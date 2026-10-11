@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Pasang GenieACS (server TR-069) + WireGuard di VPS Ubuntu 22.04/24.04 untuk INDESO.
+#
+#   sudo PPPOE_SUBNET=10.10.0.0/16 LAN_SUBNET=192.168.50.0/24 bash install.sh
+#
+# PPPOE_SUBNET : pool IP PPPoE pelanggan di MikroTik (ONU memakai IP ini)
+# LAN_SUBNET   : jaringan kantor tempat INDESO (HP Termux) berjalan
+# Semua layanan ACS hanya bisa diakses lewat terowongan WireGuard (10.99.0.0/24),
+# tidak terbuka ke internet. Lihat docs/genieacs.md untuk langkah lengkap.
+set -euo pipefail
+
+PPPOE_SUBNET="${PPPOE_SUBNET:?Isi PPPOE_SUBNET, mis. 10.10.0.0/16}"
+LAN_SUBNET="${LAN_SUBNET:?Isi LAN_SUBNET, mis. 192.168.50.0/24}"
+WG_PORT="${WG_PORT:-51820}"
+WG_VPS_IP="10.99.0.1"
+WG_MT_IP="10.99.0.2"
+GENIEACS_VERSI="${GENIEACS_VERSI:-1.2.13}"
+NBI_USER="${NBI_USER:-indeso}"
+WITH_UI="${WITH_UI:-1}"     # web admin GenieACS (opsional; INDESO tidak membutuhkannya)
+WITH_FS="${WITH_FS:-0}"     # server file untuk update firmware massal (opsional)
+RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+
+[ "$(id -u)" -eq 0 ] || { echo "Jalankan dengan sudo."; exit 1; }
+. /etc/os-release
+case "$VERSION_CODENAME" in jammy|noble) ;; *) echo "Didukung: Ubuntu 22.04 (jammy) / 24.04 (noble)."; exit 1;; esac
+grep -qw avx /proc/cpuinfo || echo "PERINGATAN: CPU VPS tidak punya AVX — MongoDB 5+ tidak akan jalan. Pilih VPS lain."
+
+echo "== Paket dasar"
+apt-get update -y
+apt-get install -y curl gnupg ca-certificates nginx apache2-utils wireguard ufw openssl
+
+# VPS RAM kecil (mis. 1 GB): tambah swap supaya MongoDB/Node tidak dimatikan kernel saat memori penuh.
+if [ "$RAM_MB" -lt 2000 ] && ! swapon --show | grep -q .; then
+  echo "== RAM ${RAM_MB} MB: membuat swap 2 GB"
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  sysctl -w vm.swappiness=10 && echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf
+fi
+
+echo "== MongoDB 8.0"
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg --yes
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${VERSION_CODENAME}/mongodb-org/8.0 multiverse" \
+  > /etc/apt/sources.list.d/mongodb-org-8.0.list
+apt-get update -y
+apt-get install -y mongodb-org
+# Batasi cache MongoDB: bawaannya ±50% RAM, terlalu boros untuk VPS kecil. Hanya dengar localhost.
+CACHE_GB=$([ "$RAM_MB" -lt 2000 ] && echo 0.25 || echo 0.5)
+cat > /etc/mongod.conf <<MONGO
+storage:
+  dbPath: /var/lib/mongodb
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: ${CACHE_GB}
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+net:
+  port: 27017
+  bindIp: 127.0.0.1
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+MONGO
+systemctl enable mongod && systemctl restart mongod
+
+echo "== Node.js 20 + GenieACS ${GENIEACS_VERSI}"
+if ! command -v node >/dev/null || ! node -v | grep -q '^v20'; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
+fi
+npm install -g --unsafe-perm "genieacs@${GENIEACS_VERSI}"
+
+id genieacs >/dev/null 2>&1 || useradd --system --no-create-home --user-group genieacs
+mkdir -p /opt/genieacs/ext /var/log/genieacs
+chown -R genieacs:genieacs /opt/genieacs /var/log/genieacs
+
+# NBI & UI hanya di localhost (nginx yang membukanya ke terowongan, NBI dengan password).
+# CWMP (ONU lapor) & FS (firmware) di semua interface, tapi firewall hanya mengizinkan dari terowongan.
+if [ ! -f /opt/genieacs/genieacs.env ]; then
+  cat > /opt/genieacs/genieacs.env <<ENV
+GENIEACS_CWMP_ACCESS_LOG_FILE=/var/log/genieacs/genieacs-cwmp-access.log
+GENIEACS_NBI_ACCESS_LOG_FILE=/var/log/genieacs/genieacs-nbi-access.log
+GENIEACS_FS_ACCESS_LOG_FILE=/var/log/genieacs/genieacs-fs-access.log
+GENIEACS_UI_ACCESS_LOG_FILE=/var/log/genieacs/genieacs-ui-access.log
+GENIEACS_DEBUG_FILE=/var/log/genieacs/genieacs-debug.yaml
+GENIEACS_EXT_DIR=/opt/genieacs/ext
+GENIEACS_NBI_INTERFACE=127.0.0.1
+GENIEACS_UI_INTERFACE=127.0.0.1
+GENIEACS_UI_JWT_SECRET=$(openssl rand -hex 32)
+ENV
+  chmod 600 /opt/genieacs/genieacs.env
+  chown genieacs:genieacs /opt/genieacs/genieacs.env
+fi
+
+LAYANAN="cwmp nbi"
+[ "$WITH_FS" = 1 ] && LAYANAN="$LAYANAN fs"
+[ "$WITH_UI" = 1 ] && LAYANAN="$LAYANAN ui"
+for svc in cwmp nbi fs ui; do
+  # Batas heap Node per layanan supaya muat di VPS 1 GB (cwmp paling sibuk).
+  HEAP=$([ "$svc" = cwmp ] && echo 256 || echo 160)
+  cat > /etc/systemd/system/genieacs-${svc}.service <<UNIT
+[Unit]
+Description=GenieACS ${svc}
+After=network.target mongod.service
+
+[Service]
+User=genieacs
+EnvironmentFile=/opt/genieacs/genieacs.env
+Environment=NODE_OPTIONS=--max-old-space-size=${HEAP}
+ExecStart=$(command -v genieacs-${svc})
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+done
+systemctl daemon-reload
+for svc in $LAYANAN; do systemctl enable genieacs-${svc}; systemctl restart genieacs-${svc}; done
+
+echo "== WireGuard (VPS ${WG_VPS_IP} <-> MikroTik ${WG_MT_IP})"
+umask 077
+[ -f /etc/wireguard/vps.key ] || wg genkey > /etc/wireguard/vps.key
+[ -f /etc/wireguard/mikrotik.key ] || wg genkey > /etc/wireguard/mikrotik.key
+VPS_PRIV=$(cat /etc/wireguard/vps.key); VPS_PUB=$(wg pubkey < /etc/wireguard/vps.key)
+MT_PRIV=$(cat /etc/wireguard/mikrotik.key); MT_PUB=$(wg pubkey < /etc/wireguard/mikrotik.key)
+cat > /etc/wireguard/wg0.conf <<WG
+[Interface]
+Address = ${WG_VPS_IP}/24
+ListenPort = ${WG_PORT}
+PrivateKey = ${VPS_PRIV}
+
+[Peer]
+# MikroTik kantor. ONU (pool PPPoE) dan LAN kantor (INDESO) diakses lewat peer ini.
+PublicKey = ${MT_PUB}
+AllowedIPs = ${WG_MT_IP}/32, ${PPPOE_SUBNET}, ${LAN_SUBNET}
+PersistentKeepalive = 25
+WG
+systemctl enable --now wg-quick@wg0 || systemctl restart wg-quick@wg0
+
+echo "== nginx: NBI (berpassword) & UI hanya di alamat terowongan"
+if [ ! -f /etc/nginx/genieacs-nbi.htpasswd ]; then
+  NBI_PASS=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)
+  htpasswd -bc /etc/nginx/genieacs-nbi.htpasswd "$NBI_USER" "$NBI_PASS"
+  echo "$NBI_PASS" > /root/genieacs-nbi-password.txt; chmod 600 /root/genieacs-nbi-password.txt
+fi
+cat > /etc/nginx/sites-available/genieacs <<NGX
+server {
+    listen ${WG_VPS_IP}:7557;
+    auth_basic "GenieACS NBI";
+    auth_basic_user_file /etc/nginx/genieacs-nbi.htpasswd;
+    client_max_body_size 50m;
+    location / { proxy_pass http://127.0.0.1:7557; proxy_read_timeout 90s; }
+}
+server {
+    listen ${WG_VPS_IP}:3000;
+    location / { proxy_pass http://127.0.0.1:3000; proxy_set_header Host \$host; }
+}
+NGX
+ln -sf /etc/nginx/sites-available/genieacs /etc/nginx/sites-enabled/genieacs
+# nginx harus menunggu wg0 (alamat 10.99.0.1) sudah ada
+mkdir -p /etc/systemd/system/nginx.service.d
+printf '[Unit]\nAfter=wg-quick@wg0.service\nRequires=wg-quick@wg0.service\n' > /etc/systemd/system/nginx.service.d/wg.conf
+systemctl daemon-reload
+nginx -t && systemctl restart nginx
+
+echo "== Firewall"
+ufw allow 22/tcp
+ufw allow "${WG_PORT}/udp"
+# 7567/3000 hanya dipakai bila FS/UI dinyalakan
+for port in 7547 7557 7567 3000; do ufw allow in on wg0 to any port "$port" proto tcp; done
+ufw --force enable
+
+echo "== Provision bawaan INDESO"
+sleep 3
+NBI="http://127.0.0.1:7557"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+curl -fsS -X PUT --data-binary @"$DIR/provision-indeso.js" "$NBI/provisions/indeso-default"
+curl -fsS -X PUT --data-binary @"$DIR/vp-pppoeUsername.js" "$NBI/virtual_parameters/pppoeUsername"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"weight":0,"channel":"","events":{},"precondition":"","configurations":[{"type":"provision","name":"indeso-default","args":null}]}' \
+  "$NBI/presets/indeso-default"
+
+VPS_IP=$(curl -fsS https://api.ipify.org || echo "IP_PUBLIK_VPS")
+cat <<SELESAI
+
+==================================================================
+ SELESAI. Simpan informasi ini.
+
+ Password NBI (untuk .env INDESO): $(cat /root/genieacs-nbi-password.txt)
+   GENIEACS_URL=http://${WG_VPS_IP}:7557
+   GENIEACS_USER=${NBI_USER}
+   GENIEACS_PASS=(password di atas)
+
+ Tempel perintah ini di Terminal MikroTik (RouterOS v7):
+
+/interface wireguard add name=wg-acs listen-port=13231 private-key="${MT_PRIV}"
+/interface wireguard peers add interface=wg-acs public-key="${VPS_PUB}" endpoint-address=${VPS_IP} endpoint-port=${WG_PORT} allowed-address=${WG_VPS_IP}/32 persistent-keepalive=25s
+/ip address add address=${WG_MT_IP}/24 interface=wg-acs
+/ip firewall filter add chain=forward in-interface=wg-acs src-address=${WG_VPS_IP} action=accept comment="ACS -> ONU (connection request)" place-before=0
+/ip firewall filter add chain=forward out-interface=wg-acs action=accept comment="ONU & INDESO -> ACS" place-before=0
+
+ URL ACS untuk diisi di menu TR-069 setiap ONU:  http://${WG_VPS_IP}:7547/
+ Web GenieACS (lewat LAN kantor):                http://${WG_VPS_IP}:3000/
+==================================================================
+SELESAI

@@ -56,7 +56,11 @@ class FakeRes:
         for k in list(self.mt.active):
             self.mt.active[k] = [x for x in self.mt.active[k] if x["id"] != id]
 
-    def call(self, *a, **k):
+    def call(self, perintah, arg=None, *a, **k):
+        if perintah == "monitor-traffic":
+            return [dict(self.mt.traffic)] if getattr(self.mt, "traffic", None) else []
+        if perintah == "ping":
+            return list(getattr(self.mt, "ping", []))
         return []
 
 
@@ -96,8 +100,9 @@ class FakeMikroTik:
 class FakeResp:
     def __init__(self, ok=True, data=None):
         self.ok = ok
-        self._d = data or {"ok": ok, "result": []}
+        self._d = data if data is not None else {"ok": ok, "result": []}
         self.text = str(self._d)
+        self.status_code = 200 if ok else 400
 
     def json(self):
         return self._d
@@ -800,3 +805,97 @@ def test_riwayat_semua_waktu(siap):
     assert k.get(f"/api/keuangan/transaksi?periode={tgl[:7]}").json()["ringkasan"]["keluar"] == 1000
     csv = k.get("/api/keuangan/ekspor?periode=semua").text
     assert lama in csv and tgl in csv
+
+
+class FakeACS:
+    """GenieACS NBI tiruan: cukup untuk query perangkat dan tugas."""
+    def __init__(self):
+        wlan = {"1": {"SSID": {"_value": "RUMAH_BUDI"}, "Enable": {"_value": True}, "Channel": {"_value": 6},
+                      "TotalAssociations": {"_value": 3}, "PreSharedKey": {"1": {"KeyPassphrase": {"_value": ""}}}},
+                "5": {"SSID": {"_value": "RUMAH_BUDI_5G"}, "Enable": {"_value": True}, "Channel": {"_value": 149},
+                      "KeyPassphrase": {"_value": ""}}}
+        hosts = {str(i): {"HostName": {"_value": f"hp{i}"}, "IPAddress": {"_value": f"192.168.1.{i + 1}"},
+                          "MACAddress": {"_value": "aa"}, "Active": {"_value": True}} for i in range(1, 13)}
+        self.dev = {"ZTEGC1234567": {
+            "_id": "ZTE-F609-ZTEGC1234567", "_lastInform": "2026-01-01T00:00:00.000Z",
+            "_deviceId": {"_Manufacturer": "ZTE", "_ProductClass": "F609", "_SerialNumber": "ZTEGC1234567"},
+            "InternetGatewayDevice": {
+                "DeviceInfo": {"SoftwareVersion": {"_value": "V9.0"}, "UpTime": {"_value": 600}},
+                "LANDevice": {"1": {"WLANConfiguration": wlan, "Hosts": {"Host": hosts}}},
+                "WANDevice": {"1": {"WANConnectionDevice": {"1": {"WANPPPConnection": {"1": {
+                    "Username": {"_value": "budi"}, "ExternalIPAddress": {"_value": "10.0.0.2"}}}}}}}}}}
+        self.tugas, self.antre = [], False
+
+    def _cocok(self, doc, q):
+        if "$or" in q:
+            return any(self._cocok(doc, x) for x in q["$or"])
+        for jalur, nilai in q.items():
+            cur = doc
+            for p in jalur.split("."):
+                cur = cur.get(p) if isinstance(cur, dict) else None
+            if cur != nilai:
+                return False
+        return True
+
+    def request(self, method, url, params=None, json=None, auth=None, timeout=None):
+        import json as js
+        if url.endswith("/devices/") and method == "GET":
+            q = js.loads((params or {}).get("query", "{}"))
+            return FakeResp(True, [d for d in self.dev.values() if self._cocok(d, q)])
+        if "/tasks" in url and method == "POST":
+            self.tugas.append(json)
+            r = FakeResp(True, {})
+            r.status_code = 202 if self.antre else 200
+            return r
+        r = FakeResp(False, {})
+        r.status_code = 404
+        return r
+
+
+def test_acs_dan_diagnosa(siap, monkeypatch):
+    main, o, k, m = siap
+    for r in (k.get("/api/acs/budi"), k.post("/api/acs/budi/reboot")):
+        assert r.status_code == 503                                  # belum diatur
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    assert m.get("/api/acs/budi").status_code == 403                 # mitra tidak boleh
+    # ONU ditemukan lewat username PPPoE (belum ada data OLT), id tersimpan
+    d = k.get("/api/acs/budi").json()
+    p = d["perangkat"]
+    assert d["terhubung"] and p["model"] == "F609" and p["perangkat_aktif"] == 12
+    assert [(w["index"], w["band"], w["bisa_ganti_password"]) for w in p["wifi"]] == [(1, "2,4 GHz", True), (5, "5 GHz", True)]
+    conn = main._billing_conn()
+    assert conn.execute("SELECT acs_id FROM pelanggan WHERE username='budi'").fetchone()[0] == "ZTE-F609-ZTEGC1234567"
+    conn.close()
+    assert k.get("/api/acs/ani").json()["terhubung"] is False
+    # ganti WiFi: validasi, parameter yang benar per model, password tidak masuk log
+    assert k.post("/api/acs/budi/wifi", json={"index": 1, "password": "pendek"}).status_code == 400
+    assert k.post("/api/acs/budi/wifi", json={"index": 9, "password": "rahasia123"}).status_code == 404
+    assert k.post("/api/acs/budi/wifi", json={"index": 1, "ssid": "BUDI_BARU", "password": "rahasia123"}).json()["status"] == "selesai"
+    assert acs.tugas[-1]["parameterValues"] == [
+        ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID", "BUDI_BARU", "xsd:string"],
+        ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase", "rahasia123", "xsd:string"]]
+    k.post("/api/acs/budi/wifi", json={"index": 5, "password": "rahasia123"})
+    assert acs.tugas[-1]["parameterValues"][0][0].endswith("WLANConfiguration.5.KeyPassphrase")
+    log = " ".join(x["detail"] for x in o.get("/api/aktivitas").json()["aktivitas"])
+    assert "password WiFi diganti" in log and "rahasia123" not in log
+    acs.antre = True
+    assert k.post("/api/acs/budi/reboot").json()["status"] == "antre"
+    assert acs.tugas[-1] == {"name": "reboot"}
+    # diagnosa: online, pemakaian penuh, banyak perangkat, ONU baru restart
+    main._latest_data = main._build_dashboard(main.fetch_pppoe_active()[0], None, [])
+    main._mt.traffic = {"tx-bits-per-second": "9800000", "rx-bits-per-second": "500000"}
+    dg = k.get("/api/diagnosa/budi").json()
+    assert dg["pppoe"]["online"] and dg["lalu_lintas"]["download_mbps"] == 9.8
+    teks = " ".join(x["teks"] for x in dg["kesimpulan"])
+    assert "penuh" in teks and "12 perangkat" in teks and "restart" in teks
+    main._mt.ping = [{"time": "2ms500us", "sent": "1", "received": "1"},
+                     {"status": "timeout", "sent": "2", "received": "1", "packet-loss": "50", "avg-rtt": "2ms500us",
+                      "min-rtt": "2ms500us", "max-rtt": "2ms500us"}]
+    pg = k.post("/api/diagnosa/budi/ping").json()
+    assert pg["hilang_persen"] == 50 and pg["rata_ms"] == 2.5
+    assert k.post("/api/diagnosa/ani/ping").status_code == 400     # tidak online
+    dg = k.get("/api/diagnosa/ani").json()
+    assert not dg["pppoe"]["online"] and "tidak online" in dg["kesimpulan"][0]["teks"]
+    assert k.get("/api/diagnosa/tidakada").status_code == 404

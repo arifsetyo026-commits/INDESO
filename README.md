@@ -25,6 +25,11 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   Telegram; tiket yang belum selesai lebih dari 24 jam (diatur di Pengaturan) diingatkan,
   dan masuk laporan harian. Mitra bisa melapor gangguan untuk pelanggannya dan memantau
   statusnya.
+- **Diagnosa & ONU** — untuk pelanggan yang lapor lemot/gangguan: trafik langsung vs batas
+  paket, tes ping dari MikroTik, redaman ONU + tren 3 hari, putus-sambung, isolir/tunggakan,
+  dan kesimpulan otomatis penyebab yang paling mungkin. Dengan server **GenieACS (TR-069)**
+  di VPS: lihat perangkat di rumah pelanggan, ganti nama/password WiFi, dan reboot ONU dari
+  pusat (tercatat di log). Setup VPS: `deploy/genieacs/install.sh`, panduan `docs/genieacs.md`.
 - **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
   nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
   ditagih, tidak diisolir otomatis, tidak dipantau putusnya). Saat ditandai Berhenti,
