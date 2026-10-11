@@ -265,7 +265,7 @@
   <label id="kuTempoLabel">Jatuh tempo pembayaran</label><input id="kuTempo" type="date">
   <label>Uang muka dibayar sekarang (opsional)</label><input id="kuDP" inputmode="numeric" placeholder="0" oninput="formatJumlah(this);hitungCicilan(true)">
   <label>Metode uang muka</label><select id="kuDPMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
-  <div class="plSub" style="margin-top:6px">Biayanya langsung dihitung sebagai pengeluaran bulan ini (laba), tapi saldo kas baru berkurang saat utang dibayar/dicicil di tab Utang.</div>
+  <div class="plSub" style="margin-top:6px">Harga barang dihitung sebagai pengeluaran bulan pembelian (laba); bunga cicilan dibebankan per bulan sesuai jadwal. Saldo kas baru berkurang saat utang dibayar/dicicil di tab Utang.</div>
  </div>
  <label>Keterangan</label><textarea id="kuKet" placeholder="mis. Beli 10 ONT ZTE F670 dari toko X, nota no. 123"></textarea>
  <label>Foto nota / kuitansi</label>
@@ -411,9 +411,18 @@ function ingatkanWA(id){
   }
 async function ubahLunas(id,lunas){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
- if(!confirm((lunas?'Tandai LUNAS: ':'Batalkan pelunasan: ')+t.nama+' — '+rp(t.jumlah)+'?')) return;
+ let body;
+ if(lunas){
+  body={tanggal:$('blTgl').value,metode:$('blMetode').value};
+  if(!body.tanggal){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Isi tanggal uang diterima.'; return; }
+ } else {
+  const alasan=prompt('Batalkan pelunasan '+t.nama+' — '+rp(t.jumlah)+' (dibayar '+tglPendek(t.tgl_bayar)+')?\nPendapatan bulan itu ikut berkurang. Tuliskan alasannya:'); if(alasan==null) return;
+  if(alasan.trim().length<3){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Alasan minimal 3 huruf.'; return; }
+  body={alasan};
+ }
  try{
-  const r=await fetch('/api/tagihan/'+id+(lunas?'/lunas':'/batal'),{method:'POST'});
+  const r=await fetch('/api/tagihan/'+id+(lunas?'/lunas':'/batal'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  bl.bayar=null;
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
   $('blMsg').textContent=''; await loadBilling(true);
  }catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
@@ -672,10 +681,12 @@ function renderBilling(){
   const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari, terisolir=iso.has(t.username);
   const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
-  const sub=lunas?('Dibayar '+tglPendek(t.tgl_bayar)):('Jatuh tempo '+tglPendek(t.jatuh_tempo));
-  const tLunas=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="ubahLunas(${t.id},true)">Tandai lunas</button>`;
+  const sub=lunas?('Dibayar '+tglPendek(t.tgl_bayar)+(t.metode_bayar?' · '+esc(t.metode_bayar):'')+(t.lunas_oleh?' · dicatat '+esc(t.lunas_oleh):'')):('Jatuh tempo '+tglPendek(t.jatuh_tempo));
+  const tLunas=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="bl.bayar=bl.bayar===${t.id}?null:${t.id};renderBilling()">Tandai lunas</button>`;
+  const hariIni=new Date().toLocaleDateString('sv-SE');
+  const fBayar=!lunas&&bl.bayar===t.id?`<div class="kuBayarForm" style="margin-top:8px"><div><small>Tanggal uang diterima</small><input type="date" id="blTgl" value="${hariIni}" max="${hariIni}"></div><div><small>Metode</small><select id="blMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select></div><div><small>&nbsp;</small><button class="btnS go" onclick="ubahLunas(${t.id},true)">Simpan lunas</button></div></div>`:'';
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolir(${t.id})">Buka isolir</button>`:(lunas?'':`<button class="btnS" onclick="isolirManual(${t.id})">Isolir</button>`);
-  return `<div class="blRow"><div><div class="plName">${esc(t.nama)}</div><div class="plSub">${esc(t.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div><div class="blAksi">${chipIso}${chip}${tLunas}${tIso}</div></div></div>`;
+  return `<div class="blRow"${fBayar?' style="display:block"':''}><div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><div class="plName">${esc(t.nama)}</div><div class="plSub">${esc(t.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div><div class="blAksi">${chipIso}${chip}${tLunas}${tIso}</div></div></div>${fBayar}</div>`;
  }).join('');
  const htmlLain=lain.map(p=>{
   const terisolir=iso.has(p.username), i=bl.lain.indexOf(p);
@@ -1131,7 +1142,7 @@ async function aksiTiket(aksi){
  }catch(e){ tkPesan('Gagal: '+e.message,false,'tkDMsg'); }
 }
 var _tkBadgeTerakhir=0;
-Object.assign(AKSI_LABEL,{tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
+Object.assign(AKSI_LABEL,{tutup_buku:'Tutup buku',buka_buku:'Buka kembali buku',tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
 
 // ===== Keuangan =====
 const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};
@@ -1162,7 +1173,10 @@ async function muatRingkasanKu(){
  let d; try{ d=await jsonAtauError(await fetch('/api/keuangan/ringkasan?periode='+ku.periode)); ku.data=d; }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
  const tagihanPersen=d.tagihan_periode.total?Math.round((d.tagihan_periode.total-d.piutang_periode.total)*100/d.tagihan_periode.total):null;
  const ins=d.insentif_mitra, sisaIns=Math.max(0,ins.terhitung-ins.dibayar);
- let h='<div class="kuKpi">'
+ const tb=d.tutup_buku, owner=saya.peran==='owner', bisaTutup=ku.periode<=kuPeriodeIni();
+ let h=`<div class="kuPanel" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;${tb?'background:#f3faf5;border-color:#bfe6cb':''}"><div><b style="font-size:13px">${tb?'🔒 Buku '+esc(namaPeriode(ku.periode))+' sudah ditutup':'Buku '+esc(namaPeriode(ku.periode))+' masih terbuka'}</b><div class="plSub">${tb?'oleh '+esc(tb.oleh)+' · '+esc(khWaktu(tb.pada))+(tb.catatan?' · '+esc(tb.catatan):'')+' — transaksi bertanggal bulan ini tidak bisa ditambah, diubah, atau dihapus.':'Setelah semua transaksi bulan ini diperiksa, owner menutup buku supaya laporannya tidak berubah lagi.'}</div></div>${owner?(tb?`<button class="btnS" onclick="bukaBuku()">Buka kembali</button>`:(bisaTutup?`<button class="btnS go" onclick="tutupBuku()">Tutup buku</button>`:'')):''}</div>`;
+ if(d.kas_negatif) h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:13px">⚠ Saldo kas akhir bulan negatif ('+rp(d.saldo_akhir)+')</b><div class="plSub">Uang tidak mungkin minus. Kemungkinan ada setoran modal atau pemasukan yang belum dicatat, atau pengeluaran tercatat dobel.</div></div>';
+ h+='<div class="kuKpi">'
   +kotakKu('Pendapatan',rp(d.pendapatan),selisih(d.pendapatan,d.bulan_lalu.pendapatan,true))
   +kotakKu('Pengeluaran',rp(d.beban),selisih(d.beban,d.bulan_lalu.beban,false))
   +kotakKu('Laba bersih',rp(d.laba),selisih(d.laba,d.bulan_lalu.laba,true),d.laba<0?'#b42318':'#0b7a3b')
@@ -1193,6 +1207,20 @@ async function muatRingkasanKu(){
  if(tn&&tn.jumlah) h+=`<div class="kuPanel" style="margin-top:12px;border-color:#f3d48a"><h4>📎 ${tn.jumlah} pengeluaran ≥ ${rp(tn.batas)} belum ada nota <span class="plSub">(total ${rp(tn.total)})</span></h4>`
   +tn.daftar.map(x=>`<div class="blRow"><div><div class="plName">${esc(x.kategori)} <span class="plSub">${esc(x.kode)}</span></div><div class="plSub">${esc(tglPendek(x.tanggal))} · ${esc(x.keterangan||'—')} · ${esc(x.dicatat_oleh)}</div></div><div class="blKanan"><div class="blAmt turun">−${rp(x.jumlah)}</div><div class="blAksi"><button class="btnS" onclick="tambahNota('${x.kode.startsWith('#U')?'utang':'transaksi'}',${x.id})">+ Nota</button></div></div></div>`).join('')+'</div>';
  el.innerHTML=h; pasangTipTren(d.tren);
+}
+async function tutupBuku(){
+ const d=ku.data, tn=d.tanpa_nota;
+ const cek=[ (tn&&tn.jumlah?'• '+tn.jumlah+' pengeluaran besar belum ada nota':'• Nota lengkap'), (d.kas_negatif?'• SALDO KAS NEGATIF — periksa dulu':'• Saldo kas akhir '+rp(d.saldo_akhir)), '• Laba '+rp(d.laba) ].join('\n');
+ const catatan=prompt('Tutup buku '+namaPeriode(ku.periode)+'?\n\n'+cek+'\n\nSetelah ditutup, transaksi bertanggal bulan ini tidak bisa ditambah/diubah/dihapus sampai owner membukanya kembali.\nCatatan (opsional):','');
+ if(catatan==null) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/tutup-buku/'+ku.periode,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({catatan})})); kuPesan('Buku '+namaPeriode(ku.periode)+' ditutup.',true); muatRingkasanKu(); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function bukaBuku(){
+ const alasan=prompt('Buka kembali buku '+namaPeriode(ku.periode)+'?\nLaporan bulan itu bisa berubah lagi. Tuliskan alasannya (tercatat di log):'); if(alasan==null) return;
+ if(alasan.trim().length<3){ kuPesan('Alasan minimal 3 huruf.'); return; }
+ try{ await jsonAtauError(await fetch('/api/keuangan/tutup-buku/'+ku.periode+'/buka',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); kuPesan('Buku '+namaPeriode(ku.periode)+' dibuka kembali.',true); muatRingkasanKu(); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
 }
 function chartTren(tren,label){
  const W=560,H=210,pl=46,pr=8,pt=10,pb=26, w=W-pl-pr, h=H-pt-pb;
@@ -1236,6 +1264,14 @@ async function muatKeseluruhan(){
   +kotakKu('Piutang pelanggan',rp(d.piutang.total),d.piutang.jumlah+' tagihan · '+d.piutang.pelanggan+' pelanggan',d.piutang.total?'#b45309':'')
   +kotakKu('Utang belum dibayar',rp(d.utang.sisa),d.utang.jumlah?d.utang.jumlah+' tagihan pemasok':'tidak ada utang',d.utang.sisa?'#b45309':'')
   +kotakKu('Pelanggan',String(d.pelanggan.berbayar),'berbayar · '+d.pelanggan.gratis+' gratis · '+d.pelanggan.berhenti+' berhenti')+'</div>';
+ if(d.peringatan&&d.peringatan.length) h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5">'+d.peringatan.map(p=>'<div style="color:#b42318;font-size:12.5px;font-weight:700;margin:2px 0">⚠ '+esc(p)+'</div>').join('')+'</div>';
+ const N=d.neraca, baris=(k,v,tebal)=>`<tr${tebal?' style="font-weight:800"':''}><td>${k}</td><td class="${v<0?'turun':''}">${rp(v)}</td></tr>`;
+ h+=`<div class="kuGrid" style="margin-bottom:12px"><div class="kuPanel"><h4>Neraca per hari ini ${N.seimbang?'<span class="chip ok">Seimbang</span>':'<span class="chip bad">Tidak seimbang</span>'}</h4><table class="kuTbl"><tbody>`
+  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">ASET</td></tr>'+baris('Kas & bank',N.aset.kas)+(N.aset.bunga_dibayar_dimuka?baris('Bunga dibayar di muka',N.aset.bunga_dibayar_dimuka):'')+baris('Total aset',N.total_aset,true)
+  +'</tbody></table></div><div class="kuPanel"><h4>&nbsp;</h4><table class="kuTbl"><tbody>'
+  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">KEWAJIBAN</td></tr>'+baris('Utang usaha (kredit/cicilan)',N.kewajiban.utang_usaha)+(N.bunga_belum_jatuh_tempo?'<tr><td colspan="2" style="text-align:left"><span class="plSub">di luar bunga cicilan yang belum jatuh tempo '+rp(N.bunga_belum_jatuh_tempo)+'</span></td></tr>':'')
+  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">EKUITAS</td></tr>'+baris('Modal disetor',N.ekuitas.modal_disetor)+baris('Prive',N.ekuitas.prive)+baris('Laba ditahan',N.ekuitas.laba_ditahan)
+  +baris('Total kewajiban + ekuitas',N.total_pasiva,true)+`</tbody></table><div class="plSub" style="margin-top:6px">Pendapatan langganan diakui saat dibayar (basis kas), jadi piutang ${rp(N.piutang_belum_diakui)} belum masuk neraca.</div></div></div>`;
  h+='<div class="kuGrid"><div class="kuPanel"><h4>Pendapatan vs pengeluaran per bulan</h4><div class="kuLegend"><span><i style="background:#2a78d6"></i>Pendapatan</span><span><i style="background:#eb6834"></i>Pengeluaran</span></div><div class="kuChart" id="kuChartAll">'+chartTren(d.bulanan,'Grafik pendapatan dan pengeluaran sejak awal')+'<div class="kuTip" id="kuTipAll"></div></div>';
  if(d.tahunan.length>1||d.tahunan[0].bulan>=12) h+='<div style="overflow-x:auto"><table class="kuTbl"><thead><tr><th>Tahun</th><th>Pendapatan</th><th>Pengeluaran</th><th>Laba</th></tr></thead><tbody>'+d.tahunan.map(t=>`<tr><td>${esc(t.tahun)}${t.bulan<12?' <small class="muted">('+t.bulan+' bln)</small>':''}</td><td>${rp(t.pendapatan)}</td><td>${rp(t.beban)}</td><td class="${t.laba<0?'turun':''}">${rp(t.laba)}</td></tr>`).join('')+'</tbody></table></div>';
  h+='</div>';
@@ -1270,7 +1306,7 @@ async function muatTransaksi(){
    const info=esc(tglPendek(t.tanggal))+(t.qty?' · <b>'+esc(teksQty(t.qty,t.satuan))+'</b> @'+rp(Math.round(t.jumlah/t.qty)):'')+' · '+esc(t.metode)+' · dicatat '+esc(t.dicatat_oleh)+(t.diubah_oleh?' · diubah '+esc(t.diubah_oleh):'');
    const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dihapus ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
    const nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,t.jenis==='keluar'&&!t.utang_id&&t.status==='aktif');
-   return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
+   return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plSub" style="font-weight:800;letter-spacing:.02em">${esc(t.nomor||'#'+t.id)}</div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
   }).join(''):'<div class="muted">Belum ada transaksi di bulan ini.</div>';
  }catch(e){ $('kuTrxList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
@@ -1296,7 +1332,7 @@ function hitungCicilan(isiOtomatis){
  if(isiOtomatis&&harga&&(!$('kuCicilan').dataset.manual)){ $('kuCicilan').value=Math.ceil((harga-dp)/n).toLocaleString('id-ID'); }
  if(!isiOtomatis) $('kuCicilan').dataset.manual='1';
  const c=angka('kuCicilan'), total=dp+c*n, bunga=total-harga;
- $('kuCicilanInfo').innerHTML=c?('Total dibayar <b>'+rp(total)+'</b> ('+(dp?rp(dp)+' uang muka + ':'')+n+' × '+rp(c)+')'+(harga?(bunga>0?' · bunga/biaya <b style="color:#b45309">'+rp(bunga)+'</b> (dicatat sebagai beban "Bunga & biaya cicilan")':(bunga<0?' · <b style="color:#b42318">kurang '+rp(-bunga)+' dari harga barang</b>':' · tanpa bunga')):'')):'';
+ $('kuCicilanInfo').innerHTML=c?('Total dibayar <b>'+rp(total)+'</b> ('+(dp?rp(dp)+' uang muka + ':'')+n+' × '+rp(c)+')'+(harga?(bunga>0?' · bunga/biaya <b style="color:#b45309">'+rp(bunga)+'</b> (dibebankan "Bunga & biaya cicilan" ±'+rp(Math.floor(bunga/n))+' per bulan, sesuai jadwal cicilan)':(bunga<0?' · <b style="color:#b42318">kurang '+rp(-bunga)+' dari harga barang</b>':' · tanpa bunga')):'')):'';
 }
 function kreditBaru(){ ku.edit=null; tabKu('catat'); setFormJenis('keluar'); $('kuMetode').value='kredit'; aturKredit(); $('kuPemasok').focus(); }
 function formatJumlah(el){ const n=el.value.replace(/\D/g,''); el.value=n?Number(n).toLocaleString('id-ID'):''; }

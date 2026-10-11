@@ -53,6 +53,17 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   insentifnya (insentif Oktober yang dibayar November tetap tercatat untuk Oktober), bukti
   transfer bisa dilampirkan; mitra melihat status pembayarannya. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
   bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
+- **Pengendalian keuangan (SOP)** — setiap transaksi kas bernomor bukti berurutan
+  (`BKM-YYMM-0001` uang masuk, `BKK-YYMM-0001` uang keluar). Pelunasan tagihan mencatat
+  tanggal uang diterima, metode (tunai/transfer/QRIS), dan petugasnya; tanggal pelunasan
+  lama tidak pernah tertimpa, dan pembatalan pelunasan wajib beralasan. **Tutup buku**
+  bulanan oleh owner mengunci bulan itu (tidak bisa catat/ubah/hapus transaksi, pelunasan,
+  utang, pembayaran, insentif, atau nota bertanggal bulan itu) sampai owner membukanya
+  kembali dengan alasan. Bunga cicilan dibebankan per bulan sesuai jadwal (akrual). Tab
+  Sejak awal menampilkan **neraca** (kas = utang + modal − prive + laba ditahan) yang
+  diperiksa keseimbangannya, plus peringatan bila saldo kas tercatat negatif. Hapus
+  permanen menyimpan salinan lengkap data di log aktivitas; penghapusan tagihan saat
+  pelanggan jadi gratis/berhenti dicatat beserta nominalnya.
 - **Laporan keuangan bulanan ke Telegram owner** — tiap tanggal 1 (jam diatur, menyusul
   s/d tanggal 7 bila server mati) ke grup internal owner dan/atau chat pribadi owner: laba rugi vs bulan lalu, kas,
   tagihan & 5 penunggak terbesar, utang, insentif mitra, pelanggan, ringkasan gangguan,
