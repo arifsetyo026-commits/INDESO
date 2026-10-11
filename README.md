@@ -13,7 +13,7 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
   ditagih, tidak diisolir otomatis, tidak dipantau putusnya).
 - **Log aktivitas** — setiap pelunasan, isolir, perubahan pelanggan/paket tercatat
-  beserta akun pelakunya (menu Pengaturan). Gunakan `DASHBOARD_USERS` agar tiap
+  beserta akun pelakunya (menu Pengaturan). Buat akun sendiri untuk tiap
   petugas punya akun sendiri.
 - **Billing** — tagihan bulanan otomatis (dibuat di hari terakhir bulan), tandai lunas,
   pengingat WhatsApp, rekap belum bayar ke Telegram.
