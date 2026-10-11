@@ -131,16 +131,30 @@
 </div></main></div>
 <div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>Data Pelanggan &amp; ONU</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari username, PON, ONU, model, serial…" onkeydown="if(event.key==='Enter')searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
-<div id="plListView"><div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"><button onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div><div id="plSummary" class="muted"></div><div id="plList"></div></div>
+<div id="plListView">
+<div class="blNav"><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div>
+<div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"></div>
+<div class="blFilters plFilters"><button data-f="aktif" class="on" onclick="setFilterPelanggan('aktif')">Aktif</button><button data-f="belum" onclick="setFilterPelanggan('belum')">Belum lengkap</button><button data-f="berhenti" onclick="setFilterPelanggan('berhenti')">Berhenti</button><button data-f="semua" onclick="setFilterPelanggan('semua')">Semua</button></div>
+<div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
 <div id="plFormView" style="display:none"><div class="plForm">
 <label>Username PPPoE</label><input id="plUser" disabled>
 <label>Nama lengkap</label><input id="plNama">
 <label>Alamat</label><textarea id="plAlamat"></textarea>
 <label>Nomor HP / WhatsApp</label><input id="plHp" type="tel" inputmode="tel">
 <label>Paket</label><select id="plPaket"></select>
+<label>Status langganan</label><select id="plStatus"><option value="aktif">Aktif</option><option value="berhenti">Berhenti (tidak ditagih, tidak dipantau)</option></select>
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
 <div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
+<div id="plPaketView" style="display:none">
+<div id="pkList"></div>
+<div class="plForm" style="margin-top:14px"><b id="pkJudul" style="font-size:13px">Tambah paket</b>
+<label>Nama paket</label><input id="pkNama" placeholder="mis. Paket 10 Mbps">
+<label>Kecepatan (Mbps)</label><input id="pkSpeed" type="number" min="1" step="any" inputmode="decimal">
+<label>Harga per bulan (Rp)</label><input id="pkHarga" type="number" min="0" step="1000" inputmode="numeric">
+<div class="plSub" style="margin-top:6px">Nama profil PPP di MikroTik sebaiknya berisi kecepatannya, mis. <code>paket-10mbps</code>, supaya impor otomatis mengenali paketnya. Perubahan harga hanya berlaku untuk tagihan baru.</div>
+<div class="plBtns"><button class="plSave" onclick="simpanPaket()">Simpan paket</button><button class="plCancel" onclick="batalPaket()">Kembali</button></div>
+<div class="plMsg" id="pkMsg"></div></div></div>
 </div></div></div>
 <div class="overlay" id="billingModal"><div class="modal"><div class="modalHead"><h3>Billing</h3><button class="close" onclick="closeModal('billingModal')">Tutup</button></div><div class="modalBody">
 <div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button></div>
@@ -157,7 +171,10 @@
 <div class="plSub" id="khInfo"></div><div class="plMsg" id="khMsg"></div><div id="khList"></div>
 </div></div></div>
   
-<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan Dashboard</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody"><div class="detailGrid"><div class="detail"><small>Auto refresh</small><b>5 detik</b></div><div class="detail"><small>Backend</small><b>/api/status</b></div><div class="detail"><small>OLT</small><b>192.168.2.100</b></div><div class="detail"><small>Mode</small><b>Monitoring &amp; billing</b></div></div><p class="muted" style="font-size:11px;line-height:1.6">Dashboard ini menampilkan data dari backend yang tersedia. Perubahan ke MikroTik hanya terjadi lewat aksi isolir/buka isolir di menu Billing. OLT hanya dibaca (SNMP).</p></div></div></div>
+<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan &amp; Log Aktivitas</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody"><div class="detailGrid"><div class="detail"><small>Auto refresh</small><b>5 detik</b></div><div class="detail"><small>Backend</small><b>/api/status</b></div><div class="detail"><small>OLT</small><b>SNMP (baca saja)</b></div><div class="detail"><small>Mode</small><b>Monitoring &amp; billing</b></div></div><p class="muted" style="font-size:11px;line-height:1.6">Perubahan ke MikroTik hanya terjadi lewat aksi isolir/buka isolir. OLT hanya dibaca (SNMP).</p>
+<b style="font-size:13px">Log aktivitas</b><div class="plSub" style="margin:3px 0 8px">Siapa melakukan apa: pelunasan, isolir, perubahan data pelanggan dan paket. "sistem" = otomasi.</div>
+<div class="search"><input id="akCari" placeholder="Cari username, aksi, atau nama akun…" onkeydown="if(event.key==='Enter')loadAktivitas()"><button onclick="loadAktivitas()">Cari</button></div>
+<div id="akList"></div></div></div></div>
 <script>
 const state={history:[],last:null};
 const $=id=>document.getElementById(id);
@@ -169,54 +186,8 @@ function statusClass(s){s=(s||'').toUpperCase();return s==='CRITICAL'?'crit':s==
 function classifyRx(v){if(v==null)return ['UNKNOWN','']; if(v>-23)return ['NORMAL','']; if(v>-27)return ['WARNING','warn']; return ['CRITICAL','crit']}
 function setMetric(id,pid,v,kind='normal'){ $(id).textContent=v==null?'—':v; const p=$(pid); p.textContent=kind==='crit'?'Critical':kind==='warn'?'Warning':'Normal'; p.className='pill '+(kind==='crit'?'crit':kind==='warn'?'warn':'');}
 function scrollToSection(id){document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'})}
-function openSettings(){$('settingsModal').classList.add('show')}
   const pl={data:[],paket:[],cur:null};
-async function openPelanggan(){
- $('pelangganModal').classList.add('show');
- backPelanggan();
- await loadPelanggan();
-}
-async function loadPelanggan(){
- $('plList').innerHTML='<div class="muted">Memuat…</div>';
- try{
-  const [a,b]=await Promise.all([fetch('/api/data-pelanggan'),fetch('/api/paket')]);
-  if(!a.ok||!b.ok) throw new Error('HTTP '+a.status+'/'+b.status);
-  pl.data=(await a.json()).pelanggan||[];
-  pl.paket=(await b.json()).paket||[];
-  renderPelanggan();
- }catch(e){ $('plList').innerHTML='<div class="muted">Gagal memuat data: '+esc(e.message)+'</div>'; }
-}
 function plLengkap(p){return !!(p.alamat&&p.no_hp&&p.paket_id)}
-function renderPelanggan(){
- const q=$('plSearch').value.trim().toLowerCase();
- const belum=pl.data.filter(p=>!plLengkap(p)).length;
- $('plSummary').textContent=pl.data.length+' pelanggan · '+belum+' belum lengkap';
- const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q));
- $('plList').innerHTML=rows.length?rows.map(({p,i})=>`<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${esc(p.paket||'Belum ada paket')}${p.gratis?' · GRATIS':''}</div></div><span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span></div>`).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
-}
-function editPelanggan(i){
- const p=pl.data[i]; pl.cur=p.username;
- $('plTitle').textContent='Ubah Data Pelanggan';
- $('plGratis').checked=!!pl.data[i].gratis;
- $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
- $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · Rp ${Number(k.harga).toLocaleString('id-ID')}</option>`).join('');
- $('plMsg').textContent='';
- $('plListView').style.display='none'; $('plFormView').style.display='block';
-}
-function backPelanggan(){
- $('plTitle').textContent='Data Pelanggan';
- $('plListView').style.display='block'; $('plFormView').style.display='none';
-}
-async function savePelanggan(){
- const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null};
- body.gratis=$('plGratis').checked;
- if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
- try{
-  const r=await fetch('/api/data-pelanggan/'+encodeURIComponent(pl.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
-  await loadPelanggan(); backPelanggan();
- }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
-  }
   const BLN=['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 const BLN_PJ=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 const bl={periode:'',rows:[],ring:null,filter:'semua'};
@@ -235,34 +206,7 @@ async function openBilling(){
  await loadBilling();
 }
 async function ubahPeriode(n){ bl.periode=geserPeriode(bl.periode,n); await loadBilling(); }
-async function loadBilling(diam){
- $('blPeriode').textContent=namaPeriode(bl.periode);
- if(!diam){ $('blMsg').textContent=''; $('blList').innerHTML='<div class="muted">Memuat…</div>'; }
- try{
-  const r=await fetch('/api/tagihan?periode='+bl.periode);
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  const d=await r.json(); bl.rows=d.tagihan||[]; bl.ring=d.ringkasan; renderBilling();
- }catch(e){ $('blList').innerHTML='<div class="muted">Gagal memuat tagihan: '+esc(e.message)+'</div>'; }
-}
 function setFilterBilling(f){ bl.filter=f; renderBilling(); }
-function renderBilling(){
- const s=bl.ring||{jumlah_tagihan:0,total:0,terbayar:0,belum_bayar:0};
- const nLunas=bl.rows.filter(t=>t.status==='lunas').length;
- $('blTotal').textContent=rp(s.total); $('blTerbayar').textContent=rp(s.terbayar); $('blBelum').textContent=rp(s.belum_bayar);
- $('blTotalN').textContent=s.jumlah_tagihan+' tagihan'; $('blTerbayarN').textContent=nLunas+' tagihan'; $('blBelumN').textContent=(bl.rows.length-nLunas)+' tagihan';
- document.querySelectorAll('.blFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===bl.filter));
- const q=$('blSearch').value.trim().toLowerCase(), hari=new Date().toLocaleDateString('sv-SE');
- const lolos=t=>(bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':t.status!=='lunas'))&&(!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q));
- const rows=bl.rows.filter(lolos);
- if(!bl.rows.length){ $('blList').innerHTML='<div class="muted">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>'; return; }
- $('blList').innerHTML=rows.length?rows.map(t=>{
-  const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari;
-  const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
-  const sub=lunas?('Dibayar '+tglPendek(t.tgl_bayar)):('Jatuh tempo '+tglPendek(t.jatuh_tempo));
-  const tombol=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="ubahLunas(${t.id},true)">Tandai lunas</button>`;
-  return `<div class="blRow"><div><div class="plName">${esc(t.nama)}</div><div class="plSub">${esc(t.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div><div class="blAksi">${chip}${tombol}</div></div></div>`;
- }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
-}
 const NAMA_USAHA='Internet Desa';
 const INFO_BAYAR='Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.';
 function nomorWA(hp){
@@ -527,9 +471,9 @@ function renderBilling(){
  }).join('');
  const htmlLain=lain.map(p=>{
   const terisolir=iso.has(p.username), i=bl.lain.indexOf(p);
-  const chip=p.gratis?'<span class="chip ok">Gratis</span>':'<span class="chip warn">'+(p.paket_id?'Belum ditagih':'Belum ada paket')+'</span>';
+  const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':p.gratis?'<span class="chip ok">Gratis</span>':'<span class="chip warn">'+(p.paket_id?'Belum ditagih':'Belum ada paket')+'</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
-  const sub=p.gratis?'Tidak ditagih':(p.paket_id?'Tagihan periode ini belum dibuat':'Lengkapi paket di menu Pelanggan');
+  const sub=p.status==='berhenti'?'Berhenti berlangganan':p.gratis?'Tidak ditagih':(p.paket_id?'Tagihan periode ini belum dibuat':'Lengkapi paket di menu Pelanggan');
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolirLain(${i})">Buka isolir</button>`:`<button class="btnS" onclick="isolirLain(${i})">Isolir</button>`;
   return `<div class="blRow"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tIso}</div></div></div>`;
  }).join('');
@@ -564,6 +508,13 @@ async function bukaIsolir(id){
  if(!confirm('Buka isolir '+t.nama+'?')) return;
  await aksiIsolir('/api/isolir/'+encodeURIComponent(t.username)+'/buka','Isolir '+t.nama+' dibuka.');
 }
+// ===== Pelanggan: daftar, ubah data, status, impor =====
+async function openPelanggan(){
+ $('pelangganModal').classList.add('show');
+ pl.filter=pl.filter||'aktif'; $('plListMsg').textContent='';
+ backPelanggan();
+ await loadPelanggan();
+}
 async function loadPelanggan(){
  $('plList').innerHTML='<div class="muted">Memuat…</div>';
  try{
@@ -575,12 +526,121 @@ async function loadPelanggan(){
   renderPelanggan();
  }catch(e){ $('plList').innerHTML='<div class="muted">Gagal memuat data: '+esc(e.message)+'</div>'; }
 }
+function setFilterPelanggan(f){ pl.filter=f; renderPelanggan(); }
 function renderPelanggan(){
- const q=$('plSearch').value.trim().toLowerCase(), iso=pl.isolir||new Set();
- const belum=pl.data.filter(p=>!plLengkap(p)).length;
- $('plSummary').textContent=pl.data.length+' pelanggan · '+belum+' belum lengkap'+(iso.size?(' · '+iso.size+' terisolir'):'');
- const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q));
- $('plList').innerHTML=rows.length?rows.map(({p,i})=>`<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${esc(p.paket||'Belum ada paket')}${p.gratis?' · GRATIS':''}${iso.has(p.username)?' · ISOLIR':''}</div></div><span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span></div>`).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
+ const q=$('plSearch').value.trim().toLowerCase(), iso=pl.isolir||new Set(), f=pl.filter||'aktif';
+ const aktif=pl.data.filter(p=>p.status!=='berhenti');
+ const belum=aktif.filter(p=>!plLengkap(p)).length;
+ $('plSummary').textContent=aktif.length+' aktif · '+belum+' belum lengkap · '+(pl.data.length-aktif.length)+' berhenti'+(iso.size?(' · '+iso.size+' terisolir'):'');
+ document.querySelectorAll('.plFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===f));
+ const lolos=p=>f==='semua'||(f==='berhenti'?p.status==='berhenti':(p.status!=='berhenti'&&(f!=='belum'||!plLengkap(p))));
+ const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>lolos(p)&&(!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q)));
+ $('plList').innerHTML=rows.length?rows.map(({p,i})=>{
+  const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':`<span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span>`;
+  const sub=esc(p.username)+' · '+esc(p.paket||'Belum ada paket')+(p.gratis?' · GRATIS':'')+(iso.has(p.username)?' · ISOLIR':'')+(p.status==='berhenti'&&p.berhenti_sejak?' · sejak '+tglPendek(p.berhenti_sejak):'');
+  return `<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${sub}</div></div>${chip}</div>`;
+ }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
+}
+function tampilkanView(v){
+ $('plListView').style.display=v==='list'?'block':'none';
+ $('plFormView').style.display=v==='form'?'block':'none';
+ $('plPaketView').style.display=v==='paket'?'block':'none';
+}
+function editPelanggan(i){
+ const p=pl.data[i]; pl.cur=p.username;
+ $('plTitle').textContent='Ubah Data Pelanggan';
+ $('plGratis').checked=!!p.gratis;
+ $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
+ $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value;
+ $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
+ $('plMsg').textContent='';
+ tampilkanView('form');
+}
+function backPelanggan(){
+ $('plTitle').textContent='Data Pelanggan';
+ tampilkanView('list');
+}
+async function savePelanggan(){
+ const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value};
+ if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
+ if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\nAkun PPPoE di MikroTik tidak diubah, nonaktifkan manual bila perlu.')) return;
+ try{
+  const r=await fetch('/api/data-pelanggan/'+encodeURIComponent(pl.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  await loadPelanggan(); backPelanggan();
+  $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+'.';
+ }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
+}
+async function imporPelanggan(){
+ if(!confirm('Impor pelanggan dari PPP secret MikroTik?\nPelanggan baru ditambahkan; data yang sudah ada tidak ditimpa.')) return;
+ const m=$('plListMsg'); m.style.color='#4b6355'; m.textContent='Mengimpor…';
+ try{
+  const r=await fetch('/api/impor-pelanggan',{method:'POST'}); const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  await loadPelanggan();
+  let t=d.total_secret+' secret dibaca · '+d.baru+' pelanggan baru';
+  if(d.tanpa_paket&&d.tanpa_paket.length) t+=' · '+d.tanpa_paket.length+' belum cocok dengan paket mana pun';
+  m.style.color='#0b7a3b'; m.innerHTML=esc(t);
+  if(d.tidak_ada_di_mikrotik&&d.tidak_ada_di_mikrotik.length){
+   m.innerHTML+='<div style="color:#b45309;margin-top:6px">'+d.tidak_ada_di_mikrotik.length+' pelanggan aktif tidak ada lagi di MikroTik (mungkin sudah berhenti, cek lalu tandai Berhenti): '+d.tidak_ada_di_mikrotik.map(x=>esc(x.nama||x.username)).join(', ')+'</div>';
   }
+ }catch(e){ m.style.color='#b42318'; m.textContent='Impor gagal: '+e.message; }
+}
+// ===== Paket =====
+async function bukaPaket(){
+ $('plTitle').textContent='Kelola Paket'; tampilkanView('paket'); batalPaket(true);
+ await loadPaket();
+}
+async function loadPaket(){
+ $('pkList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const r=await fetch('/api/paket'); if(!r.ok) throw new Error('HTTP '+r.status);
+  pl.paket=(await r.json()).paket||[];
+  $('pkList').innerHTML=pl.paket.length?pl.paket.map((k,i)=>`<div class="blRow"><div><div class="plName">${esc(k.nama)}</div><div class="plSub">${k.kecepatan_mbps} Mbps · ${k.jumlah_pelanggan} pelanggan aktif</div></div><div class="blKanan"><div class="blAmt">${rp(k.harga)}</div><div class="blAksi"><button class="btnS" onclick="ubahPaket(${i})">Ubah</button><button class="btnS" onclick="hapusPaket(${i})">Hapus</button></div></div></div>`).join(''):'<div class="muted">Belum ada paket. Tambahkan di bawah.</div>';
+ }catch(e){ $('pkList').innerHTML='<div class="muted">Gagal memuat paket: '+esc(e.message)+'</div>'; }
+}
+function ubahPaket(i){
+ const k=pl.paket[i]; pl.pkCur=k.id;
+ $('pkJudul').textContent='Ubah paket '+k.nama; $('pkNama').value=k.nama; $('pkSpeed').value=k.kecepatan_mbps; $('pkHarga').value=k.harga; $('pkMsg').textContent='';
+ $('pkNama').focus();
+}
+function batalPaket(diam){
+ if(pl.pkCur==null&&!diam){ backPelanggan(); loadPelanggan(); return; }
+ pl.pkCur=null; $('pkJudul').textContent='Tambah paket'; $('pkNama').value=''; $('pkSpeed').value=''; $('pkHarga').value=''; if(diam) $('pkMsg').textContent='';
+}
+async function simpanPaket(){
+ const body={nama:$('pkNama').value.trim(),kecepatan_mbps:Number($('pkSpeed').value),harga:Math.round(Number($('pkHarga').value))};
+ const m=$('pkMsg');
+ if(!body.nama||!(body.kecepatan_mbps>0)||!(body.harga>=0)||$('pkHarga').value===''){ m.style.color='#b42318'; m.textContent='Isi nama, kecepatan, dan harga dengan benar.'; return; }
+ const baru=pl.pkCur==null;
+ try{
+  const r=await fetch(baru?'/api/paket':'/api/paket/'+pl.pkCur,{method:baru?'POST':'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  batalPaket(true); await loadPaket();
+  m.style.color='#0b7a3b'; m.textContent='Paket '+body.nama+(baru?' ditambahkan.':' disimpan.');
+ }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
+async function hapusPaket(i){
+ const k=pl.paket[i]; if(!confirm('Hapus paket '+k.nama+'?')) return;
+ const m=$('pkMsg');
+ try{
+  const r=await fetch('/api/paket/'+k.id,{method:'DELETE'}); const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  batalPaket(true); await loadPaket(); m.style.color='#0b7a3b'; m.textContent='Paket '+k.nama+' dihapus.';
+ }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
+// ===== Log aktivitas (di menu Pengaturan) =====
+const AKSI_LABEL={tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+function openSettings(){ $('settingsModal').classList.add('show'); $('akCari').value=''; loadAktivitas(); }
+async function loadAktivitas(){
+ $('akList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const q=$('akCari').value.trim();
+  const r=await fetch('/api/aktivitas?limit=300'+(q?'&cari='+encodeURIComponent(q):'')); if(!r.ok) throw new Error('HTTP '+r.status);
+  const rows=(await r.json()).aktivitas||[];
+  $('akList').innerHTML=rows.length?rows.map(a=>`<div class="blRow"><div><div class="plName">${esc(AKSI_LABEL[a.aksi]||a.aksi)} <span class="plSub">oleh ${esc(a.oleh)}</span></div><div class="plSub">${esc(a.detail||'')}</div></div><div class="plSub" style="white-space:nowrap">${esc(khWaktu(a.waktu))}</div></div>`).join(''):'<div class="muted">Belum ada aktivitas tercatat.</div>';
+ }catch(e){ $('akList').innerHTML='<div class="muted">Gagal memuat log: '+esc(e.message)+'</div>'; }
+}
 </script>
 </body></html>

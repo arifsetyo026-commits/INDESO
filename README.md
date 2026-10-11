@@ -9,7 +9,12 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   redaman/kesehatan ONU dari OLT C-Data (SNMP). ONU dicocokkan ke pelanggan lewat MAC.
 - **Alert Telegram** — redaman kritis, pelanggan putus lebih dari 10 menit, gangguan
   massal, laporan harian. Perintah bot: `/cek nama`, `/masalah`, `/boncos`, `/putus`.
-- **Data pelanggan & paket** — nama, alamat, no. HP, paket, pelanggan gratis.
+- **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
+  nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
+  ditagih, tidak diisolir otomatis, tidak dipantau putusnya).
+- **Log aktivitas** — setiap pelunasan, isolir, perubahan pelanggan/paket tercatat
+  beserta akun pelakunya (menu Pengaturan). Gunakan `DASHBOARD_USERS` agar tiap
+  petugas punya akun sendiri.
 - **Billing** — tagihan bulanan otomatis (dibuat di hari terakhir bulan), tandai lunas,
   pengingat WhatsApp, rekap belum bayar ke Telegram.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
@@ -28,23 +33,17 @@ cp .env.example .env      # lalu isi password MikroTik, token Telegram, password
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Buka `http://<ip-server>:8000`. Bila `DASHBOARD_PASSWORD` diisi, browser akan meminta
-login (username `DASHBOARD_USER`).
+Buka `http://<ip-server>:8000`. Bila `DASHBOARD_PASSWORD` atau `DASHBOARD_USERS` diisi,
+browser akan meminta login.
 
 ## Persiapan data awal
 
-Dashboard belum punya form untuk paket, jadi tambahkan paket lewat API, lalu impor
-pelanggan dari PPP secret MikroTik. Paket dicocokkan dari nama profil PPP
-(mis. profil `paket-10mbps` ↔ paket berkecepatan 10 Mbps).
-
-```bash
-curl -u admin:PASSWORD -X POST http://localhost:8000/api/paket \
-     -H 'Content-Type: application/json' \
-     -d '{"nama":"Paket 10 Mbps","kecepatan_mbps":10,"harga":150000}'
-curl -u admin:PASSWORD -X POST http://localhost:8000/api/impor-pelanggan
-```
-
-Setelah itu lengkapi alamat, no. HP, dan paket di menu **Pelanggan** pada dashboard.
+1. Menu **Pelanggan → Kelola paket**: tambahkan paket (nama, kecepatan, harga).
+2. Menu **Pelanggan → Impor dari MikroTik**: pelanggan diambil dari PPP secret. Paket
+   dicocokkan dari nama profil PPP (mis. profil `paket-10mbps` ↔ paket 10 Mbps).
+   Pelanggan yang secret-nya sudah tidak ada di MikroTik ikut dilaporkan supaya bisa
+   ditandai Berhenti.
+3. Lengkapi alamat, no. HP, dan paket tiap pelanggan (filter **Belum lengkap**).
 
 ## Isolir
 
