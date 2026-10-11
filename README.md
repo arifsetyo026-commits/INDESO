@@ -28,7 +28,9 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   dan pemasukan lain (biaya pasang, penjualan perangkat, setoran modal); pembayaran
   tagihan pelanggan masuk otomatis dari Billing. Ringkasan per bulan: pendapatan,
   pengeluaran, laba, saldo kas, piutang, insentif mitra, tren 6 bulan, per kategori,
-  ekspor CSV. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
+  ekspor CSV. **Pembelian kredit (utang)**: biaya dihitung pada tanggal beli, kas berkurang
+  saat uang muka/cicilan dibayar; sisa utang, jatuh tempo, dan pengingat Telegram 3 hari
+  sebelum jatuh tempo. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
   bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.

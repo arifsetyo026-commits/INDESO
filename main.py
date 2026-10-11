@@ -1036,6 +1036,10 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat proses isolir: {e}")
         try:
+            await asyncio.to_thread(proses_pengingat_utang)
+        except Exception as e:
+            logger.error(f"Error saat pengingat utang: {e}")
+        try:
             await asyncio.to_thread(proses_backup_harian)
         except Exception as e:
             logger.error(f"Error saat proses backup harian: {e}")
@@ -2857,6 +2861,9 @@ _KATEGORI_AWAL = [
     ("Setoran modal pemilik", "masuk", 0),
 ]
 _METODE = ("tunai", "transfer", "qris", "lainnya")
+# Kategori khusus untuk pembayaran/cicilan utang: mengurangi kas tetapi bukan
+# beban (bebannya sudah dihitung saat pembelian kredit dicatat).
+_KAT_BAYAR_UTANG = "Pembayaran utang"
 
 
 def init_keuangan_db() -> None:
@@ -2894,6 +2901,33 @@ def init_keuangan_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_transaksi_tanggal ON transaksi(tanggal)")
         if conn.execute("SELECT COUNT(*) FROM kategori_kas").fetchone()[0] == 0:
             conn.executemany("INSERT INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?,?,?)", _KATEGORI_AWAL)
+        # --- Utang (pembelian kredit) ---
+        if "khusus" not in [r[1] for r in conn.execute("PRAGMA table_info(kategori_kas)")]:
+            conn.execute("ALTER TABLE kategori_kas ADD COLUMN khusus INTEGER NOT NULL DEFAULT 0")
+        conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba, khusus) VALUES (?, 'keluar', 0, 1)",
+                     (_KAT_BAYAR_UTANG,))
+        conn.execute("UPDATE kategori_kas SET khusus = 1, pengaruh_laba = 0 WHERE nama = ? AND jenis = 'keluar'",
+                     (_KAT_BAYAR_UTANG,))
+        if "utang_id" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+            conn.execute("ALTER TABLE transaksi ADD COLUMN utang_id INTEGER REFERENCES utang(id)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS utang (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tanggal TEXT NOT NULL,
+                pemasok TEXT NOT NULL,
+                kategori_id INTEGER NOT NULL REFERENCES kategori_kas(id),
+                jumlah INTEGER NOT NULL CHECK (jumlah > 0),
+                jatuh_tempo TEXT,
+                keterangan TEXT,
+                dicatat_oleh TEXT NOT NULL,
+                dicatat_pada TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'aktif',
+                batal_oleh TEXT,
+                batal_pada TEXT,
+                batal_alasan TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_utang_tanggal ON utang(tanggal)")
         conn.commit()
     finally:
         conn.close()
@@ -2915,30 +2949,55 @@ def _batas_periode(periode: str) -> tuple[str, str]:
 
 
 def _ringkas_periode(conn, periode: str) -> dict:
+    """Laba: pendapatan (langganan lunas + pemasukan) - beban (pengeluaran tunai +
+    pembelian kredit, dihitung pada tanggal pembelian). Kas: hanya uang yang
+    benar-benar keluar/masuk (cicilan utang mengurangi kas, bukan beban lagi)."""
     awal, akhir = _batas_periode(periode)
     langganan = conn.execute(
         "SELECT COALESCE(SUM(jumlah),0), COUNT(*) FROM tagihan WHERE status='lunas' AND tgl_bayar >= ? AND tgl_bayar < ?",
         (awal, akhir),
     ).fetchone()
     per_kat = conn.execute(
-        "SELECT k.id, k.nama, t.jenis, k.pengaruh_laba, SUM(t.jumlah) AS total, COUNT(*) AS n "
+        "SELECT k.id, k.nama, t.jenis, k.pengaruh_laba, k.khusus, SUM(t.jumlah) AS total, COUNT(*) AS n "
         "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
-        "WHERE t.status='aktif' AND t.tanggal >= ? AND t.tanggal < ? GROUP BY k.id ORDER BY total DESC",
+        "WHERE t.status='aktif' AND t.tanggal >= ? AND t.tanggal < ? GROUP BY k.id",
         (awal, akhir),
     ).fetchall()
+    kredit = {r["kategori_id"]: r for r in conn.execute(
+        "SELECT u.kategori_id, k.nama, k.pengaruh_laba, SUM(u.jumlah) AS total, COUNT(*) AS n "
+        "FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
+        "WHERE u.status='aktif' AND u.tanggal >= ? AND u.tanggal < ? GROUP BY u.kategori_id",
+        (awal, akhir),
+    ).fetchall()}
     masuk_ops = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and r["pengaruh_laba"])
-    keluar_ops = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["pengaruh_laba"])
+    keluar_tunai = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["pengaruh_laba"])
     masuk_lain = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and not r["pengaruh_laba"])
-    keluar_lain = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and not r["pengaruh_laba"])
+    prive = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and not r["pengaruh_laba"] and not r["khusus"])
+    bayar_utang = sum(r["total"] for r in per_kat if r["khusus"])
+    beban_kredit = sum(r["total"] for r in kredit.values())
+    # Rincian per kategori: gabungan tunai + kredit (tanpa kategori khusus pembayaran utang)
+    gabung: dict[int, dict] = {}
+    for r in per_kat:
+        if r["khusus"]:
+            continue
+        gabung[r["id"]] = {"id": r["id"], "nama": r["nama"], "jenis": r["jenis"], "pengaruh_laba": r["pengaruh_laba"],
+                           "total": r["total"], "n": r["n"], "kredit": 0}
+    for kid, r in kredit.items():
+        g = gabung.setdefault(kid, {"id": kid, "nama": r["nama"], "jenis": "keluar", "pengaruh_laba": r["pengaruh_laba"],
+                                    "total": 0, "n": 0, "kredit": 0})
+        g["total"] += r["total"]
+        g["n"] += r["n"]
+        g["kredit"] += r["total"]
     pendapatan = langganan[0] + masuk_ops
+    beban = keluar_tunai + beban_kredit
     return {
         "periode": periode,
         "pendapatan_langganan": langganan[0], "jumlah_pembayaran": langganan[1],
         "pendapatan_lain": masuk_ops, "pendapatan": pendapatan,
-        "beban": keluar_ops, "laba": pendapatan - keluar_ops,
-        "modal_masuk": masuk_lain, "prive": keluar_lain,
-        "arus_kas": pendapatan + masuk_lain - keluar_ops - keluar_lain,
-        "per_kategori": [dict(r) for r in per_kat],
+        "beban": beban, "beban_kredit": beban_kredit, "laba": pendapatan - beban,
+        "modal_masuk": masuk_lain, "prive": prive, "bayar_utang": bayar_utang,
+        "arus_kas": pendapatan + masuk_lain - keluar_tunai - prive - bayar_utang,
+        "per_kategori": sorted(gabung.values(), key=lambda g: -g["total"]),
     }
 
 
@@ -2992,6 +3051,7 @@ def keuangan_ringkasan(periode: str, request: Request):
         ).fetchone()[0]
         pelanggan_aktif = conn.execute(
             "SELECT COUNT(*) FROM pelanggan WHERE status='aktif' AND gratis=0").fetchone()[0]
+        utang_info = _ringkas_utang(conn)
         terbaru = conn.execute(
             "SELECT t.id, t.tanggal, t.jenis, k.nama AS kategori, t.jumlah, t.keterangan, t.dicatat_oleh, t.status "
             "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id ORDER BY t.id DESC LIMIT 8"
@@ -3007,6 +3067,7 @@ def keuangan_ringkasan(periode: str, request: Request):
         "piutang_periode": {"total": piutang_periode[0], "jumlah": piutang_periode[1]},
         "piutang_total": {"total": piutang_total[0], "jumlah": piutang_total[1]},
         "insentif_mitra": {"terhitung": insentif["total"], "dibayar": insentif_dibayar},
+        "utang": utang_info,
         "pelanggan_berbayar": pelanggan_aktif,
         "transaksi_terbaru": [dict(r) for r in terbaru],
     }
@@ -3017,7 +3078,7 @@ def keuangan_kategori(request: Request):
     _wajib_admin(request)
     conn = _billing_conn()
     try:
-        rows = conn.execute("SELECT id, nama, jenis, pengaruh_laba, aktif FROM kategori_kas ORDER BY jenis DESC, id").fetchall()
+        rows = conn.execute("SELECT id, nama, jenis, pengaruh_laba, aktif, khusus FROM kategori_kas ORDER BY jenis DESC, id").fetchall()
     finally:
         conn.close()
     return {"kategori": [dict(r) for r in rows]}
@@ -3049,6 +3110,226 @@ def keuangan_tambah_kategori(d: KategoriIn, request: Request):
     return {"id": cur.lastrowid}
 
 
+class BatalIn(BaseModel):
+    alasan: str
+
+
+def _daftar_utang(conn, hanya_belum: bool = False) -> list[dict]:
+    rows = conn.execute(
+        "SELECT u.*, k.nama AS kategori, "
+        "(SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t WHERE t.utang_id = u.id AND t.status='aktif') AS dibayar "
+        "FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
+        "ORDER BY u.status, COALESCE(u.jatuh_tempo, '9999-12-31'), u.id DESC"
+    ).fetchall()
+    hasil = []
+    hari = datetime.now().strftime("%Y-%m-%d")
+    for r in rows:
+        d = dict(r)
+        d["sisa"] = d["jumlah"] - d["dibayar"] if d["status"] == "aktif" else 0
+        d["lunas"] = d["status"] == "aktif" and d["sisa"] <= 0
+        d["lewat_tempo"] = bool(d["status"] == "aktif" and d["sisa"] > 0 and d["jatuh_tempo"] and d["jatuh_tempo"] < hari)
+        if hanya_belum and (d["status"] != "aktif" or d["sisa"] <= 0):
+            continue
+        hasil.append(d)
+    return hasil
+
+
+def _ringkas_utang(conn) -> dict:
+    belum = _daftar_utang(conn, hanya_belum=True)
+    lewat = [u for u in belum if u["lewat_tempo"]]
+    tempo = sorted((u for u in belum if u["jatuh_tempo"]), key=lambda u: u["jatuh_tempo"])
+    return {"sisa": sum(u["sisa"] for u in belum), "jumlah": len(belum),
+            "lewat_tempo": len(lewat), "lewat_tempo_total": sum(u["sisa"] for u in lewat),
+            "terdekat": {k: tempo[0][k] for k in ("pemasok", "sisa", "jatuh_tempo")} if tempo else None}
+
+
+class UtangIn(BaseModel):
+    tanggal: str
+    pemasok: str
+    kategori_id: int
+    jumlah: int
+    jatuh_tempo: Optional[str] = None
+    keterangan: Optional[str] = None
+    uang_muka: int = 0
+    metode_uang_muka: str = "tunai"
+
+
+class BayarUtangIn(BaseModel):
+    tanggal: str
+    jumlah: int
+    metode: str = "tunai"
+    keterangan: Optional[str] = None
+
+
+def _id_kat_bayar_utang(conn) -> int:
+    return conn.execute("SELECT id FROM kategori_kas WHERE khusus = 1 AND nama = ?", (_KAT_BAYAR_UTANG,)).fetchone()[0]
+
+
+def _catat_bayar_utang(conn, utang_id: int, d: BayarUtangIn, oleh: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, utang_id) "
+        "VALUES (?, 'keluar', ?, ?, ?, ?, ?, ?, ?)",
+        (d.tanggal, _id_kat_bayar_utang(conn), d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
+         oleh, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), utang_id),
+    )
+    return cur.lastrowid
+
+
+def _cek_tanggal_lalu(t: str, label: str = "Tanggal") -> None:
+    if not _tanggal_valid(t):
+        raise HTTPException(status_code=400, detail=f"{label} tidak valid.")
+    if t > (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"):
+        raise HTTPException(status_code=400, detail=f"{label} tidak boleh di masa depan.")
+
+
+@app.get("/api/keuangan/utang")
+def keuangan_list_utang(request: Request, status: str = "belum"):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        semua = _daftar_utang(conn)
+        bayar = {}
+        for r in conn.execute(
+            "SELECT t.id, t.utang_id, t.tanggal, t.jumlah, t.metode, t.keterangan, t.dicatat_oleh, t.status, t.batal_alasan "
+            "FROM transaksi t WHERE t.utang_id IS NOT NULL ORDER BY t.tanggal, t.id"
+        ):
+            bayar.setdefault(r["utang_id"], []).append(dict(r))
+        ringkas = _ringkas_utang(conn)
+    finally:
+        conn.close()
+    if status == "belum":
+        semua = [u for u in semua if u["status"] == "aktif" and u["sisa"] > 0]
+    elif status == "lunas":
+        semua = [u for u in semua if u["lunas"]]
+    for u in semua:
+        u["pembayaran"] = bayar.get(u["id"], [])
+    return {"saya": request.state.user, "peran": request.state.peran, "ringkasan": ringkas, "utang": semua}
+
+
+@app.post("/api/keuangan/utang")
+def keuangan_tambah_utang(d: UtangIn, request: Request):
+    """Pembelian kredit: beban dicatat sekarang, kas berkurang saat dibayar."""
+    _wajib_admin(request)
+    _cek_tanggal_lalu(d.tanggal, "Tanggal pembelian")
+    pemasok = d.pemasok.strip()
+    if not pemasok or len(pemasok) > 100:
+        raise HTTPException(status_code=400, detail="Isi nama pemasok/toko (maks. 100 karakter).")
+    if not 0 < d.jumlah <= 10_000_000_000:
+        raise HTTPException(status_code=400, detail="Jumlah harus lebih dari 0.")
+    if d.jatuh_tempo and (not _tanggal_valid(d.jatuh_tempo) or d.jatuh_tempo < d.tanggal):
+        raise HTTPException(status_code=400, detail="Jatuh tempo tidak valid (tidak boleh sebelum tanggal pembelian).")
+    if not 0 <= d.uang_muka < d.jumlah:
+        raise HTTPException(status_code=400, detail="Uang muka harus kurang dari total pembelian. Kalau lunas, catat sebagai pengeluaran biasa.")
+    if d.metode_uang_muka not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode uang muka tidak valid.")
+    conn = _billing_conn()
+    try:
+        k = conn.execute("SELECT nama, jenis, pengaruh_laba, khusus FROM kategori_kas WHERE id = ?", (d.kategori_id,)).fetchone()
+        if not k or k["jenis"] != "keluar" or k["khusus"] or not k["pengaruh_laba"]:
+            raise HTTPException(status_code=400, detail="Pilih kategori pengeluaran (beban) untuk pembelian kredit.")
+        oleh = _oleh(request)
+        cur = conn.execute(
+            "INSERT INTO utang (tanggal, pemasok, kategori_id, jumlah, jatuh_tempo, keterangan, dicatat_oleh, dicatat_pada) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (d.tanggal, pemasok, d.kategori_id, d.jumlah, d.jatuh_tempo or None, (d.keterangan or "").strip()[:500] or None,
+             oleh, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        uid = cur.lastrowid
+        if d.uang_muka:
+            _catat_bayar_utang(conn, uid, BayarUtangIn(tanggal=d.tanggal, jumlah=d.uang_muka, metode=d.metode_uang_muka,
+                                                       keterangan="Uang muka"), oleh)
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "utang_catat",
+                    f"#U{uid} {pemasok} {_rp(d.jumlah)} · {k['nama']} · {d.tanggal}"
+                    + (f" · jatuh tempo {d.jatuh_tempo}" if d.jatuh_tempo else "")
+                    + (f" · uang muka {_rp(d.uang_muka)}" if d.uang_muka else ""))
+    return {"id": uid}
+
+
+@app.post("/api/keuangan/utang/{uid}/bayar")
+def keuangan_bayar_utang(uid: int, d: BayarUtangIn, request: Request):
+    _wajib_admin(request)
+    _cek_tanggal_lalu(d.tanggal)
+    if d.metode not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode tidak valid.")
+    conn = _billing_conn()
+    try:
+        u = next((x for x in _daftar_utang(conn) if x["id"] == uid), None)
+        if not u or u["status"] != "aktif":
+            raise HTTPException(status_code=404, detail="Utang tidak ditemukan atau sudah dibatalkan.")
+        if u["sisa"] <= 0:
+            raise HTTPException(status_code=400, detail="Utang ini sudah lunas.")
+        if not 0 < d.jumlah <= u["sisa"]:
+            raise HTTPException(status_code=400, detail=f"Jumlah bayar harus 1 sampai {_rp(u['sisa'])} (sisa utang).")
+        if d.tanggal < u["tanggal"]:
+            raise HTTPException(status_code=400, detail="Tanggal bayar tidak boleh sebelum tanggal pembelian.")
+        tid = _catat_bayar_utang(conn, uid, d, _oleh(request))
+        conn.commit()
+    finally:
+        conn.close()
+    sisa = u["sisa"] - d.jumlah
+    catat_aktivitas(_oleh(request), "utang_bayar",
+                    f"#U{uid} {u['pemasok']}: bayar {_rp(d.jumlah)} ({d.metode}), sisa {_rp(sisa)}" + (" — LUNAS" if not sisa else ""))
+    return {"ok": True, "transaksi_id": tid, "sisa": sisa}
+
+
+@app.post("/api/keuangan/utang/{uid}/batal")
+def keuangan_batal_utang(uid: int, d: BatalIn, request: Request):
+    _wajib_admin(request)
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan pembatalan.")
+    conn = _billing_conn()
+    try:
+        u = conn.execute("SELECT * FROM utang WHERE id = ?", (uid,)).fetchone()
+        if not u or u["status"] != "aktif":
+            raise HTTPException(status_code=404, detail="Utang tidak ditemukan atau sudah dibatalkan.")
+        _boleh_ubah_transaksi(request, u)
+        if conn.execute("SELECT 1 FROM transaksi WHERE utang_id = ? AND status='aktif'", (uid,)).fetchone():
+            raise HTTPException(status_code=400, detail="Sudah ada pembayaran. Batalkan pembayarannya dulu di tab Transaksi.")
+        conn.execute("UPDATE utang SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
+                     (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), alasan[:300], uid))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "utang_batal", f"#U{uid} {u['pemasok']} {_rp(u['jumlah'])} dibatalkan: {alasan[:120]}")
+    return {"ok": True}
+
+
+_pengingat_utang_terakhir: Optional[str] = None
+
+
+def proses_pengingat_utang(sekarang=None) -> None:
+    """Sekali sehari (setelah TAGIHAN_JAM): kabari utang yang jatuh tempo dalam 3 hari atau sudah lewat."""
+    global _pengingat_utang_terakhir
+    sekarang = sekarang or datetime.now()
+    hari = sekarang.strftime("%Y-%m-%d")
+    if sekarang.hour < CONFIG["TAGIHAN_JAM"] or _pengingat_utang_terakhir == hari:
+        return
+    conn = _billing_conn()
+    try:
+        if conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='utang'", (hari,)).fetchone():
+            _pengingat_utang_terakhir = hari
+            return
+        batas = (sekarang + timedelta(days=3)).strftime("%Y-%m-%d")
+        dekat = [u for u in _daftar_utang(conn, hanya_belum=True) if u["jatuh_tempo"] and u["jatuh_tempo"] <= batas]
+        if dekat:
+            baris = []
+            for u in sorted(dekat, key=lambda x: x["jatuh_tempo"]):
+                selisih = (datetime.strptime(u["jatuh_tempo"], "%Y-%m-%d").date() - sekarang.date()).days
+                ket = f"lewat {-selisih} hari" if selisih < 0 else ("hari ini" if selisih == 0 else f"{selisih} hari lagi")
+                baris.append(f"• {_esc(u['pemasok'])}: sisa {_rp(u['sisa'])}, jatuh tempo {u['jatuh_tempo'][8:10]}/{u['jatuh_tempo'][5:7]} ({ket})")
+            send_telegram_message(f"💳 <b>Utang jatuh tempo</b> ({len(dekat)})\\n" + "\\n".join(baris[:15])
+                                  + "\\nBayar lewat dashboard → Keuangan → Utang.")
+        conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?, 'utang')", (hari,))
+        conn.commit()
+        _pengingat_utang_terakhir = hari
+    finally:
+        conn.close()
+
+
 class TransaksiIn(BaseModel):
     tanggal: str
     jenis: str
@@ -3069,9 +3350,11 @@ def _cek_transaksi(conn, d: TransaksiIn) -> str:
         raise HTTPException(status_code=400, detail="Jumlah harus lebih dari 0.")
     if d.metode not in _METODE:
         raise HTTPException(status_code=400, detail="Metode harus tunai, transfer, qris, atau lainnya.")
-    k = conn.execute("SELECT nama, jenis, aktif FROM kategori_kas WHERE id = ?", (d.kategori_id,)).fetchone()
+    k = conn.execute("SELECT nama, jenis, aktif, khusus FROM kategori_kas WHERE id = ?", (d.kategori_id,)).fetchone()
     if not k or k["jenis"] != d.jenis:
         raise HTTPException(status_code=400, detail="Kategori tidak cocok dengan jenis transaksi.")
+    if k["khusus"]:
+        raise HTTPException(status_code=400, detail="Pembayaran utang dicatat dari tab Utang.")
     return k["nama"]
 
 
@@ -3117,6 +3400,8 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
             raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan.")
         if t["status"] != "aktif":
             raise HTTPException(status_code=400, detail="Transaksi yang sudah dibatalkan tidak bisa diubah.")
+        if t["utang_id"]:
+            raise HTTPException(status_code=400, detail="Pembayaran utang tidak bisa diubah. Batalkan, lalu bayar ulang dari tab Utang.")
         _boleh_ubah_transaksi(request, t)
         kat = _cek_transaksi(conn, d)
         conn.execute(
@@ -3135,10 +3420,6 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
     if ubah:
         catat_aktivitas(_oleh(request), "kas_ubah", f"#{tid} " + "; ".join(ubah))
     return {"ok": True}
-
-
-class BatalIn(BaseModel):
-    alasan: str
 
 
 @app.post("/api/keuangan/transaksi/{tid}/batal")
@@ -3168,7 +3449,8 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
     awal, akhir = _batas_periode(periode)
     sql = ("SELECT t.id, t.tanggal, t.jenis, t.kategori_id, k.nama AS kategori, k.pengaruh_laba, t.jumlah, t.metode, "
            "t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.diubah_oleh, t.diubah_pada, t.status, "
-           "t.batal_oleh, t.batal_pada, t.batal_alasan "
+           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, "
+           "(SELECT u.pemasok FROM utang u WHERE u.id = t.utang_id) AS pemasok "
            "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.tanggal >= ? AND t.tanggal < ?")
     arg: list = [awal, akhir]
     if jenis in ("masuk", "keluar"):
@@ -3222,6 +3504,9 @@ def keuangan_ekspor(periode: str, request: Request):
             "SELECT t.tgl_bayar, t.username, p.nama, t.periode, t.jumlah FROM tagihan t "
             "JOIN pelanggan p ON p.username = t.username WHERE t.status='lunas' AND t.tgl_bayar >= ? AND t.tgl_bayar < ? "
             "ORDER BY t.tgl_bayar", (awal, akhir)).fetchall()
+        utang = conn.execute(
+            "SELECT u.*, k.nama AS kategori FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
+            "WHERE u.tanggal >= ? AND u.tanggal < ? ORDER BY u.tanggal", (awal, akhir)).fetchall()
     finally:
         conn.close()
     buf = io.StringIO()
@@ -3234,8 +3519,16 @@ def keuangan_ekspor(periode: str, request: Request):
     for b in bayar:
         w.writerow([b["tgl_bayar"], "masuk", "Pembayaran langganan", b["jumlah"], "", aman(f"{b['nama']} ({b['username']}) periode {b['periode']}"), "billing", "aktif", ""])
     for t in trx:
-        w.writerow([t["tanggal"], t["jenis"], aman(t["kategori"]), t["jumlah"], t["metode"], aman(t["keterangan"]),
+        ket = t["keterangan"] or ""
+        if t["utang_id"]:
+            ket = f"Bayar utang #U{t['utang_id']} {t['pemasok'] or ''}" + (f" · {ket}" if ket else "")
+        w.writerow([t["tanggal"], t["jenis"], aman(t["kategori"]), t["jumlah"], t["metode"], aman(ket),
                     aman(t["dicatat_oleh"]), t["status"], aman(t["batal_alasan"])])
+    for u in utang:
+        w.writerow([u["tanggal"], "kredit (utang)", aman(u["kategori"]), u["jumlah"], "kredit",
+                    aman(f"#U{u['id']} {u['pemasok']}" + (f" · jatuh tempo {u['jatuh_tempo']}" if u["jatuh_tempo"] else "")
+                         + (f" · {u['keterangan']}" if u["keterangan"] else "")),
+                    aman(u["dicatat_oleh"]), u["status"], aman(u["batal_alasan"])])
     catat_aktivitas(_oleh(request), "kas_ekspor", f"periode {periode}")
     # BOM supaya Excel membaca UTF-8 dengan benar
     return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
