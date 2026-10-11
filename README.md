@@ -18,7 +18,10 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   OLT/MikroTik tidak terjangkau diteruskan ke Telegram (maks. sekali per 30 menit per jenis).
 - **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
   nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
-  ditagih, tidak diisolir otomatis, tidak dipantau putusnya).
+  ditagih, tidak diisolir otomatis, tidak dipantau putusnya). Saat ditandai Berhenti,
+  secret PPPoE-nya otomatis dinonaktifkan di MikroTik (tidak dihapus) dan sesinya
+  diputus; saat diaktifkan lagi, secret diaktifkan kembali. Bila MikroTik tak terjangkau,
+  dicoba ulang otomatis tiap siklus.
 - **Log aktivitas** — setiap pelunasan, isolir, perubahan pelanggan/paket tercatat
   beserta akun pelakunya (menu Pengaturan). Buat akun terpisah untuk
   tiap petugas di Pengaturan → Pengguna.

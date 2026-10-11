@@ -1092,6 +1092,11 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat proses tagihan harian: {e}")
         try:
+            if mikrotik_error is None:
+                await asyncio.to_thread(proses_sinkron_secret)
+        except Exception as e:
+            logger.error(f"Error saat sinkron secret PPPoE: {e}")
+        try:
             await asyncio.to_thread(proses_isolir)
         except Exception as e:
             logger.error(f"Error saat proses isolir: {e}")
@@ -1200,6 +1205,13 @@ def init_billing_db() -> None:
         # tiap bulan walau tidak punya tagihan.
         if "insentif_gratis" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN insentif_gratis INTEGER NOT NULL DEFAULT 0")
+        # Sinkron status secret PPPoE di MikroTik saat pelanggan berhenti/aktif lagi.
+        # secret_target: 'nonaktif' / 'aktif' bila belum berhasil diterapkan (dicoba ulang otomatis).
+        # secret_nonaktif: 1 bila secret sudah dinonaktifkan oleh sistem ini.
+        if "secret_target" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN secret_target TEXT")
+        if "secret_nonaktif" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN secret_nonaktif INTEGER NOT NULL DEFAULT 0")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS aktivitas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2727,6 +2739,7 @@ class PelangganIn(BaseModel):
     status: Optional[str] = None    # "aktif" / "berhenti"; None = tidak diubah
     tampil_mitra: Optional[bool] = None   # None = tidak diubah
     insentif_gratis: Optional[bool] = None   # None = tidak diubah
+    atur_secret: bool = True   # saat status berubah: nonaktifkan/aktifkan secret PPPoE di MikroTik
 
 
 @app.get("/api/data-pelanggan")
@@ -2735,7 +2748,8 @@ def list_data_pelanggan():
     try:
         rows = conn.execute(
             "SELECT p.username, p.nama, p.alamat, p.no_hp, p.paket_id, p.gratis, "
-            "p.status, p.berhenti_sejak, p.tampil_mitra, p.insentif_gratis, k.nama AS paket, k.harga "
+            "p.status, p.berhenti_sejak, p.tampil_mitra, p.insentif_gratis, p.secret_target, p.secret_nonaktif, "
+            "k.nama AS paket, k.harga "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "ORDER BY p.nama COLLATE NOCASE"
         ).fetchall()
@@ -2816,7 +2830,101 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
         perubahan.append(f"{terhapus} tagihan belum bayar dihapus")
     if perubahan:
         catat_aktivitas(_oleh(request), "pelanggan_ubah", f"{username}: " + "; ".join(perubahan))
-    return {"ok": True, "tagihan_dihapus": terhapus}
+
+    # Status berubah -> nonaktifkan / aktifkan secret PPPoE di MikroTik
+    secret = None
+    if lama["status"] != status:
+        if d.atur_secret:
+            secret = _terapkan_secret(username, "nonaktif" if status == "berhenti" else "aktif", _oleh(request))
+        elif lama["secret_target"]:
+            # Sinkron lama yang masih tertunda tidak berlaku lagi setelah status diubah,
+            # supaya pelanggan yang baru diaktifkan tidak ikut dinonaktifkan nanti.
+            conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+            try:
+                conn.execute("UPDATE pelanggan SET secret_target = NULL WHERE username = ?", (username,))
+                conn.commit()
+            finally:
+                conn.close()
+            catat_aktivitas(_oleh(request), "secret_tertunda", f"{username}: sinkron secret tertunda dibatalkan (status diubah)")
+    return {"ok": True, "tagihan_dihapus": terhapus, "secret": secret}
+
+
+def _atur_secret_mikrotik(username: str, nonaktif: bool) -> tuple[bool, str]:
+    """disabled=yes/no pada /ppp/secret; saat dinonaktifkan sesi aktifnya diputus.
+    Secret TIDAK dihapus, jadi password & profil tetap ada bila pelanggan kembali."""
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        secret = api.get_resource("/ppp/secret")
+        rows = secret.get(name=username)
+        if not rows:
+            return False, "secret tidak ditemukan di MikroTik"
+        secret.set(id=rows[0]["id"], disabled="yes" if nonaktif else "no")
+        putus = 0
+        if nonaktif:
+            aktif = api.get_resource("/ppp/active")
+            for sesi in aktif.get(name=username):
+                aktif.remove(id=sesi["id"])
+                putus += 1
+        return True, ("dinonaktifkan" + (", sesi aktif diputus" if putus else "")) if nonaktif else "diaktifkan"
+    finally:
+        pool.disconnect()
+
+
+_KATA_SECRET = {"nonaktif": ("dinonaktifkan", "menonaktifkan"), "aktif": ("diaktifkan", "mengaktifkan")}
+
+
+def _terapkan_secret(username: str, target: str, oleh: str, ulang: bool = False) -> dict:
+    """Terapkan target ('nonaktif'/'aktif'). Bila MikroTik gagal, simpan sebagai
+    tertunda (secret_target) supaya dicoba ulang tiap siklus pemantauan."""
+    try:
+        ok, pesan = _atur_secret_mikrotik(username, target == "nonaktif")
+    except Exception as e:
+        ok, pesan = False, f"MikroTik tidak terbaca: {e}"
+    tidak_ada = not ok and "tidak ditemukan" in pesan
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        if ok or tidak_ada:
+            conn.execute("UPDATE pelanggan SET secret_target = NULL, secret_nonaktif = ? WHERE username = ?",
+                         (1 if (ok and target == "nonaktif") else 0, username))
+        else:
+            conn.execute("UPDATE pelanggan SET secret_target = ? WHERE username = ?", (target, username))
+        conn.commit()
+    finally:
+        conn.close()
+    if ok:
+        catat_aktivitas(oleh, "secret_" + target, f"{username}: secret PPPoE {pesan}")
+    elif tidak_ada:
+        catat_aktivitas(oleh, "secret_" + target, f"{username}: {pesan} (dilewati)")
+    elif not ulang:      # percobaan ulang otomatis tidak dicatat tiap siklus
+        catat_aktivitas(oleh, "secret_tertunda",
+                        f"{username}: gagal {_KATA_SECRET[target][1]} secret ({pesan[:120]}), dicoba ulang otomatis")
+    return {"ok": ok, "pesan": pesan, "tertunda": not ok and not tidak_ada}
+
+
+_secret_gagal_dikabari: set = set()
+
+
+def proses_sinkron_secret() -> None:
+    """Tiap siklus: coba lagi secret yang tertunda (MikroTik sempat tak terjangkau)."""
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        tertunda = conn.execute(
+            "SELECT username, nama, secret_target FROM pelanggan WHERE secret_target IS NOT NULL").fetchall()
+    except sqlite3.OperationalError:
+        return
+    finally:
+        conn.close()
+    for username, nama, target in tertunda:
+        hasil = _terapkan_secret(username, target, "sistem", ulang=True)
+        if hasil["ok"]:
+            _secret_gagal_dikabari.discard(username)
+            send_telegram_message(f"✅ Secret PPPoE {_esc(nama or username)} berhasil {_KATA_SECRET[target][0]} "
+                                  "(sempat tertunda karena MikroTik tidak terjangkau).")
+        elif hasil["tertunda"] and username not in _secret_gagal_dikabari:
+            _secret_gagal_dikabari.add(username)
+            send_telegram_message(f"⚠️ Gagal {_KATA_SECRET[target][1]} secret PPPoE {_esc(nama or username)}: "
+                                  f"{_esc(hasil['pesan'][:150])}\nDicoba ulang otomatis tiap siklus.")
 
 
 def _periode_valid(periode: str) -> bool:

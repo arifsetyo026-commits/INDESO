@@ -179,7 +179,9 @@
 <label>Alamat</label><textarea id="plAlamat"></textarea>
 <label>Nomor HP / WhatsApp</label><input id="plHp" type="tel" inputmode="tel">
 <label>Paket</label><select id="plPaket"></select>
-<label>Status langganan</label><select id="plStatus"><option value="aktif">Aktif</option><option value="berhenti">Berhenti (tidak ditagih, tidak dipantau)</option></select>
+<label>Status langganan</label><select id="plStatus" onchange="aturCentangSecret()"><option value="aktif">Aktif</option><option value="berhenti">Berhenti (tidak ditagih, tidak dipantau)</option></select>
+<label class="plCek" id="plSecretWrap" style="display:none"><input type="checkbox" id="plSecret" checked> <span id="plSecretTeks">Nonaktifkan juga secret PPPoE di MikroTik</span></label>
+<div class="plSub" id="plSecretInfo"></div>
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
 <label class="plCek"><input type="checkbox" id="plMitra"> Tampilkan ke mitra (ikut dihitung insentif bila lunas)</label>
 <label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung insentif mitra tiap bulan</label>
@@ -676,7 +678,7 @@ function renderPelanggan(){
  const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>lolos(p)&&(!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q)));
  $('plList').innerHTML=rows.length?rows.map(({p,i})=>{
   const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':`<span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span>`;
-  const sub=esc(p.username)+' · '+esc(p.paket||'Belum ada paket')+(p.gratis?' · GRATIS':'')+(iso.has(p.username)?' · ISOLIR':'')+(p.status==='berhenti'&&p.berhenti_sejak?' · sejak '+tglPendek(p.berhenti_sejak):'');
+  const sub=esc(p.username)+' · '+esc(p.paket||'Belum ada paket')+(p.gratis?' · GRATIS':'')+(iso.has(p.username)?' · ISOLIR':'')+(p.status==='berhenti'&&p.berhenti_sejak?' · sejak '+tglPendek(p.berhenti_sejak):'')+(p.secret_target?' · ⏳ sinkron MikroTik':(p.secret_nonaktif?' · secret nonaktif':''));
   return `<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${sub}</div></div>${chip}</div>`;
  }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
 }
@@ -690,7 +692,8 @@ function editPelanggan(i){
  $('plTitle').textContent='Ubah Data Pelanggan';
  $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0; $('plInsGratis').checked=!!p.insentif_gratis; aturCentangGratis();
  $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
- $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value;
+ $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value; $('plSecret').checked=true; aturCentangSecret();
+ $('plSecretInfo').innerHTML=p.secret_target?'<span style="color:#b45309">⏳ Menunggu sinkron MikroTik: secret akan '+(p.secret_target==='nonaktif'?'dinonaktifkan':'diaktifkan')+' begitu MikroTik terjangkau.</span>':(p.secret_nonaktif?'Secret PPPoE pelanggan ini sedang nonaktif di MikroTik.':'');
  $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
  $('plMsg').textContent='';
  tampilkanView('form');
@@ -700,15 +703,17 @@ function backPelanggan(){
  tampilkanView('list');
 }
 async function savePelanggan(){
- const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked};
+ const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,atur_secret:$('plSecret').checked,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked};
  if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
- if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\nAkun PPPoE di MikroTik tidak diubah, nonaktifkan manual bila perlu.')) return;
+ if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\n'+(body.atur_secret?'Secret PPPoE di MikroTik DINONAKTIFKAN dan sesinya diputus (tidak dihapus, bisa diaktifkan lagi).':'Secret PPPoE di MikroTik TIDAK diubah.'))) return;
+ if(body.status==='aktif'&&pl.statusAwal==='berhenti'&&body.atur_secret&&!confirm('Aktifkan kembali '+body.nama+'? Secret PPPoE di MikroTik akan diaktifkan lagi.')) return;
  try{
   const r=await fetch('/api/data-pelanggan/'+encodeURIComponent(pl.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
   await loadPelanggan(); backPelanggan();
-  $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+'.';
+  const sc=d.secret, teksSecret=sc?(sc.ok?' · secret PPPoE '+sc.pesan:(sc.tertunda?' · ⚠️ MikroTik gagal ('+sc.pesan+'), dicoba ulang otomatis':' · secret: '+sc.pesan)):'';
+  $('plListMsg').style.color=sc&&!sc.ok?'#b45309':'#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+teksSecret+'.';
  }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
 }
 async function imporPelanggan(){
@@ -725,6 +730,11 @@ async function imporPelanggan(){
    m.innerHTML+='<div style="color:#b45309;margin-top:6px">'+d.tidak_ada_di_mikrotik.length+' pelanggan aktif tidak ada lagi di MikroTik (mungkin sudah berhenti, cek lalu tandai Berhenti): '+d.tidak_ada_di_mikrotik.map(x=>esc(x.nama||x.username)).join(', ')+'</div>';
   }
  }catch(e){ m.style.color='#b42318'; m.textContent='Impor gagal: '+e.message; }
+}
+function aturCentangSecret(){
+ const berubah=$('plStatus').value!==pl.statusAwal;
+ $('plSecretWrap').style.display=berubah?'flex':'none';
+ $('plSecretTeks').textContent=$('plStatus').value==='berhenti'?'Nonaktifkan juga secret PPPoE di MikroTik (sesi diputus, secret tidak dihapus)':'Aktifkan kembali secret PPPoE di MikroTik';
 }
 // ===== Paket =====
 async function bukaPaket(){
@@ -1283,6 +1293,6 @@ async function batalBayarInsentif(id){
  try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-AKSI_LABEL.insentif_bayar='Bayar insentif mitra';
+AKSI_LABEL.insentif_bayar='Bayar insentif mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 </script>
 </body></html>
