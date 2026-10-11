@@ -32,6 +32,11 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   saat uang muka/cicilan dibayar; sisa utang, jatuh tempo, dan pengingat Telegram 3 hari
   sebelum jatuh tempo. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
   bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
+- **Laporan keuangan bulanan ke Telegram owner** — tiap tanggal 1 (jam diatur, menyusul
+  s/d tanggal 7 bila server mati) ke chat pribadi owner: laba rugi vs bulan lalu, kas,
+  tagihan & 5 penunggak terbesar, utang, insentif mitra, pelanggan, ringkasan gangguan,
+  plus berkas CSV. Kirim `/laporan` atau `/laporan 2026-09` dari chat owner kapan saja.
+  Chat ID owner hanya bisa diubah owner (Pengaturan → Sistem); `/id` ke bot untuk melihatnya.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.
 - **Akun mitra** — akun berperan mitra yang hanya bisa membuka halaman mitra:

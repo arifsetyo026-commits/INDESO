@@ -206,7 +206,8 @@
 </div></div></div>
   
 <div class="overlay" id="keuanganModal"><div class="modal kuModal"><div class="modalHead"><h3>Keuangan</h3><button class="close" onclick="closeModal('keuanganModal')">Tutup</button></div><div class="modalBody">
-<div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor CSV</a></div>
+<div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor CSV</a><button class="btnS" id="kuLapBtn" style="display:none" onclick="pratinjauLaporan()">Laporan Telegram</button></div>
+<div id="kuLap" class="kuPanel" style="display:none;margin-bottom:10px"><h4>Pratinjau laporan Telegram <span class="plSub" id="kuLapInfo"></span></h4><div id="kuLapTeks" style="white-space:pre-wrap;font-size:12px;line-height:1.55;max-height:340px;overflow:auto;background:#f7faf8;border-radius:9px;padding:10px"></div><div class="plBtns"><button class="plSave" onclick="kirimLaporan()">Kirim ke Telegram owner</button><button class="plCancel" onclick="$('kuLap').style.display='none'">Tutup</button></div></div>
 <div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ringkasan</button><button data-t="transaksi" onclick="tabKu('transaksi')">Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Utang <span id="kuNUtang"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Catat transaksi</button></div>
 <div class="plMsg" id="kuMsg"></div>
 <div id="kuRingkasan"></div>
@@ -833,9 +834,12 @@ async function loadPengaturan(){
   const kotak=(k,v)=>`<div class="detail"><small>${k}</small><b>${esc(v??'—')}</b></div>`;
   $('sysInfo').innerHTML=kotak('MikroTik',x.mikrotik)+kotak('OLT',x.olt)+kotak('Profil isolir',x.profil_isolir)+kotak('Telegram',x.telegram)
    +kotak('Backup terakhir',x.backup_terakhir?(x.backup_terakhir+' ('+x.jumlah_backup+' tersimpan)'):'belum ada')+kotak('Data monitoring',x.data_terakhir||'belum ada');
-  $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+'</label>'+(p.tipe==='pilihan'
-   ?'<select id="set'+i+'">'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
-   :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric">`)).join('');
+  const kunci=p=>p.owner&&d.peran!=='owner'?' disabled title="Hanya owner yang bisa mengubah"':'';
+  $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+(p.owner?' <span class="chip info">owner</span>':'')+'</label>'+(p.tipe==='pilihan'
+   ?'<select id="set'+i+'"'+kunci(p)+'>'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
+   :p.tipe==='teks'?`<input id="set${i}" value="${esc(p.nilai)}" inputmode="numeric" placeholder="mis. 123456789"${kunci(p)}>`
+   :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric"${kunci(p)}>`)
+   +(p.bantuan?'<div class="plSub" style="margin-top:4px">'+esc(p.bantuan)+'</div>':'')).join('');
  }catch(e){ $('sysInfo').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 async function simpanPengaturan(){
@@ -946,7 +950,7 @@ async function openKeuangan(){
 }
 function geserKu(n){ ku.periode=geserPeriode(ku.periode,n); tabKu(ku.tab==='catat'?'ringkasan':ku.tab); }
 function tabKu(t){
- ku.tab=t; kuPesan('');
+ ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
  $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none';
@@ -1132,5 +1136,24 @@ async function batalUtang(i){
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 AKSI_LABEL.utang_catat='Catat utang'; AKSI_LABEL.utang_bayar='Bayar utang'; AKSI_LABEL.utang_batal='Batalkan utang';
+
+// ===== Laporan bulanan Telegram (owner) =====
+function htmlTelegram(t){ // tampilkan HTML Telegram (b/i/code) dengan aman
+ // teks dari server sudah ber-escape HTML (format Telegram): kembalikan entitasnya, izinkan hanya b/i/code
+ return esc(t).replace(/&amp;(amp|lt|gt|quot|#39);/g,'&$1;').replace(/&lt;(\/?)(b|i|code)&gt;/g,'<$1$2>');
+}
+async function pratinjauLaporan(){
+ $('kuLap').style.display='block'; $('kuLapTeks').textContent='Memuat…';
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/laporan-telegram?periode='+ku.periode));
+  $('kuLapTeks').innerHTML=htmlTelegram(d.teks);
+  $('kuLapInfo').textContent=d.chat_owner?('· '+d.chat_owner+' chat owner · otomatis tiap tanggal 1 jam '+d.jam+(d.aktif?'':' (NONAKTIF)')):'· chat ID owner belum diisi (Pengaturan → Sistem)';
+ }catch(e){ $('kuLapTeks').textContent='Gagal: '+e.message; }
+}
+async function kirimLaporan(){
+ if(!confirm('Kirim laporan '+namaPeriode(ku.periode)+' ke Telegram owner sekarang?')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/laporan-telegram?periode='+ku.periode,{method:'POST'})); kuPesan('Laporan terkirim ke '+d.terkirim+' chat owner, beserta berkas CSV.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.laporan_bulanan='Laporan bulanan';
 </script>
 </body></html>

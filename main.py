@@ -112,6 +112,11 @@ CONFIG = {
     "TELEGRAM_CHAT_ID": _env_wajib("TELEGRAM_CHAT_ID"),
     "TELEGRAM_ENABLED": True,
     "TELEGRAM_POLL_INTERVAL_SECONDS": 3,   # seberapa sering cek perintah masuk
+    # Chat pribadi owner untuk laporan keuangan (pisahkan dari grup operasional).
+    # Bisa beberapa, dipisah koma. Bisa juga diubah owner dari Pengaturan -> Sistem.
+    "TELEGRAM_OWNER_CHAT_ID": os.environ.get("TELEGRAM_OWNER_CHAT_ID", "").strip(),
+    "LAPORAN_BULANAN_AKTIF": "ya",
+    "LAPORAN_BULANAN_JAM": 8,          # tanggal 1, setelah jam ini, laporan bulan lalu dikirim
 
     # --- Login. Akun dikelola dari menu Pengaturan (tersimpan di billing.db).
     # Isian akun di .env (DASHBOARD_*, MITRA_USERS) hanya diimpor SEKALI saat
@@ -611,6 +616,23 @@ _last_alert_sent: dict[tuple[str, int], datetime] = {}
 _previous_online: dict[tuple[str, int], bool] = {}
 
 
+def kirim_telegram_ke(chat_id: str, text: str) -> bool:
+    """Kirim ke chat tertentu dan kembalikan apakah Telegram menerimanya."""
+    if not CONFIG["TELEGRAM_ENABLED"]:
+        return False
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{CONFIG['TELEGRAM_BOT_TOKEN']}/sendMessage",
+            data={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10,
+        )
+        if not r.ok:
+            logger.error(f"Telegram menolak pesan ke {chat_id}: {r.text[:200]}")
+        return r.ok
+    except Exception as e:
+        logger.error(f"Gagal kirim Telegram ke {chat_id}: {e}")
+        return False
+
+
 def send_telegram_message(text: str) -> None:
     if not CONFIG["TELEGRAM_ENABLED"]:
         return
@@ -1036,6 +1058,10 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat proses isolir: {e}")
         try:
+            await asyncio.to_thread(proses_laporan_bulanan)
+        except Exception as e:
+            logger.error(f"Error saat laporan bulanan: {e}")
+        try:
             await asyncio.to_thread(proses_pengingat_utang)
         except Exception as e:
             logger.error(f"Error saat pengingat utang: {e}")
@@ -1450,6 +1476,8 @@ _HELP_TEXT = (
     "<code>/masalah</code> — daftar ONU WARNING/CRITICAL saat ini\n"
     "<code>/boncos</code> — kandidat upgrade paket\n"
     "<code>/putus</code> — pelanggan yang sering putus-nyambung\n"
+    "<code>/id</code> — tampilkan chat ID (untuk chat owner)\n"
+    "<code>/laporan</code> — laporan keuangan bulan lalu (hanya di chat owner)\n"
     "<code>/help</code> — tampilkan pesan ini"
 )
 
@@ -1460,7 +1488,7 @@ def _handle_telegram_command(text: str) -> None:
         return
 
     command, _, rest = text.partition(" ")
-    command = command.lower()
+    command = command.lower().split("@")[0]     # "/cek@NamaBot" di grup
 
     if command in ("/help", "/start"):
         send_telegram_message(_HELP_TEXT)
@@ -1534,6 +1562,18 @@ def _poll_telegram_updates_once() -> None:
 
         message = update.get("message") or {}
         chat_id = str(message.get("chat", {}).get("id", ""))
+        perintah = (message.get("text") or "").strip().split(" ")[0].lower().split("@")[0]
+        if perintah == "/id":
+            # Siapa pun boleh tahu chat ID-nya sendiri (dipakai untuk mengisi chat ID owner)
+            kirim_telegram_ke(chat_id, f"Chat ID ini: <code>{_esc(chat_id)}</code>")
+            continue
+        if chat_id in _chat_owner():
+            try:
+                if _handle_perintah_owner(chat_id, message.get("text", "")):
+                    continue
+            except Exception as e:
+                logger.error(f"Error saat proses perintah owner: {e}")
+                continue
         if chat_id != str(CONFIG["TELEGRAM_CHAT_ID"]):
             continue  # abaikan chat lain — data pelanggan tidak boleh bocor ke chat lain
 
@@ -2357,6 +2397,13 @@ _PENGATURAN = {
     "MITRA_INSENTIF_PER_PELANGGAN": {"label": "Insentif mitra per pelanggan lunas (Rp)", "tipe": "int", "min": 0, "max": 1_000_000},
     "PUTUS_TUNGGU_MENIT": {"label": "Tunggu sebelum alert putus (menit)", "tipe": "int", "min": 1, "max": 240},
     "DAILY_REPORT_HOUR": {"label": "Jam laporan harian Telegram (0-23)", "tipe": "int", "min": 0, "max": 23},
+    "LAPORAN_BULANAN_AKTIF": {"label": "Laporan keuangan bulanan ke Telegram owner", "tipe": "pilihan",
+                              "pilihan": ["ya", "tidak"], "owner": True},
+    "LAPORAN_BULANAN_JAM": {"label": "Jam kirim laporan bulanan, tanggal 1 (0-23)", "tipe": "int", "min": 0, "max": 23,
+                            "owner": True},
+    "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID Telegram owner (pisahkan koma bila lebih dari satu)", "tipe": "teks",
+                               "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
+                               "bantuan": "Kirim /id ke bot dari chat pribadi owner untuk mengetahui chat ID-nya."},
 }
 
 
@@ -2372,6 +2419,11 @@ def _validasi_pengaturan(kunci: str, nilai):
         if not meta["min"] <= nilai <= meta["max"]:
             raise HTTPException(status_code=400, detail=f"{meta['label']} harus {meta['min']}–{meta['max']}.")
         return nilai
+    if meta["tipe"] == "teks":
+        nilai = str(nilai or "").strip()
+        if not re.fullmatch(meta["pola"], nilai):
+            raise HTTPException(status_code=400, detail=f"{meta['label']}: format tidak valid.")
+        return ",".join(x.strip() for x in nilai.split(",") if x.strip())
     if nilai not in meta["pilihan"]:
         raise HTTPException(status_code=400, detail=f"{meta['label']} harus salah satu: {', '.join(meta['pilihan'])}.")
     return nilai
@@ -2397,6 +2449,7 @@ def get_pengaturan(request: Request):
     folder = _folder_backup()
     backup = _daftar_backup(folder)
     return {
+        "peran": request.state.peran,
         "pengaturan": [{"kunci": k, **m, "nilai": CONFIG[k]} for k, m in _PENGATURAN.items()],
         "sistem": {
             "mikrotik": f"{CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']} (user {CONFIG['MIKROTIK_USER']})",
@@ -2420,6 +2473,10 @@ def ubah_pengaturan(d: PengaturanIn, request: Request):
     _wajib_admin(request)
     baru = {k: _validasi_pengaturan(k, v) for k, v in d.nilai.items()}
     berubah = {k: v for k, v in baru.items() if CONFIG[k] != v}
+    terkunci = [k for k in berubah if _PENGATURAN[k].get("owner") and request.state.peran != "owner"]
+    if terkunci:
+        raise HTTPException(status_code=403, detail="Hanya owner yang bisa mengubah: "
+                            + ", ".join(_PENGATURAN[k]["label"] for k in terkunci))
     if berubah:
         conn = _billing_conn()
         try:
@@ -3488,12 +3545,8 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
     }
 
 
-@app.get("/api/keuangan/ekspor")
-def keuangan_ekspor(periode: str, request: Request):
-    """CSV satu bulan: transaksi manual + pembayaran tagihan, untuk dibuka di Excel."""
-    _wajib_admin(request)
-    if not _periode_valid(periode):
-        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+def _buat_csv_keuangan(periode: str) -> str:
+    """CSV satu bulan: transaksi manual + pembayaran tagihan + pembelian kredit."""
     import csv
     import io
     awal, akhir = _batas_periode(periode)
@@ -3529,10 +3582,229 @@ def keuangan_ekspor(periode: str, request: Request):
                     aman(f"#U{u['id']} {u['pemasok']}" + (f" · jatuh tempo {u['jatuh_tempo']}" if u["jatuh_tempo"] else "")
                          + (f" · {u['keterangan']}" if u["keterangan"] else "")),
                     aman(u["dicatat_oleh"]), u["status"], aman(u["batal_alasan"])])
-    catat_aktivitas(_oleh(request), "kas_ekspor", f"periode {periode}")
     # BOM supaya Excel membaca UTF-8 dengan benar
-    return Response("﻿" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+    return "\ufeff" + buf.getvalue()
+
+
+@app.get("/api/keuangan/ekspor")
+def keuangan_ekspor(periode: str, request: Request):
+    _wajib_admin(request)
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    isi = _buat_csv_keuangan(periode)
+    catat_aktivitas(_oleh(request), "kas_ekspor", f"periode {periode}")
+    return Response(isi, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="keuangan-{periode}.csv"'})
+
+
+# ============================================================
+# 6g. LAPORAN KEUANGAN BULANAN KE TELEGRAM OWNER
+# ============================================================
+
+def _chat_owner() -> list[str]:
+    return [x.strip() for x in str(CONFIG["TELEGRAM_OWNER_CHAT_ID"] or "").split(",") if x.strip()]
+
+
+def _persen_ubah(ini: int, lalu: int) -> str:
+    if not lalu:
+        return ""
+    p = round((ini - lalu) * 100 / abs(lalu))
+    return " (sama)" if p == 0 else f" ({'▲' if p > 0 else '▼'}{abs(p)}%)"
+
+
+def susun_laporan_bulanan(periode: str) -> str:
+    """Teks laporan (HTML Telegram, < 4096 karakter) untuk satu periode YYYY-MM."""
+    awal, akhir = _batas_periode(periode)
+    conn = _billing_conn()
+    try:
+        r = _ringkas_periode(conn, periode)
+        lalu = _ringkas_periode(conn, _geser_periode(periode, -1))
+        saldo_awal, saldo_akhir = _saldo_kas_sampai(conn, awal), _saldo_kas_sampai(conn, akhir)
+        tag = conn.execute("SELECT COALESCE(SUM(jumlah),0), COUNT(*), "
+                           "COALESCE(SUM(CASE WHEN status='lunas' THEN jumlah END),0), "
+                           "COALESCE(SUM(CASE WHEN status='lunas' THEN 1 END),0) FROM tagihan WHERE periode=?",
+                           (periode,)).fetchone()
+        piutang = conn.execute(
+            "SELECT COALESCE(SUM(jumlah),0), COUNT(*) FROM tagihan WHERE status='belum' AND periode <= ?", (periode,)
+        ).fetchone()
+        penunggak = conn.execute(
+            "SELECT p.nama, p.username, SUM(t.jumlah) AS total, COUNT(*) AS n FROM tagihan t "
+            "JOIN pelanggan p ON p.username = t.username WHERE t.status='belum' AND t.periode <= ? "
+            "GROUP BY t.username ORDER BY total DESC, n DESC LIMIT 5", (periode,)
+        ).fetchall()
+        utang = _ringkas_utang(conn)
+        insentif = _hitung_insentif(conn, periode)
+        ins_bayar = conn.execute(
+            "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
+            "WHERE t.status='aktif' AND k.nama='Insentif mitra' AND t.tanggal >= ? AND t.tanggal < ?", (awal, akhir)
+        ).fetchone()[0]
+        pel = conn.execute(
+            "SELECT SUM(status='aktif' AND gratis=0), SUM(status='aktif' AND gratis=1), "
+            "SUM(status='berhenti' AND berhenti_sejak >= ? AND berhenti_sejak < ?) FROM pelanggan", (awal, akhir)
+        ).fetchone()
+        n_isolir = conn.execute("SELECT COUNT(*) FROM isolir").fetchone()[0]
+        n_trx = conn.execute("SELECT COUNT(*), COUNT(DISTINCT dicatat_oleh) FROM transaksi "
+                             "WHERE status='aktif' AND tanggal >= ? AND tanggal < ?", (awal, akhir)).fetchone()
+        n_batal = conn.execute("SELECT COUNT(*) FROM transaksi WHERE status='batal' AND tanggal >= ? AND tanggal < ?",
+                               (awal, akhir)).fetchone()[0]
+    finally:
+        conn.close()
+    try:
+        hc = sqlite3.connect(CONFIG["HISTORY_DB_PATH"])
+        try:
+            ev = dict(hc.execute("SELECT tingkat, COUNT(*) FROM event WHERE waktu >= ? AND waktu < ? GROUP BY tingkat",
+                                 (awal, akhir)).fetchall())
+            ev_top = hc.execute("SELECT judul, COUNT(*) AS n FROM event WHERE tingkat='kritis' AND waktu >= ? AND waktu < ? "
+                                "GROUP BY judul ORDER BY n DESC LIMIT 3", (awal, akhir)).fetchall()
+        finally:
+            hc.close()
+    except Exception:
+        ev, ev_top = {}, []
+
+    nama_bln = _nama_periode(periode)
+    L = [f"📊 <b>Laporan Keuangan {nama_bln}</b>", ""]
+    L.append("<b>Laba rugi</b>")
+    L.append(f"Pendapatan: <b>{_rp(r['pendapatan'])}</b>{_persen_ubah(r['pendapatan'], lalu['pendapatan'])}")
+    L.append(f"  • Langganan ({r['jumlah_pembayaran']}x bayar): {_rp(r['pendapatan_langganan'])}")
+    if r["pendapatan_lain"]:
+        L.append(f"  • Pemasukan lain: {_rp(r['pendapatan_lain'])}")
+    L.append(f"Pengeluaran: <b>{_rp(r['beban'])}</b>{_persen_ubah(r['beban'], lalu['beban'])}"
+             + (f" (termasuk kredit {_rp(r['beban_kredit'])})" if r["beban_kredit"] else ""))
+    top = [k for k in r["per_kategori"] if k["jenis"] == "keluar" and k["pengaruh_laba"]][:3]
+    for k in top:
+        L.append(f"  • {_esc(k['nama'])}: {_rp(k['total'])}")
+    ikon = "🟢" if r["laba"] >= 0 else "🔴"
+    L.append(f"{ikon} Laba bersih: <b>{_rp(r['laba'])}</b>{_persen_ubah(r['laba'], lalu['laba'])}")
+    if r["pendapatan"]:
+        L.append(f"Margin: {round(r['laba'] * 100 / r['pendapatan'])}%")
+    L += ["", "<b>Kas</b>", f"Saldo awal {_rp(saldo_awal)} → akhir <b>{_rp(saldo_akhir)}</b>"]
+    lain = []
+    if r["modal_masuk"]:
+        lain.append(f"modal masuk {_rp(r['modal_masuk'])}")
+    if r["prive"]:
+        lain.append(f"prive {_rp(r['prive'])}")
+    if r["bayar_utang"]:
+        lain.append(f"bayar utang {_rp(r['bayar_utang'])}")
+    if lain:
+        L.append("Termasuk " + ", ".join(lain))
+    L += ["", "<b>Tagihan pelanggan</b>"]
+    if tag[1]:
+        L.append(f"Tagihan {nama_bln}: {tag[3]}/{tag[1]} lunas ({round(tag[2] * 100 / tag[0]) if tag[0] else 0}%), "
+                 f"{_rp(tag[2])} dari {_rp(tag[0])}")
+    else:
+        L.append(f"Belum ada tagihan untuk {nama_bln}.")
+    L.append(f"Piutang s/d bulan ini: <b>{_rp(piutang[0])}</b> ({piutang[1]} tagihan)")
+    for p in penunggak:
+        L.append(f"  • {_esc(p['nama'] or p['username'])}: {_rp(p['total'])}" + (f" ({p['n']} bulan)" if p["n"] > 1 else ""))
+    if utang["jumlah"]:
+        L += ["", "<b>Utang ke pemasok</b>", f"Sisa: <b>{_rp(utang['sisa'])}</b> ({utang['jumlah']} utang)"]
+        if utang["lewat_tempo"]:
+            L.append(f"⚠️ Lewat jatuh tempo: {_rp(utang['lewat_tempo_total'])} ({utang['lewat_tempo']} utang)")
+        if utang["terdekat"]:
+            t = utang["terdekat"]
+            L.append(f"Terdekat: {_esc(t['pemasok'])} {_rp(t['sisa'])}, {t['jatuh_tempo'][8:10]}/{t['jatuh_tempo'][5:7]}")
+    if insentif["total"] or ins_bayar:
+        sisa = max(0, insentif["total"] - ins_bayar)
+        L += ["", "<b>Insentif mitra</b>",
+              f"Terhitung {_rp(insentif['total'])} ({insentif['jumlah']} pelanggan), dibayar {_rp(ins_bayar)}"
+              + (f" — <b>kurang {_rp(sisa)}</b>" if sisa else " ✅")]
+    L += ["", "<b>Pelanggan</b>",
+          f"Aktif berbayar {pel[0] or 0}, gratis {pel[1] or 0}, berhenti bulan ini {pel[2] or 0}, terisolir saat ini {n_isolir}"]
+    if ev:
+        L += ["", "<b>Jaringan</b>",
+              f"Event: {ev.get('kritis', 0)} kritis, {ev.get('peringatan', 0)} peringatan"]
+        if ev_top:
+            L.append("Kritis terbanyak: " + ", ".join(f"{_esc(e[0])} ({e[1]}x)" for e in ev_top))
+    L += ["", f"<i>{n_trx[0]} transaksi dicatat oleh {n_trx[1]} petugas"
+          + (f", {n_batal} dibatalkan" if n_batal else "") + ". Rincian di berkas CSV terlampir.</i>"]
+    teks = "\n".join(L)
+    return teks if len(teks) < 4000 else teks[:3990] + "…"
+
+
+def kirim_laporan_bulanan(periode: str, chat_ids: Optional[list[str]] = None) -> tuple[int, int]:
+    """Kirim laporan + CSV ke chat owner. Kembalikan (berhasil, total chat)."""
+    tujuan = chat_ids or _chat_owner()
+    if not tujuan:
+        return 0, 0
+    teks = susun_laporan_bulanan(periode)
+    csv_isi = _buat_csv_keuangan(periode).encode("utf-8")
+    ok = 0
+    for cid in tujuan:
+        if kirim_telegram_ke(cid, teks):
+            ok += 1
+            kirim_berkas_telegram(cid, f"keuangan-{periode}.csv", csv_isi, f"Rincian transaksi {_nama_periode(periode)}")
+    return ok, len(tujuan)
+
+
+def _handle_perintah_owner(chat_id: str, text: str) -> bool:
+    """Perintah khusus chat owner. True bila sudah ditangani."""
+    perintah, _, arg = (text or "").strip().partition(" ")
+    if perintah.lower().split("@")[0] != "/laporan":
+        return False
+    arg = arg.strip()
+    periode = arg if _periode_valid(arg) else _geser_periode(datetime.now().strftime("%Y-%m"), -1)
+    if arg and not _periode_valid(arg):
+        kirim_telegram_ke(chat_id, "Format: <code>/laporan</code> (bulan lalu) atau <code>/laporan 2026-09</code>")
+        return True
+    kirim_laporan_bulanan(periode, [chat_id])
+    catat_aktivitas("telegram-owner", "laporan_bulanan", f"periode {periode} diminta lewat /laporan")
+    return True
+
+
+def proses_laporan_bulanan(sekarang=None) -> None:
+    """Tanggal 1-7 (menyusul bila server mati di tanggal 1), setelah LAPORAN_BULANAN_JAM:
+    kirim laporan bulan lalu sekali saja (dicatat di otomasi_log)."""
+    sekarang = sekarang or datetime.now()
+    if CONFIG["LAPORAN_BULANAN_AKTIF"] != "ya" or sekarang.day > 7:
+        return
+    if sekarang.day == 1 and sekarang.hour < CONFIG["LAPORAN_BULANAN_JAM"]:
+        return
+    if not _chat_owner():
+        return
+    periode = _geser_periode(sekarang.strftime("%Y-%m"), -1)
+    kunci = f"laporan:{periode}"
+    conn = _billing_conn()
+    try:
+        if conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='laporan_bulanan'", (kunci,)).fetchone():
+            return
+    finally:
+        conn.close()
+    ok, total = kirim_laporan_bulanan(periode)
+    if ok:
+        conn = _billing_conn()
+        try:
+            conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?, 'laporan_bulanan')", (kunci,))
+            conn.commit()
+        finally:
+            conn.close()
+        catat_aktivitas("sistem", "laporan_bulanan", f"periode {periode} terkirim ke {ok}/{total} chat owner")
+    else:
+        logger.warning(f"Laporan bulanan {periode} gagal dikirim; dicoba lagi siklus berikutnya.")
+
+
+@app.get("/api/keuangan/laporan-telegram")
+def pratinjau_laporan(periode: str, request: Request):
+    if request.state.peran != "owner":
+        raise HTTPException(status_code=403, detail="Khusus owner.")
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    return {"periode": periode, "teks": susun_laporan_bulanan(periode), "chat_owner": len(_chat_owner()),
+            "aktif": CONFIG["LAPORAN_BULANAN_AKTIF"] == "ya", "jam": CONFIG["LAPORAN_BULANAN_JAM"]}
+
+
+@app.post("/api/keuangan/laporan-telegram")
+def kirim_laporan_sekarang(periode: str, request: Request):
+    if request.state.peran != "owner":
+        raise HTTPException(status_code=403, detail="Khusus owner.")
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    if not _chat_owner():
+        raise HTTPException(status_code=400, detail="Chat ID Telegram owner belum diisi (Pengaturan → Sistem).")
+    ok, total = kirim_laporan_bulanan(periode)
+    catat_aktivitas(request.state.user, "laporan_bulanan", f"periode {periode} dikirim manual ke {ok}/{total} chat owner")
+    if not ok:
+        raise HTTPException(status_code=502, detail="Telegram menolak pesan. Pastikan owner sudah menekan Start di bot dan chat ID benar.")
+    return {"ok": True, "terkirim": ok, "total": total}
 
 
 # ============================================================
@@ -4259,7 +4531,8 @@ _BLN_PANJANG = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
 
 
 def _rp(n) -> str:
-    return "Rp " + f"{int(n):,}".replace(",", ".")
+    n = int(n)
+    return ("-" if n < 0 else "") + "Rp " + f"{abs(n):,}".replace(",", ".")
 
 
 def _nama_periode(p: str) -> str:
@@ -4760,14 +5033,26 @@ def buat_backup(sekarang=None) -> dict:
     return {"berkas": tujuan, "ukuran_kb": ukuran_kb, "integritas": integritas, "jumlah": jumlah}
 
 
-def kirim_dokumen_telegram(path: str, caption: str) -> bool:
+def kirim_dokumen_telegram(path: str, caption: str, chat_id: Optional[str] = None) -> bool:
     url = f"https://api.telegram.org/bot{CONFIG['TELEGRAM_BOT_TOKEN']}/sendDocument"
     with open(path, "rb") as f:
         r = requests.post(
-            url, data={"chat_id": CONFIG["TELEGRAM_CHAT_ID"], "caption": caption},
+            url, data={"chat_id": chat_id or CONFIG["TELEGRAM_CHAT_ID"], "caption": caption},
             files={"document": f}, timeout=60,
         )
     return r.ok
+
+
+def kirim_berkas_telegram(chat_id: str, nama: str, isi: bytes, caption: str = "") -> bool:
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{CONFIG['TELEGRAM_BOT_TOKEN']}/sendDocument",
+            data={"chat_id": chat_id, "caption": caption}, files={"document": (nama, isi)}, timeout=60,
+        )
+        return r.ok
+    except Exception as e:
+        logger.error(f"Gagal kirim berkas Telegram ke {chat_id}: {e}")
+        return False
 
 
 _backup_gagal_terakhir = None
