@@ -55,6 +55,11 @@ from pydantic import BaseModel
 # Rahasia (password, token) dan alamat perangkat dibaca dari berkas .env
 # (lihat .env.example). Nilai lain cukup diubah langsung di bawah.
 
+def _env(nama: str, default: str) -> str:
+    """Baris kosong di .env (mis. OLT_SNMP_COMMUNITY=) dianggap belum diisi, bukan string kosong."""
+    return os.environ.get(nama, "").strip() or default
+
+
 def _env_wajib(nama: str) -> str:
     nilai = os.environ.get(nama, "").strip()
     if not nilai:
@@ -64,16 +69,16 @@ def _env_wajib(nama: str) -> str:
 
 CONFIG = {
     # --- MikroTik RouterOS API ---
-    "MIKROTIK_HOST": os.environ.get("MIKROTIK_HOST", "192.168.50.1"),
-    "MIKROTIK_PORT": int(os.environ.get("MIKROTIK_PORT", "8728")),
-    "MIKROTIK_USER": os.environ.get("MIKROTIK_USER", "INDESO"),
+    "MIKROTIK_HOST": _env("MIKROTIK_HOST", "192.168.50.1"),
+    "MIKROTIK_PORT": int(_env("MIKROTIK_PORT", "8728")),
+    "MIKROTIK_USER": _env("MIKROTIK_USER", "INDESO"),
     "MIKROTIK_PASSWORD": _env_wajib("MIKROTIK_PASSWORD"),
     "MIKROTIK_USE_SSL": False,
 
     # --- OLT C-Data via SNMP ---
-    "OLT_HOST": os.environ.get("OLT_HOST", "192.168.2.100"),   # subnet Wilayah 2, tervalidasi lewat snmpwalk manual
-    "OLT_SNMP_PORT": int(os.environ.get("OLT_SNMP_PORT", "161")),
-    "OLT_SNMP_COMMUNITY": os.environ.get("OLT_SNMP_COMMUNITY", "public"),
+    "OLT_HOST": _env("OLT_HOST", "192.168.2.100"),   # subnet Wilayah 2, tervalidasi lewat snmpwalk manual
+    "OLT_SNMP_PORT": int(_env("OLT_SNMP_PORT", "161")),
+    "OLT_SNMP_COMMUNITY": _env("OLT_SNMP_COMMUNITY", "public"),
     "OLT_SNMP_VERSION": "2c",      # dipakai langsung sebagai flag -v snmpwalk
 
     # --- OID (tervalidasi manual via snmpwalk + cross-check web GUI OLT) ---
@@ -109,7 +114,7 @@ CONFIG = {
     "TELEGRAM_POLL_INTERVAL_SECONDS": 3,   # seberapa sering cek perintah masuk
 
     # --- Login dashboard (HTTP Basic). Kosongkan DASHBOARD_PASSWORD = tanpa login ---
-    "DASHBOARD_USER": os.environ.get("DASHBOARD_USER", "admin"),
+    "DASHBOARD_USER": _env("DASHBOARD_USER", "admin"),
     "DASHBOARD_PASSWORD": os.environ.get("DASHBOARD_PASSWORD", ""),
 
     # --- History Database (SQLite) ---
@@ -1259,6 +1264,10 @@ _background_tasks: list[asyncio.Task] = []
 async def on_startup():
     await asyncio.to_thread(init_history_db)
     await asyncio.to_thread(init_billing_db)
+    logger.info(
+        f"Target: MikroTik {CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']}, "
+        f"OLT SNMP v{CONFIG['OLT_SNMP_VERSION']} {CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}"
+    )
     if not CONFIG["DASHBOARD_PASSWORD"]:
         logger.warning("DASHBOARD_PASSWORD kosong: dashboard dan API bisa dibuka siapa saja di jaringan ini.")
     # Simpan referensinya: task tanpa referensi bisa dibersihkan garbage collector.
