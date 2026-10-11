@@ -86,6 +86,10 @@
 .blAmt{font-weight:800;font-size:13px}
 .blAksi{display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:5px;flex-wrap:wrap}
 .chip.bad{background:#fde4e1;color:#b42318}
+.chip.off{background:#eef3ef;color:#5f7669}
+.tkLog{border-left:2px solid var(--line);margin:6px 0 0 4px;padding-left:12px}
+.tkLog div{font-size:12px;padding:5px 0}.tkLog small{color:#6b7f73;font-size:10.5px;display:block}
+.tkAksi{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .plForm label.plCek{display:flex;align-items:center;gap:8px;font-size:12px;margin-top:14px;color:#234}
 .plForm input[type=checkbox]{width:auto;margin:0}
 .khSum{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
@@ -119,6 +123,7 @@
   <a href="#" onclick="scrollToSection('onu');return false"><span class="ico">▣</span>ONU / PON</a>
   <a href="#" onclick="scrollToSection('traffic');return false"><span class="ico">⌖</span>Peta Jaringan</a>
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
+   <a href="#" onclick="openTiket();return false"><span class="ico">⚒</span>Tiket Gangguan <span id="tiketBadge" class="badge" style="display:none">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan</a>
   <a href="#" onclick="openBilling();return false"><span class="ico">₨</span>Billing</a>
@@ -185,7 +190,7 @@
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
 <label class="plCek"><input type="checkbox" id="plMitra"> Tampilkan ke mitra (ikut dihitung insentif bila lunas)</label>
 <label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung insentif mitra tiap bulan</label>
-<div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
+<div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
 <div id="plPaketView" style="display:none">
 <div id="pkList"></div>
@@ -266,6 +271,26 @@
  <div class="plBtns"><button class="plSave" onclick="simpanTransaksi()">Simpan</button><button class="plCancel" onclick="resetFormKu();tabKu('transaksi')">Batal</button></div>
  <div class="plSub" style="margin-top:8px">Pembayaran tagihan pelanggan tercatat otomatis dari menu Billing — tidak perlu dicatat di sini. Catatan bisa diubah/dibatalkan oleh pencatatnya dalam 24 jam; setelah itu hanya oleh owner.</div>
 </div></div>
+</div></div></div>
+<div class="overlay" id="tiketModal"><div class="modal"><div class="modalHead"><h3 id="tkJudul">Tiket Gangguan</h3><button class="close" onclick="closeModal('tiketModal')">Tutup</button></div><div class="modalBody">
+<div id="tkListView">
+ <div class="blSum"><div class="blBox"><small>Terbuka</small><b id="tkNTerbuka" style="color:#b45309">—</b><small id="tkNBaru"></small></div><div class="blBox"><small>Selesai 30 hari</small><b id="tkNSelesai" style="color:#0b7a3b">—</b><small>tiket</small></div><div class="blBox"><small>Rata-rata penanganan</small><b id="tkRata">—</b><small>30 hari terakhir</small></div></div>
+ <div class="search"><input id="tkCari" placeholder="Cari pelanggan, nomor tiket, masalah, teknisi…" onkeydown="if(event.key==='Enter')muatTiket()"><button onclick="muatTiket()">Cari</button></div>
+ <div class="blFilters tkFilter"><button data-v="terbuka" class="on" onclick="setTkFilter('terbuka')">Terbuka</button><button data-v="saya" onclick="setTkFilter('saya')">Tugas saya</button><button data-v="selesai" onclick="setTkFilter('selesai')">Selesai</button><button data-v="batal" onclick="setTkFilter('batal')">Dibatalkan</button><button data-v="semua" onclick="setTkFilter('semua')">Semua</button><button class="go" onclick="tiketBaru()">+ Tiket baru</button></div>
+ <div class="plMsg" id="tkMsg"></div>
+ <div id="tkList"></div>
+</div>
+<div id="tkFormView" style="display:none"><div class="plForm">
+ <label>Pelanggan</label><input id="tkUser" list="tkUserList" placeholder="Ketik nama atau username… (kosongkan untuk gangguan umum/jaringan)" autocomplete="off"><datalist id="tkUserList"></datalist>
+ <label>Jenis masalah</label><select id="tkKat"></select>
+ <label>Keterangan</label><textarea id="tkKet" placeholder="mis. Lampu LOS merah sejak pagi, sudah restart modem"></textarea>
+ <label>Prioritas</label><select id="tkPrio"><option value="normal">Normal</option><option value="tinggi">Tinggi (mis. banyak pelanggan, pelanggan penting)</option></select>
+ <label>Teknisi</label><select id="tkTeknisi"></select>
+ <div class="plBtns"><button class="plSave" onclick="simpanTiket()">Buat tiket</button><button class="plCancel" onclick="tkView('list')">Batal</button></div>
+ <div class="plMsg" id="tkFMsg"></div>
+ <div class="plSub" style="margin-top:8px">Tiket baru langsung dikabarkan ke grup Telegram. Tiket yang belum selesai diingatkan otomatis (atur jamnya di Pengaturan).</div>
+</div></div>
+<div id="tkDetailView" style="display:none"></div>
 </div></div></div>
 <div class="overlay" id="alertModal"><div class="modal"><div class="modalHead"><h3>Alert &amp; Event</h3><button class="close" onclick="closeModal('alertModal')">Tutup</button></div><div class="modalBody">
 <div class="blFilters aeTabs"><button data-t="aktif" class="on" onclick="tabAE('aktif')">Aktif <span id="aeNAktif"></span></button><button data-t="riwayat" onclick="tabAE('riwayat')">Riwayat event</button><button onclick="muatAE()">Muat ulang</button></div>
@@ -448,7 +473,7 @@ async function load(force=false){
   setConn('mikState',d.mikrotik_online);setConn('oltState',d.olt_online);setConn('snmpState',d.olt_online);$('snmpSub').textContent=d.olt_online?'Response OK':'Tidak ada response';
   $('sideMik').innerHTML=`<i class="dot ${d.mikrotik_online?'':'off'}"></i>${d.mikrotik_online?'Online':'Offline'}`;
   $('sideOlt').innerHTML=`<i class="dot ${d.olt_online?'':'off'}"></i>${d.olt_online?'Online':'Offline'}`;
-  const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); muatAlertKartu(); updateOptical(onus);
+  const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); muatAlertKartu(); if(Date.now()-_tkBadgeTerakhir>60000){ _tkBadgeTerakhir=Date.now(); muatBadgeTiket(); } updateOptical(onus);
   const rx=sum(users.map(x=>x.rx_mbps)),tx=sum(users.map(x=>x.tx_mbps)); $('rxNow').textContent=rx==null?'—':fmt(rx)+' Mbps';$('txNow').textContent=tx==null?'—':fmt(tx)+' Mbps';
   state.history.push({rx:rx||0,tx:tx||0,t:Date.now()}); if(state.history.length>24)state.history.shift(); drawChart();
  }catch(e){$('overall').textContent='OFFLINE';$('overallSub').textContent='Dashboard tidak dapat mengambil data backend';$('updated').textContent='Gagal memuat: '+e.message}
@@ -973,6 +998,105 @@ async function muatRiwayat(){
   $('aeRiwayatList').innerHTML=d.event.length?d.event.map(e=>barisEvent(e,e.waktu)).join('')+(d.event.length>=400?'<div class="muted">Menampilkan 400 event terbaru. Persempit dengan filter atau pencarian.</div>':''):'<div class="muted">Tidak ada event untuk filter ini.</div>';
  }catch(e){ $('aeRiwayatList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
+
+// ===== Tiket gangguan =====
+const tk={filter:'terbuka',data:null,cur:null,pelanggan:null};
+const TK_CHIP={baru:'<span class="chip bad">Baru</span>',dikerjakan:'<span class="chip warn">Dikerjakan</span>',selesai:'<span class="chip ok">Selesai</span>',batal:'<span class="chip off">Dibatalkan</span>'};
+const TK_AKSI={buat:'Tiket dibuat',tugaskan:'Ditugaskan ke',selesai:'Selesai',batal:'Dibatalkan',buka:'Dibuka lagi',catatan:'Catatan',prioritas:'Prioritas diubah'};
+function tkPesan(t,ok,id){ const m=$(id||'tkMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+function tkView(v){ $('tkListView').style.display=v==='list'?'block':'none'; $('tkFormView').style.display=v==='form'?'block':'none'; $('tkDetailView').style.display=v==='detail'?'block':'none';
+ $('tkJudul').textContent=v==='form'?'Tiket Baru':v==='detail'?'Detail Tiket':'Tiket Gangguan'; if(v==='list') muatTiket(); }
+function openTiket(){ $('tiketModal').classList.add('show'); tkView('list'); }
+function setTkFilter(v){ tk.filter=v; muatTiket(); }
+async function muatBadgeTiket(){
+ try{ const d=await jsonAtauError(await fetch('/api/tiket?status=terbuka&limit=1',{cache:'no-store'})); const n=d.ringkasan.terbuka; $('tiketBadge').textContent=n; $('tiketBadge').style.display=n?'':'none'; }catch(e){}
+}
+async function muatTiket(){
+ document.querySelectorAll('.tkFilter button[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===tk.filter));
+ $('tkList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const q=new URLSearchParams({status:tk.filter,cari:$('tkCari').value.trim()});
+  const d=await jsonAtauError(await fetch('/api/tiket?'+q,{cache:'no-store'})); tk.data=d; const r=d.ringkasan;
+  $('tkNTerbuka').textContent=r.terbuka; $('tkNBaru').textContent=r.baru?r.baru+' belum ada teknisi':'semua sudah ditangani';
+  $('tkNSelesai').textContent=r.selesai_30hari; $('tkRata').textContent=r.rata_selesai||'—';
+  $('tiketBadge').textContent=r.terbuka; $('tiketBadge').style.display=r.terbuka?'':'none';
+  $('tkList').innerHTML=d.tiket.length?d.tiket.map(t=>{
+   const siapa=t.username?esc(t.nama||t.username)+' <span class="plSub">· '+esc(t.username)+'</span>':'<i>Umum / jaringan</i>';
+   const prio=t.prioritas==='tinggi'&&t.terbuka?'<span class="chip bad">🔺 Tinggi</span>':'';
+   const sub=['#T'+t.id,esc(t.kategori),(t.terbuka?'sudah ':'ditangani ')+esc(t.umur),t.teknisi?'teknisi '+esc(t.teknisi):(t.terbuka?'<b style="color:#b42318">belum ada teknisi</b>':'')].filter(Boolean).join(' · ');
+   return `<div class="plRow" onclick="bukaTiket(${t.id})"><div style="min-width:0"><div class="plName">${siapa}</div><div class="plSub">${sub}</div>${t.keterangan?`<div class="plSub" style="color:#234">${esc(t.keterangan.slice(0,140))}</div>`:''}${t.solusi&&!t.terbuka?`<div class="plSub">✔ ${esc(t.solusi.slice(0,140))}</div>`:''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${prio}${TK_CHIP[t.status]||''}</div></div>`;
+  }).join(''):'<div class="muted">'+(tk.filter==='terbuka'?'✅ Tidak ada tiket terbuka.':'Tidak ada tiket.')+'</div>';
+ }catch(e){ $('tkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function tiketBaru(username){
+ tkPesan('',false,'tkFMsg');
+ if(!tk.data){ try{ tk.data=await jsonAtauError(await fetch('/api/tiket?status=terbuka&limit=1')); }catch(e){ tkPesan('Gagal: '+e.message); return; } }
+ if(!tk.pelanggan){ try{ tk.pelanggan=(await jsonAtauError(await fetch('/api/data-pelanggan'))).pelanggan.filter(p=>p.status!=='berhenti'); }catch(e){ tk.pelanggan=[]; } }
+ $('tkUserList').innerHTML=tk.pelanggan.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}${p.alamat?' — '+esc(p.alamat):''}</option>`).join('');
+ $('tkKat').innerHTML=tk.data.kategori.map(k=>`<option>${esc(k)}</option>`).join('');
+ $('tkTeknisi').innerHTML='<option value="">— belum ditentukan —</option>'+tk.data.teknisi.map(u=>`<option value="${esc(u)}">${esc(u)}${u===tk.data.saya?' (saya)':''}</option>`).join('');
+ $('tkUser').value=username||''; $('tkKet').value=''; $('tkPrio').value='normal';
+ tkView('form'); (username?$('tkKet'):$('tkUser')).focus();
+}
+function tiketDariPelanggan(){ const u=$('plUser').value; closeModal('pelangganModal'); $('tiketModal').classList.add('show'); tiketBaru(u); }
+async function simpanTiket(){
+ const isi=$('tkUser').value.trim();
+ let username=null;
+ if(isi){ const p=tk.pelanggan.find(x=>x.username===isi)||tk.pelanggan.find(x=>(x.nama||'').toLowerCase()===isi.toLowerCase());
+  if(!p){ tkPesan('Pelanggan "'+isi+'" tidak ditemukan. Pilih dari daftar, atau kosongkan untuk gangguan umum.',false,'tkFMsg'); return; } username=p.username; }
+ const body={username,kategori:$('tkKat').value,keterangan:$('tkKet').value.trim()||null,prioritas:$('tkPrio').value,teknisi:$('tkTeknisi').value||null};
+ try{ const d=await jsonAtauError(await fetch('/api/tiket',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})); tk.filter='terbuka'; tkView('list'); tkPesan('Tiket #T'+d.id+' dibuat.',true); }
+ catch(e){ tkPesan('Gagal: '+e.message,false,'tkFMsg'); }
+}
+async function bukaTiket(id){
+ tk.cur=id; tkView('detail'); const box=$('tkDetailView'); box.innerHTML='<div class="muted">Memuat…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/tiket/'+id,{cache:'no-store'})); }catch(e){ box.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div><button class="btnS" onclick="tkView(\'list\')">‹ Kembali</button>'; return; }
+ const t=d.tiket, k=d.kontak, g=d.diagnosa, kotak=(a,b)=>`<div class="detail"><small>${a}</small><b>${b}</b></div>`;
+ let html=`<div class="blNav"><button class="btnS" onclick="tkView('list')">‹ Kembali</button><b>#T${t.id}</b>${TK_CHIP[t.status]||''}${t.prioritas==='tinggi'?'<span class="chip bad">🔺 Prioritas tinggi</span>':''}</div>`;
+ html+=`<div class="kuPanel" style="margin-bottom:10px"><div class="plName" style="font-size:15px">${t.username?esc(t.nama||t.username):'Gangguan umum / jaringan'}</div>`;
+ if(t.username) html+=`<div class="plSub">${esc(t.username)}${k&&k.alamat?' · '+esc(k.alamat):''}${k&&k.no_hp?' · <a href="https://wa.me/'+esc(nomorWA(k.no_hp))+'" target="_blank" rel="noopener">WA '+esc(k.no_hp)+'</a>':''}</div>`;
+ html+=`<div style="margin-top:8px;font-size:13px"><b>${esc(t.kategori)}</b>${t.keterangan?' — '+esc(t.keterangan):''}</div><div class="plSub">Dilaporkan ${esc(t.dibuat_oleh)} · ${esc(khWaktu(t.dibuat_pada))} · ${t.terbuka?'sudah '+esc(t.umur):'ditangani dalam '+esc(t.umur)}${t.teknisi?' · teknisi <b>'+esc(t.teknisi)+'</b>':''}</div>`;
+ if(t.solusi&&!t.terbuka) html+=`<div style="margin-top:8px;font-size:13px">${t.status==='selesai'?'✔ Solusi':'Alasan batal'}: ${esc(t.solusi)}</div>`;
+ html+='</div>';
+ if(g){
+  let x='';
+  if(!g.data_monitoring) x=kotak('Monitoring','belum ada data');
+  else{
+   x+=kotak('PPPoE',g.pppoe_online?'<span style="color:#0b7a3b">● Online</span>':'<span style="color:#b42318">● Offline</span>');
+   if(g.pppoe_online) x+=kotak('IP · uptime',esc(g.ip||'—')+' · '+esc(g.uptime||'—'));
+   if(g.onu){ const o=g.onu; x+=kotak('ONU '+esc(o.pon)+'/'+esc(o.onu_id),(o.online?'Online':'<span style="color:#b42318">Offline</span>')+' · '+esc(o.status)); x+=kotak('Redaman (ONU-RX / OLT-RX)',esc(o.onu_rx_dbm??'—')+' / '+esc(o.olt_rx_dbm??'—')+' dBm'); }
+   else x+=kotak('ONU','tidak terpetakan');
+  }
+  if(g.terisolir) x+=kotak('Isolir','<span style="color:#b42318">Sedang diisolir</span>');
+  if(g.tagihan_belum.length) x+=kotak('Tagihan belum dibayar',g.tagihan_belum.length+' bulan · '+rp(g.tagihan_belum.reduce((a,b)=>a+b.jumlah,0)));
+  html+=`<div class="plSub" style="margin-bottom:4px;font-weight:800">Kondisi sekarang</div><div class="detailGrid" style="margin-bottom:10px">${x}</div>`;
+  if(g.terisolir) html+='<div class="plSub" style="color:#b42318;margin-bottom:10px">⚠ Pelanggan sedang diisolir — internet mati bisa karena tunggakan, bukan gangguan.</div>';
+ }
+ html+='<div class="plForm" style="margin-top:0"><label>Catatan / solusi</label><textarea id="tkCatatan" placeholder="mis. Konektor di ODP diganti, redaman normal lagi"></textarea>';
+ if(t.terbuka){
+  html+=`<label>Teknisi</label><select id="tkTugas"><option value="">— pilih —</option>${(tk.data?tk.data.teknisi:[]).map(u=>`<option value="${esc(u)}" ${u===t.teknisi?'selected':''}>${esc(u)}</option>`).join('')}</select>`;
+  html+=`<div class="tkAksi">${t.teknisi!==(tk.data&&tk.data.saya)?'<button class="btnS go" onclick="aksiTiket(\'ambil\')">Saya kerjakan</button>':''}<button class="btnS" onclick="aksiTiket('tugaskan')">Tugaskan</button><button class="btnS go" onclick="aksiTiket('selesai')">✔ Selesai</button><button class="btnS" onclick="aksiTiket('catatan')">Tambah catatan</button><button class="btnS" onclick="aksiTiket('prioritas')">${t.prioritas==='tinggi'?'Jadikan normal':'Jadikan prioritas tinggi'}</button><button class="btnS" onclick="aksiTiket('batal')">Batalkan tiket</button></div>`;
+ } else html+=`<div class="tkAksi"><button class="btnS" onclick="aksiTiket('catatan')">Tambah catatan</button><button class="btnS" onclick="aksiTiket('buka')">Buka lagi</button></div>`;
+ html+='<div class="plMsg" id="tkDMsg"></div></div>';
+ html+=`<div class="plSub" style="margin-top:12px;font-weight:800">Riwayat tiket ini</div><div class="tkLog">${d.log.map(l=>`<div><small>${esc(khWaktu(l.waktu))} · ${esc(l.oleh)}</small>${esc(TK_AKSI[l.aksi]||l.aksi)}${l.catatan?(l.aksi==='tugaskan'||l.aksi==='prioritas'?' ':': ')+esc(l.catatan):''}</div>`).join('')}</div>`;
+ if(d.riwayat.length) html+=`<div class="plSub" style="margin-top:12px;font-weight:800">Tiket sebelumnya pelanggan ini</div>`+d.riwayat.map(r=>`<div class="plRow" onclick="bukaTiket(${r.id})"><div><div class="plName">#T${r.id} · ${esc(r.kategori)}</div><div class="plSub">${esc(khWaktu(r.dibuat_pada))}${r.solusi?' · '+esc(r.solusi.slice(0,100)):''}</div></div>${TK_CHIP[r.status]||''}</div>`).join('');
+ box.innerHTML=html;
+}
+async function aksiTiket(aksi){
+ const t=tk.data&&tk.data.tiket.find(x=>x.id===tk.cur);
+ const body={aksi,catatan:$('tkCatatan').value.trim()||null};
+ if(aksi==='tugaskan'){ body.teknisi=$('tkTugas').value; if(!body.teknisi){ tkPesan('Pilih teknisinya dulu.',false,'tkDMsg'); return; } }
+ if(aksi==='prioritas') body.prioritas=$('tkDetailView').innerHTML.includes('Jadikan normal')?'normal':'tinggi';
+ if(aksi==='selesai'&&!body.catatan){ tkPesan('Tuliskan apa yang dikerjakan / penyebabnya di kolom catatan.',false,'tkDMsg'); $('tkCatatan').focus(); return; }
+ if(aksi==='batal'&&!body.catatan){ tkPesan('Tuliskan alasan pembatalan di kolom catatan.',false,'tkDMsg'); $('tkCatatan').focus(); return; }
+ if(aksi==='catatan'&&!body.catatan){ tkPesan('Catatan masih kosong.',false,'tkDMsg'); $('tkCatatan').focus(); return; }
+ try{ await jsonAtauError(await fetch('/api/tiket/'+tk.cur+'/aksi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  if(aksi==='selesai'||aksi==='batal'){ tkView('list'); tkPesan('Tiket #T'+tk.cur+(aksi==='selesai'?' selesai.':' dibatalkan.'),true); }
+  else { await bukaTiket(tk.cur); tkPesan('Tersimpan.',true,'tkDMsg'); }
+ }catch(e){ tkPesan('Gagal: '+e.message,false,'tkDMsg'); }
+}
+var _tkBadgeTerakhir=0;
+Object.assign(AKSI_LABEL,{tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
 
 // ===== Keuangan =====
 const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};
