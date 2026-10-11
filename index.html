@@ -146,6 +146,7 @@
 <label>Status langganan</label><select id="plStatus"><option value="aktif">Aktif</option><option value="berhenti">Berhenti (tidak ditagih, tidak dipantau)</option></select>
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
 <label class="plCek"><input type="checkbox" id="plMitra"> Tampilkan ke mitra (ikut dihitung insentif bila lunas)</label>
+<label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung insentif mitra tiap bulan</label>
 <div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
 <div id="plPaketView" style="display:none">
@@ -485,7 +486,7 @@ async function loadBilling(diam){
 }
 function infoIsolir(){
  const ins=bl.insentif;
- const teksIns=ins?'<div class="plSub" style="margin:4px 0">Insentif mitra: '+ins.jumlah_lunas+' pelanggan lunas × '+rp(ins.per_pelanggan)+' = <b>'+rp(ins.total)+'</b></div>':'';
+ const teksIns=ins?'<div class="plSub" style="margin:4px 0">Insentif mitra: '+ins.jumlah_lunas+' lunas'+(ins.jumlah_gratis?(' + '+ins.jumlah_gratis+' gratis'):'')+' × '+rp(ins.per_pelanggan)+' = <b>'+rp(ins.total)+'</b></div>':'';
  return teksIns+infoIsolirSaja();
 }
 function infoIsolirSaja(){
@@ -596,7 +597,7 @@ function tampilkanView(v){
 function editPelanggan(i){
  const p=pl.data[i]; pl.cur=p.username;
  $('plTitle').textContent='Ubah Data Pelanggan';
- $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0;
+ $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0; $('plInsGratis').checked=!!p.insentif_gratis; aturCentangGratis();
  $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
  $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value;
  $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
@@ -608,7 +609,7 @@ function backPelanggan(){
  tampilkanView('list');
 }
 async function savePelanggan(){
- const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,tampil_mitra:$('plMitra').checked};
+ const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked};
  if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
  if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\nAkun PPPoE di MikroTik tidak diubah, nonaktifkan manual bila perlu.')) return;
  try{
@@ -794,5 +795,11 @@ async function loadAktivitas(){
   $('akList').innerHTML=rows.length?rows.map(a=>`<div class="blRow"><div><div class="plName">${esc(AKSI_LABEL[a.aksi]||a.aksi)} <span class="plSub">oleh ${esc(a.oleh)}</span></div><div class="plSub">${esc(a.detail||'')}</div></div><div class="plSub" style="white-space:nowrap">${esc(khWaktu(a.waktu))}</div></div>`).join(''):'<div class="muted">Belum ada aktivitas tercatat.</div>';
  }catch(e){ $('akList').innerHTML='<div class="muted">Gagal memuat log: '+esc(e.message)+'</div>'; }
 }
+// Centang "gratis dihitung insentif" hanya bermakna untuk pelanggan gratis; bila dicentang, otomatis tampil ke mitra
+function aturCentangGratis(){
+ const g=$('plGratis').checked; $('plInsGratisWrap').style.display=g?'flex':'none';
+ if(g&&$('plInsGratis').checked) $('plMitra').checked=true;
+}
+document.addEventListener('change',e=>{ if(e.target&&(e.target.id==='plGratis'||e.target.id==='plInsGratis')) aturCentangGratis(); });
 </script>
 </body></html>

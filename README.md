@@ -21,8 +21,8 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.
 - **Akun mitra** — akun berperan mitra yang hanya bisa membuka halaman mitra:
   daftar pelanggan dan status bayarnya, ubah nama/alamat/no. HP, dan rekap insentif
-  (pelanggan dengan tagihan lunas bulan itu × `MITRA_INSENTIF_PER_PELANGGAN`, default
-  Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
+  (pelanggan dengan tagihan lunas bulan itu, ditambah pelanggan gratis yang dicentang
+  "Gratis, tetap dihitung insentif mitra", × tarif per pelanggan, default Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
   tidak terlihat dan tidak dihitung. Semua API lain ditolak untuk akun mitra.
 - **Kesehatan jaringan** — skor per pelanggan (redaman, kestabilan sinyal, reconnect,
   ketersediaan) beserta saran untuk teknisi.

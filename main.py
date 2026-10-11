@@ -834,6 +834,10 @@ def init_billing_db() -> None:
         if "tampil_mitra" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN tampil_mitra INTEGER NOT NULL DEFAULT 1")
             conn.execute("UPDATE pelanggan SET tampil_mitra = 0 WHERE gratis = 1")
+        # insentif_gratis = 1: pelanggan gratis yang tetap dihitung insentif mitra
+        # tiap bulan walau tidak punya tagihan.
+        if "insentif_gratis" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN insentif_gratis INTEGER NOT NULL DEFAULT 0")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS aktivitas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2184,6 +2188,7 @@ class PelangganIn(BaseModel):
     gratis: bool = False
     status: Optional[str] = None    # "aktif" / "berhenti"; None = tidak diubah
     tampil_mitra: Optional[bool] = None   # None = tidak diubah
+    insentif_gratis: Optional[bool] = None   # None = tidak diubah
 
 
 @app.get("/api/data-pelanggan")
@@ -2192,7 +2197,7 @@ def list_data_pelanggan():
     try:
         rows = conn.execute(
             "SELECT p.username, p.nama, p.alamat, p.no_hp, p.paket_id, p.gratis, "
-            "p.status, p.berhenti_sejak, p.tampil_mitra, k.nama AS paket, k.harga "
+            "p.status, p.berhenti_sejak, p.tampil_mitra, p.insentif_gratis, k.nama AS paket, k.harga "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "ORDER BY p.nama COLLATE NOCASE"
         ).fetchall()
@@ -2229,11 +2234,16 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
         elif status == "aktif":
             berhenti_sejak = None
         tampil_mitra = lama["tampil_mitra"] if d.tampil_mitra is None else int(d.tampil_mitra)
+        insentif_gratis = lama["insentif_gratis"] if d.insentif_gratis is None else int(d.insentif_gratis)
+        if not d.gratis:
+            insentif_gratis = 0          # pelanggan berbayar dihitung dari tagihan lunas
+        elif insentif_gratis:
+            tampil_mitra = 1             # dihitung insentif = pasti terlihat oleh mitra
         conn.execute(
             "UPDATE pelanggan SET nama=?, alamat=?, no_hp=?, paket_id=?, gratis=?, status=?, berhenti_sejak=?, "
-            "tampil_mitra=? WHERE username=?",
+            "tampil_mitra=?, insentif_gratis=? WHERE username=?",
             (nama, (d.alamat or "").strip() or None, (d.no_hp or "").strip() or None,
-             d.paket_id, int(d.gratis), status, berhenti_sejak, tampil_mitra, username),
+             d.paket_id, int(d.gratis), status, berhenti_sejak, tampil_mitra, insentif_gratis, username),
         )
         terhapus = 0
         if d.gratis:
@@ -2260,6 +2270,8 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
         perubahan.append(f"status {lama['status']} → {status}")
     if lama["tampil_mitra"] != tampil_mitra:
         perubahan.append("ditampilkan ke mitra" if tampil_mitra else "disembunyikan dari mitra")
+    if lama["insentif_gratis"] != insentif_gratis:
+        perubahan.append("gratis dihitung insentif mitra" if insentif_gratis else "gratis tidak dihitung insentif")
     if (lama["alamat"] or "") != (d.alamat or "").strip() or (lama["no_hp"] or "") != (d.no_hp or "").strip():
         perubahan.append("kontak/alamat diubah")
     if terhapus:
@@ -2334,8 +2346,7 @@ def list_tagihan(periode: str):
         insentif = _hitung_insentif(conn, periode)
         return {
             "periode": periode,
-            "insentif_mitra": {"jumlah_lunas": insentif["jumlah_lunas"], "per_pelanggan": insentif["per_pelanggan"],
-                               "total": insentif["total"]} if conn.execute(
+            "insentif_mitra": {k: insentif[k] for k in ("jumlah_lunas", "jumlah_gratis", "jumlah", "per_pelanggan", "total")} if conn.execute(
                 "SELECT 1 FROM akun WHERE peran='mitra' LIMIT 1").fetchone() else None,
             "ringkasan": {"jumlah_tagihan": len(rows), "total": total,
                           "terbayar": lunas, "belum_bayar": total - lunas},
@@ -2391,17 +2402,30 @@ def batalkan_lunas(tagihan_id: int, request: Request):
 # ============================================================
 
 def _hitung_insentif(conn, periode: str) -> dict:
-    """Insentif mitra = jumlah pelanggan (yang ditampilkan ke mitra) dengan tagihan
-    periode itu LUNAS x tarif per pelanggan. Gratis/menunggak/berhenti tanpa
-    pembayaran otomatis tidak terhitung karena tidak punya tagihan lunas."""
-    rows = conn.execute(
+    """Insentif mitra = (pelanggan dengan tagihan periode itu LUNAS + pelanggan
+    gratis yang ditandai insentif_gratis dan masih aktif di periode itu) x tarif.
+    Hanya pelanggan yang ditampilkan ke mitra. Menunggak/berhenti tanpa
+    pembayaran tidak terhitung."""
+    lunas = conn.execute(
         "SELECT p.username, p.nama, t.tgl_bayar FROM tagihan t JOIN pelanggan p ON p.username = t.username "
         "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 ORDER BY p.nama COLLATE NOCASE",
         (periode,),
     ).fetchall()
+    # Pelanggan gratis dihitung untuk periode selama ia belum berhenti sebelum
+    # awal periode tersebut.
+    gratis = conn.execute(
+        "SELECT p.username, p.nama FROM pelanggan p "
+        "WHERE p.gratis = 1 AND p.insentif_gratis = 1 AND p.tampil_mitra = 1 "
+        "AND (p.status = 'aktif' OR p.berhenti_sejak >= ?) "
+        "AND p.username NOT IN (SELECT username FROM tagihan WHERE periode = ? AND status = 'lunas') "
+        "ORDER BY p.nama COLLATE NOCASE",
+        (f"{periode}-01", periode),
+    ).fetchall()
     tarif = CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
-    return {"periode": periode, "per_pelanggan": tarif, "jumlah_lunas": len(rows),
-            "total": len(rows) * tarif, "pelanggan": [dict(r) for r in rows]}
+    jumlah = len(lunas) + len(gratis)
+    return {"periode": periode, "per_pelanggan": tarif, "jumlah_lunas": len(lunas),
+            "jumlah_gratis": len(gratis), "jumlah": jumlah, "total": jumlah * tarif,
+            "pelanggan": [dict(r) for r in lunas] + [{**dict(r), "gratis": True} for r in gratis]}
 
 
 @app.get("/api/mitra/pelanggan")
@@ -2411,7 +2435,7 @@ def mitra_list_pelanggan(periode: str, request: Request):
     conn = _billing_conn()
     try:
         rows = conn.execute(
-            "SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, k.nama AS paket, "
+            "SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, p.gratis, p.insentif_gratis, k.nama AS paket, "
             "t.status AS status_bayar, t.tgl_bayar, t.jatuh_tempo, "
             "(SELECT 1 FROM isolir i WHERE i.username = p.username) AS terisolir "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
