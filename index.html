@@ -269,7 +269,7 @@
  <div class="notaWrap" id="kuNotaBaru"></div>
  <input type="file" id="kuNotaInput" accept="image/*,application/pdf" multiple style="margin-top:6px" onchange="pilihNota(this)">
  <div class="plSub" style="margin-top:4px">Foto dari kamera atau galeri (otomatis diperkecil), atau PDF. Maks. 6 berkas.</div>
- <div class="plBtns"><button class="plSave" onclick="simpanTransaksi()">Simpan</button><button class="plCancel" onclick="resetFormKu();tabKu('transaksi')">Batal</button></div>
+ <div class="plBtns"><button class="plSave" onclick="simpanTransaksi()">Simpan</button><button class="plCancel" onclick="hapusDraftKu();resetFormKu();tabKu('transaksi')">Batal</button></div>
  <div class="plSub" style="margin-top:8px">Pembayaran tagihan pelanggan tercatat otomatis dari menu Billing — tidak perlu dicatat di sini. Catatan bisa diubah/dibatalkan oleh pencatatnya dalam 24 jam; setelah itu hanya oleh owner.</div>
 </div></div>
 </div></div></div>
@@ -349,7 +349,7 @@ window.fetch=async(...arg)=>{const r=await _fetchAsli(...arg); if(r.status===401
 const saya={username:null,peran:null};
 (async()=>{try{const r=await fetch('/api/me');if(r.ok){Object.assign(saya,await r.json());const e=document.getElementById('navUser');if(e)e.textContent=saya.username;
  // Owner langsung disuguhi ringkasan keuangan, sekali per sesi browser
- if(saya.peran==='owner'){ let sudah=false; try{sudah=sessionStorage.getItem('kuTampil')==='1'; sessionStorage.setItem('kuTampil','1');}catch(x){} if(!sudah) setTimeout(()=>openKeuangan(),300); }
+ if(saya.peran==='owner'){ let sudah=false; try{sudah=sessionStorage.getItem('kuTampil')==='1'; sessionStorage.setItem('kuTampil','1');}catch(x){} if(!sudah) setTimeout(()=>{ if(!document.querySelector('.overlay.show')) openKeuangan(); },300); }
 }}catch(e){}})();
 async function keluar(){
  if(!confirm('Keluar dari akun '+(saya.username||'ini')+'?')) return;
@@ -427,7 +427,27 @@ async function buatTagihan(){
                                                                                                                                                          }
 function openCustomers(){ $('customerModal').classList.add('show'); $('customerSearch').focus(); searchCustomers(); }
 function closeModal(id){$(id).classList.remove('show')}
-window.addEventListener('click',e=>{if(e.target.classList.contains('overlay'))e.target.classList.remove('show')});
+// Tutup lewat area gelap hanya bila sentuhan DIMULAI dan DIAKHIRI di area gelap. Sebelumnya
+// menggeser/menyeleksi teks di dalam jendela lalu melepas jari di luar ikut menutup jendela.
+let _tekanDiOverlay=null;
+window.addEventListener('pointerdown',e=>{_tekanDiOverlay=e.target.classList&&e.target.classList.contains('overlay')?e.target:null},true);
+window.addEventListener('click',e=>{if(e.target.classList.contains('overlay')&&_tekanDiOverlay===e.target)e.target.classList.remove('show'); _tekanDiOverlay=null});
+// Ingat jendela yang sedang terbuka, supaya kalau browser memuat ulang halaman (mis. HP
+// kehabisan memori saat membuka kamera untuk foto nota) jendelanya dibuka lagi.
+const _PEMBUKA={customerModal:()=>openCustomers(),pelangganModal:()=>openPelanggan(),billingModal:()=>openBilling(),kesehatanModal:()=>openKesehatan(),
+ keuanganModal:()=>openKeuangan(),alertModal:()=>openAlertEvent(),settingsModal:()=>openSettings(),tiketModal:()=>openTiket()};
+function _simpanModalAktif(){
+ const buka=[...document.querySelectorAll('.overlay.show')].map(o=>o.id).filter(id=>_PEMBUKA[id]);
+ // jendela ditutup: dashboard di belakangnya langsung diperbarui, tidak menunggu jeda 30 detik
+ if(!document.querySelector('.overlay.show')&&!_sedangLoad&&Date.now()-_loadTerakhir>5000) putaranLoad();
+ try{ if(buka.length) sessionStorage.setItem('modalAktif',JSON.stringify({id:buka[buka.length-1],tab:ku.tab,periode:ku.periode,t:Date.now()})); else sessionStorage.removeItem('modalAktif'); }catch(x){}
+}
+function pulihkanModal(){
+ let m=null; try{ m=JSON.parse(sessionStorage.getItem('modalAktif')||'null'); }catch(x){}
+ if(!m||!_PEMBUKA[m.id]||Date.now()-m.t>30*60*1000) return false;
+ if(m.id==='keuanganModal'){ if(m.tab) ku.tab=m.tab; if(m.periode) ku.periode=m.periode; }
+ _PEMBUKA[m.id](); return true;
+}
 
 function drawChart(){
  const svg=$('trafficSvg'), W=720,H=190,pad={l:28,r:175,t:15,b:24};
@@ -469,7 +489,7 @@ async function load(force=false){
   $('kpiCustomers').textContent=d.pppoe_active_count??d.pppoe_users?.length??0;
   $('kpiOnu').textContent=d.onu_online_count??0; $('kpiOnuSub').textContent=`Dari ${d.onu_total??0}`;
   $('kpiProblems').textContent=(d.onu_warning_count||0)+(d.onu_critical_count||0);
-  try{const br=await fetch('/api/boncos',{cache:'no-store'});const bj=await br.json();$('kpiUpgrade').textContent=(bj.candidates||[]).length}catch{$('kpiUpgrade').textContent='—'}
+  if(Date.now()-_boncosTerakhir>300000){ _boncosTerakhir=Date.now(); try{const br=await fetch('/api/boncos',{cache:'no-store'});const bj=await br.json();$('kpiUpgrade').textContent=(bj.candidates||[]).length}catch{$('kpiUpgrade').textContent='—'} }
   const allOk=d.mikrotik_online&&d.olt_online; $('overall').textContent=allOk?'ONLINE':'PERLU CEK'; $('overallSub').textContent=allOk?'Layanan berjalan normal':'Ada perangkat utama yang tidak merespons';
   setConn('mikState',d.mikrotik_online);setConn('oltState',d.olt_online);setConn('snmpState',d.olt_online);$('snmpSub').textContent=d.olt_online?'Response OK':'Tidak ada response';
   $('sideMik').innerHTML=`<i class="dot ${d.mikrotik_online?'':'off'}"></i>${d.mikrotik_online?'Online':'Offline'}`;
@@ -487,8 +507,18 @@ async function searchCustomers(){
  try{const r=await fetch('/api/pelanggan/'+encodeURIComponent(q),{cache:'no-store'});const d=await r.json();$('customerResults').innerHTML=d.found?d.results.map(detailCard).join(''):`<div class="muted">Tidak ditemukan: ${esc(q)}</div>`}catch(e){$('customerResults').innerHTML='<div class="muted">Gagal mengambil data.</div>'}
 }
 function detailCard(o){return `<div class="detail" style="margin-bottom:8px"><small>${esc(o.pon||'—')} · ONU ${esc(o.onu_id||'—')}</small><b>${esc(o.pppoe_username||o.serial_number||'ONU tanpa username')}</b><div style="margin-top:7px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:9px"><span>OLT RX<br><b>${fmt(o.olt_rx_dbm)} dBm</b></span><span>ONU RX<br><b>${fmt(o.onu_rx_dbm)} dBm</b></span><span>Status<br><b>${esc(o.status||'—')}</b></span></div></div>`}
-load();
-setInterval(()=>load(),5000);
+// Muat ulang data berkala tanpa menumpuk: permintaan berikutnya baru dijadwalkan setelah
+// yang sebelumnya selesai. Berhenti saat tab tidak terlihat, dan melambat saat ada jendela
+// terbuka (data di belakangnya tidak sedang dilihat) supaya HP dan server tidak terbebani.
+var _boncosTerakhir=0, _timerLoad=null, _sedangLoad=false, _loadTerakhir=0;
+async function putaranLoad(){
+ clearTimeout(_timerLoad); _timerLoad=null;
+ if(document.hidden) return;
+ if(!_sedangLoad){ _sedangLoad=true; try{ await load(); } finally{ _sedangLoad=false; _loadTerakhir=Date.now(); } }
+ if(!document.hidden) _timerLoad=setTimeout(putaranLoad,document.querySelector('.overlay.show')?30000:5000);
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) putaranLoad(); else { clearTimeout(_timerLoad); _timerLoad=null; } });
+putaranLoad();
 const kh={data:null,filter:'cek',jam:24,buka:null};
 const KH_WARNA={BERMASALAH:'bad',PANTAU:'warn',SEHAT:'ok'};
 function khNomor(hp){let n=String(hp||'').replace(/\D/g,'');if(!n)return '';if(n.startsWith('0'))n='62'+n.slice(1);else if(n.startsWith('8'))n='62'+n;return n}
@@ -1120,7 +1150,7 @@ function tabKu(t){
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
  $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
- if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit) resetFormKu();
+ if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit){ resetFormKu(); pulihkanDraftKu(); }
 }
 function kotakKu(label,nilai,bawah,warna){ return `<div class="blBox"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
 async function muatRingkasanKu(){
@@ -1266,6 +1296,26 @@ function hitungCicilan(isiOtomatis){
 }
 function kreditBaru(){ ku.edit=null; tabKu('catat'); setFormJenis('keluar'); $('kuMetode').value='kredit'; aturKredit(); $('kuPemasok').focus(); }
 function formatJumlah(el){ const n=el.value.replace(/\D/g,''); el.value=n?Number(n).toLocaleString('id-ID'):''; }
+// Isian form "Catat transaksi" disimpan sementara di browser, supaya tidak hilang bila
+// halaman termuat ulang (mis. saat memilih foto nota dari kamera).
+const _DRAFT_ID=['kuTgl','kuKat','kuJumlah','kuMetode','kuPemasok','kuTenor','kuCicilan','kuTempo','kuDP','kuDPMetode','kuKet'];
+function simpanDraftKu(){
+ if(ku.edit!=null) return;
+ const f={}; _DRAFT_ID.forEach(id=>f[id]=$(id).value);
+ if(!f.kuJumlah&&!f.kuKet&&!f.kuPemasok){ hapusDraftKu(); return; }
+ try{ sessionStorage.setItem('kuDraft',JSON.stringify({jenis:ku.formJenis,cara:ku.caraKredit,f,t:Date.now()})); }catch(x){}
+}
+function hapusDraftKu(){ try{ sessionStorage.removeItem('kuDraft'); }catch(x){} }
+function pulihkanDraftKu(){
+ let d=null; try{ d=JSON.parse(sessionStorage.getItem('kuDraft')||'null'); }catch(x){}
+ if(!d||Date.now()-d.t>6*3600*1000) return;
+ setFormJenis(d.jenis||'keluar'); $('kuMetode').value=d.f.kuMetode||'tunai'; aturKredit(Number(d.f.kuKat)); setCaraKredit(d.cara||'sekali');
+ _DRAFT_ID.forEach(id=>{ if(id!=='kuMetode'&&d.f[id]!=null&&d.f[id]!=='') $(id).value=d.f[id]; });
+ if(d.f.kuCicilan) $('kuCicilan').dataset.manual='1';
+ kuPesan('Isian yang belum disimpan dipulihkan. Foto nota perlu dipilih ulang.',true);
+}
+document.addEventListener('input',e=>{ if(e.target.closest&&e.target.closest('#kuCatat')) simpanDraftKu(); });
+document.addEventListener('change',e=>{ if(e.target.closest&&e.target.closest('#kuCatat')) simpanDraftKu(); });
 function resetFormKu(){
  ku.edit=null; $('kuFormJudul').textContent='Catat transaksi baru'; $('kuMetode').value='tunai'; setFormJenis('keluar');
  $('kuPemasok').value=''; $('kuTempo').value=''; $('kuDP').value=''; $('kuDPMetode').value='tunai';
@@ -1289,7 +1339,7 @@ async function simpanTransaksi(){
   const hasil=await jsonAtauError(await fetch(baru?'/api/keuangan/transaksi':'/api/keuangan/transaksi/'+ku.edit,{method:baru?'POST':'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
   const gagalNota=await unggahSemuaNota('transaksi',baru?hasil.id:ku.edit);
   const pesan=(baru?'Tercatat: ':'Disimpan: ')+(body.jenis==='keluar'?'pengeluaran ':'pemasukan ')+rp(body.jumlah)+(ku.notaTerunggah?(' · '+ku.notaTerunggah+' nota'):'')+'.'+(gagalNota?' ⚠️ '+gagalNota:'');
-  ku.periode=body.tanggal.slice(0,7); resetFormKu();
+  ku.periode=body.tanggal.slice(0,7); hapusDraftKu(); resetFormKu();
   if(baru){ kuPesan(pesan,true); $('kuJumlah').focus(); } else { tabKu('transaksi'); kuPesan(pesan,true); }
  }catch(e){ kuPesan('Gagal: '+e.message); }
 }
@@ -1326,7 +1376,7 @@ async function simpanKredit(){
  try{
   const hasil=await jsonAtauError(await fetch('/api/keuangan/utang',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
   const gagalNota=await unggahSemuaNota('utang',hasil.id), nNota=ku.notaTerunggah;
-  ku.periode=body.tanggal.slice(0,7); resetFormKu(); tabKu('utang');
+  ku.periode=body.tanggal.slice(0,7); hapusDraftKu(); resetFormKu(); tabKu('utang');
   kuPesan('Pembelian kredit '+rp(body.jumlah)+' dari '+body.pemasok+' tercatat'+(body.tenor?(', cicilan '+body.tenor+' × '+rp(body.cicilan)):'')+(body.uang_muka?(', uang muka '+rp(body.uang_muka)):'')+(nNota?(' · '+nNota+' nota'):'')+'.'+(gagalNota?' ⚠️ '+gagalNota:''),!gagalNota);
  }catch(e){ kuPesan('Gagal: '+e.message); }
 }
@@ -1496,5 +1546,7 @@ async function batalBayarInsentif(id){
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 AKSI_LABEL.insentif_bayar='Bayar insentif mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
+new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
+pulihkanModal();
 </script>
 </body></html>

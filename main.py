@@ -35,6 +35,7 @@ import secrets
 import sys
 import re
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -2444,9 +2445,17 @@ async def get_pelanggan(nama: str):
         return {"found": 0, "results": []}
     return {"found": len(matches), "results": [(m.model_dump() if hasattr(m, "model_dump") else m.dict()) for m in matches]}
 
+_cache_boncos: tuple[float, list] = (0.0, [])
+
+
 @app.get("/api/boncos")
 async def get_boncos():
-    return {"candidates": await asyncio.to_thread(get_boncos_candidates)}
+    # Riwayat pemakaian hanya bertambah tiap HISTORY_INTERVAL_SECONDS, jadi hasilnya
+    # disimpan sebentar: query agregat 7 hari ini cukup berat bila diulang tiap beberapa detik di HP.
+    global _cache_boncos
+    if time.monotonic() - _cache_boncos[0] > 120:
+        _cache_boncos = (time.monotonic(), await asyncio.to_thread(get_boncos_candidates))
+    return {"candidates": _cache_boncos[1]}
 
 
 @app.get("/api/putus")
