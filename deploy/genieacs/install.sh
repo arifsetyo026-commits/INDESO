@@ -199,8 +199,20 @@ else
 fi
 
 echo "== Provision bawaan INDESO"
-sleep 3
 NBI="http://127.0.0.1:7557"
+# Di VPS kecil MongoDB + Node butuh waktu untuk menyala: tunggu NBI siap (maks. 2 menit).
+echo -n "Menunggu GenieACS NBI siap"
+for i in $(seq 1 60); do
+  curl -fsS -o /dev/null "$NBI/devices/?projection=_id" 2>/dev/null && { echo " — siap."; break; }
+  echo -n "."; sleep 2
+  if [ "$i" -eq 60 ]; then
+    echo; echo "GenieACS NBI tidak menyala. Status layanan:"
+    systemctl --no-pager --lines=0 status mongod genieacs-nbi || true
+    echo "--- log genieacs-nbi ---"; journalctl -u genieacs-nbi -n 25 --no-pager || true
+    echo "--- log mongod ---"; tail -n 15 /var/log/mongodb/mongod.log 2>/dev/null || journalctl -u mongod -n 15 --no-pager || true
+    exit 1
+  fi
+done
 DIR="$(cd "$(dirname "$0")" && pwd)"
 curl -fsS -X PUT --data-binary @"$DIR/provision-indeso.js" "$NBI/provisions/indeso-default"
 curl -fsS -X PUT --data-binary @"$DIR/vp-pppoeUsername.js" "$NBI/virtual_parameters/pppoeUsername"
