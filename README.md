@@ -9,6 +9,13 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   redaman/kesehatan ONU dari OLT C-Data (SNMP). ONU dicocokkan ke pelanggan lewat MAC.
 - **Alert Telegram** — redaman kritis, pelanggan putus lebih dari 10 menit, gangguan
   massal, laporan harian. Perintah bot: `/cek nama`, `/masalah`, `/boncos`, `/putus`.
+- **Alert & Event** — *Aktif*: masalah yang sedang terjadi (MikroTik/OLT tidak terjangkau,
+  redaman kritis, hardware ONT, pelanggan putus, CPU/memori router tinggi, login gagal ke
+  MikroTik). *Riwayat*: log MikroTik (error/critical/warning, login gagal, link down/up,
+  perubahan konfigurasi, PPPoE connect/disconnect, reboot) dan event OLT (dying-gasp/LOS
+  per ONU, ONU offline/online, perubahan redaman, ONU baru), bisa difilter per sumber,
+  tingkat, dan waktu. Disimpan 90 hari. Event kritis MikroTik (login gagal, reboot) dan
+  OLT/MikroTik tidak terjangkau diteruskan ke Telegram (maks. sekali per 30 menit per jenis).
 - **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
   nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
   ditagih, tidak diisolir otomatis, tidak dipantau putusnya).

@@ -142,6 +142,9 @@ CONFIG = {
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     "HISTORY_INTERVAL_SECONDS": 300,   # simpan snapshot tiap 5 menit, bukan tiap 30 detik
     "HISTORY_RETENTION_DAYS": 30,      # data lebih lama dari ini dibuang otomatis
+    "EVENT_RETENTION_DAYS": 90,        # riwayat Alert & Event disimpan sekian hari
+    "EVENT_TELEGRAM_KRITIS": True,     # teruskan event kritis MikroTik (login gagal, reboot) ke Telegram
+    "MIKROTIK_CPU_PERINGATAN": 90,     # CPU MikroTik >= ini (%) -> peringatan
 
     # --- Deteksi "boncos" / kandidat upgrade paket ---
     # Kalau MikroTik melaporkan rate-limit pelanggan, itu dipakai sebagai acuan
@@ -697,6 +700,293 @@ def _build_dashboard(pppoe_users: list[PPPoEUser], mikrotik_error: Optional[str]
     )
 
 
+# ============================================================
+# 6a. ALERT & EVENT — log MikroTik, event OLT/ONU, kondisi perangkat
+# ============================================================
+# Event disimpan di isp_history.db tabel "event". Tingkat: kritis / peringatan / info.
+# kunci_dedup UNIQUE supaya log yang sama tidak tersimpan dua kali walau
+# dibaca ulang tiap siklus.
+
+_BULAN_ROS = {b: i for i, b in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def init_event_db() -> None:
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"])
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                waktu TEXT NOT NULL,
+                sumber TEXT NOT NULL,
+                tingkat TEXT NOT NULL,
+                kategori TEXT NOT NULL,
+                judul TEXT NOT NULL,
+                detail TEXT,
+                pelanggan TEXT,
+                kunci_dedup TEXT UNIQUE
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_event_waktu ON event(waktu)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def simpan_event(daftar: list[dict]) -> list[dict]:
+    """Simpan event; kembalikan yang benar-benar baru (belum pernah tersimpan)."""
+    if not daftar:
+        return []
+    baru = []
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"])
+    try:
+        for e in daftar:
+            kunci = e.get("kunci") or hashlib.sha1(
+                f"{e['waktu']}|{e['sumber']}|{e['judul']}|{e.get('detail', '')}".encode()).hexdigest()
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO event (waktu, sumber, tingkat, kategori, judul, detail, pelanggan, kunci_dedup) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (e["waktu"], e["sumber"], e["tingkat"], e["kategori"], e["judul"][:200],
+                 (e.get("detail") or "")[:1000], e.get("pelanggan"), kunci),
+            )
+            if cur.rowcount:
+                baru.append(e)
+        conn.commit()
+    finally:
+        conn.close()
+    return baru
+
+
+def _ev(sumber, tingkat, kategori, judul, detail="", pelanggan=None, waktu=None, kunci=None) -> dict:
+    return {"waktu": waktu or datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "sumber": sumber,
+            "tingkat": tingkat, "kategori": kategori, "judul": judul, "detail": detail,
+            "pelanggan": pelanggan, "kunci": kunci}
+
+
+def _waktu_log_ros(teks: str, sekarang: datetime) -> Optional[datetime]:
+    """Format waktu log RouterOS: 'HH:MM:SS' (hari ini), 'mon/dd HH:MM:SS' (tahun ini),
+    'mon/dd/yyyy HH:MM:SS', 'yyyy-mm-dd HH:MM:SS' atau 'mm-dd HH:MM:SS' (v7)."""
+    teks = (teks or "").strip()
+    try:
+        if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", teks):
+            t = datetime.combine(sekarang.date(), datetime.strptime(teks, "%H:%M:%S").time())
+            return t - timedelta(days=1) if t > sekarang + timedelta(minutes=5) else t
+        m = re.fullmatch(r"([a-z]{3})/(\d{1,2})(?:/(\d{4}))? (\d{1,2}:\d{2}:\d{2})", teks.lower())
+        if m:
+            bln, tgl, thn, jam = m.groups()
+            t = datetime.strptime(f"{thn or sekarang.year}-{_BULAN_ROS[bln]}-{tgl} {jam}", "%Y-%m-%d %H:%M:%S")
+            if not thn and t > sekarang + timedelta(days=1):
+                t = t.replace(year=t.year - 1)
+            return t
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}:\d{2}", teks):
+            return datetime.strptime(teks, "%Y-%m-%d %H:%M:%S")
+        m = re.fullmatch(r"(\d{2})-(\d{2}) (\d{1,2}:\d{2}:\d{2})", teks)
+        if m:
+            t = datetime.strptime(f"{sekarang.year}-{m.group(1)}-{m.group(2)} {m.group(3)}", "%Y-%m-%d %H:%M:%S")
+            return t.replace(year=t.year - 1) if t > sekarang + timedelta(days=1) else t
+    except (ValueError, KeyError):
+        return None
+    return None
+
+
+def _klasifikasi_log_ros(topics: str, pesan: str) -> Optional[tuple[str, str, str]]:
+    """(tingkat, kategori, judul) atau None bila log tidak perlu disimpan (mis. dhcp info)."""
+    t = set((topics or "").split(","))
+    p = (pesan or "").lower()
+    if "login failure" in p:
+        return "kritis", "keamanan", "Login gagal ke MikroTik"
+    if "critical" in t:
+        return "kritis", "router", "Log critical MikroTik"
+    if "link down" in p:
+        return "peringatan", "interface", "Interface link down"
+    if "error" in t:
+        return "peringatan", "router", "Log error MikroTik"
+    if "warning" in t:
+        return "peringatan", "router", "Log warning MikroTik"
+    if "link up" in p:
+        return "info", "interface", "Interface link up"
+    if "account" in t or "logged in" in p or "logged out" in p:
+        return "info", "akses", "Akses ke MikroTik"
+    if "reboot" in p or "router was rebooted" in p:
+        return "kritis", "router", "Router reboot"
+    if "changed by" in p or "added by" in p or "removed by" in p:
+        return "info", "konfigurasi", "Konfigurasi MikroTik diubah"
+    if "pppoe" in t or "ppp" in t:
+        if "disconnected" in p or "terminating" in p:
+            return "info", "pppoe", "PPPoE terputus"
+        if "connected" in p or "authenticated" in p:
+            return "info", "pppoe", "PPPoE tersambung"
+        return None
+    return None
+
+
+_PPPOE_USER_RE = re.compile(r"<pppoe-([^>]+)>|^([^\s:]+): (?:connected|disconnected|authenticated|terminating)")
+_mikrotik_pertama = True        # pembacaan log pertama tidak dikirim ke Telegram (isi buffer lama)
+_mikrotik_uptime_lalu: Optional[int] = None
+_mikrotik_resource: dict = {}   # kondisi terakhir router untuk alert aktif
+
+
+def fetch_mikrotik_event() -> list[dict]:
+    """Baca /log dan /system/resource dari MikroTik, ubah menjadi event."""
+    global _mikrotik_uptime_lalu, _mikrotik_resource
+    sekarang = datetime.now()
+    hasil = []
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        log = api.get_resource("/log").get()
+        res = (api.get_resource("/system/resource").get() or [{}])[0]
+    finally:
+        pool.disconnect()
+
+    for row in log:
+        kelas = _klasifikasi_log_ros(row.get("topics", ""), row.get("message", ""))
+        if not kelas:
+            continue
+        waktu = _waktu_log_ros(row.get("time", ""), sekarang)
+        if waktu is None:
+            continue
+        tingkat, kategori, judul = kelas
+        pesan = row.get("message", "")
+        m = _PPPOE_USER_RE.search(pesan)
+        hasil.append(_ev("mikrotik", tingkat, kategori, judul, f"{pesan} [{row.get('topics', '')}]",
+                         pelanggan=(m.group(1) or m.group(2)) if m and kategori == "pppoe" else None,
+                         waktu=waktu.strftime("%Y-%m-%d %H:%M:%S")))
+
+    # Kondisi router: CPU, memori, reboot
+    try:
+        cpu = int(res.get("cpu-load", 0))
+        mem_free, mem_total = int(res.get("free-memory", 0)), int(res.get("total-memory", 0))
+        uptime = parse_uptime_to_seconds(res.get("uptime", ""))
+    except (TypeError, ValueError):
+        cpu, mem_free, mem_total, uptime = 0, 0, 0, None
+    mem_persen = round(100 - mem_free * 100 / mem_total, 1) if mem_total else None
+    lalu = _mikrotik_resource
+    _mikrotik_resource = {"cpu": cpu, "memori_persen": mem_persen, "uptime": res.get("uptime"),
+                          "versi": res.get("version"), "board": res.get("board-name"), "waktu": sekarang}
+    if cpu >= CONFIG["MIKROTIK_CPU_PERINGATAN"] and lalu.get("cpu", 0) < CONFIG["MIKROTIK_CPU_PERINGATAN"]:
+        hasil.append(_ev("mikrotik", "peringatan", "router", "CPU MikroTik tinggi", f"CPU {cpu}%"))
+    elif cpu < CONFIG["MIKROTIK_CPU_PERINGATAN"] - 10 and lalu.get("cpu", 0) >= CONFIG["MIKROTIK_CPU_PERINGATAN"]:
+        hasil.append(_ev("mikrotik", "info", "router", "CPU MikroTik normal kembali", f"CPU {cpu}%"))
+    if mem_persen is not None and mem_persen >= 90 and (lalu.get("memori_persen") or 0) < 90:
+        hasil.append(_ev("mikrotik", "peringatan", "router", "Memori MikroTik hampir penuh", f"Terpakai {mem_persen}%"))
+    if uptime is not None and _mikrotik_uptime_lalu is not None and uptime < _mikrotik_uptime_lalu:
+        hasil.append(_ev("mikrotik", "kritis", "router", "MikroTik reboot terdeteksi",
+                         f"Uptime kembali ke {res.get('uptime')}"))
+    if uptime is not None:
+        _mikrotik_uptime_lalu = uptime
+    return hasil
+
+
+def _db(v) -> str:
+    return "-" if v is None else f"{v}"
+
+
+# Kondisi terakhir tiap ONU, untuk mendeteksi perubahan antar siklus
+_onu_kondisi: dict[tuple[str, int], dict] = {}
+_olt_pertama = True
+_olt_online_lalu: Optional[bool] = None
+_mikrotik_online_lalu: Optional[bool] = None
+
+
+def deteksi_event_perangkat(onu_list: list[ONUStatus], mikrotik_error: Optional[str]) -> list[dict]:
+    """Bandingkan kondisi sekarang dengan siklus sebelumnya -> event perubahan."""
+    global _olt_pertama, _olt_online_lalu, _mikrotik_online_lalu
+    hasil = []
+    olt_online = len(onu_list) > 0
+    if _olt_online_lalu is not None and olt_online != _olt_online_lalu:
+        hasil.append(_ev("olt", "kritis" if not olt_online else "info", "olt",
+                         "OLT tidak merespons SNMP" if not olt_online else "OLT merespons kembali",
+                         f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}"))
+    _olt_online_lalu = olt_online
+    mik_online = mikrotik_error is None
+    if _mikrotik_online_lalu is not None and mik_online != _mikrotik_online_lalu:
+        hasil.append(_ev("sistem", "kritis" if not mik_online else "info", "mikrotik",
+                         "API MikroTik tidak terhubung" if not mik_online else "API MikroTik terhubung kembali",
+                         mikrotik_error or f"{CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']}"))
+    _mikrotik_online_lalu = mik_online
+    if not olt_online:
+        return hasil      # data ONU kosong karena OLT tak terbaca, jangan anggap semua ONU hilang
+
+    for o in onu_list:
+        key = (o.pon, o.onu_id)
+        lokasi = f"PON {o.pon} / ONU {o.onu_id}"
+        lama = _onu_kondisi.get(key)
+        # ONU yang offline tidak punya PPPoE aktif: pakai pelanggan terakhir yang diketahui
+        siapa = o.pppoe_username or (lama or {}).get("pelanggan")
+        ev_waktu = (o.last_event_time or "").strip().strip('"')
+        ev_teks = (o.last_event or "").strip().strip('"')
+        # Event bawaan OLT (dying-gasp, LOS, dll.) beserta waktunya
+        if ev_teks and ev_teks != "--" and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", ev_waktu):
+            low = ev_teks.lower()
+            tingkat = "kritis" if "los" in low else ("peringatan" if "dying" in low or "power" in low else "info")
+            hasil.append(_ev("olt", tingkat, "onu", f"Event OLT: {ev_teks}", lokasi, pelanggan=siapa,
+                             waktu=ev_waktu, kunci=f"olt|{o.pon}|{o.onu_id}|{ev_waktu}|{ev_teks}"))
+        if lama is not None:
+            if lama["online"] and not o.online:
+                hasil.append(_ev("olt", "peringatan", "onu", "ONU offline",
+                                 f"{lokasi}" + (f" · event terakhir: {ev_teks}" if ev_teks and ev_teks != "--" else ""),
+                                 pelanggan=siapa))
+            elif not lama["online"] and o.online:
+                hasil.append(_ev("olt", "info", "onu", "ONU online kembali", lokasi, pelanggan=siapa))
+            if o.online and lama["online"] and o.status != lama["status"] and o.status in ("OK", "WARNING", "CRITICAL"):
+                judul = {"CRITICAL": "Redaman kritis", "WARNING": "Redaman mendekati batas",
+                         "OK": "Redaman normal kembali"}[o.status]
+                hasil.append(_ev("olt", {"CRITICAL": "kritis", "WARNING": "peringatan", "OK": "info"}[o.status],
+                                 "redaman", judul, f"{lokasi} · OLT-RX {_db(o.olt_rx_dbm)} / ONU-RX {_db(o.onu_rx_dbm)} dBm",
+                                 pelanggan=siapa))
+            if o.online and o.hardware_status == "PERLU_CEK" and lama["hardware"] != "PERLU_CEK":
+                hasil.append(_ev("olt", "peringatan", "hardware", "Hardware ONT perlu dicek",
+                                 f"{lokasi} · " + "; ".join(o.hardware_notes), pelanggan=siapa))
+        elif not _olt_pertama:
+            hasil.append(_ev("olt", "info", "onu", "ONU baru terdeteksi",
+                             f"{lokasi} · {o.model or '-'} · SN {o.serial_number or '-'}", pelanggan=siapa))
+        _onu_kondisi[key] = {"online": o.online, "status": o.status, "hardware": o.hardware_status,
+                             "pelanggan": siapa}
+    _olt_pertama = False
+    return hasil
+
+
+_event_telegram_terakhir: dict[str, datetime] = {}
+
+
+def kirim_event_penting(baru: list[dict], dari_log_awal: bool = False) -> None:
+    """Event kritis dari log MikroTik (mis. login gagal, reboot) diteruskan ke Telegram,
+    maksimal sekali per 30 menit per jenis. Event ONU/redaman sudah punya alert sendiri."""
+    if dari_log_awal or not CONFIG["EVENT_TELEGRAM_KRITIS"]:
+        return
+    sekarang = datetime.now()
+    for e in baru:
+        diteruskan = e["sumber"] in ("mikrotik", "sistem") or e["kategori"] == "olt"
+        if e["tingkat"] != "kritis" or not diteruskan:
+            continue
+        try:
+            if sekarang - datetime.strptime(e["waktu"], "%Y-%m-%d %H:%M:%S") > timedelta(minutes=15):
+                continue    # log lama yang baru terbaca, tidak perlu dikabarkan
+        except ValueError:
+            pass
+        jenis = e["judul"]
+        if sekarang - _event_telegram_terakhir.get(jenis, datetime.min) < timedelta(minutes=30):
+            continue
+        _event_telegram_terakhir[jenis] = sekarang
+        send_telegram_message(f"🚨 <b>{_esc(e['judul'])}</b>\n{_esc(e['detail'] or '')}\nWaktu: {e['waktu'][11:16]}")
+
+
+def proses_event(onu_list: list[ONUStatus], mikrotik_error: Optional[str]) -> None:
+    """Dipanggil tiap siklus pemantauan."""
+    global _mikrotik_pertama
+    event = deteksi_event_perangkat(onu_list, mikrotik_error)
+    kirim_event_penting(simpan_event(event))
+    if mikrotik_error is None:
+        try:
+            ev_mik = fetch_mikrotik_event()
+        except Exception as e:
+            logger.warning(f"Gagal baca log MikroTik: {e}")
+            return
+        kirim_event_penting(simpan_event(ev_mik), dari_log_awal=_mikrotik_pertama)
+        _mikrotik_pertama = False
+
+
 async def background_monitor_loop():
     """Setiap tahap dibungkus try/except sendiri supaya satu sumber data gagal
     (mis. MikroTik down) tidak menghentikan pengambilan data lain (OLT tetap
@@ -729,6 +1019,10 @@ async def background_monitor_loop():
             await asyncio.to_thread(check_and_send_onu_alerts, onu_list)
         except Exception as e:
             logger.error(f"Error saat proses alert: {e}")
+        try:
+            await asyncio.to_thread(proses_event, onu_list, mikrotik_error)
+        except Exception as e:
+            logger.error(f"Error saat proses event: {e}")
         try:
             await asyncio.to_thread(proses_putus_pelanggan, pppoe_users, mikrotik_error, onu_list)
         except Exception as e:
@@ -883,6 +1177,8 @@ def cleanup_old_history() -> None:
     try:
         conn.execute("DELETE FROM onu_history WHERE ts < ?", (cutoff,))
         conn.execute("DELETE FROM usage_history WHERE ts < ?", (cutoff,))
+        batas_event = (datetime.now() - timedelta(days=CONFIG["EVENT_RETENTION_DAYS"])).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("DELETE FROM event WHERE waktu < ?", (batas_event,))
         conn.commit()
     finally:
         conn.close()
@@ -1796,6 +2092,7 @@ _background_tasks: list[asyncio.Task] = []
 @app.on_event("startup")
 async def on_startup():
     await asyncio.to_thread(init_history_db)
+    await asyncio.to_thread(init_event_db)
     await asyncio.to_thread(init_billing_db)
     await asyncio.to_thread(init_akun_db)
     await asyncio.to_thread(_muat_pengaturan)
@@ -1856,6 +2153,110 @@ async def get_status():
     else:
         data = _latest_data
     return await asyncio.to_thread(_perkaya_pelanggan, data)
+
+
+
+# ------------------------------------------------------------
+# API Alert & Event
+# ------------------------------------------------------------
+
+_URUT_TINGKAT = {"kritis": 0, "peringatan": 1, "info": 2}
+
+
+@app.get("/api/alert")
+def get_alert_aktif():
+    """Masalah yang SEDANG terjadi (dihitung dari kondisi terkini), beda dengan
+    /api/event yang berisi riwayat kejadian."""
+    data = _latest_data
+    alert = []
+    sekarang = datetime.now()
+    if data is not None:
+        if not data.mikrotik_online:
+            alert.append({"tingkat": "kritis", "sumber": "mikrotik", "judul": "MikroTik tidak terhubung",
+                          "detail": data.mikrotik_error or "", "pelanggan": None, "sejak": None})
+        if not data.olt_online:
+            alert.append({"tingkat": "kritis", "sumber": "olt", "judul": "OLT tidak merespons SNMP",
+                          "detail": f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}", "pelanggan": None, "sejak": None})
+        for o in data.onu_list:
+            lokasi = f"PON {o.pon} / ONU {o.onu_id}"
+            if o.online and o.status in ("CRITICAL", "WARNING"):
+                alert.append({"tingkat": "kritis" if o.status == "CRITICAL" else "peringatan", "sumber": "olt",
+                              "judul": "Redaman kritis" if o.status == "CRITICAL" else "Redaman mendekati batas",
+                              "detail": f"{lokasi} · OLT-RX {o.olt_rx_dbm} / ONU-RX "
+                                        f"{'-' if o.onu_rx_dbm is None else o.onu_rx_dbm} dBm",
+                              "pelanggan": o.pppoe_username, "sejak": None})
+            if o.online and o.hardware_status == "PERLU_CEK":
+                alert.append({"tingkat": "peringatan", "sumber": "olt", "judul": "Hardware ONT perlu dicek",
+                              "detail": f"{lokasi} · " + "; ".join(o.hardware_notes),
+                              "pelanggan": o.pppoe_username, "sejak": None})
+    # Pelanggan yang sedang putus (sudah lewat masa tunggu)
+    nama = {}
+    try:
+        nama = {u: d.get("nama") for u, d in _data_pelanggan().items()}
+    except Exception:
+        pass
+    for u, st in list(_putus_aktif.items()):
+        if st.get("alert"):
+            menit = round((sekarang - st["mulai"]).total_seconds() / 60)
+            alert.append({"tingkat": "peringatan", "sumber": "mikrotik", "judul": "Pelanggan putus",
+                          "detail": (f"{nama.get(u) or u} · " if nama.get(u) else "")
+                          + ("sejak sebelum pemantauan dimulai" if st.get("awal") else f"±{menit} menit"),
+                          "pelanggan": u, "sejak": st["mulai"].strftime("%Y-%m-%d %H:%M:%S")})
+    res = _mikrotik_resource
+    if res and sekarang - res.get("waktu", sekarang) < timedelta(minutes=10):
+        if res.get("cpu", 0) >= CONFIG["MIKROTIK_CPU_PERINGATAN"]:
+            alert.append({"tingkat": "peringatan", "sumber": "mikrotik", "judul": "CPU MikroTik tinggi",
+                          "detail": f"CPU {res['cpu']}%", "pelanggan": None, "sejak": None})
+        if (res.get("memori_persen") or 0) >= 90:
+            alert.append({"tingkat": "peringatan", "sumber": "mikrotik", "judul": "Memori MikroTik hampir penuh",
+                          "detail": f"Terpakai {res['memori_persen']}%", "pelanggan": None, "sejak": None})
+    # Percobaan login gagal ke MikroTik dalam 1 jam terakhir
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"])
+    try:
+        n, terakhir = conn.execute(
+            "SELECT COUNT(*), MAX(waktu) FROM event WHERE kategori='keamanan' AND waktu >= ?",
+            ((sekarang - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if n:
+        alert.append({"tingkat": "kritis", "sumber": "mikrotik", "judul": "Login gagal ke MikroTik",
+                      "detail": f"{n}x dalam 1 jam terakhir, terakhir {terakhir[11:16]}. Cek Riwayat untuk asal IP.",
+                      "pelanggan": None, "sejak": terakhir})
+    alert.sort(key=lambda a: (_URUT_TINGKAT[a["tingkat"]], a["judul"], a["pelanggan"] or ""))
+    return {
+        "ringkasan": {"kritis": sum(a["tingkat"] == "kritis" for a in alert),
+                      "peringatan": sum(a["tingkat"] == "peringatan" for a in alert)},
+        "mikrotik": {k: v for k, v in res.items() if k != "waktu"} if res else None,
+        "alert": alert,
+    }
+
+
+@app.get("/api/event")
+def get_event(jam: int = 24, sumber: str = "", tingkat: str = "", cari: str = "", limit: int = 300):
+    jam = max(1, min(jam, 24 * 90))
+    limit = max(1, min(limit, 1000))
+    sql = "SELECT waktu, sumber, tingkat, kategori, judul, detail, pelanggan FROM event WHERE waktu >= ?"
+    arg: list = [(datetime.now() - timedelta(hours=jam)).strftime("%Y-%m-%d %H:%M:%S")]
+    if sumber in ("mikrotik", "olt", "sistem"):
+        sql += " AND sumber = ?"
+        arg.append(sumber)
+    if tingkat in ("kritis", "peringatan", "info"):
+        sql += " AND tingkat = ?"
+        arg.append(tingkat)
+    if cari.strip():
+        sql += " AND (judul LIKE ? OR detail LIKE ? OR pelanggan LIKE ?)"
+        arg += [f"%{cari.strip()}%"] * 3
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"])
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(sql + " ORDER BY waktu DESC, id DESC LIMIT ?", arg + [limit]).fetchall()
+        hitung = dict(conn.execute(
+            "SELECT tingkat, COUNT(*) FROM event WHERE waktu >= ? GROUP BY tingkat", (arg[0],)).fetchall())
+    finally:
+        conn.close()
+    return {"jam": jam, "ringkasan": {t: hitung.get(t, 0) for t in ("kritis", "peringatan", "info")},
+            "event": [dict(r) for r in rows]}
 
 
 @app.get("/api/pelanggan/{nama}")

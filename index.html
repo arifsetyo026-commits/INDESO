@@ -27,6 +27,10 @@
 .chip{font-size:10px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}
 .chip.ok{background:#dcf5e5;color:#0b7a3b}
 .chip.warn{background:#fff1c9;color:#8a5a00}
+.chip.info{background:#dceeff;color:#1669aa}
+.evRow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 4px;border-bottom:1px solid var(--line)}
+.evRow:last-child{border-bottom:0}.evSrc{font-size:10px;font-weight:800;color:#5f7669;text-transform:uppercase;letter-spacing:.04em}
+.evDetail{font-size:11.5px;color:#6b7f73;margin-top:2px;overflow-wrap:anywhere}.evTime{font-size:11px;color:#6b7f73;white-space:nowrap;text-align:right}
 .plForm label{display:block;font-size:11px;font-weight:800;color:#4b6355;margin:12px 0 4px}
 .plForm input,.plForm textarea,.plForm select{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font:inherit;font-size:13px;outline:none;background:#fff}
 .plForm textarea{min-height:70px;resize:vertical}
@@ -83,7 +87,7 @@
   <a href="#" onclick="openPelanggan();return false"><span class="ico">♙</span>Pelanggan</a>
   <a href="#" onclick="scrollToSection('onu');return false"><span class="ico">▣</span>ONU / PON</a>
   <a href="#" onclick="scrollToSection('traffic');return false"><span class="ico">⌖</span>Peta Jaringan</a>
-  <a href="#" onclick="scrollToSection('alerts');return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
+  <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan</a>
   <a href="#" onclick="openBilling();return false"><span class="ico">₨</span>Billing</a>
@@ -126,7 +130,7 @@
  </div>
  <div class="bottomGrid" id="history">
   <section class="card"><div class="cardHead"><div class="cardTitle"><span class="titleIcon">♟</span>Pelanggan Terbaru</div><button class="select" onclick="openPelanggan()">.Lihat Semua ›</button></div><div class="tableWrap"><table class="customerTable"><thead><tr><th>No</th><th>Nama</th><th>Username</th><th>IP Address</th><th>Paket</th><th>Status</th><th>ONU / PON</th><th>Uptime</th></tr></thead><tbody id="customerRows"><tr><td colspan="8" class="muted">Memuat…</td></tr></tbody></table></div></section>
-  <section class="card" id="alerts"><div class="cardHead"><div class="cardTitle"><span class="titleIcon">♧</span>Alert Terbaru</div><span class="cardMeta">Live</span></div><div class="alertList" id="alertList"><div class="muted" style="padding:14px">Memuat…</div></div></section>
+  <section class="card" id="alerts"><div class="cardHead"><div class="cardTitle"><span class="titleIcon">♧</span>Alert Aktif</div><button class="select" onclick="openAlertEvent()">Lihat semua ›</button></div><div class="alertList" id="alertList"><div class="muted" style="padding:14px">Memuat…</div></div></section>
  </div>
  <div class="footer"><div><b>Internet Desa</b> &nbsp; v3.1 &nbsp; | &nbsp; Monitoring &nbsp; • &nbsp; Pelanggan &nbsp; • &nbsp; Jaringan &nbsp; • &nbsp; Masa Depan Desa</div><div class="footerRight">Internet untuk Semua 🌿 <span id="updated"></span></div></div>
 </div></main></div>
@@ -174,6 +178,21 @@
 <div class="plSub" id="khInfo"></div><div class="plMsg" id="khMsg"></div><div id="khList"></div>
 </div></div></div>
   
+<div class="overlay" id="alertModal"><div class="modal"><div class="modalHead"><h3>Alert &amp; Event</h3><button class="close" onclick="closeModal('alertModal')">Tutup</button></div><div class="modalBody">
+<div class="blFilters aeTabs"><button data-t="aktif" class="on" onclick="tabAE('aktif')">Aktif <span id="aeNAktif"></span></button><button data-t="riwayat" onclick="tabAE('riwayat')">Riwayat event</button><button onclick="muatAE()">Muat ulang</button></div>
+<div id="aeAktif">
+ <div class="detailGrid" id="aeRouter" style="margin-bottom:10px"></div>
+ <div id="aeAktifList"></div>
+</div>
+<div id="aeRiwayat" style="display:none">
+ <div class="blSum"><div class="blBox"><small>Kritis</small><b id="aeKritis" style="color:#b42318">—</b></div><div class="blBox"><small>Peringatan</small><b id="aePeringatan" style="color:#b45309">—</b></div><div class="blBox"><small>Info</small><b id="aeInfo" style="color:#1669aa">—</b></div></div>
+ <div class="search"><input id="aeCari" placeholder="Cari pelanggan, interface, pesan…" onkeydown="if(event.key==='Enter')muatRiwayat()"><button onclick="muatRiwayat()">Cari</button></div>
+ <div class="blFilters aeSumber"><button data-v="" class="on" onclick="setAE('sumber','')">Semua sumber</button><button data-v="mikrotik" onclick="setAE('sumber','mikrotik')">MikroTik</button><button data-v="olt" onclick="setAE('sumber','olt')">OLT</button><button data-v="sistem" onclick="setAE('sumber','sistem')">Sistem</button></div>
+ <div class="blFilters aeTingkat"><button data-v="" class="on" onclick="setAE('tingkat','')">Semua tingkat</button><button data-v="kritis" onclick="setAE('tingkat','kritis')">Kritis</button><button data-v="peringatan" onclick="setAE('tingkat','peringatan')">Peringatan</button><button data-v="info" onclick="setAE('tingkat','info')">Info</button></div>
+ <div class="blFilters aeJam"><button data-v="24" class="on" onclick="setAE('jam',24)">24 jam</button><button data-v="72" onclick="setAE('jam',72)">3 hari</button><button data-v="168" onclick="setAE('jam',168)">7 hari</button><button data-v="720" onclick="setAE('jam',720)">30 hari</button></div>
+ <div id="aeRiwayatList"></div>
+</div>
+</div></div></div>
 <div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody">
 <div class="blFilters stTabs"><button data-t="saya" class="on" onclick="tabPengaturan('saya')">Akun saya</button><button data-t="akun" onclick="tabPengaturan('akun')">Pengguna</button><button data-t="sistem" onclick="tabPengaturan('sistem')">Sistem</button><button data-t="log" onclick="tabPengaturan('log')">Log aktivitas</button></div>
 <div class="plMsg" id="stMsg"></div>
@@ -307,17 +326,6 @@ function drawChart(){
  for(let i=0;i<5;i++){let x=pad.l+w*i/4;out+=`<text x="${x}" y="${H-5}" text-anchor="middle" font-size="9" fill="#7a8d83">${['awal','25%','50%','75%','sekarang'][i]}</text>`}
  svg.innerHTML=out;
 }
-function buildAlerts(onus){
- const bad=onus.filter(o=>['CRITICAL','WARNING'].includes((o.status||'').toUpperCase())||o.last_event);
- const top=bad.sort((a,b)=>{const rank=x=>x.status==='CRITICAL'?0:x.status==='WARNING'?1:2;return rank(a)-rank(b)}).slice(0,6);
- $('alertBadge').textContent=top.filter(x=>x.status==='CRITICAL'||x.status==='WARNING').length;
- $('alertList').innerHTML=top.length?top.map(o=>{
-  const level=(o.status||'INFO').toUpperCase(); const tag=level==='CRITICAL'?'critical':level==='WARNING'?'warning':'info';
-  const title=level==='CRITICAL'?`ONU ${o.onu_id} — Redaman kritis`:level==='WARNING'?`ONU ${o.onu_id} — Perlu perhatian`:`ONU ${o.onu_id} — ${o.last_event||'Event'}`;
-  const sub=`PON ${esc(o.pon||'—')} · ${esc(o.pppoe_username||o.model||'Pelanggan tidak diketahui')}`;
-  return `<div class="alert"><i class="aDot" style="background:${level==='CRITICAL'?'#ef4444':level==='WARNING'?'#f59e0b':'#258ff0'}"></i><span class="aTime">${esc((o.last_event_time||'').slice(11,16)||'—')}</span><div class="aText"><strong>${title}</strong><span>${sub}</span></div><span class="tag ${tag}">${level}</span></div>`
- }).join(''):'<div class="muted" style="padding:14px">Tidak ada alert aktif.</div>';
-}
 function renderCustomers(users,onus){
  const byUser=new Map(onus.filter(o=>o.pppoe_username).map(o=>[o.pppoe_username,o]));
  const rows=users.slice(0,8).map((u,i)=>{const o=byUser.get(u.username);return `<tr><td>${i+1}</td><td>${esc(u.nama||'—')}</td><td><b>${esc(u.username)}</b></td><td>${esc(u.ip_address||'—')}</td><td>${esc(u.paket||'—')}</td><td class="status ${u.uptime?'online':'offline'}"><i class="smallDot" style="background:${u.uptime?'#18b85a':'#ef4444'}"></i>${u.uptime?'Online':'Offline'}</td><td>${o?esc(`${o.onu_id} / ${o.pon}`):'—'}</td><td>${esc(u.uptime||'—')}</td></tr>`});
@@ -348,7 +356,7 @@ async function load(force=false){
   setConn('mikState',d.mikrotik_online);setConn('oltState',d.olt_online);setConn('snmpState',d.olt_online);$('snmpSub').textContent=d.olt_online?'Response OK':'Tidak ada response';
   $('sideMik').innerHTML=`<i class="dot ${d.mikrotik_online?'':'off'}"></i>${d.mikrotik_online?'Online':'Offline'}`;
   $('sideOlt').innerHTML=`<i class="dot ${d.olt_online?'':'off'}"></i>${d.olt_online?'Online':'Offline'}`;
-  const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); buildAlerts(onus); updateOptical(onus);
+  const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); muatAlertKartu(); updateOptical(onus);
   const rx=sum(users.map(x=>x.rx_mbps)),tx=sum(users.map(x=>x.tx_mbps)); $('rxNow').textContent=rx==null?'—':fmt(rx)+' Mbps';$('txNow').textContent=tx==null?'—':fmt(tx)+' Mbps';
   state.history.push({rx:rx||0,tx:tx||0,t:Date.now()}); if(state.history.length>24)state.history.shift(); drawChart();
  }catch(e){$('overall').textContent='OFFLINE';$('overallSub').textContent='Dashboard tidak dapat mengambil data backend';$('updated').textContent='Gagal memuat: '+e.message}
@@ -801,5 +809,58 @@ function aturCentangGratis(){
  if(g&&$('plInsGratis').checked) $('plMitra').checked=true;
 }
 document.addEventListener('change',e=>{ if(e.target&&(e.target.id==='plGratis'||e.target.id==='plInsGratis')) aturCentangGratis(); });
+
+// ===== Alert & Event =====
+const ae={tab:'aktif',sumber:'',tingkat:'',jam:24,aktif:null};
+const AE_CHIP={kritis:'<span class="chip bad">Kritis</span>',peringatan:'<span class="chip warn">Peringatan</span>',info:'<span class="chip info">Info</span>'};
+const AE_SUMBER={mikrotik:'MikroTik',olt:'OLT',sistem:'Sistem'};
+let _aeKartuTerakhir=0;
+async function muatAlertKartu(paksa){
+ if(!paksa&&Date.now()-_aeKartuTerakhir<15000&&ae.aktif){ renderAlertKartu(); return; }
+ _aeKartuTerakhir=Date.now();
+ try{ const r=await fetch('/api/alert',{cache:'no-store'}); if(!r.ok) throw new Error('HTTP '+r.status); ae.aktif=await r.json(); }
+ catch(e){ $('alertList').innerHTML='<div class="muted" style="padding:14px">Gagal memuat alert.</div>'; return; }
+ renderAlertKartu();
+}
+function renderAlertKartu(){
+ const d=ae.aktif; if(!d) return;
+ const n=d.ringkasan.kritis+d.ringkasan.peringatan; $('alertBadge').textContent=n; $('alertBadge').style.display=n?'':'none';
+ const top=d.alert.slice(0,6);
+ $('alertList').innerHTML=top.length?top.map(a=>{
+  const warna=a.tingkat==='kritis'?'#ef4444':a.tingkat==='peringatan'?'#f59e0b':'#258ff0';
+  const tag=a.tingkat==='kritis'?'critical':a.tingkat==='peringatan'?'warning':'info';
+  return `<div class="alert"><i class="aDot" style="background:${warna}"></i><span class="aTime">${esc(a.sejak?a.sejak.slice(11,16):AE_SUMBER[a.sumber]||'')}</span><div class="aText"><strong>${esc(a.judul)}${a.pelanggan?' — '+esc(a.pelanggan):''}</strong><span>${esc(a.detail||'')}</span></div><span class="tag ${tag}">${esc(a.tingkat.toUpperCase())}</span></div>`;
+ }).join('')+(d.alert.length>6?`<div class="muted" style="padding:8px 12px">+${d.alert.length-6} alert lain — <a href="#" onclick="openAlertEvent();return false">lihat semua</a></div>`:''):'<div class="muted" style="padding:14px">✅ Tidak ada alert aktif.</div>';
+}
+function openAlertEvent(){ $('alertModal').classList.add('show'); tabAE(ae.tab); }
+function tabAE(t){
+ ae.tab=t; document.querySelectorAll('.aeTabs button[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ $('aeAktif').style.display=t==='aktif'?'block':'none'; $('aeRiwayat').style.display=t==='riwayat'?'block':'none';
+ muatAE();
+}
+function muatAE(){ return ae.tab==='aktif'?muatAktif():muatRiwayat(); }
+function barisEvent(a,waktu){
+ return `<div class="evRow"><div>${AE_CHIP[a.tingkat]||''}</div><div><div class="evSrc">${esc(AE_SUMBER[a.sumber]||a.sumber)}${a.kategori?' · '+esc(a.kategori):''}</div><div class="plName">${esc(a.judul)}${a.pelanggan?' <span class="plSub">· '+esc(a.pelanggan)+'</span>':''}</div><div class="evDetail">${esc(a.detail||'')}</div></div><div class="evTime">${waktu?esc(khWaktu(waktu)):''}</div></div>`;
+}
+async function muatAktif(){
+ $('aeAktifList').innerHTML='<div class="muted">Memuat…</div>';
+ await muatAlertKartu(true);
+ const d=ae.aktif; if(!d){ $('aeAktifList').innerHTML='<div class="muted">Gagal memuat alert.</div>'; return; }
+ $('aeNAktif').textContent=d.alert.length?'('+d.alert.length+')':'';
+ const m=d.mikrotik, kotak=(k,v)=>`<div class="detail"><small>${k}</small><b>${esc(v??'—')}</b></div>`;
+ $('aeRouter').innerHTML=m?kotak('CPU MikroTik',m.cpu+'%')+kotak('Memori terpakai',m.memori_persen!=null?m.memori_persen+'%':'—')+kotak('Uptime router',m.uptime)+kotak('RouterOS',(m.board||'')+' '+(m.versi||'')):'';
+ $('aeAktifList').innerHTML=d.alert.length?d.alert.map(a=>barisEvent(a,a.sejak)).join(''):'<div class="muted">✅ Tidak ada masalah yang sedang terjadi.</div>';
+}
+function setAE(k,v){ ae[k]=v; muatRiwayat(); }
+async function muatRiwayat(){
+ for(const [cls,k] of [['aeSumber','sumber'],['aeTingkat','tingkat'],['aeJam','jam']]) document.querySelectorAll('.'+cls+' button').forEach(b=>b.classList.toggle('on',b.dataset.v===String(ae[k])));
+ $('aeRiwayatList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const q=new URLSearchParams({jam:ae.jam,sumber:ae.sumber,tingkat:ae.tingkat,cari:$('aeCari').value.trim(),limit:400});
+  const r=await fetch('/api/event?'+q); if(!r.ok) throw new Error('HTTP '+r.status); const d=await r.json();
+  $('aeKritis').textContent=d.ringkasan.kritis; $('aePeringatan').textContent=d.ringkasan.peringatan; $('aeInfo').textContent=d.ringkasan.info;
+  $('aeRiwayatList').innerHTML=d.event.length?d.event.map(e=>barisEvent(e,e.waktu)).join('')+(d.event.length>=400?'<div class="muted">Menampilkan 400 event terbaru. Persempit dengan filter atau pencarian.</div>':''):'<div class="muted">Tidak ada event untuk filter ini.</div>';
+ }catch(e){ $('aeRiwayatList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
 </script>
 </body></html>
