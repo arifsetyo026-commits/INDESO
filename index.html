@@ -87,7 +87,8 @@
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan</a>
   <a href="#" onclick="openBilling();return false"><span class="ico">₨</span>Billing</a>
-  <a href="Settings();return false"><span class="ico">⚙</span>Pengaturan</a>
+  <a href="#" onclick="openSettings();return false"><span class="ico">⚙</span>Pengaturan</a>
+  <a href="#" onclick="keluar();return false" title="Keluar / ganti akun"><span class="ico">⎋</span>Keluar <small id="navUser" style="margin-left:auto;opacity:.75;font-weight:600"></small></a>
  </nav>
  <div class="system"><div class="systemHead"><span>Status Sistem</span><span class="state">● Normal</span></div>
   <div class="systemRow"><span>MikroTik</span><span id="sideMik"><i class="dot"></i>Online</span></div>
@@ -172,11 +173,51 @@
 <div class="plSub" id="khInfo"></div><div class="plMsg" id="khMsg"></div><div id="khList"></div>
 </div></div></div>
   
-<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan &amp; Log Aktivitas</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody"><div class="detailGrid"><div class="detail"><small>Auto refresh</small><b>5 detik</b></div><div class="detail"><small>Backend</small><b>/api/status</b></div><div class="detail"><small>OLT</small><b>SNMP (baca saja)</b></div><div class="detail"><small>Mode</small><b>Monitoring &amp; billing</b></div></div><p class="muted" style="font-size:11px;line-height:1.6">Perubahan ke MikroTik hanya terjadi lewat aksi isolir/buka isolir. OLT hanya dibaca (SNMP).</p>
-<b style="font-size:13px">Log aktivitas</b><div class="plSub" style="margin:3px 0 8px">Siapa melakukan apa: pelunasan, isolir, perubahan data pelanggan dan paket. "sistem" = otomasi.</div>
-<div class="search"><input id="akCari" placeholder="Cari username, aksi, atau nama akun…" onkeydown="if(event.key==='Enter')loadAktivitas()"><button onclick="loadAktivitas()">Cari</button></div>
-<div id="akList"></div></div></div></div>
+<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody">
+<div class="blFilters stTabs"><button data-t="saya" class="on" onclick="tabPengaturan('saya')">Akun saya</button><button data-t="akun" onclick="tabPengaturan('akun')">Pengguna</button><button data-t="sistem" onclick="tabPengaturan('sistem')">Sistem</button><button data-t="log" onclick="tabPengaturan('log')">Log aktivitas</button></div>
+<div class="plMsg" id="stMsg"></div>
+<div id="stSaya" class="stTab plForm">
+ <div class="detailGrid"><div class="detail"><small>Masuk sebagai</small><b id="saUser">—</b></div><div class="detail"><small>Peran</small><b id="saPeran">—</b></div></div>
+ <div class="plBtns"><button class="plSave" onclick="keluar()">Keluar / ganti akun</button></div>
+ <b style="display:block;font-size:13px;margin-top:18px">Ganti password</b>
+ <label>Password lama</label><input id="saLama" type="password" autocomplete="current-password">
+ <label>Password baru (min. 8 karakter)</label><input id="saBaru" type="password" autocomplete="new-password">
+ <label>Ulangi password baru</label><input id="saBaru2" type="password" autocomplete="new-password">
+ <div class="plBtns"><button class="plSave" onclick="gantiPasswordSaya()">Simpan password</button></div>
+ <div class="plSub" style="margin-top:8px">Setelah password diganti, sesi di perangkat lain otomatis keluar.</div>
+</div>
+<div id="stAkun" class="stTab" style="display:none">
+ <div id="akunList"></div>
+ <div class="plForm" style="margin-top:14px"><b style="font-size:13px">Tambah pengguna</b>
+  <label>Username</label><input id="akUser" autocapitalize="none" spellcheck="false" placeholder="mis. kasir1">
+  <label>Password awal (min. 8 karakter)</label><input id="akPass" type="password" autocomplete="new-password">
+  <label>Peran</label><select id="akPeran"><option value="admin">Admin — akses penuh</option><option value="mitra">Mitra — hanya halaman mitra</option></select>
+  <div class="plBtns"><button class="plSave" onclick="tambahAkun()">Tambah pengguna</button></div>
+ </div>
+</div>
+<div id="stSistem" class="stTab" style="display:none">
+ <div class="detailGrid" id="sysInfo"></div>
+ <div class="blNav" style="margin-top:12px;flex-wrap:wrap"><button class="btnS" onclick="tesTelegram()">Tes Telegram</button><button class="btnS" onclick="backupSekarang(false)">Backup sekarang</button><button class="btnS" onclick="backupSekarang(true)">Backup + kirim Telegram</button><button class="btnS" onclick="cekProfilIsolir()">Cek profil isolir</button></div>
+ <div class="plForm" id="setForm" style="margin-top:10px"></div>
+ <div class="plBtns"><button class="plSave" onclick="simpanPengaturan()">Simpan pengaturan</button></div>
+ <div class="plSub" style="margin-top:8px">Alamat MikroTik/OLT, password, dan token Telegram tetap diatur di berkas <code>.env</code> server.</div>
+</div>
+<div id="stLog" class="stTab" style="display:none">
+ <div class="search"><input id="akCari" placeholder="Cari username, aksi, atau nama akun…" onkeydown="if(event.key==='Enter')loadAktivitas()"><button onclick="loadAktivitas()">Cari</button></div>
+ <div id="akList"></div>
+</div>
+</div></div></div>
 <script>
+// Sesi habis / logout di perangkat lain -> kembali ke halaman login
+const _fetchAsli=window.fetch.bind(window);
+window.fetch=async(...arg)=>{const r=await _fetchAsli(...arg); if(r.status===401){location.replace('/login');} return r;};
+const saya={username:null,peran:null};
+(async()=>{try{const r=await fetch('/api/me');if(r.ok){Object.assign(saya,await r.json());const e=document.getElementById('navUser');if(e)e.textContent=saya.username;}}catch(e){}})();
+async function keluar(){
+ if(!confirm('Keluar dari akun '+(saya.username||'ini')+'?')) return;
+ try{ await _fetchAsli('/api/logout',{method:'POST'}); }catch(e){}
+ location.replace('/login');
+}
 const state={history:[],last:null};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -638,13 +679,118 @@ async function hapusPaket(i){
 }
 // ===== Log aktivitas (di menu Pengaturan) =====
 const AKSI_LABEL={tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
-function openSettings(){ $('settingsModal').classList.add('show'); $('akCari').value=''; loadAktivitas(); }
+
+// ===== Pengaturan: akun saya, pengguna, sistem, log =====
+AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';
+AKSI_LABEL.akun_tambah='Tambah pengguna'; AKSI_LABEL.akun_ubah='Ubah pengguna'; AKSI_LABEL.akun_hapus='Hapus pengguna';
+AKSI_LABEL.akun_password='Password'; AKSI_LABEL.akun_cabut_sesi='Cabut sesi'; AKSI_LABEL.pengaturan_ubah='Ubah pengaturan';
+AKSI_LABEL.mitra_ubah_kontak='Mitra ubah kontak';
+const st={tab:'saya',akun:[],set:[]};
+function stPesan(t,ok){ const m=$('stMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+async function jsonAtauError(r){ const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status)); return d; }
+function openSettings(){ $('settingsModal').classList.add('show'); tabPengaturan(st.tab); }
+function tabPengaturan(t){
+ st.tab=t; stPesan('');
+ document.querySelectorAll('.stTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ for(const [k,id] of [['saya','stSaya'],['akun','stAkun'],['sistem','stSistem'],['log','stLog']]) $(id).style.display=k===t?'block':'none';
+ if(t==='saya'){ $('saUser').textContent=saya.username||'—'; $('saPeran').textContent=saya.peran==='admin'?'Admin':(saya.peran||'—'); }
+ if(t==='akun') loadAkun();
+ if(t==='sistem') loadPengaturan();
+ if(t==='log'){ loadAktivitas(); }
+}
+async function gantiPasswordSaya(){
+ const lama=$('saLama').value, baru=$('saBaru').value;
+ if(baru!==$('saBaru2').value){ stPesan('Ulangi password baru tidak sama.'); return; }
+ try{
+  const d=await jsonAtauError(await fetch('/api/akun/saya/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lama,baru})}));
+  $('saLama').value=$('saBaru').value=$('saBaru2').value='';
+  stPesan('Password diganti'+(d.sesi_lain_dicabut?(' · '+d.sesi_lain_dicabut+' sesi di perangkat lain dikeluarkan'):'')+'.',true);
+ }catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function loadAkun(){
+ $('akunList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const d=await jsonAtauError(await fetch('/api/akun')); st.akun=d.akun;
+  $('akunList').innerHTML=d.akun.map((a,i)=>{
+   const diri=a.username===d.saya;
+   const chip=(a.peran==='admin'?'<span class="chip ok">Admin</span>':'<span class="chip warn">Mitra</span>')+(a.aktif?'':'<span class="chip bad">Nonaktif</span>');
+   const sub='Login terakhir: '+(a.login_terakhir?esc(khWaktu(a.login_terakhir)):'belum pernah')+' · '+a.sesi_aktif+' sesi aktif'+(diri?' · <b>akun Anda</b>':'');
+   const tombol=`<button class="btnS" onclick="resetPassword(${i})">Reset password</button>`
+    +(a.sesi_aktif&&!diri?`<button class="btnS" onclick="cabutSesi(${i})">Keluarkan</button>`:'')
+    +(diri?'':`<button class="btnS" onclick="ubahPeran(${i})">Jadikan ${a.peran==='admin'?'mitra':'admin'}</button><button class="btnS" onclick="toggleAktif(${i})">${a.aktif?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick="hapusAkun(${i})">Hapus</button>`);
+   return `<div class="blRow"><div><div class="plName">${esc(a.username)}</div><div class="plSub">${sub}</div></div><div class="blKanan"><div class="blAksi">${chip}</div><div class="blAksi">${tombol}</div></div></div>`;
+  }).join('')||'<div class="muted">Belum ada pengguna.</div>';
+ }catch(e){ $('akunList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function aksiAkun(url,opsi,pesan){
+ try{ await jsonAtauError(await fetch(url,opsi)); await loadAkun(); stPesan(pesan,true); }catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function tambahAkun(){
+ const body={username:$('akUser').value.trim(),password:$('akPass').value,peran:$('akPeran').value};
+ if(!body.username||!body.password){ stPesan('Isi username dan password.'); return; }
+ await aksiAkun('/api/akun',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},'Pengguna '+body.username+' ditambahkan.');
+ if($('stMsg').style.color!=='rgb(180, 35, 24)'){ $('akUser').value=''; $('akPass').value=''; }
+}
+async function resetPassword(i){
+ const a=st.akun[i]; const baru=prompt('Password baru untuk '+a.username+' (min. 8 karakter):'); if(!baru) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username)+'/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baru})},'Password '+a.username+' direset; sesinya di perangkat lain dikeluarkan.');
+}
+async function cabutSesi(i){
+ const a=st.akun[i]; if(!confirm('Keluarkan '+a.username+' dari semua perangkat?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username)+'/logout',{method:'POST'},a.username+' dikeluarkan dari semua perangkat.');
+}
+async function ubahPeran(i){
+ const a=st.akun[i], peran=a.peran==='admin'?'mitra':'admin'; if(!confirm('Ubah peran '+a.username+' menjadi '+peran+'?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({peran})},'Peran '+a.username+' sekarang '+peran+'.');
+}
+async function toggleAktif(i){
+ const a=st.akun[i]; if(!confirm((a.aktif?'Nonaktifkan ':'Aktifkan ')+a.username+'?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({aktif:!a.aktif})},a.username+(a.aktif?' dinonaktifkan.':' diaktifkan.'));
+}
+async function hapusAkun(i){
+ const a=st.akun[i]; if(!confirm('HAPUS pengguna '+a.username+'? Riwayat log aktivitasnya tetap tersimpan.')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'DELETE'},'Pengguna '+a.username+' dihapus.');
+}
+async function loadPengaturan(){
+ $('sysInfo').innerHTML='<div class="muted">Memuat…</div>'; $('setForm').innerHTML='';
+ try{
+  const d=await jsonAtauError(await fetch('/api/pengaturan')); const x=d.sistem; st.set=d.pengaturan;
+  const kotak=(k,v)=>`<div class="detail"><small>${k}</small><b>${esc(v??'—')}</b></div>`;
+  $('sysInfo').innerHTML=kotak('MikroTik',x.mikrotik)+kotak('OLT',x.olt)+kotak('Profil isolir',x.profil_isolir)+kotak('Telegram',x.telegram)
+   +kotak('Backup terakhir',x.backup_terakhir?(x.backup_terakhir+' ('+x.jumlah_backup+' tersimpan)'):'belum ada')+kotak('Data monitoring',x.data_terakhir||'belum ada');
+  $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+'</label>'+(p.tipe==='pilihan'
+   ?'<select id="set'+i+'">'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
+   :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric">`)).join('');
+ }catch(e){ $('sysInfo').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function simpanPengaturan(){
+ const nilai={}; st.set.forEach((p,i)=>{ const v=$('set'+i).value; nilai[p.kunci]=p.tipe==='int'?Number(v):v; });
+ if(nilai.ISOLIR_MODE==='aktif'&&st.set.find(p=>p.kunci==='ISOLIR_MODE').nilai!=='aktif'&&!confirm('Mode isolir AKTIF: pelanggan menunggak akan benar-benar diisolir otomatis. Lanjutkan?')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/pengaturan',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nilai})})); await loadPengaturan(); stPesan(d.berubah?(d.berubah+' pengaturan disimpan dan langsung berlaku.'):'Tidak ada yang berubah.',true); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function tesTelegram(){
+ stPesan('Mengirim…',true);
+ try{ await jsonAtauError(await fetch('/api/test-telegram',{method:'POST'})); stPesan('Pesan tes terkirim ke Telegram.',true); }catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function backupSekarang(kirim){
+ stPesan('Membuat backup…',true);
+ try{ const d=await jsonAtauError(await fetch('/api/backup'+(kirim?'?kirim=true':''),{method:'POST'}));
+  stPesan('Backup '+d.berkas.split('/').pop()+' ('+d.ukuran_kb+' KB, '+d.jumlah.pelanggan+' pelanggan) dibuat'+(kirim?(d.terkirim_telegram?' dan terkirim ke Telegram.':', tapi GAGAL dikirim ke Telegram.'):'.'),true); loadPengaturan(); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function cekProfilIsolir(){
+ stPesan('Mengecek MikroTik…',true);
+ try{ const d=await jsonAtauError(await fetch('/api/isolir-cek'));
+  stPesan(d.ada_di_mikrotik?('Profil "'+d.profil_isolir+'" ada di MikroTik · '+d.pelanggan_berprofil_isolir.length+' secret memakai profil ini.'):('Profil "'+d.profil_isolir+'" BELUM ADA di MikroTik. Buat dulu di PPP → Profiles.'),d.ada_di_mikrotik); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
 async function loadAktivitas(){
  $('akList').innerHTML='<div class="muted">Memuat…</div>';
  try{
   const q=$('akCari').value.trim();
-  const r=await fetch('/api/aktivitas?limit=300'+(q?'&cari='+encodeURIComponent(q):'')); if(!r.ok) throw new Error('HTTP '+r.status);
-  const rows=(await r.json()).aktivitas||[];
+  const d=await jsonAtauError(await fetch('/api/aktivitas?limit=300'+(q?'&cari='+encodeURIComponent(q):'')));
+  const rows=d.aktivitas||[];
   $('akList').innerHTML=rows.length?rows.map(a=>`<div class="blRow"><div><div class="plName">${esc(AKSI_LABEL[a.aksi]||a.aksi)} <span class="plSub">oleh ${esc(a.oleh)}</span></div><div class="plSub">${esc(a.detail||'')}</div></div><div class="plSub" style="white-space:nowrap">${esc(khWaktu(a.waktu))}</div></div>`).join(''):'<div class="muted">Belum ada aktivitas tercatat.</div>';
  }catch(e){ $('akList').innerHTML='<div class="muted">Gagal memuat log: '+esc(e.message)+'</div>'; }
 }

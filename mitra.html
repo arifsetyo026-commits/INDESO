@@ -34,7 +34,7 @@
 .note{font-size:11.5px;color:var(--muted);line-height:1.55;margin-top:10px}
 @media(max-width:620px){.cards{grid-template-columns:1fr 1fr}.card.main{grid-column:1/-1}.row{align-items:flex-start}}
 </style></head><body>
-<div class="top"><div class="topIn"><div class="mark">ID</div><div><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div></div></div>
+<div class="top"><div class="topIn"><div class="mark">ID</div><div style="flex:1;min-width:0"><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div><button class="btn" onclick="bukaPassword()">Password</button><button class="btn" onclick="keluar()">Keluar</button></div></div>
 <div class="wrap">
  <div class="nav"><button class="btn" onclick="geser(-1)" aria-label="Bulan sebelumnya">‹</button><b id="periode">—</b><button class="btn" onclick="geser(1)" aria-label="Bulan berikutnya">›</button></div>
  <div class="cards">
@@ -49,6 +49,14 @@
   <div id="list"><div class="muted">Memuat…</div></div>
   <div class="note">Insentif dihitung dari pelanggan yang tagihan bulan tersebut sudah <b>lunas</b>. Ketuk nama pelanggan untuk memperbarui nama, alamat, atau nomor HP.</div>
  </div>
+ <div class="panel form" id="pwView" style="display:none">
+  <b style="font-size:14px">Ganti password</b>
+  <label>Password lama</label><input id="pwLama" type="password" autocomplete="current-password">
+  <label>Password baru (min. 8 karakter)</label><input id="pwBaru" type="password" autocomplete="new-password">
+  <label>Ulangi password baru</label><input id="pwBaru2" type="password" autocomplete="new-password">
+  <div class="btns"><button class="btn go" onclick="simpanPassword()">Simpan</button><button class="btn" onclick="tutupForm()">Batal</button></div>
+  <div class="msg" id="pwMsg"></div>
+ </div>
  <div class="panel form" id="formView" style="display:none">
   <b id="fJudul" style="font-size:14px">Ubah kontak</b>
   <label>Username PPPoE</label><input id="fUser" disabled>
@@ -60,7 +68,20 @@
  </div>
 </div>
 <script>
+const _fetchAsli=window.fetch.bind(window);
+window.fetch=async(...arg)=>{const r=await _fetchAsli(...arg); if(r.status===401){location.replace('/login');} return r;};
 const $=id=>document.getElementById(id);
+async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{await _fetchAsli('/api/logout',{method:'POST'});}catch(e){} location.replace('/login'); }
+function bukaPassword(){ $('listView').style.display='none'; $('formView').style.display='none'; $('pwView').style.display='block'; $('pwMsg').textContent=''; $('pwLama').focus(); }
+async function simpanPassword(){
+ const lama=$('pwLama').value, baru=$('pwBaru').value, m=$('pwMsg');
+ if(baru!==$('pwBaru2').value){ m.style.color='#b42318'; m.textContent='Ulangi password baru tidak sama.'; return; }
+ try{
+  const r=await fetch('/api/akun/saya/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lama,baru})});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  $('pwLama').value=$('pwBaru').value=$('pwBaru2').value=''; tutupForm(); $('msg').style.color='#0b7a3b'; $('msg').textContent='Password berhasil diganti.';
+ }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const BLN=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 const st={periode:'',data:null,filter:'semua',cur:null};
@@ -110,7 +131,7 @@ function buka(i){
  $('fUser').value=p.username; $('fNama').value=p.nama||''; $('fAlamat').value=p.alamat||''; $('fHp').value=p.no_hp||''; $('fMsg').textContent='';
  $('listView').style.display='none'; $('formView').style.display='block'; $('fNama').focus();
 }
-function tutupForm(){ $('formView').style.display='none'; $('listView').style.display='block'; }
+function tutupForm(){ $('formView').style.display='none'; $('pwView').style.display='none'; $('listView').style.display='block'; }
 async function simpan(){
  const body={nama:$('fNama').value.trim(),alamat:$('fAlamat').value.trim()||null,no_hp:$('fHp').value.trim()||null};
  if(!body.nama){ $('fMsg').style.color='#b42318'; $('fMsg').textContent='Nama tidak boleh kosong.'; return; }

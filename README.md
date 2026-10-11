@@ -19,7 +19,7 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   pengingat WhatsApp, rekap belum bayar ke Telegram.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.
-- **Akun mitra** — login khusus (`MITRA_USERS`) yang hanya bisa membuka halaman mitra:
+- **Akun mitra** — akun berperan mitra yang hanya bisa membuka halaman mitra:
   daftar pelanggan dan status bayarnya, ubah nama/alamat/no. HP, dan rekap insentif
   (pelanggan dengan tagihan lunas bulan itu × `MITRA_INSENTIF_PER_PELANGGAN`, default
   Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
@@ -38,8 +38,29 @@ cp .env.example .env      # lalu isi password MikroTik, token Telegram, password
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Buka `http://<ip-server>:8000`. Bila `DASHBOARD_PASSWORD` atau `DASHBOARD_USERS` diisi,
-browser akan meminta login.
+Buka `http://<ip-server>:8000`. Pada instalasi baru, halaman login meminta Anda membuat
+**akun admin pertama**. Akun lain ditambahkan dari **Pengaturan → Pengguna**.
+
+## Keamanan
+
+- Semua halaman dan API wajib login. Sesi disimpan sebagai cookie `HttpOnly` +
+  `SameSite=Strict`; berakhir setelah 12 jam tidak dipakai atau 7 hari sejak login.
+- Password di-hash PBKDF2-SHA256 (200.000 iterasi); token sesi hanya disimpan hash-nya.
+- Peran **admin** (akses penuh) dan **mitra** (hanya halaman mitra), dibatasi di server.
+- 5 kali gagal login per IP (atau 10 per username) dalam 15 menit → dikunci 15 menit.
+- Menonaktifkan akun, mengubah peran, atau reset password langsung mengeluarkan sesinya.
+- Request pengubah data dari situs lain ditolak (cek Origin), ditambah header keamanan
+  (CSP, X-Frame-Options, nosniff).
+- Login, logout, login gagal, dan semua perubahan akun tercatat di **Log aktivitas**.
+
+Saran operasional:
+- `chmod 600 .env` — berkas ini berisi password MikroTik dan token Telegram.
+- Koneksi masih HTTP. Untuk akses dari luar jaringan lokal, pasang HTTPS (mis. Cloudflare
+  Tunnel atau reverse proxy); cookie otomatis bertanda `Secure` bila diakses lewat HTTPS.
+  Jangan buka port 8000 langsung ke internet.
+- Lupa password admin satu-satunya: hentikan server, lalu
+  `sqlite3 billing.db "DELETE FROM akun; DELETE FROM sesi;"` dan buat admin baru dari
+  halaman login (data pelanggan & tagihan tidak terhapus).
 
 ## Persiapan data awal
 
@@ -59,5 +80,6 @@ menjadi `"simulasi"`. Isolir otomatis ditahan bila jumlah pelanggan menunggak me
 
 ## Konfigurasi lain
 
-Jadwal, ambang redaman, tanggal jatuh tempo, dan pengaturan lain ada di dict `CONFIG`
-di bagian atas `main.py`.
+Tanggal jatuh tempo, mode isolir (aktif/simulasi), toleransi, jam otomasi, dan
+nominal insentif mitra bisa diubah dari **Pengaturan → Sistem** dan langsung berlaku.
+Pengaturan lain (ambang redaman, interval, dll.) ada di dict `CONFIG` di `main.py`.

@@ -28,7 +28,7 @@ mapping manual.
 """
 
 import asyncio
-import base64
+import hashlib
 import logging
 import os
 import secrets
@@ -46,7 +46,7 @@ from dotenv import load_dotenv
 load_dotenv()
 import routeros_api
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
 # ============================================================
@@ -113,14 +113,14 @@ CONFIG = {
     "TELEGRAM_ENABLED": True,
     "TELEGRAM_POLL_INTERVAL_SECONDS": 3,   # seberapa sering cek perintah masuk
 
-    # --- Login dashboard (HTTP Basic). Kosongkan DASHBOARD_PASSWORD dan
-    # DASHBOARD_USERS = tanpa login. DASHBOARD_USERS untuk beberapa akun
-    # sekaligus, format "nama:password,nama2:password2". ---
+    # --- Login. Akun dikelola dari menu Pengaturan (tersimpan di billing.db).
+    # Isian akun di .env (DASHBOARD_*, MITRA_USERS) hanya diimpor SEKALI saat
+    # tabel akun masih kosong, untuk peralihan dari versi lama. ---
+    "SESI_IDLE_JAM": 12,       # sesi berakhir bila tidak dipakai selama ini
+    "SESI_MAKS_HARI": 7,       # dan paling lama sekian hari sejak login
     "DASHBOARD_USER": _env("DASHBOARD_USER", "admin"),
     "DASHBOARD_PASSWORD": os.environ.get("DASHBOARD_PASSWORD", ""),
     "DASHBOARD_USERS": os.environ.get("DASHBOARD_USERS", ""),
-    # Akun mitra: hanya bisa membuka halaman mitra (daftar pelanggan, ubah kontak,
-    # rekap insentif). Format sama: "nama:password,nama2:password2".
     "MITRA_USERS": os.environ.get("MITRA_USERS", ""),
     "MITRA_INSENTIF_PER_PELANGGAN": int(_env("MITRA_INSENTIF_PER_PELANGGAN", "10000")),
 
@@ -1263,67 +1263,527 @@ app = FastAPI(title="ISP Monitoring Dashboard")
 # API (mis. mengisolir pelanggan).
 
 
-def _parse_akun(teks: str) -> dict[str, str]:
-    akun = {}
-    for item in teks.split(","):
-        nama, _, pw = item.strip().partition(":")
-        if nama.strip() and pw:
-            akun[nama.strip()] = pw
-    return akun
+# ============================================================
+# 7a. AKUN & SESI LOGIN
+# ============================================================
+# Akun disimpan di billing.db (tabel akun), password di-hash PBKDF2-SHA256.
+# Login membuat sesi acak; yang disimpan di database hanya hash token-nya,
+# jadi salinan database/backup tidak bisa dipakai untuk masuk.
+# Cookie sesi: HttpOnly (tidak terbaca JavaScript), SameSite=Strict (tidak
+# terkirim dari situs lain -> aman dari CSRF), Secure bila lewat HTTPS.
+
+_COOKIE_SESI = "indeso_sesi"
+_PBKDF2_ITERASI = 200_000
+_POLA_USERNAME = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
+_PERAN = ("admin", "mitra")
+
+# Alamat yang boleh dibuka tanpa login, dan yang boleh dibuka akun mitra.
+# Selain itu: tanpa login -> 401/ke halaman login, mitra -> 403.
+_JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|api/login|api/setup|api/setup-status)$")
+_JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
 
 
-def _daftar_akun() -> dict[str, tuple[str, str]]:
-    """{nama: (password, peran)}. Peran "admin" = akses penuh, "mitra" = halaman mitra saja."""
-    akun = {nama: (pw, "mitra") for nama, pw in _parse_akun(CONFIG["MITRA_USERS"]).items()}
-    admin = _parse_akun(CONFIG["DASHBOARD_USERS"])
-    if CONFIG["DASHBOARD_PASSWORD"]:
-        admin[CONFIG["DASHBOARD_USER"]] = CONFIG["DASHBOARD_PASSWORD"]
-    for nama in set(akun) & set(admin):
-        logger.warning(f"Akun '{nama}' ada di DASHBOARD_USERS dan MITRA_USERS — dipakai sebagai admin.")
-    akun.update({nama: (pw, "admin") for nama, pw in admin.items()})
-    if akun and not admin:
-        # Tanpa akun admin, siapa pun yang tidak login akan diperlakukan admin.
-        sys.exit("MITRA_USERS diisi tapi belum ada akun admin. Isi DASHBOARD_PASSWORD atau DASHBOARD_USERS dulu.")
-    return akun
+def _hash_password(pw: str) -> str:
+    garam = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(garam), _PBKDF2_ITERASI).hex()
+    return f"pbkdf2_sha256${_PBKDF2_ITERASI}${garam}${h}"
 
 
-_AKUN = _daftar_akun()
+def _cek_password(pw: str, tersimpan: Optional[str]) -> bool:
+    try:
+        _alg, iterasi, garam, h = (tersimpan or "").split("$")
+        hitung = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(garam), int(iterasi)).hex()
+        return secrets.compare_digest(hitung, h)
+    except Exception:
+        return False
 
-# Satu-satunya alamat yang boleh dibuka akun mitra. Selain ini ditolak 403,
-# jadi mitra tidak bisa membuka data tagihan, isolir, jaringan, dsb. walau tahu URL-nya.
-_JALUR_MITRA = re.compile(r"^/(|favicon\.ico|api/mitra/.*)$")
+
+# Hash palsu untuk username yang tidak ada, supaya lama prosesnya sama
+# (penyerang tidak bisa menebak username dari waktu respons).
+_HASH_PALSU = _hash_password(secrets.token_hex(8))
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _cek_password_baru(pw: str) -> None:
+    if len(pw) < 8:
+        raise HTTPException(status_code=400, detail="Password minimal 8 karakter.")
+    if len(pw) > 128:
+        raise HTTPException(status_code=400, detail="Password maksimal 128 karakter.")
+
+
+def init_akun_db() -> None:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS akun (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                peran TEXT NOT NULL,
+                aktif INTEGER NOT NULL DEFAULT 1,
+                dibuat TEXT NOT NULL,
+                login_terakhir TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sesi (
+                token_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                dibuat TEXT NOT NULL,
+                terakhir_aktif TEXT NOT NULL,
+                ip TEXT,
+                perangkat TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sesi_user ON sesi(username)")
+        # Impor sekali dari .env (cara lama). Setelah tabel akun terisi, akun
+        # dikelola dari menu Pengaturan dan isian akun di .env tidak dipakai lagi.
+        if conn.execute("SELECT COUNT(*) FROM akun").fetchone()[0] == 0:
+            def parse(teks):
+                for item in (teks or "").split(","):
+                    nama, _, pw = item.strip().partition(":")
+                    if nama.strip() and pw:
+                        yield nama.strip(), pw
+            akun = {n: (pw, "mitra") for n, pw in parse(CONFIG["MITRA_USERS"])}
+            akun.update({n: (pw, "admin") for n, pw in parse(CONFIG["DASHBOARD_USERS"])})
+            if CONFIG["DASHBOARD_PASSWORD"]:
+                akun[CONFIG["DASHBOARD_USER"]] = (CONFIG["DASHBOARD_PASSWORD"], "admin")
+            if akun and not any(p == "admin" for _pw, p in akun.values()):
+                logger.warning("Akun mitra di .env tidak diimpor karena belum ada akun admin.")
+                akun = {}
+            sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for nama, (pw, peran) in akun.items():
+                conn.execute(
+                    "INSERT INTO akun (username, password_hash, peran, dibuat) VALUES (?,?,?,?)",
+                    (nama, _hash_password(pw), peran, sekarang),
+                )
+            if akun:
+                logger.warning(f"{len(akun)} akun diimpor dari .env: {', '.join(sorted(akun))}. "
+                               "Selanjutnya kelola akun dari menu Pengaturan; boleh hapus isian akun di .env.")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _jumlah_akun() -> int:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        return conn.execute("SELECT COUNT(*) FROM akun").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _ambil_sesi(token: str) -> Optional[tuple[str, str]]:
+    """Kembalikan (username, peran) untuk token sesi yang masih berlaku."""
+    if not token:
+        return None
+    sekarang = datetime.now()
+    th = _hash_token(token)
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        r = conn.execute(
+            "SELECT s.username, s.dibuat, s.terakhir_aktif, a.peran FROM sesi s "
+            "JOIN akun a ON a.username = s.username WHERE s.token_hash = ? AND a.aktif = 1",
+            (th,),
+        ).fetchone()
+        if not r:
+            return None
+        username, dibuat, terakhir, peran = r
+        if (sekarang - datetime.fromisoformat(terakhir) > timedelta(hours=CONFIG["SESI_IDLE_JAM"])
+                or sekarang - datetime.fromisoformat(dibuat) > timedelta(days=CONFIG["SESI_MAKS_HARI"])):
+            conn.execute("DELETE FROM sesi WHERE token_hash = ?", (th,))
+            conn.commit()
+            return None
+        # Perbarui waktu aktif paling sering sekali per menit, supaya tidak menulis tiap request.
+        if sekarang - datetime.fromisoformat(terakhir) > timedelta(minutes=1):
+            conn.execute("UPDATE sesi SET terakhir_aktif = ? WHERE token_hash = ?",
+                         (sekarang.isoformat(timespec="seconds"), th))
+            conn.commit()
+        return username, peran
+    finally:
+        conn.close()
+
+
+def _cabut_sesi(username: str, kecuali_token: Optional[str] = None) -> int:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        if kecuali_token:
+            n = conn.execute("DELETE FROM sesi WHERE username = ? AND token_hash != ?",
+                             (username, _hash_token(kecuali_token))).rowcount
+        else:
+            n = conn.execute("DELETE FROM sesi WHERE username = ?", (username,)).rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+def _ip(request: Request) -> str:
+    return request.client.host if request.client else "-"
+
+
+# --- Pembatas percobaan login (di memori): 5 gagal per IP atau 10 gagal per
+# username dalam 15 menit -> dikunci 15 menit sejak gagal terakhir. ---
+_gagal_login: dict[str, list[datetime]] = {}
+_BATAS_GAGAL = {"ip": 5, "user": 10}
+_JENDELA_GAGAL = timedelta(minutes=15)
+
+
+def _terkunci(kunci: str, batas: int, sekarang: datetime) -> Optional[int]:
+    daftar = [t for t in _gagal_login.get(kunci, []) if sekarang - t < _JENDELA_GAGAL]
+    _gagal_login[kunci] = daftar
+    if len(daftar) >= batas:
+        return int((_JENDELA_GAGAL - (sekarang - daftar[-1])).total_seconds() // 60) + 1
+    return None
+
+
+def _catat_gagal(kunci: str, sekarang: datetime) -> None:
+    _gagal_login.setdefault(kunci, []).append(sekarang)
+
+
+_HEADER_KEAMANAN = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'self'"
+    ),
+}
+
+
+def _asal_sah(request: Request) -> bool:
+    """Tolak request pengubah data yang datang dari situs lain (lapisan kedua
+    selain SameSite=Strict). Tanpa header Origin/Referer (mis. curl) dibiarkan."""
+    asal = request.headers.get("origin") or request.headers.get("referer")
+    if not asal:
+        return True
+    host = request.headers.get("host", "")
+    return re.sub(r"^https?://", "", asal).split("/")[0] == host
 
 
 @app.middleware("http")
 async def wajib_login(request: Request, call_next):
-    """HTTP Basic auth untuk semua halaman dan API, aktif bila ada akun di .env.
-    Nama akun yang login disimpan di request.state.user untuk log aktivitas."""
-    request.state.user = "tanpa-login"
-    request.state.peran = "admin"
-    if _AKUN:
-        user_ok = None
-        skema, _, kredensial = request.headers.get("authorization", "").partition(" ")
-        if skema.lower() == "basic":
-            try:
-                user, _, pw = base64.b64decode(kredensial).decode("utf-8").partition(":")
-                benar = _AKUN.get(user)
-                # compare_digest tetap dijalankan walau user tidak ada, supaya waktunya sama
-                if secrets.compare_digest(pw.encode(), (benar[0] if benar else "\0").encode()) and benar is not None:
-                    user_ok = user
-            except Exception:
-                user_ok = None
-        if user_ok is None:
-            return Response(
-                "Login diperlukan.", status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="Internet Desa", charset="UTF-8"'},
-            )
-        request.state.user = user_ok
-        request.state.peran = _AKUN[user_ok][1]
-        if request.state.peran == "mitra" and not _JALUR_MITRA.match(request.url.path):
-            return Response("Akun mitra tidak punya akses ke halaman ini.", status_code=403)
-    elif request.url.path.startswith("/api/mitra/"):
-        return Response("Fitur mitra butuh login. Isi MITRA_USERS dan akun admin di .env.", status_code=403)
-    return await call_next(request)
+    """Semua halaman dan API wajib login, kecuali halaman login itu sendiri.
+    request.state.user / peran dipakai endpoint dan log aktivitas."""
+    jalur = request.url.path
+    request.state.user = None
+    request.state.peran = None
+    request.state.token = request.cookies.get(_COOKIE_SESI, "")
+
+    if request.method not in ("GET", "HEAD", "OPTIONS") and not _asal_sah(request):
+        return JSONResponse({"detail": "Permintaan ditolak (asal tidak sah)."}, status_code=403)
+
+    if not _JALUR_PUBLIK.match(jalur):
+        sesi = await asyncio.to_thread(_ambil_sesi, request.state.token)
+        if sesi is None:
+            if jalur.startswith("/api/"):
+                return JSONResponse({"detail": "Sesi berakhir, silakan login lagi."}, status_code=401)
+            return RedirectResponse("/login", status_code=303)
+        request.state.user, request.state.peran = sesi
+        if request.state.peran == "mitra" and not _JALUR_MITRA.match(jalur):
+            if jalur.startswith("/api/"):
+                return JSONResponse({"detail": "Akun mitra tidak punya akses ke fitur ini."}, status_code=403)
+            return RedirectResponse("/", status_code=303)
+
+    response = await call_next(request)
+    for k, v in _HEADER_KEAMANAN.items():
+        response.headers.setdefault(k, v)
+    if jalur.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+def _wajib_admin(request: Request) -> None:
+    if request.state.peran != "admin":
+        raise HTTPException(status_code=403, detail="Khusus admin.")
+
+
+def _pasang_cookie(response: Response, request: Request, token: str) -> None:
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    response.set_cookie(
+        _COOKIE_SESI, token, httponly=True, samesite="strict", secure=https,
+        max_age=CONFIG["SESI_MAKS_HARI"] * 86400, path="/",
+    )
+
+
+def _buat_sesi(username: str, request: Request) -> str:
+    token = secrets.token_urlsafe(32)
+    sekarang = datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        # Bersihkan sesi kedaluwarsa sekalian
+        batas_idle = (datetime.now() - timedelta(hours=CONFIG["SESI_IDLE_JAM"])).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM sesi WHERE terakhir_aktif < ?", (batas_idle,))
+        conn.execute(
+            "INSERT INTO sesi (token_hash, username, dibuat, terakhir_aktif, ip, perangkat) VALUES (?,?,?,?,?,?)",
+            (_hash_token(token), username, sekarang, sekarang, _ip(request),
+             (request.headers.get("user-agent") or "")[:200]),
+        )
+        conn.execute("UPDATE akun SET login_terakhir = ? WHERE username = ?",
+                     (sekarang.replace("T", " "), username))
+        conn.commit()
+    finally:
+        conn.close()
+    return token
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/login")
+async def halaman_login():
+    return FileResponse("login.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/setup-status")
+def setup_status():
+    return {"perlu_setup": _jumlah_akun() == 0}
+
+
+@app.post("/api/setup")
+def setup_admin_pertama(d: LoginIn, request: Request):
+    """Hanya bisa dipakai selama belum ada akun sama sekali (instalasi baru)."""
+    username = d.username.strip()
+    if not _POLA_USERNAME.match(username):
+        raise HTTPException(status_code=400, detail="Username 3-32 karakter: huruf, angka, titik, minus, garis bawah.")
+    _cek_password_baru(d.password)
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("BEGIN IMMEDIATE")   # cegah dua setup bersamaan
+        if conn.execute("SELECT COUNT(*) FROM akun").fetchone()[0] > 0:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="Akun admin sudah dibuat. Silakan login.")
+        conn.execute("INSERT INTO akun (username, password_hash, peran, dibuat) VALUES (?,?,?,?)",
+                     (username, _hash_password(d.password), "admin", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(username, "akun_tambah", f"admin pertama dibuat dari {_ip(request)}")
+    token = _buat_sesi(username, request)
+    resp = JSONResponse({"ok": True, "peran": "admin"})
+    _pasang_cookie(resp, request, token)
+    return resp
+
+
+@app.post("/api/login")
+def login(d: LoginIn, request: Request):
+    username = d.username.strip()
+    sekarang = datetime.now()
+    ip = _ip(request)
+    for kunci, batas in ((f"ip:{ip}", _BATAS_GAGAL["ip"]), (f"user:{username.lower()}", _BATAS_GAGAL["user"])):
+        menit = _terkunci(kunci, batas, sekarang)
+        if menit:
+            raise HTTPException(status_code=429, detail=f"Terlalu banyak percobaan gagal. Coba lagi dalam {menit} menit.")
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        r = conn.execute("SELECT username, password_hash, peran, aktif FROM akun WHERE username = ?",
+                         (username,)).fetchone()
+    finally:
+        conn.close()
+    ok = _cek_password(d.password, r[1] if r else _HASH_PALSU) and r is not None
+    if not ok or not r[3]:
+        _catat_gagal(f"ip:{ip}", sekarang)
+        _catat_gagal(f"user:{username.lower()}", sekarang)
+        catat_aktivitas(username[:32] or "-", "login_gagal",
+                        f"dari {ip}" + (" (akun nonaktif)" if ok and r and not r[3] else ""))
+        raise HTTPException(status_code=401, detail="Username atau password salah." if not ok
+                            else "Akun ini sedang dinonaktifkan. Hubungi admin.")
+    _gagal_login.pop(f"user:{username.lower()}", None)
+    token = _buat_sesi(r[0], request)
+    catat_aktivitas(r[0], "login", f"dari {ip}")
+    resp = JSONResponse({"ok": True, "peran": r[2]})
+    _pasang_cookie(resp, request, token)
+    return resp
+
+
+@app.post("/api/logout")
+def logout(request: Request):
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("DELETE FROM sesi WHERE token_hash = ?", (_hash_token(request.state.token),))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(request.state.user, "logout", f"dari {_ip(request)}")
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_COOKIE_SESI, path="/")
+    return resp
+
+
+@app.get("/api/me")
+def akun_saya(request: Request):
+    return {"username": request.state.user, "peran": request.state.peran}
+
+
+class GantiPasswordIn(BaseModel):
+    lama: str
+    baru: str
+
+
+@app.post("/api/akun/saya/password")
+def ganti_password_saya(d: GantiPasswordIn, request: Request):
+    _cek_password_baru(d.baru)
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        r = conn.execute("SELECT password_hash FROM akun WHERE username = ?", (request.state.user,)).fetchone()
+        if not r or not _cek_password(d.lama, r[0]):
+            raise HTTPException(status_code=400, detail="Password lama salah.")
+        conn.execute("UPDATE akun SET password_hash = ? WHERE username = ?",
+                     (_hash_password(d.baru), request.state.user))
+        conn.commit()
+    finally:
+        conn.close()
+    n = _cabut_sesi(request.state.user, kecuali_token=request.state.token)
+    catat_aktivitas(request.state.user, "akun_password", f"ganti password sendiri, {n} sesi lain dicabut")
+    return {"ok": True, "sesi_lain_dicabut": n}
+
+
+# --- Kelola akun (khusus admin) ---
+
+class AkunIn(BaseModel):
+    username: str
+    password: str
+    peran: str = "admin"
+
+
+class AkunUbahIn(BaseModel):
+    peran: Optional[str] = None
+    aktif: Optional[bool] = None
+
+
+class ResetPasswordIn(BaseModel):
+    baru: str
+
+
+def _admin_aktif_lain(conn, username: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM akun WHERE peran='admin' AND aktif=1 AND username != ?", (username,)
+    ).fetchone()[0]
+
+
+@app.get("/api/akun")
+def list_akun(request: Request):
+    _wajib_admin(request)
+    batas = (datetime.now() - timedelta(hours=CONFIG["SESI_IDLE_JAM"])).isoformat(timespec="seconds")
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT a.username, a.peran, a.aktif, a.dibuat, a.login_terakhir, "
+            "(SELECT COUNT(*) FROM sesi s WHERE s.username = a.username AND s.terakhir_aktif >= ?) AS sesi_aktif "
+            "FROM akun a ORDER BY a.peran, a.username COLLATE NOCASE", (batas,)
+        ).fetchall()
+    finally:
+        conn.close()
+    return {"saya": request.state.user, "akun": [dict(r) for r in rows]}
+
+
+@app.post("/api/akun")
+def tambah_akun(d: AkunIn, request: Request):
+    _wajib_admin(request)
+    username = d.username.strip()
+    if not _POLA_USERNAME.match(username):
+        raise HTTPException(status_code=400, detail="Username 3-32 karakter: huruf, angka, titik, minus, garis bawah.")
+    if d.peran not in _PERAN:
+        raise HTTPException(status_code=400, detail="Peran harus admin atau mitra.")
+    _cek_password_baru(d.password)
+    conn = _billing_conn()
+    try:
+        try:
+            conn.execute("INSERT INTO akun (username, password_hash, peran, dibuat) VALUES (?,?,?,?)",
+                         (username, _hash_password(d.password), d.peran, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="Username sudah dipakai.")
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(request.state.user, "akun_tambah", f"{username} ({d.peran})")
+    return {"ok": True}
+
+
+@app.put("/api/akun/{username}")
+def ubah_akun(username: str, d: AkunUbahIn, request: Request):
+    _wajib_admin(request)
+    if d.peran is not None and d.peran not in _PERAN:
+        raise HTTPException(status_code=400, detail="Peran harus admin atau mitra.")
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT peran, aktif FROM akun WHERE username = ?", (username,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
+        peran = d.peran if d.peran is not None else r["peran"]
+        aktif = int(d.aktif) if d.aktif is not None else r["aktif"]
+        if username == request.state.user and (peran != "admin" or not aktif):
+            raise HTTPException(status_code=400, detail="Tidak bisa menonaktifkan atau menurunkan peran akun sendiri.")
+        if r["peran"] == "admin" and r["aktif"] and (peran != "admin" or not aktif) and _admin_aktif_lain(conn, username) == 0:
+            raise HTTPException(status_code=400, detail="Harus ada minimal satu admin aktif.")
+        conn.execute("UPDATE akun SET peran = ?, aktif = ? WHERE username = ?", (peran, aktif, username))
+        conn.commit()
+    finally:
+        conn.close()
+    ubah = []
+    if peran != r["peran"]:
+        ubah.append(f"peran {r['peran']} → {peran}")
+    if aktif != r["aktif"]:
+        ubah.append("diaktifkan" if aktif else "dinonaktifkan")
+    if ubah:
+        # Perubahan hak akses langsung berlaku: paksa login ulang.
+        _cabut_sesi(username)
+        catat_aktivitas(request.state.user, "akun_ubah", f"{username}: " + ", ".join(ubah))
+    return {"ok": True}
+
+
+@app.post("/api/akun/{username}/password")
+def reset_password_akun(username: str, d: ResetPasswordIn, request: Request):
+    _wajib_admin(request)
+    _cek_password_baru(d.baru)
+    conn = _billing_conn()
+    try:
+        n = conn.execute("UPDATE akun SET password_hash = ? WHERE username = ?",
+                         (_hash_password(d.baru), username)).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not n:
+        raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
+    _cabut_sesi(username, kecuali_token=request.state.token if username == request.state.user else None)
+    catat_aktivitas(request.state.user, "akun_password", f"reset password {username}")
+    return {"ok": True}
+
+
+@app.post("/api/akun/{username}/logout")
+def cabut_sesi_akun(username: str, request: Request):
+    _wajib_admin(request)
+    n = _cabut_sesi(username, kecuali_token=request.state.token if username == request.state.user else None)
+    catat_aktivitas(request.state.user, "akun_cabut_sesi", f"{username}: {n} sesi")
+    return {"ok": True, "dicabut": n}
+
+
+@app.delete("/api/akun/{username}")
+def hapus_akun(username: str, request: Request):
+    _wajib_admin(request)
+    if username == request.state.user:
+        raise HTTPException(status_code=400, detail="Tidak bisa menghapus akun sendiri.")
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT peran, aktif FROM akun WHERE username = ?", (username,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
+        if r["peran"] == "admin" and r["aktif"] and _admin_aktif_lain(conn, username) == 0:
+            raise HTTPException(status_code=400, detail="Harus ada minimal satu admin aktif.")
+        conn.execute("DELETE FROM akun WHERE username = ?", (username,))
+        conn.execute("DELETE FROM sesi WHERE username = ?", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(request.state.user, "akun_hapus", f"{username} ({r['peran']})")
+    return {"ok": True}
 
 
 _background_tasks: list[asyncio.Task] = []
@@ -1333,14 +1793,14 @@ _background_tasks: list[asyncio.Task] = []
 async def on_startup():
     await asyncio.to_thread(init_history_db)
     await asyncio.to_thread(init_billing_db)
+    await asyncio.to_thread(init_akun_db)
+    await asyncio.to_thread(_muat_pengaturan)
     logger.info(
         f"Target: MikroTik {CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']}, "
         f"OLT SNMP v{CONFIG['OLT_SNMP_VERSION']} {CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}"
     )
-    if not _AKUN:
-        logger.warning("Belum ada akun login (DASHBOARD_PASSWORD / DASHBOARD_USERS): dashboard dan API bisa dibuka siapa saja di jaringan ini.")
-    else:
-        logger.info("Login dashboard aktif: " + ", ".join(f"{n} ({p})" for n, (_pw, p) in sorted(_AKUN.items())))
+    if await asyncio.to_thread(_jumlah_akun) == 0:
+        logger.warning("Belum ada akun. Buka dashboard di browser untuk membuat akun admin pertama.")
     # Simpan referensinya: task tanpa referensi bisa dibersihkan garbage collector.
     _background_tasks.extend([
         asyncio.create_task(background_monitor_loop()),
@@ -1442,11 +1902,101 @@ def catat_aktivitas(oleh: str, aksi: str, detail: str = "") -> None:
 
 
 def _oleh(request: Request) -> str:
-    return getattr(request.state, "user", None) or "tanpa-login"
+    return getattr(request.state, "user", None) or "-"
+
+
+# --- Pengaturan yang bisa diubah admin dari dashboard (tersimpan di tabel
+# pengaturan, menimpa nilai default CONFIG). Hanya daftar ini yang boleh diubah. ---
+_PENGATURAN = {
+    "JATUH_TEMPO_TANGGAL": {"label": "Tanggal jatuh tempo tagihan", "tipe": "int", "min": 1, "max": 28},
+    "ISOLIR_MODE": {"label": "Mode isolir otomatis", "tipe": "pilihan", "pilihan": ["aktif", "simulasi"]},
+    "ISOLIR_TOLERANSI_HARI": {"label": "Toleransi isolir setelah jatuh tempo (hari)", "tipe": "int", "min": 0, "max": 30},
+    "ISOLIR_MAKS_SEKALI": {"label": "Maks. pelanggan diisolir otomatis sekali jalan", "tipe": "int", "min": 1, "max": 500},
+    "ISOLIR_JAM": {"label": "Jam isolir otomatis (0-23)", "tipe": "int", "min": 0, "max": 23},
+    "TAGIHAN_JAM": {"label": "Jam pembuatan tagihan otomatis (0-23)", "tipe": "int", "min": 0, "max": 23},
+    "MITRA_INSENTIF_PER_PELANGGAN": {"label": "Insentif mitra per pelanggan lunas (Rp)", "tipe": "int", "min": 0, "max": 1_000_000},
+    "PUTUS_TUNGGU_MENIT": {"label": "Tunggu sebelum alert putus (menit)", "tipe": "int", "min": 1, "max": 240},
+    "DAILY_REPORT_HOUR": {"label": "Jam laporan harian Telegram (0-23)", "tipe": "int", "min": 0, "max": 23},
+}
+
+
+def _validasi_pengaturan(kunci: str, nilai):
+    meta = _PENGATURAN.get(kunci)
+    if meta is None:
+        raise HTTPException(status_code=400, detail=f"Pengaturan {kunci} tidak bisa diubah dari dashboard.")
+    if meta["tipe"] == "int":
+        try:
+            nilai = int(nilai)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{meta['label']} harus angka.")
+        if not meta["min"] <= nilai <= meta["max"]:
+            raise HTTPException(status_code=400, detail=f"{meta['label']} harus {meta['min']}–{meta['max']}.")
+        return nilai
+    if nilai not in meta["pilihan"]:
+        raise HTTPException(status_code=400, detail=f"{meta['label']} harus salah satu: {', '.join(meta['pilihan'])}.")
+    return nilai
+
+
+def _muat_pengaturan() -> None:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+        conn.commit()
+        for kunci, nilai in conn.execute("SELECT kunci, nilai FROM pengaturan").fetchall():
+            try:
+                CONFIG[kunci] = _validasi_pengaturan(kunci, nilai)
+            except HTTPException as e:
+                logger.warning(f"Pengaturan tersimpan {kunci}={nilai!r} diabaikan: {e.detail}")
+    finally:
+        conn.close()
+
+
+@app.get("/api/pengaturan")
+def get_pengaturan(request: Request):
+    _wajib_admin(request)
+    folder = _folder_backup()
+    backup = _daftar_backup(folder)
+    return {
+        "pengaturan": [{"kunci": k, **m, "nilai": CONFIG[k]} for k, m in _PENGATURAN.items()],
+        "sistem": {
+            "mikrotik": f"{CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']} (user {CONFIG['MIKROTIK_USER']})",
+            "olt": f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']} (SNMP v{CONFIG['OLT_SNMP_VERSION']})",
+            "profil_isolir": CONFIG["ISOLIR_PROFILE"],
+            "telegram": "aktif" if CONFIG["TELEGRAM_ENABLED"] else "mati",
+            "backup_terakhir": backup[-1] if backup else None,
+            "jumlah_backup": len(backup),
+            "data_terakhir": _latest_data.timestamp if _latest_data else None,
+            "sesi_idle_jam": CONFIG["SESI_IDLE_JAM"],
+        },
+    }
+
+
+class PengaturanIn(BaseModel):
+    nilai: dict
+
+
+@app.put("/api/pengaturan")
+def ubah_pengaturan(d: PengaturanIn, request: Request):
+    _wajib_admin(request)
+    baru = {k: _validasi_pengaturan(k, v) for k, v in d.nilai.items()}
+    berubah = {k: v for k, v in baru.items() if CONFIG[k] != v}
+    if berubah:
+        conn = _billing_conn()
+        try:
+            conn.executemany("INSERT OR REPLACE INTO pengaturan (kunci, nilai) VALUES (?,?)",
+                             [(k, str(v)) for k, v in berubah.items()])
+            conn.commit()
+        finally:
+            conn.close()
+        detail = "; ".join(f"{_PENGATURAN[k]['label']}: {CONFIG[k]} → {v}" for k, v in berubah.items())
+        CONFIG.update(berubah)
+        catat_aktivitas(request.state.user, "pengaturan_ubah", detail)
+    return {"ok": True, "berubah": len(berubah)}
 
 
 @app.get("/api/aktivitas")
-def list_aktivitas(limit: int = 200, cari: str = ""):
+def list_aktivitas(request: Request, limit: int = 200, cari: str = ""):
+    _wajib_admin(request)
     limit = max(1, min(limit, 1000))
     conn = _billing_conn()
     try:
@@ -1785,7 +2335,8 @@ def list_tagihan(periode: str):
         return {
             "periode": periode,
             "insentif_mitra": {"jumlah_lunas": insentif["jumlah_lunas"], "per_pelanggan": insentif["per_pelanggan"],
-                               "total": insentif["total"]} if CONFIG["MITRA_USERS"] else None,
+                               "total": insentif["total"]} if conn.execute(
+                "SELECT 1 FROM akun WHERE peran='mitra' LIMIT 1").fetchone() else None,
             "ringkasan": {"jumlah_tagihan": len(rows), "total": total,
                           "terbayar": lunas, "belum_bayar": total - lunas},
             "tagihan": [dict(r) for r in rows],
@@ -3126,10 +3677,19 @@ def backup_sekarang(request: Request, kirim: bool = False):
         )
     return info
   
-@app.get("/api/test-telegram")
-async def test_telegram():
-    send_telegram_message("✅ Test notifikasi dari ISP Monitoring Dashboard berhasil.")
-    return {"status": "sent"}
+@app.post("/api/test-telegram")
+def test_telegram(request: Request):
+    _wajib_admin(request)
+    url = f"https://api.telegram.org/bot{CONFIG['TELEGRAM_BOT_TOKEN']}/sendMessage"
+    try:
+        r = requests.post(url, data={"chat_id": CONFIG["TELEGRAM_CHAT_ID"],
+                                     "text": f"✅ Tes notifikasi dari dashboard oleh {request.state.user}."}, timeout=10)
+        ok = r.ok and r.json().get("ok")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Telegram tidak terjangkau: {e}")
+    if not ok:
+        raise HTTPException(status_code=502, detail="Telegram menolak pesan. Cek TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID.")
+    return {"ok": True}
 
 
 if __name__ == "__main__":
