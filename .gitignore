@@ -3,3 +3,5 @@
 backup/
 __pycache__/
 *.pyc
+nota/
+.pytest_cache/

@@ -27,6 +27,41 @@
 .chip{font-size:10px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}
 .chip.ok{background:#dcf5e5;color:#0b7a3b}
 .chip.warn{background:#fff1c9;color:#8a5a00}
+.chip.info{background:#dceeff;color:#1669aa}
+.kuModal{width:min(980px,100%)}
+.kuKpi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:8px}
+.kuKpi .blBox b{font-size:17px}.kuKpi .blBox small:last-child{font-size:10.5px}
+.kuSub{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.kuBayarForm{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:6px;margin-top:8px;align-items:end}
+.kuBayarForm input,.kuBayarForm select{width:100%;border:1px solid var(--line);border-radius:8px;padding:7px 8px;font:inherit;font-size:12px}
+.kuBayarForm small{display:block;font-size:10px;color:#5f7669;margin-bottom:2px}
+.notaWrap{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.notaThumb{position:relative;width:56px;height:56px;border-radius:8px;border:1px solid var(--line);overflow:hidden;background:#f3f7f4;display:grid;place-items:center;font-size:10px;font-weight:800;color:#4b6355;text-decoration:none}
+.notaThumb img{width:100%;height:100%;object-fit:cover;display:block}
+.notaThumb button{position:absolute;top:1px;right:1px;width:18px;height:18px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:11px;line-height:18px;padding:0;cursor:pointer}
+.notaAdd{width:56px;height:56px;border-radius:8px;border:1px dashed #9cc2aa;background:#fff;color:#0b7a3b;font-size:11px;font-weight:800;cursor:pointer}
+.kuRiwBayar{font-size:11.5px;color:#4b6355;margin-top:6px;padding-left:10px;border-left:2px solid #dce8df}
+.kuSub .blBox b{font-size:14px}
+.kuGrid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:12px}
+.kuPanel{border:1px solid var(--line);border-radius:12px;padding:12px;min-width:0}
+.kuPanel h4{margin:0 0 10px;font-size:13px}
+.kuLegend{display:flex;gap:14px;font-size:11px;color:#4b6355;margin-bottom:6px}
+.kuLegend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.kuChart{position:relative}.kuChart svg{display:block;width:100%;height:auto}
+.kuTip{position:absolute;pointer-events:none;background:#fff;border:1px solid var(--line);border-radius:9px;box-shadow:0 6px 18px rgba(0,40,20,.15);padding:8px 10px;font-size:11.5px;line-height:1.5;display:none;white-space:nowrap;z-index:2}
+.kuBar{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;gap:8px;align-items:center;font-size:12px;padding:5px 0}
+.kuBar .track{height:10px;border-radius:0 4px 4px 0;background:#eb6834;min-width:2px}
+.kuBar .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2c4a3b}.kuBar .v{font-weight:800;font-size:12px;white-space:nowrap}
+.kuTbl{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:8px}.kuTbl th,.kuTbl td{padding:5px 6px;border-bottom:1px solid #eef3ef;text-align:right;white-space:nowrap}.kuTbl th:first-child,.kuTbl td:first-child{text-align:left}.kuTbl th{color:#5f7669;font-weight:800}
+.naik{color:#0b7a3b}.turun{color:#b42318}
+.kuJenis{display:flex;gap:6px;margin-top:4px}.kuJenis button{flex:1;border:1px solid var(--line);background:#fff;border-radius:9px;padding:10px;font-weight:800;font-size:12px;cursor:pointer}
+.kuJenis button.on.keluar{background:#fde4e1;border-color:#f3b4ab;color:#b42318}.kuJenis button.on.masuk{background:#dcf5e5;border-color:#a6dfb9;color:#0b7a3b}
+.kuBatal{opacity:.55}.kuBatal .blAmt{text-decoration:line-through}
+@media(max-width:900px){.kuSub{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){.kuKpi,.kuSub{grid-template-columns:repeat(2,minmax(0,1fr))}.kuGrid{grid-template-columns:1fr}.kuBayarForm{grid-template-columns:1fr 1fr}}
+.evRow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 4px;border-bottom:1px solid var(--line)}
+.evRow:last-child{border-bottom:0}.evSrc{font-size:10px;font-weight:800;color:#5f7669;text-transform:uppercase;letter-spacing:.04em}
+.evDetail{font-size:11.5px;color:#6b7f73;margin-top:2px;overflow-wrap:anywhere}.evTime{font-size:11px;color:#6b7f73;white-space:nowrap;text-align:right}
 .plForm label{display:block;font-size:11px;font-weight:800;color:#4b6355;margin:12px 0 4px}
 .plForm input,.plForm textarea,.plForm select{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font:inherit;font-size:13px;outline:none;background:#fff}
 .plForm textarea{min-height:70px;resize:vertical}
@@ -83,11 +118,13 @@
   <a href="#" onclick="openPelanggan();return false"><span class="ico">♙</span>Pelanggan</a>
   <a href="#" onclick="scrollToSection('onu');return false"><span class="ico">▣</span>ONU / PON</a>
   <a href="#" onclick="scrollToSection('traffic');return false"><span class="ico">⌖</span>Peta Jaringan</a>
-  <a href="#" onclick="scrollToSection('alerts');return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
+  <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan</a>
   <a href="#" onclick="openBilling();return false"><span class="ico">₨</span>Billing</a>
-  <a href="Settings();return false"><span class="ico">⚙</span>Pengaturan</a>
+  <a href="#" onclick="openKeuangan();return false"><span class="ico">◫</span>Keuangan</a>
+  <a href="#" onclick="openSettings();return false"><span class="ico">⚙</span>Pengaturan</a>
+  <a href="#" onclick="keluar();return false" title="Keluar / ganti akun"><span class="ico">⎋</span>Keluar <small id="navUser" style="margin-left:auto;opacity:.75;font-weight:600"></small></a>
  </nav>
  <div class="system"><div class="systemHead"><span>Status Sistem</span><span class="state">● Normal</span></div>
   <div class="systemRow"><span>MikroTik</span><span id="sideMik"><i class="dot"></i>Online</span></div>
@@ -125,28 +162,46 @@
  </div>
  <div class="bottomGrid" id="history">
   <section class="card"><div class="cardHead"><div class="cardTitle"><span class="titleIcon">♟</span>Pelanggan Terbaru</div><button class="select" onclick="openPelanggan()">.Lihat Semua ›</button></div><div class="tableWrap"><table class="customerTable"><thead><tr><th>No</th><th>Nama</th><th>Username</th><th>IP Address</th><th>Paket</th><th>Status</th><th>ONU / PON</th><th>Uptime</th></tr></thead><tbody id="customerRows"><tr><td colspan="8" class="muted">Memuat…</td></tr></tbody></table></div></section>
-  <section class="card" id="alerts"><div class="cardHead"><div class="cardTitle"><span class="titleIcon">♧</span>Alert Terbaru</div><span class="cardMeta">Live</span></div><div class="alertList" id="alertList"><div class="muted" style="padding:14px">Memuat…</div></div></section>
+  <section class="card" id="alerts"><div class="cardHead"><div class="cardTitle"><span class="titleIcon">♧</span>Alert Aktif</div><button class="select" onclick="openAlertEvent()">Lihat semua ›</button></div><div class="alertList" id="alertList"><div class="muted" style="padding:14px">Memuat…</div></div></section>
  </div>
  <div class="footer"><div><b>Internet Desa</b> &nbsp; v3.1 &nbsp; | &nbsp; Monitoring &nbsp; • &nbsp; Pelanggan &nbsp; • &nbsp; Jaringan &nbsp; • &nbsp; Masa Depan Desa</div><div class="footerRight">Internet untuk Semua 🌿 <span id="updated"></span></div></div>
 </div></main></div>
 <div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>Data Pelanggan &amp; ONU</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari username, PON, ONU, model, serial…" onkeydown="if(event.key==='Enter')searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
-<div id="plListView"><div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"><button onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div><div id="plSummary" class="muted"></div><div id="plList"></div></div>
+<div id="plListView">
+<div class="blNav"><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div>
+<div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"></div>
+<div class="blFilters plFilters"><button data-f="aktif" class="on" onclick="setFilterPelanggan('aktif')">Aktif</button><button data-f="belum" onclick="setFilterPelanggan('belum')">Belum lengkap</button><button data-f="berhenti" onclick="setFilterPelanggan('berhenti')">Berhenti</button><button data-f="semua" onclick="setFilterPelanggan('semua')">Semua</button></div>
+<div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
 <div id="plFormView" style="display:none"><div class="plForm">
 <label>Username PPPoE</label><input id="plUser" disabled>
 <label>Nama lengkap</label><input id="plNama">
 <label>Alamat</label><textarea id="plAlamat"></textarea>
 <label>Nomor HP / WhatsApp</label><input id="plHp" type="tel" inputmode="tel">
 <label>Paket</label><select id="plPaket"></select>
+<label>Status langganan</label><select id="plStatus" onchange="aturCentangSecret()"><option value="aktif">Aktif</option><option value="berhenti">Berhenti (tidak ditagih, tidak dipantau)</option></select>
+<label class="plCek" id="plSecretWrap" style="display:none"><input type="checkbox" id="plSecret" checked> <span id="plSecretTeks">Nonaktifkan juga secret PPPoE di MikroTik</span></label>
+<div class="plSub" id="plSecretInfo"></div>
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
+<label class="plCek"><input type="checkbox" id="plMitra"> Tampilkan ke mitra (ikut dihitung insentif bila lunas)</label>
+<label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung insentif mitra tiap bulan</label>
 <div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
+<div id="plPaketView" style="display:none">
+<div id="pkList"></div>
+<div class="plForm" style="margin-top:14px"><b id="pkJudul" style="font-size:13px">Tambah paket</b>
+<label>Nama paket</label><input id="pkNama" placeholder="mis. Paket 10 Mbps">
+<label>Kecepatan (Mbps)</label><input id="pkSpeed" type="number" min="1" step="any" inputmode="decimal">
+<label>Harga per bulan (Rp)</label><input id="pkHarga" type="number" min="0" step="1000" inputmode="numeric">
+<div class="plSub" style="margin-top:6px">Nama profil PPP di MikroTik sebaiknya berisi kecepatannya, mis. <code>paket-10mbps</code>, supaya impor otomatis mengenali paketnya. Perubahan harga hanya berlaku untuk tagihan baru.</div>
+<div class="plBtns"><button class="plSave" onclick="simpanPaket()">Simpan paket</button><button class="plCancel" onclick="batalPaket()">Kembali</button></div>
+<div class="plMsg" id="pkMsg"></div></div></div>
 </div></div></div>
 <div class="overlay" id="billingModal"><div class="modal"><div class="modalHead"><h3>Billing</h3><button class="close" onclick="closeModal('billingModal')">Tutup</button></div><div class="modalBody">
 <div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
 <div class="search"><input id="blSearch" placeholder="Cari nama atau username…" oninput="renderBilling()"></div>
-<div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button></div>
+<div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
 <div class="plMsg" id="blMsg"></div><div id="blList"></div>
 </div></div></div>
 <div class="overlay" id="kesehatanModal"><div class="modal"><div class="modalHead"><h3>Kesehatan Jaringan</h3><button class="close" onclick="closeModal('kesehatanModal')">Tutup</button></div><div class="modalBody">
@@ -157,8 +212,117 @@
 <div class="plSub" id="khInfo"></div><div class="plMsg" id="khMsg"></div><div id="khList"></div>
 </div></div></div>
   
-<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan Dashboard</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody"><div class="detailGrid"><div class="detail"><small>Auto refresh</small><b>5 detik</b></div><div class="detail"><small>Backend</small><b>/api/status</b></div><div class="detail"><small>OLT</small><b>192.168.2.100</b></div><div class="detail"><small>Mode</small><b>Monitoring &amp; billing</b></div></div><p class="muted" style="font-size:11px;line-height:1.6">Dashboard ini menampilkan data dari backend yang tersedia. Perubahan ke MikroTik hanya terjadi lewat aksi isolir/buka isolir di menu Billing. OLT hanya dibaca (SNMP).</p></div></div></div>
+<div class="overlay" id="keuanganModal"><div class="modal kuModal"><div class="modalHead"><h3>Keuangan</h3><button class="close" onclick="closeModal('keuanganModal')">Tutup</button></div><div class="modalBody">
+<div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor CSV</a><button class="btnS" id="kuLapBtn" style="display:none" onclick="pratinjauLaporan()">Laporan Telegram</button></div>
+<div id="kuLap" class="kuPanel" style="display:none;margin-bottom:10px"><h4>Pratinjau laporan Telegram <span class="plSub" id="kuLapInfo"></span></h4><div id="kuLapTeks" style="white-space:pre-wrap;font-size:12px;line-height:1.55;max-height:340px;overflow:auto;background:#f7faf8;border-radius:9px;padding:10px"></div><div class="plBtns"><button class="plSave" onclick="kirimLaporan()">Kirim ke Telegram owner</button><button class="plCancel" onclick="$('kuLap').style.display='none'">Tutup</button></div></div>
+<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ringkasan</button><button data-t="transaksi" onclick="tabKu('transaksi')">Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Utang <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Insentif mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Catat transaksi</button></div>
+<div class="plMsg" id="kuMsg"></div>
+<div id="kuRingkasan"></div>
+<input type="file" id="notaLangsung" accept="image/*,application/pdf" multiple style="display:none" onchange="unggahLangsung(this)">
+<div id="kuTransaksi" style="display:none">
+ <div class="search"><input id="kuCari" placeholder="Cari keterangan, kategori, atau pencatat…" onkeydown="if(event.key==='Enter')muatTransaksi()"><button onclick="muatTransaksi()">Cari</button></div>
+ <div class="blFilters kuFJenis"><button data-v="" class="on" onclick="setKuJenis('')">Semua</button><button data-v="keluar" onclick="setKuJenis('keluar')">Pengeluaran</button><button data-v="masuk" onclick="setKuJenis('masuk')">Pemasukan</button></div>
+ <div class="plSub" id="kuTrxInfo" style="margin-bottom:6px"></div>
+ <div id="kuTrxList"></div>
+</div>
+<div id="kuUtang" style="display:none">
+ <div class="blSum"><div class="blBox"><small>Sisa utang</small><b id="utSisa" style="color:#b45309">—</b><small id="utSisaN"></small></div><div class="blBox"><small>Lewat jatuh tempo</small><b id="utLewat" style="color:#b42318">—</b><small id="utLewatN"></small></div><div class="blBox"><small>Jatuh tempo terdekat</small><b id="utDekat">—</b><small id="utDekatN"></small></div></div>
+ <div class="blFilters utFilter"><button data-v="belum" class="on" onclick="setUtFilter('belum')">Belum lunas</button><button data-v="lunas" onclick="setUtFilter('lunas')">Lunas</button><button data-v="semua" onclick="setUtFilter('semua')">Semua</button><button onclick="kreditBaru()">+ Catat pembelian kredit</button></div>
+ <div id="utList"></div>
+</div>
+<div id="kuInsentif" style="display:none">
+ <div class="blSum"><div class="blBox"><small>Insentif belum dibayar</small><b id="inTunggak" style="color:#b45309">—</b><small id="inTunggakN"></small></div><div class="blBox"><small>Sudah dibayar (24 bln)</small><b id="inDibayar" style="color:#0b7a3b">—</b><small>total</small></div><div class="blBox"><small>Tarif</small><b id="inTarif">—</b><small>per pelanggan lunas</small></div></div>
+ <div class="plSub" style="margin-bottom:8px">Insentif dihitung dari tagihan bulan itu yang sudah lunas (+ pelanggan gratis yang ditandai). Kalau ada pelanggan yang melunasi belakangan, insentif bulan itu ikut bertambah.</div>
+ <div id="inList"></div>
+</div>
+<div id="kuCatat" style="display:none"><div class="plForm">
+ <b id="kuFormJudul" style="font-size:13px">Catat transaksi baru</b>
+ <div class="kuJenis"><button type="button" data-j="keluar" class="on keluar" onclick="setFormJenis('keluar')">− Pengeluaran</button><button type="button" data-j="masuk" class="masuk" onclick="setFormJenis('masuk')">+ Pemasukan</button></div>
+ <label>Tanggal</label><input id="kuTgl" type="date">
+ <label>Kategori</label><select id="kuKat"></select>
+ <div class="plSub" style="margin-top:4px"><a href="#" onclick="tambahKategori();return false">+ Tambah kategori baru</a></div>
+ <label>Jumlah (Rp)</label><input id="kuJumlah" inputmode="numeric" placeholder="mis. 250.000" oninput="formatJumlah(this)">
+ <label>Metode</label><select id="kuMetode" onchange="aturKredit()"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option><option value="kredit">Kredit / utang (bayar belakangan)</option></select>
+ <div id="kuKreditWrap" style="display:none">
+  <label>Pemasok / toko</label><input id="kuPemasok" placeholder="mis. Toko Fiber Jaya">
+  <label>Jatuh tempo pembayaran</label><input id="kuTempo" type="date">
+  <label>Uang muka dibayar sekarang (opsional)</label><input id="kuDP" inputmode="numeric" placeholder="0" oninput="formatJumlah(this)">
+  <label>Metode uang muka</label><select id="kuDPMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
+  <div class="plSub" style="margin-top:6px">Biayanya langsung dihitung sebagai pengeluaran bulan ini (laba), tapi saldo kas baru berkurang saat utang dibayar/dicicil di tab Utang.</div>
+ </div>
+ <label>Keterangan</label><textarea id="kuKet" placeholder="mis. Beli 10 ONT ZTE F670 dari toko X, nota no. 123"></textarea>
+ <label>Foto nota / kuitansi</label>
+ <div class="notaWrap" id="kuNotaAda"></div>
+ <div class="notaWrap" id="kuNotaBaru"></div>
+ <input type="file" id="kuNotaInput" accept="image/*,application/pdf" multiple style="margin-top:6px" onchange="pilihNota(this)">
+ <div class="plSub" style="margin-top:4px">Foto dari kamera atau galeri (otomatis diperkecil), atau PDF. Maks. 6 berkas.</div>
+ <div class="plBtns"><button class="plSave" onclick="simpanTransaksi()">Simpan</button><button class="plCancel" onclick="resetFormKu();tabKu('transaksi')">Batal</button></div>
+ <div class="plSub" style="margin-top:8px">Pembayaran tagihan pelanggan tercatat otomatis dari menu Billing — tidak perlu dicatat di sini. Catatan bisa diubah/dibatalkan oleh pencatatnya dalam 24 jam; setelah itu hanya oleh owner.</div>
+</div></div>
+</div></div></div>
+<div class="overlay" id="alertModal"><div class="modal"><div class="modalHead"><h3>Alert &amp; Event</h3><button class="close" onclick="closeModal('alertModal')">Tutup</button></div><div class="modalBody">
+<div class="blFilters aeTabs"><button data-t="aktif" class="on" onclick="tabAE('aktif')">Aktif <span id="aeNAktif"></span></button><button data-t="riwayat" onclick="tabAE('riwayat')">Riwayat event</button><button onclick="muatAE()">Muat ulang</button></div>
+<div id="aeAktif">
+ <div class="detailGrid" id="aeRouter" style="margin-bottom:10px"></div>
+ <div id="aeAktifList"></div>
+</div>
+<div id="aeRiwayat" style="display:none">
+ <div class="blSum"><div class="blBox"><small>Kritis</small><b id="aeKritis" style="color:#b42318">—</b></div><div class="blBox"><small>Peringatan</small><b id="aePeringatan" style="color:#b45309">—</b></div><div class="blBox"><small>Info</small><b id="aeInfo" style="color:#1669aa">—</b></div></div>
+ <div class="search"><input id="aeCari" placeholder="Cari pelanggan, interface, pesan…" onkeydown="if(event.key==='Enter')muatRiwayat()"><button onclick="muatRiwayat()">Cari</button></div>
+ <div class="blFilters aeSumber"><button data-v="" class="on" onclick="setAE('sumber','')">Semua sumber</button><button data-v="mikrotik" onclick="setAE('sumber','mikrotik')">MikroTik</button><button data-v="olt" onclick="setAE('sumber','olt')">OLT</button><button data-v="sistem" onclick="setAE('sumber','sistem')">Sistem</button></div>
+ <div class="blFilters aeTingkat"><button data-v="" class="on" onclick="setAE('tingkat','')">Semua tingkat</button><button data-v="kritis" onclick="setAE('tingkat','kritis')">Kritis</button><button data-v="peringatan" onclick="setAE('tingkat','peringatan')">Peringatan</button><button data-v="info" onclick="setAE('tingkat','info')">Info</button></div>
+ <div class="blFilters aeJam"><button data-v="24" class="on" onclick="setAE('jam',24)">24 jam</button><button data-v="72" onclick="setAE('jam',72)">3 hari</button><button data-v="168" onclick="setAE('jam',168)">7 hari</button><button data-v="720" onclick="setAE('jam',720)">30 hari</button></div>
+ <div id="aeRiwayatList"></div>
+</div>
+</div></div></div>
+<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody">
+<div class="blFilters stTabs"><button data-t="saya" class="on" onclick="tabPengaturan('saya')">Akun saya</button><button data-t="akun" onclick="tabPengaturan('akun')">Pengguna</button><button data-t="sistem" onclick="tabPengaturan('sistem')">Sistem</button><button data-t="log" onclick="tabPengaturan('log')">Log aktivitas</button></div>
+<div class="plMsg" id="stMsg"></div>
+<div id="stSaya" class="stTab plForm">
+ <div class="detailGrid"><div class="detail"><small>Masuk sebagai</small><b id="saUser">—</b></div><div class="detail"><small>Peran</small><b id="saPeran">—</b></div></div>
+ <div class="plBtns"><button class="plSave" onclick="keluar()">Keluar / ganti akun</button></div>
+ <b style="display:block;font-size:13px;margin-top:18px">Ganti password</b>
+ <label>Password lama</label><input id="saLama" type="password" autocomplete="current-password">
+ <label>Password baru (min. 8 karakter)</label><input id="saBaru" type="password" autocomplete="new-password">
+ <label>Ulangi password baru</label><input id="saBaru2" type="password" autocomplete="new-password">
+ <div class="plBtns"><button class="plSave" onclick="gantiPasswordSaya()">Simpan password</button></div>
+ <div class="plSub" style="margin-top:8px">Setelah password diganti, sesi di perangkat lain otomatis keluar.</div>
+</div>
+<div id="stAkun" class="stTab" style="display:none">
+ <div id="akunList"></div>
+ <div class="plForm" style="margin-top:14px"><b style="font-size:13px">Tambah pengguna</b>
+  <label>Username</label><input id="akUser" autocapitalize="none" spellcheck="false" placeholder="mis. kasir1">
+  <label>Password awal (min. 8 karakter)</label><input id="akPass" type="password" autocomplete="new-password">
+  <label>Peran</label><select id="akPeran"><option value="admin">Admin — operasional (catat keuangan, billing, isolir)</option><option value="owner">Owner — akses penuh + laporan keuangan saat login</option><option value="mitra">Mitra — hanya halaman mitra</option></select>
+  <div class="plBtns"><button class="plSave" onclick="tambahAkun()">Tambah pengguna</button></div>
+ </div>
+</div>
+<div id="stSistem" class="stTab" style="display:none">
+ <div class="detailGrid" id="sysInfo"></div>
+ <div class="blNav" style="margin-top:12px;flex-wrap:wrap"><button class="btnS" onclick="tesTelegram()">Tes Telegram</button><button class="btnS" onclick="backupSekarang(false)">Backup sekarang</button><button class="btnS" onclick="backupSekarang(true)">Backup + kirim Telegram</button><button class="btnS" onclick="backupNota(false)">Kirim nota baru</button><button class="btnS" id="btnArsipNota" onclick="backupNota(true)">Arsip semua nota</button><button class="btnS" onclick="cekProfilIsolir()">Cek profil isolir</button></div>
+ <div class="plForm" id="setForm" style="margin-top:10px"></div>
+ <div class="plBtns"><button class="plSave" onclick="simpanPengaturan()">Simpan pengaturan</button></div>
+ <div class="plSub" style="margin-top:8px">Alamat MikroTik/OLT, password, dan token Telegram tetap diatur di berkas <code>.env</code> server.</div>
+</div>
+<div id="stLog" class="stTab" style="display:none">
+ <div class="search"><input id="akCari" placeholder="Cari username, aksi, atau nama akun…" onkeydown="if(event.key==='Enter')loadAktivitas()"><button onclick="loadAktivitas()">Cari</button></div>
+ <div id="akList"></div>
+</div>
+</div></div></div>
 <script>
+// Sesi habis / logout di perangkat lain -> kembali ke halaman login
+const _fetchAsli=window.fetch.bind(window);
+window.fetch=async(...arg)=>{const r=await _fetchAsli(...arg); if(r.status===401){location.replace('/login');} return r;};
+const saya={username:null,peran:null};
+(async()=>{try{const r=await fetch('/api/me');if(r.ok){Object.assign(saya,await r.json());const e=document.getElementById('navUser');if(e)e.textContent=saya.username;
+ // Owner langsung disuguhi ringkasan keuangan, sekali per sesi browser
+ if(saya.peran==='owner'){ let sudah=false; try{sudah=sessionStorage.getItem('kuTampil')==='1'; sessionStorage.setItem('kuTampil','1');}catch(x){} if(!sudah) setTimeout(()=>openKeuangan(),300); }
+}}catch(e){}})();
+async function keluar(){
+ if(!confirm('Keluar dari akun '+(saya.username||'ini')+'?')) return;
+ try{ await _fetchAsli('/api/logout',{method:'POST'}); }catch(e){}
+ location.replace('/login');
+}
 const state={history:[],last:null};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
@@ -169,54 +333,8 @@ function statusClass(s){s=(s||'').toUpperCase();return s==='CRITICAL'?'crit':s==
 function classifyRx(v){if(v==null)return ['UNKNOWN','']; if(v>-23)return ['NORMAL','']; if(v>-27)return ['WARNING','warn']; return ['CRITICAL','crit']}
 function setMetric(id,pid,v,kind='normal'){ $(id).textContent=v==null?'—':v; const p=$(pid); p.textContent=kind==='crit'?'Critical':kind==='warn'?'Warning':'Normal'; p.className='pill '+(kind==='crit'?'crit':kind==='warn'?'warn':'');}
 function scrollToSection(id){document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'})}
-function openSettings(){$('settingsModal').classList.add('show')}
   const pl={data:[],paket:[],cur:null};
-async function openPelanggan(){
- $('pelangganModal').classList.add('show');
- backPelanggan();
- await loadPelanggan();
-}
-async function loadPelanggan(){
- $('plList').innerHTML='<div class="muted">Memuat…</div>';
- try{
-  const [a,b]=await Promise.all([fetch('/api/data-pelanggan'),fetch('/api/paket')]);
-  if(!a.ok||!b.ok) throw new Error('HTTP '+a.status+'/'+b.status);
-  pl.data=(await a.json()).pelanggan||[];
-  pl.paket=(await b.json()).paket||[];
-  renderPelanggan();
- }catch(e){ $('plList').innerHTML='<div class="muted">Gagal memuat data: '+esc(e.message)+'</div>'; }
-}
 function plLengkap(p){return !!(p.alamat&&p.no_hp&&p.paket_id)}
-function renderPelanggan(){
- const q=$('plSearch').value.trim().toLowerCase();
- const belum=pl.data.filter(p=>!plLengkap(p)).length;
- $('plSummary').textContent=pl.data.length+' pelanggan · '+belum+' belum lengkap';
- const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q));
- $('plList').innerHTML=rows.length?rows.map(({p,i})=>`<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${esc(p.paket||'Belum ada paket')}${p.gratis?' · GRATIS':''}</div></div><span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span></div>`).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
-}
-function editPelanggan(i){
- const p=pl.data[i]; pl.cur=p.username;
- $('plTitle').textContent='Ubah Data Pelanggan';
- $('plGratis').checked=!!pl.data[i].gratis;
- $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
- $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · Rp ${Number(k.harga).toLocaleString('id-ID')}</option>`).join('');
- $('plMsg').textContent='';
- $('plListView').style.display='none'; $('plFormView').style.display='block';
-}
-function backPelanggan(){
- $('plTitle').textContent='Data Pelanggan';
- $('plListView').style.display='block'; $('plFormView').style.display='none';
-}
-async function savePelanggan(){
- const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null};
- body.gratis=$('plGratis').checked;
- if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
- try{
-  const r=await fetch('/api/data-pelanggan/'+encodeURIComponent(pl.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
-  await loadPelanggan(); backPelanggan();
- }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
-  }
   const BLN=['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 const BLN_PJ=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 const bl={periode:'',rows:[],ring:null,filter:'semua'};
@@ -235,34 +353,7 @@ async function openBilling(){
  await loadBilling();
 }
 async function ubahPeriode(n){ bl.periode=geserPeriode(bl.periode,n); await loadBilling(); }
-async function loadBilling(diam){
- $('blPeriode').textContent=namaPeriode(bl.periode);
- if(!diam){ $('blMsg').textContent=''; $('blList').innerHTML='<div class="muted">Memuat…</div>'; }
- try{
-  const r=await fetch('/api/tagihan?periode='+bl.periode);
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  const d=await r.json(); bl.rows=d.tagihan||[]; bl.ring=d.ringkasan; renderBilling();
- }catch(e){ $('blList').innerHTML='<div class="muted">Gagal memuat tagihan: '+esc(e.message)+'</div>'; }
-}
 function setFilterBilling(f){ bl.filter=f; renderBilling(); }
-function renderBilling(){
- const s=bl.ring||{jumlah_tagihan:0,total:0,terbayar:0,belum_bayar:0};
- const nLunas=bl.rows.filter(t=>t.status==='lunas').length;
- $('blTotal').textContent=rp(s.total); $('blTerbayar').textContent=rp(s.terbayar); $('blBelum').textContent=rp(s.belum_bayar);
- $('blTotalN').textContent=s.jumlah_tagihan+' tagihan'; $('blTerbayarN').textContent=nLunas+' tagihan'; $('blBelumN').textContent=(bl.rows.length-nLunas)+' tagihan';
- document.querySelectorAll('.blFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===bl.filter));
- const q=$('blSearch').value.trim().toLowerCase(), hari=new Date().toLocaleDateString('sv-SE');
- const lolos=t=>(bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':t.status!=='lunas'))&&(!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q));
- const rows=bl.rows.filter(lolos);
- if(!bl.rows.length){ $('blList').innerHTML='<div class="muted">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>'; return; }
- $('blList').innerHTML=rows.length?rows.map(t=>{
-  const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari;
-  const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
-  const sub=lunas?('Dibayar '+tglPendek(t.tgl_bayar)):('Jatuh tempo '+tglPendek(t.jatuh_tempo));
-  const tombol=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="ubahLunas(${t.id},true)">Tandai lunas</button>`;
-  return `<div class="blRow"><div><div class="plName">${esc(t.nama)}</div><div class="plSub">${esc(t.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div><div class="blAksi">${chip}${tombol}</div></div></div>`;
- }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
-}
 const NAMA_USAHA='Internet Desa';
 const INFO_BAYAR='Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.';
 function nomorWA(hp){
@@ -320,17 +411,6 @@ function drawChart(){
  for(let i=0;i<5;i++){let x=pad.l+w*i/4;out+=`<text x="${x}" y="${H-5}" text-anchor="middle" font-size="9" fill="#7a8d83">${['awal','25%','50%','75%','sekarang'][i]}</text>`}
  svg.innerHTML=out;
 }
-function buildAlerts(onus){
- const bad=onus.filter(o=>['CRITICAL','WARNING'].includes((o.status||'').toUpperCase())||o.last_event);
- const top=bad.sort((a,b)=>{const rank=x=>x.status==='CRITICAL'?0:x.status==='WARNING'?1:2;return rank(a)-rank(b)}).slice(0,6);
- $('alertBadge').textContent=top.filter(x=>x.status==='CRITICAL'||x.status==='WARNING').length;
- $('alertList').innerHTML=top.length?top.map(o=>{
-  const level=(o.status||'INFO').toUpperCase(); const tag=level==='CRITICAL'?'critical':level==='WARNING'?'warning':'info';
-  const title=level==='CRITICAL'?`ONU ${o.onu_id} — Redaman kritis`:level==='WARNING'?`ONU ${o.onu_id} — Perlu perhatian`:`ONU ${o.onu_id} — ${o.last_event||'Event'}`;
-  const sub=`PON ${esc(o.pon||'—')} · ${esc(o.pppoe_username||o.model||'Pelanggan tidak diketahui')}`;
-  return `<div class="alert"><i class="aDot" style="background:${level==='CRITICAL'?'#ef4444':level==='WARNING'?'#f59e0b':'#258ff0'}"></i><span class="aTime">${esc((o.last_event_time||'').slice(11,16)||'—')}</span><div class="aText"><strong>${title}</strong><span>${sub}</span></div><span class="tag ${tag}">${level}</span></div>`
- }).join(''):'<div class="muted" style="padding:14px">Tidak ada alert aktif.</div>';
-}
 function renderCustomers(users,onus){
  const byUser=new Map(onus.filter(o=>o.pppoe_username).map(o=>[o.pppoe_username,o]));
  const rows=users.slice(0,8).map((u,i)=>{const o=byUser.get(u.username);return `<tr><td>${i+1}</td><td>${esc(u.nama||'—')}</td><td><b>${esc(u.username)}</b></td><td>${esc(u.ip_address||'—')}</td><td>${esc(u.paket||'—')}</td><td class="status ${u.uptime?'online':'offline'}"><i class="smallDot" style="background:${u.uptime?'#18b85a':'#ef4444'}"></i>${u.uptime?'Online':'Offline'}</td><td>${o?esc(`${o.onu_id} / ${o.pon}`):'—'}</td><td>${esc(u.uptime||'—')}</td></tr>`});
@@ -361,7 +441,7 @@ async function load(force=false){
   setConn('mikState',d.mikrotik_online);setConn('oltState',d.olt_online);setConn('snmpState',d.olt_online);$('snmpSub').textContent=d.olt_online?'Response OK':'Tidak ada response';
   $('sideMik').innerHTML=`<i class="dot ${d.mikrotik_online?'':'off'}"></i>${d.mikrotik_online?'Online':'Offline'}`;
   $('sideOlt').innerHTML=`<i class="dot ${d.olt_online?'':'off'}"></i>${d.olt_online?'Online':'Offline'}`;
-  const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); buildAlerts(onus); updateOptical(onus);
+  const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); muatAlertKartu(); updateOptical(onus);
   const rx=sum(users.map(x=>x.rx_mbps)),tx=sum(users.map(x=>x.tx_mbps)); $('rxNow').textContent=rx==null?'—':fmt(rx)+' Mbps';$('txNow').textContent=tx==null?'—':fmt(tx)+' Mbps';
   state.history.push({rx:rx||0,tx:tx||0,t:Date.now()}); if(state.history.length>24)state.history.shift(); drawChart();
  }catch(e){$('overall').textContent='OFFLINE';$('overallSub').textContent='Dashboard tidak dapat mengambil data backend';$('updated').textContent='Gagal memuat: '+e.message}
@@ -491,13 +571,18 @@ async function loadBilling(diam){
  try{
   const [r,ri]=await Promise.all([fetch('/api/tagihan?periode='+bl.periode),fetch('/api/isolir')]);
   if(!r.ok) throw new Error('HTTP '+r.status);
-  const d=await r.json(); bl.rows=d.tagihan||[]; bl.ring=d.ringkasan;
+  const d=await r.json(); bl.rows=d.tagihan||[]; bl.lain=d.tanpa_tagihan||[]; bl.ring=d.ringkasan; bl.insentif=d.insentif_mitra;
   if(ri.ok){ const di=await ri.json(); bl.isolir=new Set((di.terisolir||[]).map(x=>x.username)); bl.modeIsolir=di.mode; }
   else { bl.isolir=new Set(); }
   renderBilling();
  }catch(e){ $('blList').innerHTML='<div class="muted">Gagal memuat tagihan: '+esc(e.message)+'</div>'; }
 }
 function infoIsolir(){
+ const ins=bl.insentif;
+ const teksIns=ins?'<div class="plSub" style="margin:4px 0">Insentif mitra: '+ins.jumlah_lunas+' lunas'+(ins.jumlah_gratis?(' + '+ins.jumlah_gratis+' gratis'):'')+' × '+rp(ins.per_pelanggan)+' = <b>'+rp(ins.total)+'</b></div>':'';
+ return teksIns+infoIsolirSaja();
+}
+function infoIsolirSaja(){
  const n=bl.isolir?bl.isolir.size:0;
  const mode=bl.modeIsolir==='aktif'?'<b style="color:#0b7a3b">AKTIF</b>':'<b style="color:#b45309">SIMULASI</b> (belum ada yang benar-benar diisolir)';
  return '<div class="plSub" style="margin:4px 0 8px">Isolir otomatis: '+mode+' · '+n+' pelanggan terisolir</div>';
@@ -510,12 +595,13 @@ function renderBilling(){
  $('blTotalN').textContent=s.jumlah_tagihan+' tagihan'; $('blTerbayarN').textContent=nLunas+' tagihan'; $('blBelumN').textContent=(bl.rows.length-nLunas)+' tagihan';
  document.querySelectorAll('.blFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===bl.filter));
  const q=$('blSearch').value.trim().toLowerCase(), hari=new Date().toLocaleDateString('sv-SE');
- const lolosFilter=t=>bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':(bl.filter==='isolir'?iso.has(t.username):t.status!=='lunas'));
- const lolos=t=>lolosFilter(t)&&(!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q));
- const rows=bl.rows.filter(lolos);
+ const cari=t=>!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q);
+ const lolosFilter=t=>bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':(bl.filter==='isolir'?iso.has(t.username):(bl.filter==='belum'&&t.status!=='lunas')));
+ const rows=bl.rows.filter(t=>lolosFilter(t)&&cari(t));
+ // Pelanggan tanpa tagihan (gratis, belum punya paket, tagihan belum dibuat): tidak ditagih, tapi bisa diisolir manual
+ const lain=(bl.lain||[]).filter(p=>(bl.filter==='semua'||bl.filter==='lain'||(bl.filter==='isolir'&&iso.has(p.username)))&&cari(p));
  const info=infoIsolir();
- if(!bl.rows.length){ $('blList').innerHTML=info+'<div class="muted">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>'; return; }
- $('blList').innerHTML=info+(rows.length?rows.map(t=>{
+ const htmlTagihan=rows.map(t=>{
   const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari, terisolir=iso.has(t.username);
   const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
@@ -523,7 +609,17 @@ function renderBilling(){
   const tLunas=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="ubahLunas(${t.id},true)">Tandai lunas</button>`;
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolir(${t.id})">Buka isolir</button>`:(lunas?'':`<button class="btnS" onclick="isolirManual(${t.id})">Isolir</button>`);
   return `<div class="blRow"><div><div class="plName">${esc(t.nama)}</div><div class="plSub">${esc(t.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div><div class="blAksi">${chipIso}${chip}${tLunas}${tIso}</div></div></div>`;
- }).join(''):'<div class="muted">Tidak ada yang cocok.</div>');
+ }).join('');
+ const htmlLain=lain.map(p=>{
+  const terisolir=iso.has(p.username), i=bl.lain.indexOf(p);
+  const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':p.gratis?'<span class="chip ok">Gratis</span>':'<span class="chip warn">'+(p.paket_id?'Belum ditagih':'Belum ada paket')+'</span>';
+  const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
+  const sub=p.status==='berhenti'?'Berhenti berlangganan':p.gratis?'Tidak ditagih':(p.paket_id?'Tagihan periode ini belum dibuat':'Lengkapi paket di menu Pelanggan');
+  const tIso=terisolir?`<button class="btnS" onclick="bukaIsolirLain(${i})">Buka isolir</button>`:`<button class="btnS" onclick="isolirLain(${i})">Isolir</button>`;
+  return `<div class="blRow"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tIso}</div></div></div>`;
+ }).join('');
+ const kosong=!bl.rows.length?'<div class="muted" style="margin-bottom:8px">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>':'';
+ $('blList').innerHTML=info+kosong+((htmlTagihan||htmlLain)?htmlTagihan+(htmlLain&&htmlTagihan?'<div class="plSub" style="margin:12px 0 4px"><b>Gratis / tanpa tagihan</b></div>':'')+htmlLain:(bl.rows.length?'<div class="muted">Tidak ada yang cocok.</div>':''));
 }
 async function aksiIsolir(url,pesanOk){
  try{
@@ -538,10 +634,27 @@ async function isolirManual(id){
  if(!confirm('ISOLIR '+t.nama+'? Internetnya dibatasi sampai tagihan dilunasi.')) return;
  await aksiIsolir('/api/isolir/'+encodeURIComponent(t.username),t.nama+' diisolir.');
 }
+async function isolirLain(i){
+ const p=(bl.lain||[])[i]; if(!p) return;
+ if(!confirm('ISOLIR '+p.nama+'? Pelanggan ini tidak punya tagihan, jadi isolir hanya bisa dibuka manual.')) return;
+ await aksiIsolir('/api/isolir/'+encodeURIComponent(p.username),p.nama+' diisolir.');
+}
+async function bukaIsolirLain(i){
+ const p=(bl.lain||[])[i]; if(!p) return;
+ if(!confirm('Buka isolir '+p.nama+'?')) return;
+ await aksiIsolir('/api/isolir/'+encodeURIComponent(p.username)+'/buka','Isolir '+p.nama+' dibuka.');
+}
 async function bukaIsolir(id){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
  if(!confirm('Buka isolir '+t.nama+'?')) return;
  await aksiIsolir('/api/isolir/'+encodeURIComponent(t.username)+'/buka','Isolir '+t.nama+' dibuka.');
+}
+// ===== Pelanggan: daftar, ubah data, status, impor =====
+async function openPelanggan(){
+ $('pelangganModal').classList.add('show');
+ pl.filter=pl.filter||'aktif'; $('plListMsg').textContent='';
+ backPelanggan();
+ await loadPelanggan();
 }
 async function loadPelanggan(){
  $('plList').innerHTML='<div class="muted">Memuat…</div>';
@@ -554,12 +667,632 @@ async function loadPelanggan(){
   renderPelanggan();
  }catch(e){ $('plList').innerHTML='<div class="muted">Gagal memuat data: '+esc(e.message)+'</div>'; }
 }
+function setFilterPelanggan(f){ pl.filter=f; renderPelanggan(); }
 function renderPelanggan(){
- const q=$('plSearch').value.trim().toLowerCase(), iso=pl.isolir||new Set();
- const belum=pl.data.filter(p=>!plLengkap(p)).length;
- $('plSummary').textContent=pl.data.length+' pelanggan · '+belum+' belum lengkap'+(iso.size?(' · '+iso.size+' terisolir'):'');
- const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q));
- $('plList').innerHTML=rows.length?rows.map(({p,i})=>`<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${esc(p.paket||'Belum ada paket')}${p.gratis?' · GRATIS':''}${iso.has(p.username)?' · ISOLIR':''}</div></div><span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span></div>`).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
+ const q=$('plSearch').value.trim().toLowerCase(), iso=pl.isolir||new Set(), f=pl.filter||'aktif';
+ const aktif=pl.data.filter(p=>p.status!=='berhenti');
+ const belum=aktif.filter(p=>!plLengkap(p)).length;
+ $('plSummary').textContent=aktif.length+' aktif · '+belum+' belum lengkap · '+(pl.data.length-aktif.length)+' berhenti'+(iso.size?(' · '+iso.size+' terisolir'):'');
+ document.querySelectorAll('.plFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===f));
+ const lolos=p=>f==='semua'||(f==='berhenti'?p.status==='berhenti':(p.status!=='berhenti'&&(f!=='belum'||!plLengkap(p))));
+ const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>lolos(p)&&(!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q)));
+ $('plList').innerHTML=rows.length?rows.map(({p,i})=>{
+  const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':`<span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span>`;
+  const sub=esc(p.username)+' · '+esc(p.paket||'Belum ada paket')+(p.gratis?' · GRATIS':'')+(iso.has(p.username)?' · ISOLIR':'')+(p.status==='berhenti'&&p.berhenti_sejak?' · sejak '+tglPendek(p.berhenti_sejak):'')+(p.secret_target?' · ⏳ sinkron MikroTik':(p.secret_nonaktif?' · secret nonaktif':''));
+  return `<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${sub}</div></div>${chip}</div>`;
+ }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
+}
+function tampilkanView(v){
+ $('plListView').style.display=v==='list'?'block':'none';
+ $('plFormView').style.display=v==='form'?'block':'none';
+ $('plPaketView').style.display=v==='paket'?'block':'none';
+}
+function editPelanggan(i){
+ const p=pl.data[i]; pl.cur=p.username;
+ $('plTitle').textContent='Ubah Data Pelanggan';
+ $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0; $('plInsGratis').checked=!!p.insentif_gratis; aturCentangGratis();
+ $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
+ $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value; $('plSecret').checked=true; aturCentangSecret();
+ $('plSecretInfo').innerHTML=p.secret_target?'<span style="color:#b45309">⏳ Menunggu sinkron MikroTik: secret akan '+(p.secret_target==='nonaktif'?'dinonaktifkan':'diaktifkan')+' begitu MikroTik terjangkau.</span>':(p.secret_nonaktif?'Secret PPPoE pelanggan ini sedang nonaktif di MikroTik.':'');
+ $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
+ $('plMsg').textContent='';
+ tampilkanView('form');
+}
+function backPelanggan(){
+ $('plTitle').textContent='Data Pelanggan';
+ tampilkanView('list');
+}
+async function savePelanggan(){
+ const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,atur_secret:$('plSecret').checked,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked};
+ if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
+ if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\n'+(body.atur_secret?'Secret PPPoE di MikroTik DINONAKTIFKAN dan sesinya diputus (tidak dihapus, bisa diaktifkan lagi).':'Secret PPPoE di MikroTik TIDAK diubah.'))) return;
+ if(body.status==='aktif'&&pl.statusAwal==='berhenti'&&body.atur_secret&&!confirm('Aktifkan kembali '+body.nama+'? Secret PPPoE di MikroTik akan diaktifkan lagi.')) return;
+ try{
+  const r=await fetch('/api/data-pelanggan/'+encodeURIComponent(pl.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  await loadPelanggan(); backPelanggan();
+  const sc=d.secret, teksSecret=sc?(sc.ok?' · secret PPPoE '+sc.pesan:(sc.tertunda?' · ⚠️ MikroTik gagal ('+sc.pesan+'), dicoba ulang otomatis':' · secret: '+sc.pesan)):'';
+  $('plListMsg').style.color=sc&&!sc.ok?'#b45309':'#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+teksSecret+'.';
+ }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
+}
+async function imporPelanggan(){
+ if(!confirm('Impor pelanggan dari PPP secret MikroTik?\nPelanggan baru ditambahkan; data yang sudah ada tidak ditimpa.')) return;
+ const m=$('plListMsg'); m.style.color='#4b6355'; m.textContent='Mengimpor…';
+ try{
+  const r=await fetch('/api/impor-pelanggan',{method:'POST'}); const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  await loadPelanggan();
+  let t=d.total_secret+' secret dibaca · '+d.baru+' pelanggan baru';
+  if(d.tanpa_paket&&d.tanpa_paket.length) t+=' · '+d.tanpa_paket.length+' belum cocok dengan paket mana pun';
+  m.style.color='#0b7a3b'; m.innerHTML=esc(t);
+  if(d.tidak_ada_di_mikrotik&&d.tidak_ada_di_mikrotik.length){
+   m.innerHTML+='<div style="color:#b45309;margin-top:6px">'+d.tidak_ada_di_mikrotik.length+' pelanggan aktif tidak ada lagi di MikroTik (mungkin sudah berhenti, cek lalu tandai Berhenti): '+d.tidak_ada_di_mikrotik.map(x=>esc(x.nama||x.username)).join(', ')+'</div>';
   }
+ }catch(e){ m.style.color='#b42318'; m.textContent='Impor gagal: '+e.message; }
+}
+function aturCentangSecret(){
+ const berubah=$('plStatus').value!==pl.statusAwal;
+ $('plSecretWrap').style.display=berubah?'flex':'none';
+ $('plSecretTeks').textContent=$('plStatus').value==='berhenti'?'Nonaktifkan juga secret PPPoE di MikroTik (sesi diputus, secret tidak dihapus)':'Aktifkan kembali secret PPPoE di MikroTik';
+}
+// ===== Paket =====
+async function bukaPaket(){
+ $('plTitle').textContent='Kelola Paket'; tampilkanView('paket'); batalPaket(true);
+ await loadPaket();
+}
+async function loadPaket(){
+ $('pkList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const r=await fetch('/api/paket'); if(!r.ok) throw new Error('HTTP '+r.status);
+  pl.paket=(await r.json()).paket||[];
+  $('pkList').innerHTML=pl.paket.length?pl.paket.map((k,i)=>`<div class="blRow"><div><div class="plName">${esc(k.nama)}</div><div class="plSub">${k.kecepatan_mbps} Mbps · ${k.jumlah_pelanggan} pelanggan aktif</div></div><div class="blKanan"><div class="blAmt">${rp(k.harga)}</div><div class="blAksi"><button class="btnS" onclick="ubahPaket(${i})">Ubah</button><button class="btnS" onclick="hapusPaket(${i})">Hapus</button></div></div></div>`).join(''):'<div class="muted">Belum ada paket. Tambahkan di bawah.</div>';
+ }catch(e){ $('pkList').innerHTML='<div class="muted">Gagal memuat paket: '+esc(e.message)+'</div>'; }
+}
+function ubahPaket(i){
+ const k=pl.paket[i]; pl.pkCur=k.id;
+ $('pkJudul').textContent='Ubah paket '+k.nama; $('pkNama').value=k.nama; $('pkSpeed').value=k.kecepatan_mbps; $('pkHarga').value=k.harga; $('pkMsg').textContent='';
+ $('pkNama').focus();
+}
+function batalPaket(diam){
+ if(pl.pkCur==null&&!diam){ backPelanggan(); loadPelanggan(); return; }
+ pl.pkCur=null; $('pkJudul').textContent='Tambah paket'; $('pkNama').value=''; $('pkSpeed').value=''; $('pkHarga').value=''; if(diam) $('pkMsg').textContent='';
+}
+async function simpanPaket(){
+ const body={nama:$('pkNama').value.trim(),kecepatan_mbps:Number($('pkSpeed').value),harga:Math.round(Number($('pkHarga').value))};
+ const m=$('pkMsg');
+ if(!body.nama||!(body.kecepatan_mbps>0)||!(body.harga>=0)||$('pkHarga').value===''){ m.style.color='#b42318'; m.textContent='Isi nama, kecepatan, dan harga dengan benar.'; return; }
+ const baru=pl.pkCur==null;
+ try{
+  const r=await fetch(baru?'/api/paket':'/api/paket/'+pl.pkCur,{method:baru?'POST':'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  batalPaket(true); await loadPaket();
+  m.style.color='#0b7a3b'; m.textContent='Paket '+body.nama+(baru?' ditambahkan.':' disimpan.');
+ }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
+async function hapusPaket(i){
+ const k=pl.paket[i]; if(!confirm('Hapus paket '+k.nama+'?')) return;
+ const m=$('pkMsg');
+ try{
+  const r=await fetch('/api/paket/'+k.id,{method:'DELETE'}); const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  batalPaket(true); await loadPaket(); m.style.color='#0b7a3b'; m.textContent='Paket '+k.nama+' dihapus.';
+ }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
+// ===== Log aktivitas (di menu Pengaturan) =====
+const AKSI_LABEL={tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+
+// ===== Pengaturan: akun saya, pengguna, sistem, log =====
+AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';
+AKSI_LABEL.akun_tambah='Tambah pengguna'; AKSI_LABEL.akun_ubah='Ubah pengguna'; AKSI_LABEL.akun_hapus='Hapus pengguna';
+AKSI_LABEL.akun_password='Password'; AKSI_LABEL.akun_cabut_sesi='Cabut sesi'; AKSI_LABEL.pengaturan_ubah='Ubah pengaturan';
+AKSI_LABEL.mitra_ubah_kontak='Mitra ubah kontak';
+const st={tab:'saya',akun:[],set:[]};
+function stPesan(t,ok){ const m=$('stMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+async function jsonAtauError(r){ const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status)); return d; }
+function openSettings(){ $('settingsModal').classList.add('show'); tabPengaturan(st.tab); }
+function tabPengaturan(t){
+ st.tab=t; stPesan('');
+ document.querySelectorAll('.stTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ for(const [k,id] of [['saya','stSaya'],['akun','stAkun'],['sistem','stSistem'],['log','stLog']]) $(id).style.display=k===t?'block':'none';
+ if(t==='saya'){ $('saUser').textContent=saya.username||'—'; $('saPeran').textContent={owner:'Owner',admin:'Admin',mitra:'Mitra'}[saya.peran]||'—'; }
+ if(t==='akun') loadAkun();
+ if(t==='sistem') loadPengaturan();
+ if(t==='log'){ loadAktivitas(); }
+}
+async function gantiPasswordSaya(){
+ const lama=$('saLama').value, baru=$('saBaru').value;
+ if(baru!==$('saBaru2').value){ stPesan('Ulangi password baru tidak sama.'); return; }
+ try{
+  const d=await jsonAtauError(await fetch('/api/akun/saya/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lama,baru})}));
+  $('saLama').value=$('saBaru').value=$('saBaru2').value='';
+  stPesan('Password diganti'+(d.sesi_lain_dicabut?(' · '+d.sesi_lain_dicabut+' sesi di perangkat lain dikeluarkan'):'')+'.',true);
+ }catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function loadAkun(){
+ $('akunList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const d=await jsonAtauError(await fetch('/api/akun')); st.akun=d.akun;
+  $('akunList').innerHTML=d.akun.map((a,i)=>{
+   const diri=a.username===d.saya;
+   const chip=({owner:'<span class="chip info">Owner</span>',admin:'<span class="chip ok">Admin</span>',mitra:'<span class="chip warn">Mitra</span>'}[a.peran]||'')+(a.aktif?'':'<span class="chip bad">Nonaktif</span>');
+   const sub='Login terakhir: '+(a.login_terakhir?esc(khWaktu(a.login_terakhir)):'belum pernah')+' · '+a.sesi_aktif+' sesi aktif'+(diri?' · <b>akun Anda</b>':'');
+   const tombol=`<button class="btnS" onclick="resetPassword(${i})">Reset password</button>`
+    +(a.sesi_aktif&&!diri?`<button class="btnS" onclick="cabutSesi(${i})">Keluarkan</button>`:'')
+    +(diri&&a.peran!=='admin'?'':`<select class="btnS" onchange="ubahPeran(${i},this.value);this.value=''"><option value="">Ubah peran…</option>${['owner','admin','mitra'].filter(p=>p!==a.peran&&!(diri&&p==='mitra')).map(p=>`<option value="${p}">Jadikan ${p}</option>`).join('')}</select>`)+(diri?'':`<button class="btnS" onclick="toggleAktif(${i})">${a.aktif?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick="hapusAkun(${i})">Hapus</button>`);
+   return `<div class="blRow"><div><div class="plName">${esc(a.username)}</div><div class="plSub">${sub}</div></div><div class="blKanan"><div class="blAksi">${chip}</div><div class="blAksi">${tombol}</div></div></div>`;
+  }).join('')||'<div class="muted">Belum ada pengguna.</div>';
+ }catch(e){ $('akunList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function aksiAkun(url,opsi,pesan){
+ try{ await jsonAtauError(await fetch(url,opsi)); await loadAkun(); stPesan(pesan,true); }catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function tambahAkun(){
+ const body={username:$('akUser').value.trim(),password:$('akPass').value,peran:$('akPeran').value};
+ if(!body.username||!body.password){ stPesan('Isi username dan password.'); return; }
+ await aksiAkun('/api/akun',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},'Pengguna '+body.username+' ditambahkan.');
+ if($('stMsg').style.color!=='rgb(180, 35, 24)'){ $('akUser').value=''; $('akPass').value=''; }
+}
+async function resetPassword(i){
+ const a=st.akun[i]; const baru=prompt('Password baru untuk '+a.username+' (min. 8 karakter):'); if(!baru) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username)+'/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baru})},'Password '+a.username+' direset; sesinya di perangkat lain dikeluarkan.');
+}
+async function cabutSesi(i){
+ const a=st.akun[i]; if(!confirm('Keluarkan '+a.username+' dari semua perangkat?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username)+'/logout',{method:'POST'},a.username+' dikeluarkan dari semua perangkat.');
+}
+async function ubahPeran(i,peran){
+ const a=st.akun[i]; if(!peran) return; if(!confirm('Ubah peran '+a.username+' menjadi '+peran+'?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({peran})},'Peran '+a.username+' sekarang '+peran+'.');
+}
+async function toggleAktif(i){
+ const a=st.akun[i]; if(!confirm((a.aktif?'Nonaktifkan ':'Aktifkan ')+a.username+'?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({aktif:!a.aktif})},a.username+(a.aktif?' dinonaktifkan.':' diaktifkan.'));
+}
+async function hapusAkun(i){
+ const a=st.akun[i]; if(!confirm('HAPUS pengguna '+a.username+'? Riwayat log aktivitasnya tetap tersimpan.')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'DELETE'},'Pengguna '+a.username+' dihapus.');
+}
+async function loadPengaturan(){
+ $('sysInfo').innerHTML='<div class="muted">Memuat…</div>'; $('setForm').innerHTML='';
+ try{
+  const d=await jsonAtauError(await fetch('/api/pengaturan')); const x=d.sistem; st.set=d.pengaturan;
+  $('btnArsipNota').style.display=d.peran==='owner'?'':'none';
+  const kotak=(k,v)=>`<div class="detail"><small>${k}</small><b>${esc(v??'—')}</b></div>`;
+  $('sysInfo').innerHTML=kotak('MikroTik',x.mikrotik)+kotak('OLT',x.olt)+kotak('Profil isolir',x.profil_isolir)+kotak('Telegram',x.telegram)
+   +kotak('Backup terakhir',x.backup_terakhir?(x.backup_terakhir+' ('+x.jumlah_backup+' tersimpan)'):'belum ada')+kotak('Berkas nota',(x.nota_mb??0)+' MB (folder nota/)')+kotak('Backup nota terakhir',(x.backup_nota_terakhir||'belum pernah')+' · '+x.nota_belum_dibackup+' nota belum dibackup')+kotak('Backup dikirim ke',x.backup_ke)+kotak('Data monitoring',x.data_terakhir||'belum ada');
+  const kunci=p=>p.owner&&d.peran!=='owner'?' disabled title="Hanya owner yang bisa mengubah"':'';
+  $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+(p.owner?' <span class="chip info">owner</span>':'')+'</label>'+(p.tipe==='pilihan'
+   ?'<select id="set'+i+'"'+kunci(p)+'>'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
+   :p.tipe==='teks'?`<input id="set${i}" value="${esc(p.nilai)}" inputmode="numeric" placeholder="mis. 123456789"${kunci(p)}>`
+   :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric"${kunci(p)}>`)
+   +(p.bantuan?'<div class="plSub" style="margin-top:4px">'+esc(p.bantuan)+'</div>':'')).join('');
+ }catch(e){ $('sysInfo').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function simpanPengaturan(){
+ const nilai={}; st.set.forEach((p,i)=>{ const v=$('set'+i).value; nilai[p.kunci]=p.tipe==='int'?Number(v):v; });
+ if(nilai.ISOLIR_MODE==='aktif'&&st.set.find(p=>p.kunci==='ISOLIR_MODE').nilai!=='aktif'&&!confirm('Mode isolir AKTIF: pelanggan menunggak akan benar-benar diisolir otomatis. Lanjutkan?')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/pengaturan',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nilai})})); await loadPengaturan(); stPesan(d.berubah?(d.berubah+' pengaturan disimpan dan langsung berlaku.'):'Tidak ada yang berubah.',true); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function tesTelegram(){
+ stPesan('Mengirim…',true);
+ try{ await jsonAtauError(await fetch('/api/test-telegram',{method:'POST'})); stPesan('Pesan tes terkirim ke Telegram.',true); }catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function backupSekarang(kirim){
+ stPesan('Membuat backup…',true);
+ try{ const d=await jsonAtauError(await fetch('/api/backup'+(kirim?'?kirim=true':''),{method:'POST'}));
+  stPesan('Backup '+d.berkas.split('/').pop()+' ('+d.ukuran_kb+' KB, '+d.jumlah.pelanggan+' pelanggan) dibuat'+(kirim?(d.terkirim_telegram?' dan terkirim ke Telegram.':', tapi GAGAL dikirim ke Telegram.'):'.'),true); loadPengaturan(); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function backupNota(semua){
+ if(semua&&!confirm('Kirim SEMUA nota ke Telegram (dipecah per ±45 MB)? Bisa memakan kuota besar.')) return;
+ stPesan('Menyiapkan ZIP nota…',true);
+ try{ const d=await jsonAtauError(await fetch('/api/backup/nota'+(semua?'?semua=true':''),{method:'POST'}));
+  stPesan(d.berkas?(d.berkas+' nota terkirim dalam '+d.bagian+' berkas ZIP.'):'Tidak ada nota baru untuk dibackup.',true); loadPengaturan(); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function cekProfilIsolir(){
+ stPesan('Mengecek MikroTik…',true);
+ try{ const d=await jsonAtauError(await fetch('/api/isolir-cek'));
+  stPesan(d.ada_di_mikrotik?('Profil "'+d.profil_isolir+'" ada di MikroTik · '+d.pelanggan_berprofil_isolir.length+' secret memakai profil ini.'):('Profil "'+d.profil_isolir+'" BELUM ADA di MikroTik. Buat dulu di PPP → Profiles.'),d.ada_di_mikrotik); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function loadAktivitas(){
+ $('akList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const q=$('akCari').value.trim();
+  const d=await jsonAtauError(await fetch('/api/aktivitas?limit=300'+(q?'&cari='+encodeURIComponent(q):'')));
+  const rows=d.aktivitas||[];
+  $('akList').innerHTML=rows.length?rows.map(a=>`<div class="blRow"><div><div class="plName">${esc(AKSI_LABEL[a.aksi]||a.aksi)} <span class="plSub">oleh ${esc(a.oleh)}</span></div><div class="plSub">${esc(a.detail||'')}</div></div><div class="plSub" style="white-space:nowrap">${esc(khWaktu(a.waktu))}</div></div>`).join(''):'<div class="muted">Belum ada aktivitas tercatat.</div>';
+ }catch(e){ $('akList').innerHTML='<div class="muted">Gagal memuat log: '+esc(e.message)+'</div>'; }
+}
+// Centang "gratis dihitung insentif" hanya bermakna untuk pelanggan gratis; bila dicentang, otomatis tampil ke mitra
+function aturCentangGratis(){
+ const g=$('plGratis').checked; $('plInsGratisWrap').style.display=g?'flex':'none';
+ if(g&&$('plInsGratis').checked) $('plMitra').checked=true;
+}
+document.addEventListener('change',e=>{ if(e.target&&(e.target.id==='plGratis'||e.target.id==='plInsGratis')) aturCentangGratis(); });
+
+// ===== Alert & Event =====
+const ae={tab:'aktif',sumber:'',tingkat:'',jam:24,aktif:null};
+const AE_CHIP={kritis:'<span class="chip bad">Kritis</span>',peringatan:'<span class="chip warn">Peringatan</span>',info:'<span class="chip info">Info</span>'};
+const AE_SUMBER={mikrotik:'MikroTik',olt:'OLT',sistem:'Sistem'};
+let _aeKartuTerakhir=0;
+async function muatAlertKartu(paksa){
+ if(!paksa&&Date.now()-_aeKartuTerakhir<15000&&ae.aktif){ renderAlertKartu(); return; }
+ _aeKartuTerakhir=Date.now();
+ try{ const r=await fetch('/api/alert',{cache:'no-store'}); if(!r.ok) throw new Error('HTTP '+r.status); ae.aktif=await r.json(); }
+ catch(e){ $('alertList').innerHTML='<div class="muted" style="padding:14px">Gagal memuat alert.</div>'; return; }
+ renderAlertKartu();
+}
+function renderAlertKartu(){
+ const d=ae.aktif; if(!d) return;
+ const n=d.ringkasan.kritis+d.ringkasan.peringatan; $('alertBadge').textContent=n; $('alertBadge').style.display=n?'':'none';
+ const top=d.alert.slice(0,6);
+ $('alertList').innerHTML=top.length?top.map(a=>{
+  const warna=a.tingkat==='kritis'?'#ef4444':a.tingkat==='peringatan'?'#f59e0b':'#258ff0';
+  const tag=a.tingkat==='kritis'?'critical':a.tingkat==='peringatan'?'warning':'info';
+  return `<div class="alert"><i class="aDot" style="background:${warna}"></i><span class="aTime">${esc(a.sejak?a.sejak.slice(11,16):AE_SUMBER[a.sumber]||'')}</span><div class="aText"><strong>${esc(a.judul)}${a.pelanggan?' — '+esc(a.pelanggan):''}</strong><span>${esc(a.detail||'')}</span></div><span class="tag ${tag}">${esc(a.tingkat.toUpperCase())}</span></div>`;
+ }).join('')+(d.alert.length>6?`<div class="muted" style="padding:8px 12px">+${d.alert.length-6} alert lain — <a href="#" onclick="openAlertEvent();return false">lihat semua</a></div>`:''):'<div class="muted" style="padding:14px">✅ Tidak ada alert aktif.</div>';
+}
+function openAlertEvent(){ $('alertModal').classList.add('show'); tabAE(ae.tab); }
+function tabAE(t){
+ ae.tab=t; document.querySelectorAll('.aeTabs button[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ $('aeAktif').style.display=t==='aktif'?'block':'none'; $('aeRiwayat').style.display=t==='riwayat'?'block':'none';
+ muatAE();
+}
+function muatAE(){ return ae.tab==='aktif'?muatAktif():muatRiwayat(); }
+function barisEvent(a,waktu){
+ return `<div class="evRow"><div>${AE_CHIP[a.tingkat]||''}</div><div><div class="evSrc">${esc(AE_SUMBER[a.sumber]||a.sumber)}${a.kategori?' · '+esc(a.kategori):''}</div><div class="plName">${esc(a.judul)}${a.pelanggan?' <span class="plSub">· '+esc(a.pelanggan)+'</span>':''}</div><div class="evDetail">${esc(a.detail||'')}</div></div><div class="evTime">${waktu?esc(khWaktu(waktu)):''}</div></div>`;
+}
+async function muatAktif(){
+ $('aeAktifList').innerHTML='<div class="muted">Memuat…</div>';
+ await muatAlertKartu(true);
+ const d=ae.aktif; if(!d){ $('aeAktifList').innerHTML='<div class="muted">Gagal memuat alert.</div>'; return; }
+ $('aeNAktif').textContent=d.alert.length?'('+d.alert.length+')':'';
+ const m=d.mikrotik, kotak=(k,v)=>`<div class="detail"><small>${k}</small><b>${esc(v??'—')}</b></div>`;
+ $('aeRouter').innerHTML=m?kotak('CPU MikroTik',m.cpu+'%')+kotak('Memori terpakai',m.memori_persen!=null?m.memori_persen+'%':'—')+kotak('Uptime router',m.uptime)+kotak('RouterOS',(m.board||'')+' '+(m.versi||'')):'';
+ $('aeAktifList').innerHTML=d.alert.length?d.alert.map(a=>barisEvent(a,a.sejak)).join(''):'<div class="muted">✅ Tidak ada masalah yang sedang terjadi.</div>';
+}
+function setAE(k,v){ ae[k]=v; muatRiwayat(); }
+async function muatRiwayat(){
+ for(const [cls,k] of [['aeSumber','sumber'],['aeTingkat','tingkat'],['aeJam','jam']]) document.querySelectorAll('.'+cls+' button').forEach(b=>b.classList.toggle('on',b.dataset.v===String(ae[k])));
+ $('aeRiwayatList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const q=new URLSearchParams({jam:ae.jam,sumber:ae.sumber,tingkat:ae.tingkat,cari:$('aeCari').value.trim(),limit:400});
+  const r=await fetch('/api/event?'+q); if(!r.ok) throw new Error('HTTP '+r.status); const d=await r.json();
+  $('aeKritis').textContent=d.ringkasan.kritis; $('aePeringatan').textContent=d.ringkasan.peringatan; $('aeInfo').textContent=d.ringkasan.info;
+  $('aeRiwayatList').innerHTML=d.event.length?d.event.map(e=>barisEvent(e,e.waktu)).join('')+(d.event.length>=400?'<div class="muted">Menampilkan 400 event terbaru. Persempit dengan filter atau pencarian.</div>':''):'<div class="muted">Tidak ada event untuk filter ini.</div>';
+ }catch(e){ $('aeRiwayatList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+
+// ===== Keuangan =====
+const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};
+function kuPeriodeIni(){ const t=new Date(); return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0'); }
+function kuPesan(t,ok){ const m=$('kuMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+function rpS(n){ const a=Math.abs(n); const t=a>=1e9?(a/1e9).toFixed(1).replace('.',',')+' M':a>=1e6?(a/1e6).toFixed(1).replace('.',',')+' jt':a>=1e3?Math.round(a/1e3)+' rb':String(a); return (n<0?'−':'')+t; }
+function selisih(ini,lalu,naikBaik){
+ if(!lalu) return '';
+ const p=Math.round((ini-lalu)*100/Math.abs(lalu)); if(!p) return 'sama dengan bulan lalu';
+ const baik=naikBaik?p>0:p<0; return `<span class="${baik?'naik':'turun'}">${p>0?'▲':'▼'} ${Math.abs(p)}%</span> dari bulan lalu`;
+}
+async function openKeuangan(){
+ $('keuanganModal').classList.add('show'); if(!ku.periode) ku.periode=kuPeriodeIni();
+ if(!ku.kategori.length){ try{ ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori'))).kategori; }catch(e){ kuPesan('Gagal memuat kategori: '+e.message); } }
+ tabKu(ku.tab);
+}
+function geserKu(n){ ku.periode=geserPeriode(ku.periode,n); tabKu(ku.tab==='catat'?'ringkasan':ku.tab); }
+function tabKu(t){
+ ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
+ $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
+ document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+ $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
+ if(t==='ringkasan') muatRingkasanKu(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit) resetFormKu();
+}
+function kotakKu(label,nilai,bawah,warna){ return `<div class="blBox"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
+async function muatRingkasanKu(){
+ const el=$('kuRingkasan'); el.innerHTML='<div class="muted">Memuat…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/keuangan/ringkasan?periode='+ku.periode)); ku.data=d; }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
+ const tagihanPersen=d.tagihan_periode.total?Math.round((d.tagihan_periode.total-d.piutang_periode.total)*100/d.tagihan_periode.total):null;
+ const ins=d.insentif_mitra, sisaIns=Math.max(0,ins.terhitung-ins.dibayar);
+ let h='<div class="kuKpi">'
+  +kotakKu('Pendapatan',rp(d.pendapatan),selisih(d.pendapatan,d.bulan_lalu.pendapatan,true))
+  +kotakKu('Pengeluaran',rp(d.beban),selisih(d.beban,d.bulan_lalu.beban,false))
+  +kotakKu('Laba bersih',rp(d.laba),selisih(d.laba,d.bulan_lalu.laba,true),d.laba<0?'#b42318':'#0b7a3b')
+  +kotakKu('Saldo kas akhir bulan',rp(d.saldo_akhir),'awal bulan '+rp(d.saldo_awal))+'</div>';
+ h+='<div class="kuSub">'
+  +kotakKu('Tagihan bulan ini terkumpul',tagihanPersen==null?'—':tagihanPersen+'%',rp(d.tagihan_periode.total-d.piutang_periode.total)+' dari '+rp(d.tagihan_periode.total))
+  +kotakKu('Piutang (belum bayar)',rp(d.piutang_total.total),d.piutang_total.jumlah+' tagihan s/d bulan ini',d.piutang_total.total?'#b45309':'')
+  +kotakKu('Insentif mitra',rp(ins.terhitung),(ins.terhitung?(sisaIns?'belum dibayar '+rp(sisaIns):'sudah dibayar'):'—')+(ins.tertunggak_total>sisaIns?' · total tunggakan '+rp(ins.tertunggak_total):''),sisaIns||ins.tertunggak_total?'#b45309':'')
+  +kotakKu('Utang belum dibayar',rp(d.utang.sisa),d.utang.jumlah?(d.utang.lewat_tempo?d.utang.lewat_tempo+' lewat jatuh tempo':d.utang.jumlah+' tagihan pemasok'):'tidak ada utang',d.utang.lewat_tempo?'#b42318':(d.utang.sisa?'#b45309':''))
+  +kotakKu('Modal masuk / prive',rp(d.modal_masuk)+' / '+rp(d.prive),(d.bayar_utang?'bayar utang '+rp(d.bayar_utang)+' · ':'')+'tidak dihitung laba')+'</div>';
+ // tren 6 bulan
+ h+='<div class="kuGrid"><div class="kuPanel"><h4>Pendapatan vs pengeluaran, 6 bulan</h4><div class="kuLegend"><span><i style="background:#2a78d6"></i>Pendapatan</span><span><i style="background:#eb6834"></i>Pengeluaran</span></div><div class="kuChart" id="kuChart">'+chartTren(d.tren)+'<div class="kuTip" id="kuTip"></div></div>'
+  +'<div style="overflow-x:auto"><table class="kuTbl"><thead><tr><th>Bulan</th><th>Pendapatan</th><th>Pengeluaran</th><th>Laba</th></tr></thead><tbody>'
+  +d.tren.map(r=>`<tr><td>${esc(namaPeriode(r.periode))}</td><td>${rp(r.pendapatan)}</td><td>${rp(r.beban)}</td><td class="${r.laba<0?'turun':''}">${rp(r.laba)}</td></tr>`).join('')+'</tbody></table></div></div>';
+ // pengeluaran per kategori
+ const keluar=d.per_kategori.filter(k=>k.jenis==='keluar'), maks=Math.max(1,...keluar.map(k=>k.total));
+ h+='<div class="kuPanel"><h4>Pengeluaran per kategori</h4>'+(keluar.length?keluar.map(k=>`<div class="kuBar" title="${esc(k.nama)}: ${rp(k.total)} (${k.n} transaksi)"><span class="nm">${esc(k.nama)}${k.pengaruh_laba?'':' *'}${k.kredit?' <small class="muted">(kredit '+rpS(k.kredit)+')</small>':''}</span><span><div class="track" style="width:${Math.max(2,k.total*100/maks)}%"></div></span><span class="v">${rp(k.total)}</span></div>`).join(''):'<div class="muted">Belum ada pengeluaran bulan ini.</div>');
+ const masuk=d.per_kategori.filter(k=>k.jenis==='masuk');
+ h+='<h4 style="margin-top:14px">Rincian pemasukan</h4><div class="kuBar"><span class="nm">Pembayaran langganan ('+d.jumlah_pembayaran+'x)</span><span></span><span class="v">'+rp(d.pendapatan_langganan)+'</span></div>'
+  +masuk.map(k=>`<div class="kuBar"><span class="nm">${esc(k.nama)}${k.pengaruh_laba?'':' *'}</span><span></span><span class="v">${rp(k.total)}</span></div>`).join('')
+  +((keluar.concat(masuk)).some(k=>!k.pengaruh_laba)?'<div class="plSub" style="margin-top:6px">* modal/prive: memengaruhi saldo kas, tidak dihitung laba.</div>':'')
+  +(d.beban_kredit?'<div class="plSub" style="margin-top:6px">Pengeluaran termasuk pembelian kredit '+rp(d.beban_kredit)+' (belum tentu sudah dibayar).</div>':'')+'</div></div>';
+ $('kuNUtang').textContent=d.utang.jumlah?'('+d.utang.jumlah+')':'';
+ $('kuNIns').textContent=d.insentif_mitra.tertunggak_bulan.length?'('+d.insentif_mitra.tertunggak_bulan.length+')':'';
+ // transaksi terbaru
+ h+='<div class="kuPanel" style="margin-top:12px"><h4>Transaksi terakhir dicatat</h4>'+(d.transaksi_terbaru.length?d.transaksi_terbaru.map(t=>`<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}</div><div class="plSub">${esc(tglPendek(t.tanggal))} · ${esc(t.keterangan||'')} · oleh ${esc(t.dicatat_oleh)}${t.status==='batal'?' · DIBATALKAN':''}</div></div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div></div></div>`).join(''):'<div class="muted">Belum ada transaksi. Mulai dari tab "+ Catat transaksi".</div>')+'</div>';
+ const tn=d.tanpa_nota;
+ if(tn&&tn.jumlah) h+=`<div class="kuPanel" style="margin-top:12px;border-color:#f3d48a"><h4>📎 ${tn.jumlah} pengeluaran ≥ ${rp(tn.batas)} belum ada nota <span class="plSub">(total ${rp(tn.total)})</span></h4>`
+  +tn.daftar.map(x=>`<div class="blRow"><div><div class="plName">${esc(x.kategori)} <span class="plSub">${esc(x.kode)}</span></div><div class="plSub">${esc(tglPendek(x.tanggal))} · ${esc(x.keterangan||'—')} · ${esc(x.dicatat_oleh)}</div></div><div class="blKanan"><div class="blAmt turun">−${rp(x.jumlah)}</div><div class="blAksi"><button class="btnS" onclick="tambahNota('${x.kode.startsWith('#U')?'utang':'transaksi'}',${x.id})">+ Nota</button></div></div></div>`).join('')+'</div>';
+ el.innerHTML=h; pasangTipTren(d.tren);
+}
+function chartTren(tren){
+ const W=560,H=210,pl=46,pr=8,pt=10,pb=26, w=W-pl-pr, h=H-pt-pb;
+ const maks=Math.max(1,...tren.map(r=>Math.max(r.pendapatan,r.beban)));
+ const langkah=Math.pow(10,Math.floor(Math.log10(maks))); const atas=Math.ceil(maks/langkah)*langkah;
+ const y=v=>pt+h-(v/atas)*h, slot=w/tren.length, bw=Math.min(22,slot*0.3);
+ let o=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Grafik pendapatan dan pengeluaran 6 bulan">`;
+ for(let i=0;i<=4;i++){ const v=atas*i/4, yy=y(v); o+=`<line x1="${pl}" x2="${W-pr}" y1="${yy}" y2="${yy}" stroke="#e7eee9"/><text x="${pl-6}" y="${yy+3}" text-anchor="end" font-size="10" fill="#6e8177">${rpS(v)}</text>`; }
+ const bar=(x,v,c)=>{ if(v<=0) return ''; const yy=y(v), hh=pt+h-yy, r=Math.min(4,hh); return `<path d="M${x},${pt+h} V${yy+r} Q${x},${yy} ${x+r},${yy} H${x+bw-r} Q${x+bw},${yy} ${x+bw},${yy+r} V${pt+h} Z" fill="${c}"/>`; };
+ tren.forEach((r,i)=>{ const cx=pl+slot*i+slot/2; o+=bar(cx-bw-1,r.pendapatan,'#2a78d6')+bar(cx+1,r.beban,'#eb6834');
+  o+=`<text x="${cx}" y="${H-8}" text-anchor="middle" font-size="10.5" fill="#4b6355">${esc(namaPeriode(r.periode).slice(0,3)+' '+r.periode.slice(2,4))}</text>`;
+  o+=`<rect class="kuHit" data-i="${i}" x="${pl+slot*i}" y="${pt}" width="${slot}" height="${h}" fill="transparent"/>`; });
+ return o+`<line x1="${pl}" x2="${W-pr}" y1="${pt+h}" y2="${pt+h}" stroke="#b9c9bf"/></svg>`;
+}
+function pasangTipTren(tren){
+ const box=$('kuChart'), tip=$('kuTip'); if(!box) return;
+ box.querySelectorAll('.kuHit').forEach(el=>{
+  const tampil=e=>{ const r=tren[+el.dataset.i]; tip.innerHTML=`<b>${esc(namaPeriode(r.periode))}</b><br><span style="color:#2a78d6">■</span> Pendapatan ${rp(r.pendapatan)}<br><span style="color:#eb6834">■</span> Pengeluaran ${rp(r.beban)}<br>Laba <b>${rp(r.laba)}</b>`; tip.style.display='block';
+   const b=box.getBoundingClientRect(), x=(e.clientX||b.left+b.width/2)-b.left; tip.style.left=Math.min(Math.max(0,x-70),b.width-170)+'px'; tip.style.top='8px'; el.setAttribute('fill','rgba(0,80,40,.05)'); };
+  el.addEventListener('mousemove',tampil); el.addEventListener('click',tampil);
+  el.addEventListener('mouseleave',()=>{ tip.style.display='none'; el.setAttribute('fill','transparent'); });
+ });
+}
+function setKuJenis(j){ ku.jenis=j; muatTransaksi(); }
+function bolehUbahKu(t){
+ if(t.status!=='aktif') return false; if(ku.trx&&ku.trx.peran==='owner') return true;
+ return ku.trx&&t.dicatat_oleh===ku.trx.saya&&(Date.now()-new Date(t.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
+}
+async function muatTransaksi(){
+ document.querySelectorAll('.kuFJenis button').forEach(b=>b.classList.toggle('on',b.dataset.v===ku.jenis));
+ $('kuTrxList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const q=new URLSearchParams({periode:ku.periode,jenis:ku.jenis,cari:$('kuCari').value.trim()});
+  const d=await jsonAtauError(await fetch('/api/keuangan/transaksi?'+q)); ku.trx=d;
+  $('kuTrxInfo').innerHTML=d.ringkasan.jumlah+' transaksi · masuk <b class="naik">'+rp(d.ringkasan.masuk)+'</b> · keluar <b class="turun">'+rp(d.ringkasan.keluar)+'</b>'+(d.ringkasan.dibatalkan?' · '+d.ringkasan.dibatalkan+' dibatalkan':'')+' <span class="muted">(belum termasuk pembayaran langganan)</span>';
+  $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>{
+   const aksi=bolehUbahKu(t)?(t.utang_id||t.insentif_periode?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Batalkan</button>`:'';
+   const info=esc(tglPendek(t.tanggal))+' · '+esc(t.metode)+' · dicatat '+esc(t.dicatat_oleh)+(t.diubah_oleh?' · diubah '+esc(t.diubah_oleh):'');
+   const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dibatalkan ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
+   const nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,t.jenis==='keluar'&&!t.utang_id&&t.status==='aktif');
+   return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
+  }).join(''):'<div class="muted">Belum ada transaksi di bulan ini.</div>';
+ }catch(e){ $('kuTrxList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function isiKategori(pilih){
+ const kredit=ku.formJenis==='keluar'&&$('kuMetode').value==='kredit';
+ $('kuKat').innerHTML=ku.kategori.filter(k=>k.jenis===ku.formJenis&&!k.khusus&&k.nama!=='Insentif mitra'&&(!kredit||k.pengaruh_laba)&&(k.aktif||k.id===pilih)).map(k=>`<option value="${k.id}" ${k.id===pilih?'selected':''}>${esc(k.nama)}${k.pengaruh_laba?'':' (tidak dihitung laba)'}</option>`).join('');
+}
+function setFormJenis(j,pilih){ ku.formJenis=j; document.querySelectorAll('.kuJenis button').forEach(b=>b.classList.toggle('on',b.dataset.j===j));
+ const opt=$('kuMetode').querySelector('option[value="kredit"]'); opt.hidden=j!=='keluar'||ku.edit!=null; if(opt.hidden&&$('kuMetode').value==='kredit') $('kuMetode').value='tunai';
+ aturKredit(pilih); }
+function aturKredit(pilih){ const k=ku.formJenis==='keluar'&&$('kuMetode').value==='kredit'; $('kuKreditWrap').style.display=k?'block':'none'; isiKategori(pilih??Number($('kuKat').value)); }
+function kreditBaru(){ ku.edit=null; tabKu('catat'); setFormJenis('keluar'); $('kuMetode').value='kredit'; aturKredit(); $('kuPemasok').focus(); }
+function formatJumlah(el){ const n=el.value.replace(/\D/g,''); el.value=n?Number(n).toLocaleString('id-ID'):''; }
+function resetFormKu(){
+ ku.edit=null; $('kuFormJudul').textContent='Catat transaksi baru'; $('kuMetode').value='tunai'; setFormJenis('keluar');
+ $('kuPemasok').value=''; $('kuTempo').value=''; $('kuDP').value=''; $('kuDPMetode').value='tunai';
+ $('kuTgl').value=new Date().toLocaleDateString('sv-SE'); $('kuTgl').max=new Date().toLocaleDateString('sv-SE');
+ $('kuJumlah').value=''; $('kuKet').value=''; $('kuMetode').value='tunai';
+ ku.notaBaru=[]; $('kuNotaBaru').innerHTML=''; $('kuNotaAda').innerHTML=''; $('kuNotaInput').value='';
+}
+function editTransaksi(i){
+ const t=ku.trx.transaksi[i]; ku.edit=t.id; tabKu('catat');
+ $('kuFormJudul').textContent='Ubah transaksi #'+t.id; setFormJenis(t.jenis,t.kategori_id);
+ $('kuTgl').value=t.tanggal; $('kuJumlah').value=Number(t.jumlah).toLocaleString('id-ID'); $('kuMetode').value=t.metode; $('kuKet').value=t.keterangan||'';
+ $('kuNotaAda').innerHTML=(t.nota||[]).map(n=>thumbNota(n,true)).join('');
+}
+async function simpanTransaksi(){
+ if(ku.edit==null&&ku.formJenis==='keluar'&&$('kuMetode').value==='kredit') return simpanKredit();
+ const body={tanggal:$('kuTgl').value,jenis:ku.formJenis,kategori_id:Number($('kuKat').value),jumlah:Number($('kuJumlah').value.replace(/\D/g,'')),metode:$('kuMetode').value,keterangan:$('kuKet').value.trim()||null};
+ if(!body.tanggal||!body.kategori_id||!(body.jumlah>0)){ kuPesan('Isi tanggal, kategori, dan jumlah.'); return; }
+ const baru=ku.edit==null;
+ try{
+  const hasil=await jsonAtauError(await fetch(baru?'/api/keuangan/transaksi':'/api/keuangan/transaksi/'+ku.edit,{method:baru?'POST':'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  const gagalNota=await unggahSemuaNota('transaksi',baru?hasil.id:ku.edit);
+  const pesan=(baru?'Tercatat: ':'Disimpan: ')+(body.jenis==='keluar'?'pengeluaran ':'pemasukan ')+rp(body.jumlah)+(ku.notaTerunggah?(' · '+ku.notaTerunggah+' nota'):'')+'.'+(gagalNota?' ⚠️ '+gagalNota:'');
+  ku.periode=body.tanggal.slice(0,7); resetFormKu();
+  if(baru){ kuPesan(pesan,true); $('kuJumlah').focus(); } else { tabKu('transaksi'); kuPesan(pesan,true); }
+ }catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function batalTransaksi(i){
+ const t=ku.trx.transaksi[i]; const alasan=prompt('Batalkan '+t.kategori+' '+rp(t.jumlah)+'?\nTuliskan alasannya (tercatat dan terlihat owner):'); if(alasan==null) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+t.id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatTransaksi(); kuPesan('Transaksi dibatalkan.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function tambahKategori(){
+ const nama=prompt('Nama kategori '+(ku.formJenis==='keluar'?'pengeluaran':'pemasukan')+' baru:'); if(!nama||!nama.trim()) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/kategori',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nama:nama.trim(),jenis:ku.formJenis,pengaruh_laba:true})}));
+  ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori'))).kategori; isiKategori(d.id); kuPesan('Kategori "'+nama.trim()+'" ditambahkan.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.kas_catat='Catat kas'; AKSI_LABEL.kas_ubah='Ubah transaksi kas'; AKSI_LABEL.kas_batal='Batalkan transaksi kas'; AKSI_LABEL.kas_kategori='Kategori kas'; AKSI_LABEL.kas_ekspor='Ekspor keuangan';
+
+// ===== Utang (pembelian kredit) =====
+ku.utFilter='belum'; ku.utang=null; ku.utBayar=null;
+async function simpanKredit(){
+ const body={tanggal:$('kuTgl').value,pemasok:$('kuPemasok').value.trim(),kategori_id:Number($('kuKat').value),jumlah:Number($('kuJumlah').value.replace(/\D/g,'')),
+  jatuh_tempo:$('kuTempo').value||null,keterangan:$('kuKet').value.trim()||null,uang_muka:Number($('kuDP').value.replace(/\D/g,''))||0,metode_uang_muka:$('kuDPMetode').value};
+ if(!body.tanggal||!body.kategori_id||!(body.jumlah>0)||!body.pemasok){ kuPesan('Isi tanggal, pemasok, kategori, dan jumlah.'); return; }
+ if(!body.jatuh_tempo&&!confirm('Jatuh tempo belum diisi — tidak akan ada pengingat. Lanjutkan?')) return;
+ try{
+  const hasil=await jsonAtauError(await fetch('/api/keuangan/utang',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  const gagalNota=await unggahSemuaNota('utang',hasil.id), nNota=ku.notaTerunggah;
+  ku.periode=body.tanggal.slice(0,7); resetFormKu(); tabKu('utang');
+  kuPesan('Pembelian kredit '+rp(body.jumlah)+' dari '+body.pemasok+' tercatat'+(body.uang_muka?(', uang muka '+rp(body.uang_muka)):'')+(nNota?(' · '+nNota+' nota'):'')+'.'+(gagalNota?' ⚠️ '+gagalNota:''),!gagalNota);
+ }catch(e){ kuPesan('Gagal: '+e.message); }
+}
+function setUtFilter(v){ ku.utFilter=v; ku.utBayar=null; muatUtang(); }
+function infoTempo(u){
+ if(u.status==='batal') return '<span class="chip off">Dibatalkan</span>';
+ if(u.lunas) return '<span class="chip ok">Lunas</span>';
+ if(!u.jatuh_tempo) return '<span class="chip warn">Tanpa jatuh tempo</span>';
+ const sel=Math.round((new Date(u.jatuh_tempo+'T00:00')-new Date(new Date().toLocaleDateString('sv-SE')+'T00:00'))/864e5);
+ return sel<0?`<span class="chip bad">Lewat ${-sel} hari</span>`:sel===0?'<span class="chip bad">Jatuh tempo hari ini</span>':`<span class="chip ${sel<=3?'warn':'info'}">${sel} hari lagi</span>`;
+}
+function bolehUbahUtang(u){
+ if(u.status!=='aktif'||!ku.utang) return false; if(ku.utang.peran==='owner') return true;
+ return u.dicatat_oleh===ku.utang.saya&&(Date.now()-new Date(u.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
+}
+async function muatUtang(){
+ document.querySelectorAll('.utFilter button[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===ku.utFilter));
+ $('utList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const d=await jsonAtauError(await fetch('/api/keuangan/utang?status='+ku.utFilter)); ku.utang=d; const r=d.ringkasan;
+  $('utSisa').textContent=rp(r.sisa); $('utSisaN').textContent=r.jumlah+' utang belum lunas';
+  $('utLewat').textContent=rp(r.lewat_tempo_total); $('utLewatN').textContent=r.lewat_tempo+' utang';
+  $('utDekat').textContent=r.terdekat?rp(r.terdekat.sisa):'—'; $('utDekatN').textContent=r.terdekat?(r.terdekat.pemasok+' · '+tglPendek(r.terdekat.jatuh_tempo)):'';
+  $('kuNUtang').textContent=r.jumlah?'('+r.jumlah+')':'';
+  $('utList').innerHTML=d.utang.length?d.utang.map((u,i)=>{
+   const riw=u.pembayaran.length?'<div class="kuRiwBayar">'+u.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)}${p.keterangan?' · '+esc(p.keterangan):''} · ${esc(p.dicatat_oleh)}</div>`).join('')+'</div>':'';
+   const aksi=(u.status==='aktif'&&u.sisa>0?`<button class="btnS go" onclick="bukaBayar(${i})">Bayar</button>`:'')+(bolehUbahUtang(u)&&!u.pembayaran.some(p=>p.status==='aktif')?`<button class="btnS" onclick="batalUtang(${i})">Batalkan</button>`:'');
+   const form=ku.utBayar===u.id?`<div class="kuBayarForm"><div><small>Tanggal bayar</small><input type="date" id="byTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>Jumlah (sisa ${rp(u.sisa)})</small><input id="byJml" inputmode="numeric" value="${Number(u.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="byMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><button class="btnS go" onclick="simpanBayar(${i})">Simpan</button></div></div>`:'';
+   const batal=u.status==='batal'?`<div class="plSub" style="color:#b42318">Dibatalkan ${esc(u.batal_oleh)}: ${esc(u.batal_alasan||'')}</div>`:'';
+   return `<div class="blRow ${u.status==='batal'?'kuBatal':''}" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(u.pemasok)} <span class="plSub">#U${u.id}</span></div><div class="plSub">${esc(u.kategori)} · beli ${esc(tglPendek(u.tanggal))}${u.jatuh_tempo?' · jatuh tempo '+esc(tglPendek(u.jatuh_tempo)):''} · dicatat ${esc(u.dicatat_oleh)}</div>${u.keterangan?`<div class="plSub">${esc(u.keterangan)}</div>`:''}${batal}${htmlNota(u.nota,bolehUbahUtang(u)?`tambahNota('utang',${u.id})`:null,u.status==='aktif')}</div><div class="blKanan"><div class="blAmt">${rp(u.jumlah)}</div><div class="plSub">dibayar ${rp(u.dibayar)}${u.status==='aktif'&&u.sisa>0?' · sisa <b style="color:#b45309">'+rp(u.sisa)+'</b>':''}</div><div class="blAksi">${infoTempo(u)}${aksi}</div></div></div>${riw}${form}</div>`;
+  }).join(''):'<div class="muted">'+(ku.utFilter==='belum'?'Tidak ada utang yang belum lunas.':'Belum ada data.')+'</div>';
+ }catch(e){ $('utList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function bukaBayar(i){ const u=ku.utang.utang[i]; ku.utBayar=ku.utBayar===u.id?null:u.id; muatUtang(); }
+async function simpanBayar(i){
+ const u=ku.utang.utang[i], body={tanggal:$('byTgl').value,jumlah:Number($('byJml').value.replace(/\D/g,'')),metode:$('byMetode').value};
+ if(!(body.jumlah>0)){ kuPesan('Isi jumlah pembayaran.'); return; }
+ if(!confirm('Bayar utang '+u.pemasok+' sebesar '+rp(body.jumlah)+'? Saldo kas akan berkurang.')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/utang/'+u.id+'/bayar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  ku.utBayar=null; await muatUtang(); kuPesan('Pembayaran '+rp(body.jumlah)+' ke '+u.pemasok+' tercatat'+(d.sisa?(', sisa '+rp(d.sisa)):' — LUNAS')+'.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function batalUtang(i){
+ const u=ku.utang.utang[i]; const alasan=prompt('Batalkan pembelian kredit '+u.pemasok+' '+rp(u.jumlah)+'?\nTuliskan alasannya:'); if(alasan==null) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/utang/'+u.id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatUtang(); kuPesan('Utang dibatalkan.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.utang_catat='Catat utang'; AKSI_LABEL.utang_bayar='Bayar utang'; AKSI_LABEL.utang_batal='Batalkan utang';
+
+// ===== Laporan bulanan Telegram (owner) =====
+function htmlTelegram(t){ // tampilkan HTML Telegram (b/i/code) dengan aman
+ // teks dari server sudah ber-escape HTML (format Telegram): kembalikan entitasnya, izinkan hanya b/i/code
+ return esc(t).replace(/&amp;(amp|lt|gt|quot|#39);/g,'&$1;').replace(/&lt;(\/?)(b|i|code)&gt;/g,'<$1$2>');
+}
+async function pratinjauLaporan(){
+ $('kuLap').style.display='block'; $('kuLapTeks').textContent='Memuat…';
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/laporan-telegram?periode='+ku.periode));
+  $('kuLapTeks').innerHTML=htmlTelegram(d.teks);
+  $('kuLapInfo').textContent=d.chat_owner?('· '+d.chat_owner+' chat owner · otomatis tiap tanggal 1 jam '+d.jam+(d.aktif?'':' (NONAKTIF)')):'· chat ID owner belum diisi (Pengaturan → Sistem)';
+ }catch(e){ $('kuLapTeks').textContent='Gagal: '+e.message; }
+}
+async function kirimLaporan(){
+ if(!confirm('Kirim laporan '+namaPeriode(ku.periode)+' ke Telegram owner sekarang?')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/laporan-telegram?periode='+ku.periode,{method:'POST'})); kuPesan('Laporan terkirim ke '+d.terkirim+' chat owner, beserta berkas CSV.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.laporan_bulanan='Laporan bulanan';
+
+// ===== Nota (foto/PDF bukti) =====
+ku.notaBaru=[]; ku.notaTerunggah=0; ku.notaTarget=null;
+function thumbNota(n,bisaHapus){
+ const url='/api/keuangan/nota/'+n.id, gambar=n.mime.startsWith('image/');
+ return `<a class="notaThumb" href="${url}" target="_blank" rel="noopener" title="${esc(n.nama_asli||'nota')} · ${Math.round(n.ukuran/1024)} KB · ${esc(n.diunggah_oleh)}">${gambar?`<img src="${url}" alt="nota" loading="lazy">`:'PDF'}${bisaHapus?`<button type="button" onclick="event.preventDefault();hapusNota(${n.id})" aria-label="Hapus nota">×</button>`:''}</a>`;
+}
+function htmlNota(daftar,aksiTambah,perlu){
+ daftar=daftar||[];
+ if(!daftar.length&&!aksiTambah) return perlu?'<div class="plSub" style="color:#b45309;margin-top:4px">📎 belum ada nota</div>':'';
+ return '<div class="notaWrap">'+daftar.map(n=>thumbNota(n,!!aksiTambah)).join('')+(aksiTambah?`<button class="notaAdd" onclick="${aksiTambah}">+ Nota</button>`:'')+'</div>'
+  +(!daftar.length&&perlu?'<div class="plSub" style="color:#b45309">📎 belum ada nota</div>':'');
+}
+async function kompresNota(file){
+ if(!file.type.startsWith('image/')||file.type==='image/gif') return file;
+ try{
+  const bmp=await createImageBitmap(file); const maks=1600, skala=Math.min(1,maks/Math.max(bmp.width,bmp.height));
+  if(skala===1&&file.size<600*1024&&file.type==='image/jpeg') return file;
+  const c=document.createElement('canvas'); c.width=Math.round(bmp.width*skala); c.height=Math.round(bmp.height*skala);
+  c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);
+  const blob=await new Promise(r=>c.toBlob(r,'image/jpeg',0.8)); return blob||file;
+ }catch(e){ return file; }   // format tak didukung browser: kirim apa adanya, server yang memeriksa
+}
+function pilihNota(input){
+ for(const f of input.files) ku.notaBaru.push(f);
+ input.value='';
+ $('kuNotaBaru').innerHTML=ku.notaBaru.map((f,i)=>`<span class="notaThumb" title="${esc(f.name)}">${f.type.startsWith('image/')?`<img src="${URL.createObjectURL(f)}" alt="">`:'PDF'}<button type="button" onclick="ku.notaBaru.splice(${i},1);pilihNota({files:[],value:''})">×</button></span>`).join('');
+}
+async function unggahNota(pemilik,id,file){
+ const blob=await kompresNota(file);
+ const nama=(file.name||'nota').replace(/[^\w .()-]/g,'_').slice(0,120);
+ const r=await fetch('/api/keuangan/'+pemilik+'/'+id+'/nota',{method:'POST',headers:{'Content-Type':blob.type||'application/octet-stream','X-Nama-Berkas':nama},body:blob});
+ return jsonAtauError(r);
+}
+async function unggahSemuaNota(pemilik,id){
+ ku.notaTerunggah=0; const gagal=[];
+ for(const f of ku.notaBaru){ try{ await unggahNota(pemilik,id,f); ku.notaTerunggah++; }catch(e){ gagal.push((f.name||'nota')+': '+e.message); } }
+ ku.notaBaru=[]; $('kuNotaBaru').innerHTML='';
+ return gagal.length?('Nota gagal diunggah — '+gagal.join('; ')):'';
+}
+function tambahNota(pemilik,id){ ku.notaTarget={pemilik,id}; $('notaLangsung').click(); }
+async function unggahLangsung(input){
+ const t=ku.notaTarget, files=[...input.files]; input.value=''; if(!t||!files.length) return;
+ kuPesan('Mengunggah '+files.length+' nota…',true); const gagal=[];
+ for(const f of files){ try{ await unggahNota(t.pemilik,t.id,f); }catch(e){ gagal.push(e.message); } }
+ kuPesan(gagal.length?('Gagal: '+gagal.join('; ')):(files.length+' nota tersimpan.'),!gagal.length);
+ if(ku.tab==='utang') muatUtang(); else if(ku.tab==='transaksi') muatTransaksi(); else if(ku.tab==='insentif') muatInsentif(); else muatRingkasanKu();
+}
+async function hapusNota(id){
+ if(!confirm('Hapus nota ini? (berkas tetap tersimpan di server sebagai arsip, tercatat di log)')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/nota/'+id,{method:'DELETE'})); kuPesan('Nota dihapus.',true);
+  document.querySelectorAll(`a.notaThumb[href="/api/keuangan/nota/${id}"]`).forEach(e=>e.remove());
+  if(ku.tab==='utang') muatUtang(); else if(ku.tab==='transaksi') muatTransaksi(); else if(ku.tab==='insentif') muatInsentif(); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.nota_unggah='Unggah nota'; AKSI_LABEL.nota_hapus='Hapus nota';
+
+// ===== Insentif mitra: rekap per bulan + pembayaran =====
+ku.ins=null; ku.inBayar=null;
+const IN_CHIP={lunas:'<span class="chip ok">Lunas</span>',sebagian:'<span class="chip warn">Sebagian</span>',belum:'<span class="chip bad">Belum dibayar</span>',nihil:'<span class="chip off">Tidak ada</span>'};
+async function muatInsentif(){
+ $('inList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const d=await jsonAtauError(await fetch('/api/keuangan/insentif?sampai='+kuPeriodeIni())); ku.ins=d;
+  $('inTunggak').textContent=rp(d.ringkasan.tertunggak); $('inTunggakN').textContent=d.ringkasan.bulan_tertunggak+' bulan';
+  $('inDibayar').textContent=rp(d.ringkasan.dibayar_total); $('inTarif').textContent=d.rekap.length?rp(d.rekap[0].per_pelanggan):'—';
+  $('kuNIns').textContent=d.ringkasan.bulan_tertunggak?'('+d.ringkasan.bulan_tertunggak+')':'';
+  const hariIni=kuPeriodeIni();
+  $('inList').innerHTML=d.rekap.length?d.rekap.map((b,i)=>{
+   const berjalan=b.periode===hariIni;
+   const riw=b.pembayaran.length?'<div class="kuRiwBayar">'+b.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)} · ${esc(p.dicatat_oleh)}${p.status!=='aktif'?' · dibatalkan: '+esc(p.batal_alasan||''):''}${p.status==='aktif'&&bolehBatalBayar(p)?` <a href="#" onclick="batalBayarInsentif(${p.id});return false">batalkan</a>`:''}${htmlNota(p.nota,p.status==='aktif'&&bolehBatalBayar(p)?`tambahNota('transaksi',${p.id})`:null,false)}</div>`).join('')+'</div>':'';
+   const form=ku.inBayar===b.periode?`<div class="kuBayarForm" style="grid-template-columns:repeat(4,minmax(0,1fr)) auto"><div><small>Tanggal bayar</small><input type="date" id="ibTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>Jumlah (sisa ${rp(b.sisa)})</small><input id="ibJml" inputmode="numeric" value="${Number(b.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="ibMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><small>Penerima (opsional)</small><input id="ibPenerima" placeholder="nama mitra"></div><div><button class="btnS go" onclick="simpanBayarInsentif('${b.periode}')">Simpan</button></div></div><div class="plSub" style="margin-top:4px">Bukti transfer bisa dilampirkan setelah disimpan (tombol + Nota).</div>`:'';
+   const tombol=b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Bayar</button>`:'';
+   return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(namaPeriode(b.periode))}${berjalan?' <span class="plSub">(bulan berjalan, masih bisa bertambah)</span>':''}</div><div class="plSub">${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}${b.lebih?' · <b style="color:#1669aa">lebih bayar '+rp(b.lebih)+'</b>':''}</div></div><div class="blKanan"><div class="blAmt">${rp(b.terhitung)}</div><div class="plSub">dibayar ${rp(b.dibayar)}${b.sisa?' · sisa <b style="color:#b45309">'+rp(b.sisa)+'</b>':''}</div><div class="blAksi">${IN_CHIP[b.status]||''}${tombol}</div></div></div>${riw}${form}</div>`;
+  }).join(''):'<div class="muted">Belum ada data tagihan.</div>';
+ }catch(e){ $('inList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function bolehBatalBayar(p){
+ if(!ku.ins) return false; if(ku.ins.peran==='owner') return true;
+ return p.dicatat_oleh===ku.ins.saya&&(Date.now()-new Date(p.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
+}
+function bukaBayarInsentif(p){ ku.inBayar=ku.inBayar===p?null:p; muatInsentif(); }
+async function simpanBayarInsentif(periode){
+ const body={tanggal:$('ibTgl').value,jumlah:Number($('ibJml').value.replace(/\D/g,'')),metode:$('ibMetode').value,penerima:$('ibPenerima').value.trim()||null};
+ if(!(body.jumlah>0)){ kuPesan('Isi jumlah pembayaran.'); return; }
+ if(!confirm('Catat pembayaran insentif '+namaPeriode(periode)+' sebesar '+rp(body.jumlah)+'? Saldo kas akan berkurang.')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/bayar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  ku.inBayar=null; await muatInsentif(); kuPesan('Pembayaran insentif '+namaPeriode(periode)+' '+rp(body.jumlah)+' tercatat'+(d.sisa?(', sisa '+rp(d.sisa)):' — LUNAS')+'. Lampirkan bukti transfer dengan tombol + Nota.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function batalBayarInsentif(id){
+ const alasan=prompt('Batalkan pembayaran insentif ini? Tuliskan alasannya:'); if(alasan==null) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.insentif_bayar='Bayar insentif mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 </script>
 </body></html>
