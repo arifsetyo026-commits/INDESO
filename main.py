@@ -1282,7 +1282,8 @@ async def on_startup():
 
 @app.get("/")
 async def serve_dashboard():
-    return FileResponse("index.html")
+    # no-cache: browser selalu cek ulang ke server, jadi update index.html langsung terpakai
+    return FileResponse("index.html", headers={"Cache-Control": "no-cache"})
 
 def _salin(model, **perubahan):
     """Salin objek Pydantic dengan nilai baru (jalan di Pydantic v1 maupun v2)."""
