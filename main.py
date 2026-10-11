@@ -3091,6 +3091,7 @@ _METODE = ("tunai", "transfer", "qris", "lainnya")
 # beban (bebannya sudah dihitung saat pembelian kredit dicatat).
 _KAT_BAYAR_UTANG = "Pembayaran utang"
 _KAT_INSENTIF = "Insentif mitra"     # dibayar lewat tab Insentif, terikat ke periode
+_KAT_BUNGA = "Bunga & biaya cicilan"  # selisih total cicilan dengan harga barang
 
 
 def init_keuangan_db() -> None:
@@ -3159,6 +3160,24 @@ def init_keuangan_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_utang_tanggal ON utang(tanggal)")
+        # Cicilan bulanan (mis. PayLater): jumlah = total kewajiban (uang muka + semua cicilan),
+        # pokok = harga barang; selisihnya bunga/biaya layanan (dibebankan terpisah).
+        kol_u = [r[1] for r in conn.execute("PRAGMA table_info(utang)")]
+        for kol, tipe in (("pokok", "INTEGER"), ("uang_muka", "INTEGER NOT NULL DEFAULT 0"),
+                          ("tenor", "INTEGER"), ("cicilan", "INTEGER")):
+            if kol not in kol_u:
+                conn.execute(f"ALTER TABLE utang ADD COLUMN {kol} {tipe}")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS utang_cicilan (
+                utang_id INTEGER NOT NULL REFERENCES utang(id),
+                ke INTEGER NOT NULL,
+                jatuh_tempo TEXT NOT NULL,
+                jumlah INTEGER NOT NULL,
+                PRIMARY KEY (utang_id, ke)
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 1)",
+                     (_KAT_BUNGA,))
         conn.commit()
     finally:
         conn.close()
@@ -3194,12 +3213,23 @@ def _ringkas_periode(conn, periode: str) -> dict:
         "WHERE t.status='aktif' AND t.tanggal >= ? AND t.tanggal < ? GROUP BY k.id",
         (awal, akhir),
     ).fetchall()
-    kredit = {r["kategori_id"]: r for r in conn.execute(
-        "SELECT u.kategori_id, k.nama, k.pengaruh_laba, SUM(u.jumlah) AS total, COUNT(*) AS n "
+    kredit = {r["kategori_id"]: dict(r) for r in conn.execute(
+        "SELECT u.kategori_id, k.nama, k.pengaruh_laba, SUM(COALESCE(u.pokok, u.jumlah)) AS total, COUNT(*) AS n "
         "FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
         "WHERE u.status='aktif' AND u.tanggal >= ? AND u.tanggal < ? GROUP BY u.kategori_id",
         (awal, akhir),
     ).fetchall()}
+    # Bunga/biaya cicilan (total cicilan - harga barang) dibebankan ke kategorinya sendiri
+    bunga = conn.execute(
+        "SELECT COALESCE(SUM(u.jumlah - u.pokok),0), COUNT(*) FROM utang u WHERE u.status='aktif' "
+        "AND u.pokok IS NOT NULL AND u.jumlah > u.pokok AND u.tanggal >= ? AND u.tanggal < ?", (awal, akhir)
+    ).fetchone()
+    if bunga[0]:
+        kb = conn.execute("SELECT id FROM kategori_kas WHERE nama = ? AND jenis='keluar'", (_KAT_BUNGA,)).fetchone()
+        if kb:
+            g = kredit.setdefault(kb[0], {"kategori_id": kb[0], "nama": _KAT_BUNGA, "pengaruh_laba": 1, "total": 0, "n": 0})
+            g["total"] += bunga[0]
+            g["n"] += bunga[1]
     masuk_ops = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and r["pengaruh_laba"])
     keluar_tunai = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["pengaruh_laba"])
     masuk_lain = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and not r["pengaruh_laba"])
@@ -3355,14 +3385,46 @@ def _daftar_utang(conn, hanya_belum: bool = False) -> list[dict]:
     ).fetchall()
     hasil = []
     hari = datetime.now().strftime("%Y-%m-%d")
+    jadwal_semua: dict[int, list] = {}
+    for c in conn.execute("SELECT utang_id, ke, jatuh_tempo, jumlah FROM utang_cicilan ORDER BY utang_id, ke"):
+        jadwal_semua.setdefault(c[0], []).append({"ke": c[1], "jatuh_tempo": c[2], "jumlah": c[3]})
     for r in rows:
         d = dict(r)
         d["sisa"] = d["jumlah"] - d["dibayar"] if d["status"] == "aktif" else 0
         d["lunas"] = d["status"] == "aktif" and d["sisa"] <= 0
-        d["lewat_tempo"] = bool(d["status"] == "aktif" and d["sisa"] > 0 and d["jatuh_tempo"] and d["jatuh_tempo"] < hari)
+        d["bunga"] = max(0, d["jumlah"] - d["pokok"]) if d.get("pokok") is not None else 0
+        jadwal = jadwal_semua.get(d["id"])
+        if jadwal:
+            # Pembayaran (di luar uang muka) menutup cicilan berurutan dari yang pertama
+            tertutup = max(0, d["dibayar"] - (d.get("uang_muka") or 0))
+            kum, berikut, tertunggak = 0, None, 0
+            for c in jadwal:
+                awal_c, kum = kum, kum + c["jumlah"]
+                dibayar_c = min(c["jumlah"], max(0, tertutup - awal_c))
+                c["dibayar"], c["sisa"] = dibayar_c, c["jumlah"] - dibayar_c
+                c["status"] = ("lunas" if c["sisa"] <= 0 else
+                               ("terlambat" if c["jatuh_tempo"] < hari else ("sebagian" if dibayar_c else "belum")))
+                if c["sisa"] > 0 and c["jatuh_tempo"] < hari:
+                    tertunggak += c["sisa"]
+                if berikut is None and c["sisa"] > 0:
+                    berikut = c
+            d["jadwal"] = jadwal
+            d["jatuh_tempo_akhir"] = jadwal[-1]["jatuh_tempo"]
+            d["cicilan_lunas"] = sum(1 for c in jadwal if c["status"] == "lunas")
+            if berikut and d["status"] == "aktif":
+                d["jatuh_tempo"] = berikut["jatuh_tempo"]          # yang dipakai pengingat & urutan
+                d["cicilan_ke"] = berikut["ke"]
+                d["tagihan_berikut"] = min(berikut["sisa"], d["sisa"])
+            d["tertunggak"] = tertunggak
+            d["lewat_tempo"] = bool(d["status"] == "aktif" and tertunggak > 0)
+        else:
+            d["tagihan_berikut"] = d["sisa"]
+            d["lewat_tempo"] = bool(d["status"] == "aktif" and d["sisa"] > 0 and d["jatuh_tempo"] and d["jatuh_tempo"] < hari)
+            d["tertunggak"] = d["sisa"] if d["lewat_tempo"] else 0
         if hanya_belum and (d["status"] != "aktif" or d["sisa"] <= 0):
             continue
         hasil.append(d)
+    hasil.sort(key=lambda u: (u["status"], u["jatuh_tempo"] or "9999-12-31", -u["id"]))
     return hasil
 
 
@@ -3371,19 +3433,32 @@ def _ringkas_utang(conn) -> dict:
     lewat = [u for u in belum if u["lewat_tempo"]]
     tempo = sorted((u for u in belum if u["jatuh_tempo"]), key=lambda u: u["jatuh_tempo"])
     return {"sisa": sum(u["sisa"] for u in belum), "jumlah": len(belum),
-            "lewat_tempo": len(lewat), "lewat_tempo_total": sum(u["sisa"] for u in lewat),
-            "terdekat": {k: tempo[0][k] for k in ("pemasok", "sisa", "jatuh_tempo")} if tempo else None}
+            "lewat_tempo": len(lewat), "lewat_tempo_total": sum(u["tertunggak"] for u in lewat),
+            "terdekat": ({"pemasok": tempo[0]["pemasok"], "sisa": tempo[0]["tagihan_berikut"],
+                          "jatuh_tempo": tempo[0]["jatuh_tempo"], "cicilan_ke": tempo[0].get("cicilan_ke"),
+                          "tenor": tempo[0].get("tenor")} if tempo else None)}
 
 
 class UtangIn(BaseModel):
     tanggal: str
     pemasok: str
     kategori_id: int
-    jumlah: int
-    jatuh_tempo: Optional[str] = None
+    jumlah: int                         # harga barang/jasa (pokok)
+    jatuh_tempo: Optional[str] = None   # sekali bayar; untuk cicilan = jatuh tempo cicilan pertama
     keterangan: Optional[str] = None
     uang_muka: int = 0
     metode_uang_muka: str = "tunai"
+    tenor: Optional[int] = None         # diisi = cicilan bulanan sebanyak ini
+    cicilan: Optional[int] = None       # nominal per bulan (termasuk bunga/biaya)
+
+
+def _tambah_bulan(tanggal: str, n: int) -> str:
+    """Tanggal yang sama n bulan kemudian; tanggal 29-31 menyesuaikan akhir bulan."""
+    d = datetime.strptime(tanggal, "%Y-%m-%d")
+    total = d.year * 12 + (d.month - 1) + n
+    th, bl = total // 12, total % 12 + 1
+    akhir = ((datetime(th + (bl == 12), bl % 12 + 1, 1)) - timedelta(days=1)).day
+    return f"{th}-{bl:02d}-{min(d.day, akhir):02d}"
 
 
 class BayarUtangIn(BaseModel):
@@ -3652,6 +3727,21 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
         raise HTTPException(status_code=400, detail="Uang muka harus kurang dari total pembelian. Kalau lunas, catat sebagai pengeluaran biasa.")
     if d.metode_uang_muka not in _METODE:
         raise HTTPException(status_code=400, detail="Metode uang muka tidak valid.")
+    jadwal, total = [], d.jumlah
+    if d.tenor:
+        if not 2 <= d.tenor <= 60:
+            raise HTTPException(status_code=400, detail="Tenor cicilan 2–60 bulan.")
+        if not d.cicilan or d.cicilan <= 0:
+            raise HTTPException(status_code=400, detail="Isi nominal cicilan per bulan.")
+        if not d.jatuh_tempo:
+            raise HTTPException(status_code=400, detail="Isi jatuh tempo cicilan pertama.")
+        total = d.uang_muka + d.cicilan * d.tenor
+        if total < d.jumlah:
+            raise HTTPException(status_code=400, detail=f"Uang muka + {d.tenor} × cicilan ({_rp(total)}) kurang dari harga "
+                                f"barang ({_rp(d.jumlah)}). Periksa nominal cicilan.")
+        if total > d.jumlah * 3:
+            raise HTTPException(status_code=400, detail="Total cicilan lebih dari 3× harga barang — periksa lagi angkanya.")
+        jadwal = [(i + 1, _tambah_bulan(d.jatuh_tempo, i), d.cicilan) for i in range(d.tenor)]
     conn = _billing_conn()
     try:
         k = conn.execute("SELECT nama, jenis, pengaruh_laba, khusus FROM kategori_kas WHERE id = ?", (d.kategori_id,)).fetchone()
@@ -3659,12 +3749,15 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
             raise HTTPException(status_code=400, detail="Pilih kategori pengeluaran (beban) untuk pembelian kredit.")
         oleh = _oleh(request)
         cur = conn.execute(
-            "INSERT INTO utang (tanggal, pemasok, kategori_id, jumlah, jatuh_tempo, keterangan, dicatat_oleh, dicatat_pada) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (d.tanggal, pemasok, d.kategori_id, d.jumlah, d.jatuh_tempo or None, (d.keterangan or "").strip()[:500] or None,
-             oleh, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            "INSERT INTO utang (tanggal, pemasok, kategori_id, jumlah, jatuh_tempo, keterangan, dicatat_oleh, dicatat_pada, "
+            "pokok, uang_muka, tenor, cicilan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (d.tanggal, pemasok, d.kategori_id, total, (jadwal[-1][1] if jadwal else d.jatuh_tempo) or None,
+             (d.keterangan or "").strip()[:500] or None, oleh, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             d.jumlah, d.uang_muka, d.tenor if jadwal else None, d.cicilan if jadwal else None),
         )
         uid = cur.lastrowid
+        conn.executemany("INSERT INTO utang_cicilan (utang_id, ke, jatuh_tempo, jumlah) VALUES (?,?,?,?)",
+                         [(uid, ke, tgl, jml) for ke, tgl, jml in jadwal])
         if d.uang_muka:
             _catat_bayar_utang(conn, uid, BayarUtangIn(tanggal=d.tanggal, jumlah=d.uang_muka, metode=d.metode_uang_muka,
                                                        keterangan="Uang muka"), oleh)
@@ -3673,9 +3766,11 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
         conn.close()
     catat_aktivitas(_oleh(request), "utang_catat",
                     f"#U{uid} {pemasok} {_rp(d.jumlah)} · {k['nama']} · {d.tanggal}"
-                    + (f" · jatuh tempo {d.jatuh_tempo}" if d.jatuh_tempo else "")
+                    + (f" · cicilan {d.tenor}× {_rp(d.cicilan)} mulai {d.jatuh_tempo} (total {_rp(total)}, "
+                       f"bunga/biaya {_rp(total - d.jumlah)})" if jadwal else
+                       (f" · jatuh tempo {d.jatuh_tempo}" if d.jatuh_tempo else ""))
                     + (f" · uang muka {_rp(d.uang_muka)}" if d.uang_muka else ""))
-    return {"id": uid}
+    return {"id": uid, "total": total}
 
 
 @app.post("/api/keuangan/utang/{uid}/bayar")
@@ -3750,7 +3845,9 @@ def proses_pengingat_utang(sekarang=None) -> None:
             for u in sorted(dekat, key=lambda x: x["jatuh_tempo"]):
                 selisih = (datetime.strptime(u["jatuh_tempo"], "%Y-%m-%d").date() - sekarang.date()).days
                 ket = f"lewat {-selisih} hari" if selisih < 0 else ("hari ini" if selisih == 0 else f"{selisih} hari lagi")
-                baris.append(f"• {_esc(u['pemasok'])}: sisa {_rp(u['sisa'])}, jatuh tempo {u['jatuh_tempo'][8:10]}/{u['jatuh_tempo'][5:7]} ({ket})")
+                apa = (f"cicilan ke-{u['cicilan_ke']}/{u['tenor']} {_rp(u['tagihan_berikut'])}" if u.get("cicilan_ke")
+                       else f"sisa {_rp(u['sisa'])}")
+                baris.append(f"• {_esc(u['pemasok'])}: {apa}, jatuh tempo {u['jatuh_tempo'][8:10]}/{u['jatuh_tempo'][5:7]} ({ket})")
             send_telegram_message(f"💳 <b>Utang jatuh tempo</b> ({len(dekat)})\\n" + "\\n".join(baris[:15])
                                   + "\\nBayar lewat dashboard → Keuangan → Utang.")
         conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?, 'utang')", (hari,))
@@ -4085,7 +4182,9 @@ def _buat_csv_keuangan(periode: str) -> str:
                     aman(t["dicatat_oleh"]), t["status"], aman(t["batal_alasan"])])
     for u in utang:
         w.writerow([u["tanggal"], "kredit (utang)", aman(u["kategori"]), u["jumlah"], "kredit",
-                    aman(f"#U{u['id']} {u['pemasok']}" + (f" · jatuh tempo {u['jatuh_tempo']}" if u["jatuh_tempo"] else "")
+                    aman(f"#U{u['id']} {u['pemasok']}"
+                         + (f" · cicilan {u['tenor']}x {u['cicilan']}, harga barang {u['pokok']}" if u["tenor"] else "")
+                         + (f" · jatuh tempo {u['jatuh_tempo']}" if u["jatuh_tempo"] else "")
                          + (f" · {u['keterangan']}" if u["keterangan"] else "")),
                     aman(u["dicatat_oleh"]), u["status"], aman(u["batal_alasan"])])
     # BOM supaya Excel membaca UTF-8 dengan benar
@@ -4207,7 +4306,9 @@ def susun_laporan_bulanan(periode: str) -> str:
             L.append(f"⚠️ Lewat jatuh tempo: {_rp(utang['lewat_tempo_total'])} ({utang['lewat_tempo']} utang)")
         if utang["terdekat"]:
             t = utang["terdekat"]
-            L.append(f"Terdekat: {_esc(t['pemasok'])} {_rp(t['sisa'])}, {t['jatuh_tempo'][8:10]}/{t['jatuh_tempo'][5:7]}")
+            L.append(f"Terdekat: {_esc(t['pemasok'])} {_rp(t['sisa'])}"
+                     + (f" (cicilan ke-{t['cicilan_ke']}/{t['tenor']})" if t.get("cicilan_ke") else "")
+                     + f", {t['jatuh_tempo'][8:10]}/{t['jatuh_tempo'][5:7]}")
     if insentif["total"] or ins_bayar or ins_tunggak["total"]:
         sisa = max(0, insentif["total"] - ins_bayar)
         L += ["", "<b>Insentif mitra</b>",

@@ -522,3 +522,37 @@ def test_laporan_harian_tidak_hilang_saat_telegram_gagal(app, monkeypatch):
         tugas.cancel()
     asyncio.run(satu_putaran())
     assert not main._laporan_sudah_terkirim(datetime.now().strftime("%Y-%m-%d"))
+
+
+def test_utang_cicilan_bulanan(siap):
+    """PayLater: harga 1.200.000, uang muka 0, 3x cicilan 420.000 (bunga 60.000)."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now()
+    tgl = hari.strftime("%Y-%m-%d")
+    per = tgl[:7]
+    pertama = (hari - timedelta(days=40)).strftime("%Y-%m-%d")      # cicilan pertama sudah lewat
+    body = {"tanggal": (hari - timedelta(days=45)).strftime("%Y-%m-%d"), "pemasok": "Shopee PayLater",
+            "kategori_id": kat["Pembelian perangkat (ONT, router, kabel, dll.)"], "jumlah": 1_200_000,
+            "jatuh_tempo": pertama, "tenor": 3, "cicilan": 420_000}
+    assert k.post("/api/keuangan/utang", json={**body, "cicilan": 100_000}).status_code == 400   # kurang dari harga
+    assert k.post("/api/keuangan/utang", json={**body, "tenor": 1}).status_code == 400
+    r = k.post("/api/keuangan/utang", json=body).json()
+    assert r["total"] == 1_260_000
+    u = [x for x in o.get("/api/keuangan/utang?status=semua").json()["utang"] if x["id"] == r["id"]][0]
+    assert [c["jatuh_tempo"] for c in u["jadwal"]] == [pertama, main._tambah_bulan(pertama, 1), main._tambah_bulan(pertama, 2)]
+    assert u["bunga"] == 60_000 and u["cicilan_ke"] == 1 and u["tagihan_berikut"] == 420_000
+    assert u["lewat_tempo"] and u["tertunggak"] >= 420_000
+    # bayar cicilan pertama -> berikutnya ke-2
+    k.post(f"/api/keuangan/utang/{r['id']}/bayar", json={"tanggal": tgl, "jumlah": 420_000})
+    u = [x for x in o.get("/api/keuangan/utang?status=semua").json()["utang"] if x["id"] == r["id"]][0]
+    assert u["cicilan_ke"] == 2 and u["cicilan_lunas"] == 1 and u["sisa"] == 840_000
+    # laba: pokok di kategori perangkat + bunga di kategori bunga, pada bulan pembelian
+    per_beli = body["tanggal"][:7]
+    rk = {x["nama"]: x["total"] for x in o.get(f"/api/keuangan/ringkasan?periode={per_beli}").json()["per_kategori"]}
+    assert rk["Pembelian perangkat (ONT, router, kabel, dll.)"] == 1_200_000 and rk["Bunga & biaya cicilan"] == 60_000
+    # kas hanya berkurang sebesar cicilan yang dibayar
+    rs = o.get(f"/api/keuangan/ringkasan?periode={per}").json()
+    assert rs["bayar_utang"] == 420_000
+    # tanggal akhir bulan
+    assert main._tambah_bulan("2026-01-31", 1) == "2026-02-28" and main._tambah_bulan("2026-12-15", 1) == "2027-01-15"

@@ -31,7 +31,9 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   dan pemasukan lain (biaya pasang, penjualan perangkat, setoran modal); pembayaran
   tagihan pelanggan masuk otomatis dari Billing. Ringkasan per bulan: pendapatan,
   pengeluaran, laba, saldo kas, piutang, insentif mitra, tren 6 bulan, per kategori,
-  ekspor CSV. **Pembelian kredit (utang)**: biaya dihitung pada tanggal beli, kas berkurang
+  ekspor CSV. **Pembelian kredit (utang)**: sekali bayar atau **cicilan bulanan** (mis. PayLater:
+  tenor, nominal cicilan, jadwal otomatis tiap bulan; selisih dengan harga barang dicatat
+  sebagai beban "Bunga & biaya cicilan"); biaya dihitung pada tanggal beli, kas berkurang
   saat uang muka/cicilan dibayar; sisa utang, jatuh tempo, dan pengingat Telegram 3 hari
   sebelum jatuh tempo. **Foto nota** (JPG/PNG/WEBP/PDF, foto otomatis diperkecil) per
   transaksi dan per utang, disimpan di folder `nota/`; pengeluaran ≥ Rp 100.000 tanpa nota
