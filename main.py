@@ -3179,6 +3179,10 @@ def init_keuangan_db() -> None:
         # biasanya dibayar November). Data lama tanpa periode dianggap periode bulan tanggalnya.
         if "insentif_periode" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
             conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_periode TEXT")
+        # Banyaknya barang (mis. 10 pcs, 150 meter) — opsional, untuk keterangan & harga satuan.
+        for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT")):
+            if kol not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+                conn.execute(f"ALTER TABLE transaksi ADD COLUMN {kol} {tipe}")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS utang (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3197,6 +3201,9 @@ def init_keuangan_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_utang_tanggal ON utang(tanggal)")
+        for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT")):
+            if kol not in [r[1] for r in conn.execute("PRAGMA table_info(utang)")]:
+                conn.execute(f"ALTER TABLE utang ADD COLUMN {kol} {tipe}")
         # Cicilan bulanan (mis. PayLater): jumlah = total kewajiban (uang muka + semua cicilan),
         # pokok = harga barang; selisihnya bunga/biaya layanan (dibebankan terpisah).
         kol_u = [r[1] for r in conn.execute("PRAGMA table_info(utang)")]
@@ -3557,6 +3564,8 @@ class UtangIn(BaseModel):
     metode_uang_muka: str = "tunai"
     tenor: Optional[int] = None         # diisi = cicilan bulanan sebanyak ini
     cicilan: Optional[int] = None       # nominal per bulan (termasuk bunga/biaya)
+    qty: Optional[float] = None
+    satuan: Optional[str] = None
 
 
 def _tambah_bulan(tanggal: str, n: int) -> str:
@@ -3838,6 +3847,7 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
         raise HTTPException(status_code=400, detail="Uang muka harus kurang dari total pembelian. Kalau lunas, catat sebagai pengeluaran biasa.")
     if d.metode_uang_muka not in _METODE:
         raise HTTPException(status_code=400, detail="Metode uang muka tidak valid.")
+    d.qty, d.satuan = _cek_qty(d.qty, d.satuan)
     jadwal, total = [], d.jumlah
     if d.tenor:
         if not 2 <= d.tenor <= 60:
@@ -3861,10 +3871,10 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
         oleh = _oleh(request)
         cur = conn.execute(
             "INSERT INTO utang (tanggal, pemasok, kategori_id, jumlah, jatuh_tempo, keterangan, dicatat_oleh, dicatat_pada, "
-            "pokok, uang_muka, tenor, cicilan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "pokok, uang_muka, tenor, cicilan, qty, satuan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (d.tanggal, pemasok, d.kategori_id, total, (jadwal[-1][1] if jadwal else d.jatuh_tempo) or None,
              (d.keterangan or "").strip()[:500] or None, oleh, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             d.jumlah, d.uang_muka, d.tenor if jadwal else None, d.cicilan if jadwal else None),
+             d.jumlah, d.uang_muka, d.tenor if jadwal else None, d.cicilan if jadwal else None, d.qty, d.satuan),
         )
         uid = cur.lastrowid
         conn.executemany("INSERT INTO utang_cicilan (utang_id, ke, jatuh_tempo, jumlah) VALUES (?,?,?,?)",
@@ -3877,6 +3887,7 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
         conn.close()
     catat_aktivitas(_oleh(request), "utang_catat",
                     f"#U{uid} {pemasok} {_rp(d.jumlah)} · {k['nama']} · {d.tanggal}"
+                    + (f" · {_teks_qty(d.qty, d.satuan)}" if d.qty else "")
                     + (f" · cicilan {d.tenor}× {_rp(d.cicilan)} mulai {d.jatuh_tempo} (total {_rp(total)}, "
                        f"bunga/biaya {_rp(total - d.jumlah)})" if jadwal else
                        (f" · jatuh tempo {d.jatuh_tempo}" if d.jatuh_tempo else ""))
@@ -4164,6 +4175,31 @@ class TransaksiIn(BaseModel):
     jumlah: int
     metode: str = "tunai"
     keterangan: Optional[str] = None
+    qty: Optional[float] = None         # banyaknya barang, mis. 10 (pcs)
+    satuan: Optional[str] = None
+
+
+def _cek_qty(qty: Optional[float], satuan: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+    """Banyaknya barang opsional. Kalau diisi, satuan bawaan 'pcs'."""
+    if qty is None or qty == 0:
+        return None, None
+    if not 0 < qty <= 10_000_000:
+        raise HTTPException(status_code=400, detail="Jumlah barang (qty) harus lebih dari 0.")
+    satuan = (satuan or "").strip()[:20] or "pcs"
+    return (int(qty) if float(qty).is_integer() else round(qty, 3)), satuan
+
+
+def _angka_qty(qty):
+    """SQLite REAL mengembalikan 3.0 — tampilkan 3 bila bulat."""
+    if qty is None:
+        return None
+    return int(qty) if float(qty).is_integer() else qty
+
+
+def _teks_qty(qty, satuan) -> str:
+    if not qty:
+        return ""
+    return f"{int(qty) if float(qty).is_integer() else qty:g} {satuan or 'pcs'}"
 
 
 def _cek_transaksi(conn, d: TransaksiIn) -> str:
@@ -4177,6 +4213,7 @@ def _cek_transaksi(conn, d: TransaksiIn) -> str:
         raise HTTPException(status_code=400, detail="Jumlah harus lebih dari 0.")
     if d.metode not in _METODE:
         raise HTTPException(status_code=400, detail="Metode harus tunai, transfer, qris, atau lainnya.")
+    d.qty, d.satuan = _cek_qty(d.qty, d.satuan)
     k = conn.execute("SELECT nama, jenis, aktif, khusus FROM kategori_kas WHERE id = ?", (d.kategori_id,)).fetchone()
     if not k or k["jenis"] != d.jenis:
         raise HTTPException(status_code=400, detail="Kategori tidak cocok dengan jenis transaksi.")
@@ -4194,16 +4231,17 @@ def keuangan_tambah(d: TransaksiIn, request: Request):
     try:
         kat = _cek_transaksi(conn, d)
         cur = conn.execute(
-            "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
+            "qty, satuan) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
-             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.qty, d.satuan),
         )
         conn.commit()
     finally:
         conn.close()
     catat_aktivitas(_oleh(request), "kas_catat",
                     f"#{cur.lastrowid} {'masuk' if d.jenis == 'masuk' else 'keluar'} {_rp(d.jumlah)} · {kat} · {d.tanggal}"
+                    + (f" · {_teks_qty(d.qty, d.satuan)}" if d.qty else "")
                     + (f" · {d.keterangan.strip()[:80]}" if d.keterangan and d.keterangan.strip() else ""))
     return {"id": cur.lastrowid}
 
@@ -4237,9 +4275,9 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
         kat = _cek_transaksi(conn, d)
         conn.execute(
             "UPDATE transaksi SET tanggal=?, jenis=?, kategori_id=?, jumlah=?, metode=?, keterangan=?, "
-            "diubah_oleh=?, diubah_pada=? WHERE id=?",
+            "qty=?, satuan=?, diubah_oleh=?, diubah_pada=? WHERE id=?",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
-             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
+             d.qty, d.satuan, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
         )
         conn.commit()
     finally:
@@ -4247,6 +4285,7 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
     ubah = [f"{n}: {a} → {b}" for n, a, b in (
         ("tanggal", t["tanggal"], d.tanggal), ("jumlah", _rp(t["jumlah"]), _rp(d.jumlah)),
         ("kategori", t["kategori"], kat), ("metode", t["metode"], d.metode),
+        ("qty", _teks_qty(t["qty"], t["satuan"]) or "-", _teks_qty(d.qty, d.satuan) or "-"),
         ("keterangan", t["keterangan"] or "-", (d.keterangan or "").strip() or "-")) if a != b]
     if ubah:
         catat_aktivitas(_oleh(request), "kas_ubah", f"#{tid} " + "; ".join(ubah))
@@ -4280,7 +4319,7 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
     awal, akhir = _batas_periode(periode)
     sql = ("SELECT t.id, t.tanggal, t.jenis, t.kategori_id, k.nama AS kategori, k.pengaruh_laba, t.jumlah, t.metode, "
            "t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.diubah_oleh, t.diubah_pada, t.status, "
-           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, "
+           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, "
            "(SELECT u.pemasok FROM utang u WHERE u.id = t.utang_id) AS pemasok "
            "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.tanggal >= ? AND t.tanggal < ?")
     arg: list = [awal, akhir]
@@ -4330,7 +4369,7 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
                                "keterangan": f"{r['nama'] or r['username']} ({r['username']}) · tagihan {_nama_periode(r['periode'])}",
                                "dicatat_oleh": "Billing", "dicatat_pada": r["tgl_bayar"], "nota": []})
         if jenis in ("", "keluar", "kredit") and not batal:
-            sql = ("SELECT u.id, u.tanggal, u.pemasok, u.jumlah, u.pokok, u.uang_muka, u.tenor, u.keterangan, "
+            sql = ("SELECT u.id, u.tanggal, u.pemasok, u.jumlah, u.pokok, u.uang_muka, u.tenor, u.keterangan, u.qty, u.satuan, "
                    "u.dicatat_oleh, u.dicatat_pada, u.kategori_id, k.nama AS kategori, k.pengaruh_laba "
                    "FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
                    "WHERE u.status='aktif' AND u.tanggal >= ? AND u.tanggal < ?")
@@ -4347,6 +4386,7 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
                 daftar.append({"id": r["id"], "sumber": "kredit", "tanggal": r["tanggal"], "jenis": "keluar",
                                "kategori": r["kategori"], "pengaruh_laba": r["pengaruh_laba"], "jumlah": r["jumlah"],
                                "pokok": r["pokok"], "tenor": r["tenor"], "uang_muka": r["uang_muka"],
+                               "qty": r["qty"], "satuan": r["satuan"],
                                "metode": "kredit", "status": "aktif", "pemasok": r["pemasok"],
                                "keterangan": r["keterangan"], "dicatat_oleh": r["dicatat_oleh"],
                                "dicatat_pada": r["dicatat_pada"], "nota": nota_u.get(r["id"], [])})
@@ -4387,21 +4427,22 @@ def _buat_csv_keuangan(periode: str) -> str:
         conn.close()
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["Tanggal", "Jenis", "Kategori", "Jumlah", "Metode", "Keterangan", "Dicatat oleh", "Status", "Alasan batal"])
+    w.writerow(["Tanggal", "Jenis", "Kategori", "Jumlah", "Qty", "Satuan", "Metode", "Keterangan", "Dicatat oleh", "Status", "Alasan batal"])
     def aman(v):
         # Cegah formula injection saat CSV dibuka di Excel (=, +, -, @ di awal sel)
         v = "" if v is None else str(v)
         return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
     for b in bayar:
-        w.writerow([b["tgl_bayar"], "masuk", "Pembayaran langganan", b["jumlah"], "", aman(f"{b['nama']} ({b['username']}) periode {b['periode']}"), "billing", "aktif", ""])
+        w.writerow([b["tgl_bayar"], "masuk", "Pembayaran langganan", b["jumlah"], "", "", "", aman(f"{b['nama']} ({b['username']}) periode {b['periode']}"), "billing", "aktif", ""])
     for t in trx:
         ket = t["keterangan"] or ""
         if t["utang_id"]:
             ket = f"Bayar utang #U{t['utang_id']} {t['pemasok'] or ''}" + (f" · {ket}" if ket else "")
-        w.writerow([t["tanggal"], t["jenis"], aman(t["kategori"]), t["jumlah"], t["metode"], aman(ket),
+        w.writerow([t["tanggal"], t["jenis"], aman(t["kategori"]), t["jumlah"], _angka_qty(t["qty"]) or "", aman(t["satuan"] or ""),
+                    t["metode"], aman(ket),
                     aman(t["dicatat_oleh"]), t["status"], aman(t["batal_alasan"])])
     for u in utang:
-        w.writerow([u["tanggal"], "kredit (utang)", aman(u["kategori"]), u["jumlah"], "kredit",
+        w.writerow([u["tanggal"], "kredit (utang)", aman(u["kategori"]), u["jumlah"], _angka_qty(u["qty"]) or "", aman(u["satuan"] or ""), "kredit",
                     aman(f"#U{u['id']} {u['pemasok']}"
                          + (f" · cicilan {u['tenor']}x {u['cicilan']}, harga barang {u['pokok']}" if u["tenor"] else "")
                          + (f" · jatuh tempo {u['jatuh_tempo']}" if u["jatuh_tempo"] else "")

@@ -692,3 +692,32 @@ def test_riwayat_transaksi_lengkap(siap):
     assert any(x["sumber"] == "langganan" for x in k.get(f"/api/keuangan/transaksi?periode={per}&cari={nama}").json()["transaksi"])
     # tampilan yang dihapus tidak memuat baris otomatis
     assert all(x["sumber"] == "manual" for x in k.get(f"/api/keuangan/transaksi?periode={per}&batal=true").json()["transaksi"])
+
+
+def test_qty_transaksi(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now().strftime("%Y-%m-%d")
+    per = hari[:7]
+    kp = kat["Pembelian perangkat (ONT, router, kabel, dll.)"]
+    base = {"tanggal": hari, "jenis": "keluar", "kategori_id": kp, "jumlah": 2_500_000}
+    assert k.post("/api/keuangan/transaksi", json={**base, "qty": -1}).status_code == 400
+    tid = k.post("/api/keuangan/transaksi", json={**base, "qty": 10}).json()["id"]              # satuan bawaan pcs
+    t2 = k.post("/api/keuangan/transaksi", json={**base, "jumlah": 300_000, "qty": 150.5, "satuan": "meter"}).json()["id"]
+    t3 = k.post("/api/keuangan/transaksi", json=base).json()["id"]                             # qty opsional
+    rows = {x["id"]: x for x in k.get(f"/api/keuangan/transaksi?periode={per}&jenis=keluar").json()["transaksi"] if x["sumber"] == "manual"}
+    assert (rows[tid]["qty"], rows[tid]["satuan"]) == (10, "pcs")
+    assert (rows[t2]["qty"], rows[t2]["satuan"]) == (150.5, "meter")
+    assert rows[t3]["qty"] is None and rows[t3]["satuan"] is None
+    # ubah: qty ikut tersimpan dan tercatat di log
+    assert k.put(f"/api/keuangan/transaksi/{tid}", json={**base, "qty": 12, "satuan": "unit"}).status_code == 200
+    r = [x for x in k.get(f"/api/keuangan/transaksi?periode={per}").json()["transaksi"] if x["sumber"] == "manual" and x["id"] == tid][0]
+    assert (r["qty"], r["satuan"]) == (12, "unit")
+    assert any("qty: 10 pcs → 12 unit" in (a["detail"] or "") for a in o.get("/api/aktivitas").json()["aktivitas"])
+    # kredit
+    uid = k.post("/api/keuangan/utang", json={"tanggal": hari, "pemasok": "Toko", "kategori_id": kp, "jumlah": 900_000,
+                                              "qty": 3}).json()["id"]
+    u = [x for x in k.get("/api/keuangan/utang?status=semua").json()["utang"] if x["id"] == uid][0]
+    assert (u["qty"], u["satuan"]) == (3, "pcs")
+    csv = k.get(f"/api/keuangan/ekspor?periode={per}").text
+    assert ";Qty;Satuan;" in csv and ";150.5;meter;" in csv and ";3;pcs;" in csv
