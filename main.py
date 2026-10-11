@@ -147,7 +147,9 @@ CONFIG = {
     "NOTA_WAJIB_DI_ATAS": 100_000,      # pengeluaran >= ini tanpa nota ditandai di laporan
     "BACKUP_JAM": 2,                    # backup dibuat setelah jam ini tiap hari
     "BACKUP_SIMPAN": 14,                # jumlah backup harian yang disimpan
-    "BACKUP_KIRIM_TELEGRAM": True,      # kirim berkas backup ke Telegram
+    "BACKUP_KIRIM_TELEGRAM": True,      # kirim berkas backup ke Telegram (ke tujuan laporan owner bila diisi)
+    "BACKUP_NOTA_TELEGRAM": True,       # backup mingguan ikut mengirim nota baru (ZIP)
+    "BACKUP_NOTA_MAKS_MB": 45,          # batas per ZIP (batas Telegram 50 MB per berkas)
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     "HISTORY_INTERVAL_SECONDS": 300,   # simpan snapshot tiap 5 menit, bukan tiap 30 detik
     "HISTORY_RETENTION_DAYS": 30,      # data lebih lama dari ini dibuang otomatis
@@ -2498,6 +2500,9 @@ def get_pengaturan(request: Request):
             "jumlah_backup": len(backup),
             "data_terakhir": _latest_data.timestamp if _latest_data else None,
             "sesi_idle_jam": CONFIG["SESI_IDLE_JAM"],
+            "backup_nota_terakhir": _status_get("backup_nota_terakhir_pada") or None,
+            "nota_belum_dibackup": _hitung_nota_belum_backup(),
+            "backup_ke": "tujuan laporan owner" if _chat_owner() else "grup operasional (isi chat owner agar lebih aman)",
             "nota_mb": round(sum(os.path.getsize(os.path.join(d, f)) for d, _s, fs in os.walk(_folder_nota())
                                  for f in fs) / 1048576, 1),
         },
@@ -3312,6 +3317,7 @@ def init_nota_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_nota_pemilik ON nota(pemilik, pemilik_id)")
+        conn.execute("CREATE TABLE IF NOT EXISTS status_sistem (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
         conn.commit()
     finally:
         conn.close()
@@ -5308,6 +5314,154 @@ def kirim_berkas_telegram(chat_id: str, nama: str, isi: bytes, caption: str = ""
 _backup_gagal_terakhir = None
 
 
+def _hitung_nota_belum_backup() -> int:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        return conn.execute("SELECT COUNT(*) FROM nota WHERE id > ?",
+                            (int(_status_get("backup_nota_terakhir_id", "0") or 0),)).fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+    finally:
+        conn.close()
+
+
+def _tujuan_backup() -> list[str]:
+    """Backup berisi data keuangan & hash password: kirim ke tujuan laporan owner
+    (grup internal owner / chat pribadi). Grup operasional hanya cadangan bila belum diisi."""
+    return _chat_owner() or [str(CONFIG["TELEGRAM_CHAT_ID"])]
+
+
+def _status_get(kunci: str, bawaan: str = "") -> str:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS status_sistem (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+        r = conn.execute("SELECT nilai FROM status_sistem WHERE kunci = ?", (kunci,)).fetchone()
+        return r[0] if r else bawaan
+    finally:
+        conn.close()
+
+
+def _status_set(kunci: str, nilai: str) -> None:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS status_sistem (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+        conn.execute("INSERT OR REPLACE INTO status_sistem (kunci, nilai) VALUES (?,?)", (kunci, nilai))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _zip_nota(rows: list, tujuan_zip: str, bagian: int, total_bagian: int) -> None:
+    """Satu ZIP: berkas nota (path sama dengan folder nota/, jadi tinggal diekstrak ke
+    sana untuk memulihkan) + daftar-nota.csv yang mencocokkan berkas dengan transaksinya."""
+    import csv
+    import io
+    import zipfile
+    folder = _folder_nota()
+    daftar = io.StringIO()
+    w = csv.writer(daftar, delimiter=";")
+    w.writerow(["nota_id", "berkas", "jenis", "kode", "tanggal", "kategori", "jumlah", "keterangan",
+                "diunggah_oleh", "diunggah_pada", "status_nota"])
+    with zipfile.ZipFile(tujuan_zip, "w") as z:
+        for r in rows:
+            path = os.path.join(folder, r["berkas"])
+            if os.path.isfile(path):
+                # Foto sudah terkompresi (JPEG/WEBP), simpan apa adanya; PDF/PNG dikompres
+                metode = zipfile.ZIP_STORED if r["mime"] in ("image/jpeg", "image/webp") else zipfile.ZIP_DEFLATED
+                z.write(path, arcname=r["berkas"], compress_type=metode)
+            w.writerow([r["id"], r["berkas"], r["mime"], r["kode"], r["tanggal"] or "", r["kategori"] or "",
+                        r["jumlah"] or "", r["keterangan"] or "", r["diunggah_oleh"], r["diunggah_pada"],
+                        "dihapus" if r["dihapus_pada"] else ("ada" if os.path.isfile(path) else "berkas hilang")])
+        z.writestr("daftar-nota.csv", "﻿" + daftar.getvalue(), compress_type=zipfile.ZIP_DEFLATED)
+        z.writestr("CARA-PULIHKAN.txt",
+                   f"Backup nota bagian {bagian}/{total_bagian}.\n"
+                   "Ekstrak isi ZIP ini ke folder 'nota' di samping main.py (struktur folder per bulan dipertahankan).\n"
+                   "daftar-nota.csv berisi pasangan berkas <-> transaksi.\n")
+
+
+def kirim_backup_nota(semua: bool = False, oleh: str = "sistem") -> dict:
+    """Kirim nota ke Telegram sebagai ZIP (dipecah per BACKUP_NOTA_MAKS_MB).
+    semua=False: hanya nota baru sejak backup nota terakhir yang berhasil."""
+    dari_id = 0 if semua else int(_status_get("backup_nota_terakhir_id", "0") or 0)
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT n.*, CASE n.pemilik WHEN 'utang' THEN '#U' || n.pemilik_id ELSE '#' || n.pemilik_id END AS kode, "
+            "COALESCE(t.tanggal, u.tanggal) AS tanggal, COALESCE(kt.nama, ku.nama) AS kategori, "
+            "COALESCE(t.jumlah, u.jumlah) AS jumlah, COALESCE(t.keterangan, u.pemasok) AS keterangan "
+            "FROM nota n "
+            "LEFT JOIN transaksi t ON n.pemilik='transaksi' AND t.id = n.pemilik_id "
+            "LEFT JOIN kategori_kas kt ON kt.id = t.kategori_id "
+            "LEFT JOIN utang u ON n.pemilik='utang' AND u.id = n.pemilik_id "
+            "LEFT JOIN kategori_kas ku ON ku.id = u.kategori_id "
+            "WHERE n.id > ? ORDER BY n.id", (dari_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return {"berkas": 0, "bagian": 0, "terkirim": True, "pesan": "Tidak ada nota baru."}
+
+    # Bagi menjadi beberapa ZIP agar tiap berkas di bawah batas Telegram
+    batas = CONFIG["BACKUP_NOTA_MAKS_MB"] * 1024 * 1024
+    kelompok, isi, ukuran = [], [], 0
+    for r in rows:
+        if isi and ukuran + r["ukuran"] > batas:
+            kelompok.append(isi)
+            isi, ukuran = [], 0
+        isi.append(r)
+        ukuran += r["ukuran"]
+    kelompok.append(isi)
+
+    tujuan = _tujuan_backup()
+    hari = datetime.now().strftime("%Y-%m-%d")
+    sukses_sampai = dari_id
+    terkirim_bagian = 0
+    for i, grup in enumerate(kelompok, 1):
+        nama = f"nota-{hari}-bagian{i}dari{len(kelompok)}.zip"
+        path = os.path.join(_folder_backup(), nama)
+        try:
+            _zip_nota(grup, path, i, len(kelompok))
+            mb = os.path.getsize(path) / 1048576
+            caption = (f"🧾 Backup nota {hari} — bagian {i}/{len(kelompok)}\n"
+                       f"{len(grup)} berkas ({mb:.1f} MB), nota #{grup[0]['id']}–#{grup[-1]['id']}"
+                       + (" (arsip lengkap)" if semua else ""))
+            ok = all(kirim_dokumen_telegram(path, caption, cid) for cid in tujuan)
+        except Exception as e:
+            logger.error(f"Backup nota bagian {i} gagal: {e}")
+            ok = False
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if not ok:
+            break       # bagian berikutnya dicoba lagi di backup berikutnya, mulai dari yang gagal
+        terkirim_bagian += 1
+        sukses_sampai = grup[-1]["id"]
+    if sukses_sampai > int(_status_get("backup_nota_terakhir_id", "0") or 0):
+        _status_set("backup_nota_terakhir_id", str(sukses_sampai))
+        _status_set("backup_nota_terakhir_pada", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    hasil = {"berkas": sum(len(g) for g in kelompok[:terkirim_bagian]), "bagian": terkirim_bagian,
+             "total_bagian": len(kelompok), "terkirim": terkirim_bagian == len(kelompok)}
+    catat_aktivitas(oleh, "backup_nota",
+                    f"{'semua' if semua else 'baru'}: {hasil['berkas']} berkas, {terkirim_bagian}/{len(kelompok)} bagian terkirim")
+    return hasil
+
+
+@app.post("/api/backup/nota")
+def backup_nota_sekarang(request: Request, semua: bool = False):
+    _wajib_admin(request)
+    if semua and request.state.peran != "owner":
+        raise HTTPException(status_code=403, detail="Arsip lengkap nota hanya bisa diminta owner.")
+    hasil = kirim_backup_nota(semua=semua, oleh=_oleh(request))
+    if not hasil["terkirim"]:
+        raise HTTPException(status_code=502, detail=f"Hanya {hasil['bagian']}/{hasil['total_bagian']} bagian terkirim. "
+                            "Cek koneksi/bot Telegram; sisanya dikirim ulang pada backup berikutnya.")
+    return hasil
+
+
+
+
 def proses_backup_harian(sekarang=None) -> None:
     """Sekali per hari setelah BACKUP_JAM. Berkas dikirim ke Telegram pada hari
     BACKUP_HARI_KIRIM tiap pekan, dan juga pada backup pertama kali (untuk
@@ -5350,18 +5504,28 @@ def proses_backup_harian(sekarang=None) -> None:
         send_telegram_message(f"⚠️ <b>Backup selesai tapi pemeriksaan keutuhan gagal</b>: {_esc(info['integritas'])}")
     if CONFIG["BACKUP_KIRIM_TELEGRAM"] and (pertama or sekarang.weekday() == CONFIG["BACKUP_HARI_KIRIM"]):
         caption = (f"💾 Backup database {hari}\n{j['pelanggan']} pelanggan, {j['paket']} paket, "
-                   f"{j['tagihan']} tagihan ({info['ukuran_kb']} KB)")
+                   f"{j['tagihan']} tagihan, {j.get('transaksi', 0)} transaksi ({info['ukuran_kb']} KB)")
         try:
-            if not kirim_dokumen_telegram(info["berkas"], caption):
+            if not all(kirim_dokumen_telegram(info["berkas"], caption, cid) for cid in _tujuan_backup()):
                 send_telegram_message("⚠️ Backup tersimpan di HP, tapi gagal dikirim ke Telegram.")
         except Exception as e:
             send_telegram_message(f"⚠️ Backup tersimpan di HP, tapi gagal dikirim ke Telegram: {_esc(str(e))}")
+        if CONFIG["BACKUP_NOTA_TELEGRAM"]:
+            try:
+                hn = kirim_backup_nota()
+                if not hn["terkirim"]:
+                    send_telegram_message(f"⚠️ Backup nota baru terkirim {hn['bagian']}/{hn['total_bagian']} bagian; "
+                                          "sisanya dicoba lagi minggu depan (atau kirim manual dari Pengaturan).")
+            except Exception as e:
+                logger.error(f"Backup nota gagal: {e}")
+                send_telegram_message(f"⚠️ Backup nota gagal: {_esc(str(e))}")
     logger.warning(f"Backup database selesai: {info}")
 
 
 @app.post("/api/backup")
 def backup_sekarang(request: Request, kirim: bool = False):
     """Buat backup sekarang juga. Tambahkan ?kirim=true untuk ikut mengirim ke Telegram."""
+    _wajib_admin(request)
     try:
         info = buat_backup()
     except Exception as e:
@@ -5369,10 +5533,11 @@ def backup_sekarang(request: Request, kirim: bool = False):
     catat_aktivitas(_oleh(request), "backup", os.path.basename(info["berkas"]))
     if kirim:
         j = info["jumlah"]
-        info["terkirim_telegram"] = kirim_dokumen_telegram(
+        info["terkirim_telegram"] = all(kirim_dokumen_telegram(
             info["berkas"],
-            f"💾 Backup manual\n{j['pelanggan']} pelanggan, {j['paket']} paket, {j['tagihan']} tagihan",
-        )
+            f"💾 Backup manual oleh {_oleh(request)}\n{j['pelanggan']} pelanggan, {j['paket']} paket, "
+            f"{j['tagihan']} tagihan, {j.get('transaksi', 0)} transaksi", cid,
+        ) for cid in _tujuan_backup())
     return info
   
 @app.post("/api/test-telegram")

@@ -50,7 +50,10 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   tidak terlihat dan tidak dihitung. Semua API lain ditolak untuk akun mitra.
 - **Kesehatan jaringan** — skor per pelanggan (redaman, kestabilan sinyal, reconnect,
   ketersediaan) beserta saran untuk teknisi.
-- **Backup harian** `billing.db` ke folder `backup/`, dikirim mingguan ke Telegram.
+- **Backup harian** `billing.db` ke folder `backup/`. Tiap minggu dikirim ke Telegram
+  (ke tujuan laporan owner bila diisi, karena berisi data keuangan) **beserta ZIP nota baru**
+  sejak backup terakhir, dipecah per ±45 MB. Tiap ZIP memuat `daftar-nota.csv` (pasangan
+  berkas ↔ transaksi). Owner bisa mengirim arsip lengkap semua nota dari Pengaturan → Sistem.
 
 ## Instalasi
 
@@ -81,8 +84,8 @@ Buka `http://<ip-server>:8000`. Pada instalasi baru, halaman login meminta Anda 
 - Login, logout, login gagal, dan semua perubahan akun tercatat di **Log aktivitas**.
 
 Saran operasional:
-- Backup harian hanya menyalin `billing.db`. Foto nota ada di folder `nota/` — salin folder
-  itu juga secara berkala (mis. ke Google Drive / komputer).
+- Memulihkan nota: ekstrak semua ZIP backup nota ke folder `nota/` di samping `main.py`
+  (struktur folder per bulan di dalam ZIP sudah sama), lalu pulihkan `billing.db` dari backup.
 - `chmod 600 .env` — berkas ini berisi password MikroTik dan token Telegram.
 - Koneksi masih HTTP. Untuk akses dari luar jaringan lokal, pasang HTTPS (mis. Cloudflare
   Tunnel atau reverse proxy); cookie otomatis bertanda `Secure` bila diakses lewat HTTPS.

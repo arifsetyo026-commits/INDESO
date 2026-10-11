@@ -292,7 +292,7 @@
 </div>
 <div id="stSistem" class="stTab" style="display:none">
  <div class="detailGrid" id="sysInfo"></div>
- <div class="blNav" style="margin-top:12px;flex-wrap:wrap"><button class="btnS" onclick="tesTelegram()">Tes Telegram</button><button class="btnS" onclick="backupSekarang(false)">Backup sekarang</button><button class="btnS" onclick="backupSekarang(true)">Backup + kirim Telegram</button><button class="btnS" onclick="cekProfilIsolir()">Cek profil isolir</button></div>
+ <div class="blNav" style="margin-top:12px;flex-wrap:wrap"><button class="btnS" onclick="tesTelegram()">Tes Telegram</button><button class="btnS" onclick="backupSekarang(false)">Backup sekarang</button><button class="btnS" onclick="backupSekarang(true)">Backup + kirim Telegram</button><button class="btnS" onclick="backupNota(false)">Kirim nota baru</button><button class="btnS" id="btnArsipNota" onclick="backupNota(true)">Arsip semua nota</button><button class="btnS" onclick="cekProfilIsolir()">Cek profil isolir</button></div>
  <div class="plForm" id="setForm" style="margin-top:10px"></div>
  <div class="plBtns"><button class="plSave" onclick="simpanPengaturan()">Simpan pengaturan</button></div>
  <div class="plSub" style="margin-top:8px">Alamat MikroTik/OLT, password, dan token Telegram tetap diatur di berkas <code>.env</code> server.</div>
@@ -842,9 +842,10 @@ async function loadPengaturan(){
  $('sysInfo').innerHTML='<div class="muted">Memuat…</div>'; $('setForm').innerHTML='';
  try{
   const d=await jsonAtauError(await fetch('/api/pengaturan')); const x=d.sistem; st.set=d.pengaturan;
+  $('btnArsipNota').style.display=d.peran==='owner'?'':'none';
   const kotak=(k,v)=>`<div class="detail"><small>${k}</small><b>${esc(v??'—')}</b></div>`;
   $('sysInfo').innerHTML=kotak('MikroTik',x.mikrotik)+kotak('OLT',x.olt)+kotak('Profil isolir',x.profil_isolir)+kotak('Telegram',x.telegram)
-   +kotak('Backup terakhir',x.backup_terakhir?(x.backup_terakhir+' ('+x.jumlah_backup+' tersimpan)'):'belum ada')+kotak('Berkas nota',(x.nota_mb??0)+' MB (folder nota/)')+kotak('Data monitoring',x.data_terakhir||'belum ada');
+   +kotak('Backup terakhir',x.backup_terakhir?(x.backup_terakhir+' ('+x.jumlah_backup+' tersimpan)'):'belum ada')+kotak('Berkas nota',(x.nota_mb??0)+' MB (folder nota/)')+kotak('Backup nota terakhir',(x.backup_nota_terakhir||'belum pernah')+' · '+x.nota_belum_dibackup+' nota belum dibackup')+kotak('Backup dikirim ke',x.backup_ke)+kotak('Data monitoring',x.data_terakhir||'belum ada');
   const kunci=p=>p.owner&&d.peran!=='owner'?' disabled title="Hanya owner yang bisa mengubah"':'';
   $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+(p.owner?' <span class="chip info">owner</span>':'')+'</label>'+(p.tipe==='pilihan'
    ?'<select id="set'+i+'"'+kunci(p)+'>'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
@@ -867,6 +868,13 @@ async function backupSekarang(kirim){
  stPesan('Membuat backup…',true);
  try{ const d=await jsonAtauError(await fetch('/api/backup'+(kirim?'?kirim=true':''),{method:'POST'}));
   stPesan('Backup '+d.berkas.split('/').pop()+' ('+d.ukuran_kb+' KB, '+d.jumlah.pelanggan+' pelanggan) dibuat'+(kirim?(d.terkirim_telegram?' dan terkirim ke Telegram.':', tapi GAGAL dikirim ke Telegram.'):'.'),true); loadPengaturan(); }
+ catch(e){ stPesan('Gagal: '+e.message); }
+}
+async function backupNota(semua){
+ if(semua&&!confirm('Kirim SEMUA nota ke Telegram (dipecah per ±45 MB)? Bisa memakan kuota besar.')) return;
+ stPesan('Menyiapkan ZIP nota…',true);
+ try{ const d=await jsonAtauError(await fetch('/api/backup/nota'+(semua?'?semua=true':''),{method:'POST'}));
+  stPesan(d.berkas?(d.berkas+' nota terkirim dalam '+d.bagian+' berkas ZIP.'):'Tidak ada nota baru untuk dibackup.',true); loadPengaturan(); }
  catch(e){ stPesan('Gagal: '+e.message); }
 }
 async function cekProfilIsolir(){
