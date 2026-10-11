@@ -642,3 +642,26 @@ def test_tiket_gangguan(siap):
     assert sum("belum selesai" in x["data"].get("text", "") for x in main._terkirim) == 1
     assert "#T" in main._format_tiket_list()
     assert "Tiket gangguan terbuka" in main._build_daily_report_text()
+
+
+def test_keuangan_sejak_awal(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now()
+    lalu = (hari.replace(day=1) - timedelta(days=40)).strftime("%Y-%m-%d")   # ~2 bulan lalu
+    tgl = hari.strftime("%Y-%m-%d")
+    trx = lambda t, jenis, nama, jml: k.post("/api/keuangan/transaksi", json={
+        "tanggal": t, "jenis": jenis, "kategori_id": kat[nama], "jumlah": jml}).json()
+    trx(lalu, "masuk", "Setoran modal pemilik", 2_000_000)
+    trx(lalu, "keluar", "Listrik", 300_000)
+    trx(tgl, "masuk", "Biaya pemasangan baru", 150_000)
+    trx(tgl, "keluar", "Listrik", 100_000)
+    assert m.get("/api/keuangan/keseluruhan").status_code == 403
+    d = k.get("/api/keuangan/keseluruhan").json()
+    assert d["mulai"] == lalu[:7] and d["sampai"] == tgl[:7] and d["jumlah_bulan"] >= 2
+    assert d["total"]["modal_masuk"] == 2_000_000 and d["total"]["beban"] == 400_000
+    assert d["total"]["laba"] == 150_000 - 400_000
+    assert d["saldo_kas"] == 2_000_000 - 300_000 + 150_000 - 100_000 == d["bulanan"][-1]["saldo_akhir"]
+    assert d["bulanan"][-1]["laba_kumulatif"] == d["total"]["laba"]
+    assert {x["nama"]: x["total"] for x in d["per_kategori"]}["Listrik"] == 400_000
+    assert d["terburuk"] == lalu[:7] and d["modal_kembali_persen"] == round(-250_000 * 100 / 2_000_000)

@@ -3363,6 +3363,76 @@ def keuangan_ringkasan(periode: str, request: Request):
     }
 
 
+
+@app.get("/api/keuangan/keseluruhan")
+def keuangan_keseluruhan(request: Request):
+    """Gambaran keuangan sejak data pertama tercatat sampai bulan ini."""
+    _wajib_admin(request)
+    periode_ini = datetime.now().strftime("%Y-%m")
+    conn = _billing_conn()
+    try:
+        awal = [r[0] for r in (
+            conn.execute("SELECT MIN(substr(tgl_bayar,1,7)) FROM tagihan WHERE status='lunas' AND tgl_bayar IS NOT NULL").fetchone(),
+            conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM transaksi WHERE status='aktif'").fetchone(),
+            conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM utang WHERE status='aktif'").fetchone(),
+        ) if r[0] and _periode_valid(r[0])]
+        mulai = min(awal) if awal else periode_ini
+        mulai = max(mulai, _geser_periode(periode_ini, -119))     # maks. 10 tahun ditampilkan
+        bulanan, kategori = [], {}
+        p, laba_kum, saldo = mulai, 0, _saldo_kas_sampai(conn, f"{mulai}-01")
+        while p <= periode_ini:
+            r = _ringkas_periode(conn, p)
+            laba_kum += r["laba"]
+            saldo += r["arus_kas"]
+            b = {k: r[k] for k in ("periode", "pendapatan", "pendapatan_langganan", "pendapatan_lain", "beban",
+                                   "laba", "modal_masuk", "prive", "bayar_utang", "arus_kas")}
+            b.update(laba_kumulatif=laba_kum, saldo_akhir=saldo)
+            bulanan.append(b)
+            for k in r["per_kategori"]:
+                g = kategori.setdefault(k["id"], {**k, "total": 0, "n": 0, "kredit": 0})
+                g["total"] += k["total"]
+                g["n"] += k["n"]
+                g["kredit"] += k["kredit"]
+            p = _geser_periode(p, 1)
+        saldo_kas = _saldo_kas_sampai(conn, (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"))
+        utang_info = _ringkas_utang(conn)
+        piutang = conn.execute(
+            "SELECT COALESCE(SUM(t.jumlah),0), COUNT(*), COUNT(DISTINCT t.username) FROM tagihan t "
+            "JOIN pelanggan p ON p.username = t.username WHERE t.status='belum'").fetchone()
+        pelanggan = conn.execute(
+            "SELECT SUM(status='aktif' AND gratis=0), SUM(status='aktif' AND gratis=1), SUM(status='berhenti') FROM pelanggan").fetchone()
+        jml_trx = conn.execute("SELECT COUNT(*) FROM transaksi WHERE status='aktif'").fetchone()[0]
+        jml_bayar = conn.execute("SELECT COUNT(*) FROM tagihan WHERE status='lunas'").fetchone()[0]
+        insentif = conn.execute(
+            "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id=t.kategori_id "
+            "WHERE t.status='aktif' AND k.nama=?", (_KAT_INSENTIF,)).fetchone()[0]
+    finally:
+        conn.close()
+    total = {k: sum(b[k] for b in bulanan) for k in ("pendapatan", "pendapatan_langganan", "pendapatan_lain", "beban",
+                                                      "laba", "modal_masuk", "prive", "bayar_utang")}
+    tahunan: dict[str, dict] = {}
+    for b in bulanan:
+        t = tahunan.setdefault(b["periode"][:4], {"tahun": b["periode"][:4], "pendapatan": 0, "beban": 0, "laba": 0, "bulan": 0})
+        for k in ("pendapatan", "beban", "laba"):
+            t[k] += b[k]
+        t["bulan"] += 1
+    ada_data = [b for b in bulanan if b["pendapatan"] or b["beban"]]
+    return {
+        "mulai": mulai, "sampai": periode_ini, "jumlah_bulan": len(bulanan),
+        "total": total, "saldo_kas": saldo_kas,
+        "rata_laba": int(total["laba"] / len(ada_data)) if ada_data else 0,
+        "terbaik": max(ada_data, key=lambda b: b["laba"])["periode"] if ada_data else None,
+        "terburuk": min(ada_data, key=lambda b: b["laba"])["periode"] if ada_data else None,
+        "modal_kembali_persen": round(total["laba"] * 100 / total["modal_masuk"]) if total["modal_masuk"] else None,
+        "insentif_dibayar": insentif,
+        "utang": utang_info,
+        "piutang": {"total": piutang[0], "jumlah": piutang[1], "pelanggan": piutang[2]},
+        "pelanggan": {"berbayar": pelanggan[0] or 0, "gratis": pelanggan[1] or 0, "berhenti": pelanggan[2] or 0},
+        "jumlah_transaksi": jml_trx, "jumlah_pembayaran": jml_bayar,
+        "bulanan": bulanan, "tahunan": list(tahunan.values()),
+        "per_kategori": sorted(kategori.values(), key=lambda g: -g["total"]),
+    }
+
 @app.get("/api/keuangan/kategori")
 def keuangan_kategori(request: Request):
     _wajib_admin(request)

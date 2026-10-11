@@ -78,7 +78,7 @@
 .blBox{border:1px solid var(--line);border-radius:12px;padding:9px 10px;display:flex;flex-direction:column;gap:2px}
 .blBox small{font-size:10px;color:#6b7f73}
 .blBox b{font-size:13px}
-.blFilters{display:flex;gap:6px;margin-bottom:8px}
+.blFilters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
 .blFilters button{border:1px solid var(--line);background:#fff;font:inherit;font-size:11px;font-weight:700;padding:6px 11px;border-radius:999px;cursor:pointer}
 .blFilters button.on{background:#067d40;border-color:#067d40;color:#fff}
 .blRow{display:flex;justify-content:space-between;gap:10px;padding:11px 4px;border-bottom:1px solid var(--line)}
@@ -220,9 +220,10 @@
 <div class="overlay" id="keuanganModal"><div class="modal kuModal"><div class="modalHead"><h3>Keuangan</h3><button class="close" onclick="closeModal('keuanganModal')">Tutup</button></div><div class="modalBody">
 <div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor CSV</a><button class="btnS" id="kuLapBtn" style="display:none" onclick="pratinjauLaporan()">Laporan Telegram</button></div>
 <div id="kuLap" class="kuPanel" style="display:none;margin-bottom:10px"><h4>Pratinjau laporan Telegram <span class="plSub" id="kuLapInfo"></span></h4><div id="kuLapTeks" style="white-space:pre-wrap;font-size:12px;line-height:1.55;max-height:340px;overflow:auto;background:#f7faf8;border-radius:9px;padding:10px"></div><div class="plBtns"><button class="plSave" onclick="kirimLaporan()">Kirim ke Telegram owner</button><button class="plCancel" onclick="$('kuLap').style.display='none'">Tutup</button></div></div>
-<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ringkasan</button><button data-t="transaksi" onclick="tabKu('transaksi')">Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Utang <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Insentif mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Catat transaksi</button></div>
+<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ringkasan</button><button data-t="semua" onclick="tabKu('semua')">Sejak awal</button><button data-t="transaksi" onclick="tabKu('transaksi')">Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Utang <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Insentif mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Catat transaksi</button></div>
 <div class="plMsg" id="kuMsg"></div>
 <div id="kuRingkasan"></div>
+<div id="kuSemua" style="display:none"></div>
 <input type="file" id="notaLangsung" accept="image/*,application/pdf" multiple style="display:none" onchange="unggahLangsung(this)">
 <div id="kuTransaksi" style="display:none">
  <div class="search"><input id="kuCari" placeholder="Cari keterangan, kategori, atau pencatat…" onkeydown="if(event.key==='Enter')muatTransaksi()"><button onclick="muatTransaksi()">Cari</button></div>
@@ -1118,8 +1119,8 @@ function tabKu(t){
  ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
- $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
- if(t==='ringkasan') muatRingkasanKu(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit) resetFormKu();
+ $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
+ if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit) resetFormKu();
 }
 function kotakKu(label,nilai,bawah,warna){ return `<div class="blBox"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
 async function muatRingkasanKu(){
@@ -1159,27 +1160,58 @@ async function muatRingkasanKu(){
   +tn.daftar.map(x=>`<div class="blRow"><div><div class="plName">${esc(x.kategori)} <span class="plSub">${esc(x.kode)}</span></div><div class="plSub">${esc(tglPendek(x.tanggal))} · ${esc(x.keterangan||'—')} · ${esc(x.dicatat_oleh)}</div></div><div class="blKanan"><div class="blAmt turun">−${rp(x.jumlah)}</div><div class="blAksi"><button class="btnS" onclick="tambahNota('${x.kode.startsWith('#U')?'utang':'transaksi'}',${x.id})">+ Nota</button></div></div></div>`).join('')+'</div>';
  el.innerHTML=h; pasangTipTren(d.tren);
 }
-function chartTren(tren){
+function chartTren(tren,label){
  const W=560,H=210,pl=46,pr=8,pt=10,pb=26, w=W-pl-pr, h=H-pt-pb;
  const maks=Math.max(1,...tren.map(r=>Math.max(r.pendapatan,r.beban)));
  const langkah=Math.pow(10,Math.floor(Math.log10(maks))); const atas=Math.ceil(maks/langkah)*langkah;
  const y=v=>pt+h-(v/atas)*h, slot=w/tren.length, bw=Math.min(22,slot*0.3);
- let o=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Grafik pendapatan dan pengeluaran 6 bulan">`;
+ let o=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label||'Grafik pendapatan dan pengeluaran 6 bulan')}">`;
+ const tiap=Math.ceil(tren.length/8);
  for(let i=0;i<=4;i++){ const v=atas*i/4, yy=y(v); o+=`<line x1="${pl}" x2="${W-pr}" y1="${yy}" y2="${yy}" stroke="#e7eee9"/><text x="${pl-6}" y="${yy+3}" text-anchor="end" font-size="10" fill="#6e8177">${rpS(v)}</text>`; }
  const bar=(x,v,c)=>{ if(v<=0) return ''; const yy=y(v), hh=pt+h-yy, r=Math.min(4,hh); return `<path d="M${x},${pt+h} V${yy+r} Q${x},${yy} ${x+r},${yy} H${x+bw-r} Q${x+bw},${yy} ${x+bw},${yy+r} V${pt+h} Z" fill="${c}"/>`; };
  tren.forEach((r,i)=>{ const cx=pl+slot*i+slot/2; o+=bar(cx-bw-1,r.pendapatan,'#2a78d6')+bar(cx+1,r.beban,'#eb6834');
-  o+=`<text x="${cx}" y="${H-8}" text-anchor="middle" font-size="10.5" fill="#4b6355">${esc(namaPeriode(r.periode).slice(0,3)+' '+r.periode.slice(2,4))}</text>`;
+  if((tren.length-1-i)%tiap===0) o+=`<text x="${cx}" y="${H-8}" text-anchor="middle" font-size="10.5" fill="#4b6355">${esc(namaPeriode(r.periode).slice(0,3)+' '+r.periode.slice(2,4))}</text>`;
   o+=`<rect class="kuHit" data-i="${i}" x="${pl+slot*i}" y="${pt}" width="${slot}" height="${h}" fill="transparent"/>`; });
  return o+`<line x1="${pl}" x2="${W-pr}" y1="${pt+h}" y2="${pt+h}" stroke="#b9c9bf"/></svg>`;
 }
-function pasangTipTren(tren){
- const box=$('kuChart'), tip=$('kuTip'); if(!box) return;
+function pasangTipTren(tren,idBox,idTip){
+ const box=$(idBox||'kuChart'), tip=$(idTip||'kuTip'); if(!box) return;
  box.querySelectorAll('.kuHit').forEach(el=>{
   const tampil=e=>{ const r=tren[+el.dataset.i]; tip.innerHTML=`<b>${esc(namaPeriode(r.periode))}</b><br><span style="color:#2a78d6">■</span> Pendapatan ${rp(r.pendapatan)}<br><span style="color:#eb6834">■</span> Pengeluaran ${rp(r.beban)}<br>Laba <b>${rp(r.laba)}</b>`; tip.style.display='block';
    const b=box.getBoundingClientRect(), x=(e.clientX||b.left+b.width/2)-b.left; tip.style.left=Math.min(Math.max(0,x-70),b.width-170)+'px'; tip.style.top='8px'; el.setAttribute('fill','rgba(0,80,40,.05)'); };
   el.addEventListener('mousemove',tampil); el.addEventListener('click',tampil);
   el.addEventListener('mouseleave',()=>{ tip.style.display='none'; el.setAttribute('fill','transparent'); });
  });
+}
+async function muatKeseluruhan(){
+ const el=$('kuSemua'); el.innerHTML='<div class="muted">Memuat…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/keuangan/keseluruhan',{cache:'no-store'})); }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
+ const T=d.total, tr=d.bulanan.filter(b=>b.pendapatan||b.beban||b.modal_masuk||b.prive);
+ if(!tr.length){ el.innerHTML='<div class="muted">Belum ada data keuangan. Data muncul setelah ada pembayaran tagihan atau transaksi tercatat.</div>'; return; }
+ let h=`<div class="plSub" style="margin-bottom:8px">Sejak <b>${esc(namaPeriode(d.mulai))}</b> sampai <b>${esc(namaPeriode(d.sampai))}</b> (${d.jumlah_bulan} bulan) · ${d.jumlah_pembayaran} pembayaran langganan · ${d.jumlah_transaksi} transaksi kas</div>`;
+ h+='<div class="kuKpi">'
+  +kotakKu('Total pendapatan',rp(T.pendapatan),'langganan '+rpS(T.pendapatan_langganan)+(T.pendapatan_lain?' · lain '+rpS(T.pendapatan_lain):''))
+  +kotakKu('Total pengeluaran',rp(T.beban),d.insentif_dibayar?'termasuk insentif mitra '+rpS(d.insentif_dibayar):'')
+  +kotakKu('Laba bersih total',rp(T.laba),'rata-rata '+rp(d.rata_laba)+'/bulan',T.laba<0?'#b42318':'#0b7a3b')
+  +kotakKu('Saldo kas sekarang',rp(d.saldo_kas),'uang yang seharusnya ada',d.saldo_kas<0?'#b42318':'')+'</div>';
+ h+='<div class="kuSub">'
+  +kotakKu('Modal disetor',rp(T.modal_masuk),d.modal_kembali_persen==null?'tidak ada setoran modal tercatat':'laba sudah menutup '+d.modal_kembali_persen+'% modal',d.modal_kembali_persen>=100?'#0b7a3b':'')
+  +kotakKu('Prive (diambil pemilik)',rp(T.prive),'tidak dihitung laba')
+  +kotakKu('Bulan terbaik',d.terbaik?esc(namaPeriode(d.terbaik)):'—',d.terbaik?'laba '+rp(d.bulanan.find(b=>b.periode===d.terbaik).laba):'')
+  +kotakKu('Bulan terendah',d.terburuk?esc(namaPeriode(d.terburuk)):'—',d.terburuk?'laba '+rp(d.bulanan.find(b=>b.periode===d.terburuk).laba):'')
+  +kotakKu('Piutang pelanggan',rp(d.piutang.total),d.piutang.jumlah+' tagihan · '+d.piutang.pelanggan+' pelanggan',d.piutang.total?'#b45309':'')
+  +kotakKu('Utang belum dibayar',rp(d.utang.sisa),d.utang.jumlah?d.utang.jumlah+' tagihan pemasok':'tidak ada utang',d.utang.sisa?'#b45309':'')
+  +kotakKu('Pelanggan',String(d.pelanggan.berbayar),'berbayar · '+d.pelanggan.gratis+' gratis · '+d.pelanggan.berhenti+' berhenti')+'</div>';
+ h+='<div class="kuGrid"><div class="kuPanel"><h4>Pendapatan vs pengeluaran per bulan</h4><div class="kuLegend"><span><i style="background:#2a78d6"></i>Pendapatan</span><span><i style="background:#eb6834"></i>Pengeluaran</span></div><div class="kuChart" id="kuChartAll">'+chartTren(d.bulanan,'Grafik pendapatan dan pengeluaran sejak awal')+'<div class="kuTip" id="kuTipAll"></div></div>';
+ if(d.tahunan.length>1||d.tahunan[0].bulan>=12) h+='<div style="overflow-x:auto"><table class="kuTbl"><thead><tr><th>Tahun</th><th>Pendapatan</th><th>Pengeluaran</th><th>Laba</th></tr></thead><tbody>'+d.tahunan.map(t=>`<tr><td>${esc(t.tahun)}${t.bulan<12?' <small class="muted">('+t.bulan+' bln)</small>':''}</td><td>${rp(t.pendapatan)}</td><td>${rp(t.beban)}</td><td class="${t.laba<0?'turun':''}">${rp(t.laba)}</td></tr>`).join('')+'</tbody></table></div>';
+ h+='</div>';
+ const keluar=d.per_kategori.filter(k=>k.jenis==='keluar'), maks=Math.max(1,...keluar.map(k=>k.total));
+ h+='<div class="kuPanel"><h4>Pengeluaran per kategori, sejak awal</h4>'+(keluar.length?keluar.map(k=>`<div class="kuBar" title="${esc(k.nama)}: ${rp(k.total)} (${k.n} transaksi)"><span class="nm">${esc(k.nama)}${k.pengaruh_laba?'':' *'} <small class="muted">${T.beban&&k.pengaruh_laba?Math.round(k.total*100/T.beban)+'%':''}</small></span><span><div class="track" style="width:${Math.max(2,k.total*100/maks)}%"></div></span><span class="v">${rp(k.total)}</span></div>`).join(''):'<div class="muted">Belum ada pengeluaran.</div>')
+  +(keluar.some(k=>!k.pengaruh_laba)?'<div class="plSub" style="margin-top:6px">* prive: mengurangi kas, tidak dihitung laba.</div>':'')+'</div></div>';
+ h+='<div class="kuPanel" style="margin-top:12px"><h4>Rincian per bulan</h4><div style="overflow-x:auto"><table class="kuTbl"><thead><tr><th>Bulan</th><th>Pendapatan</th><th>Pengeluaran</th><th>Laba</th><th>Laba kumulatif</th><th>Saldo kas</th></tr></thead><tbody>'
+  +d.bulanan.slice().reverse().map(b=>`<tr style="cursor:pointer" onclick="ku.periode='${b.periode}';tabKu('ringkasan')" title="Buka ringkasan ${esc(namaPeriode(b.periode))}"><td>${esc(namaPeriode(b.periode))}</td><td>${rp(b.pendapatan)}</td><td>${rp(b.beban)}</td><td class="${b.laba<0?'turun':''}">${rp(b.laba)}</td><td class="${b.laba_kumulatif<0?'turun':''}">${rp(b.laba_kumulatif)}</td><td>${rp(b.saldo_akhir)}</td></tr>`).join('')
+  +`</tbody><tfoot><tr><th>Total</th><th>${rp(T.pendapatan)}</th><th>${rp(T.beban)}</th><th>${rp(T.laba)}</th><th></th><th>${rp(d.saldo_kas)}</th></tr></tfoot></table></div><div class="plSub" style="margin-top:6px">Ketuk satu bulan untuk membuka ringkasan bulan itu. Saldo kas = semua uang masuk (langganan, pemasukan, modal) dikurangi semua uang keluar (belanja, cicilan utang, prive).</div></div>`;
+ el.innerHTML=h; pasangTipTren(d.bulanan,'kuChartAll','kuTipAll');
 }
 function setKuJenis(j){ ku.jenis=j; muatTransaksi(); }
 function bolehUbahKu(t){
