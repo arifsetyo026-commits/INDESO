@@ -2966,6 +2966,7 @@ _METODE = ("tunai", "transfer", "qris", "lainnya")
 # Kategori khusus untuk pembayaran/cicilan utang: mengurangi kas tetapi bukan
 # beban (bebannya sudah dihitung saat pembelian kredit dicatat).
 _KAT_BAYAR_UTANG = "Pembayaran utang"
+_KAT_INSENTIF = "Insentif mitra"     # dibayar lewat tab Insentif, terikat ke periode
 
 
 def init_keuangan_db() -> None:
@@ -3012,6 +3013,10 @@ def init_keuangan_db() -> None:
                      (_KAT_BAYAR_UTANG,))
         if "utang_id" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
             conn.execute("ALTER TABLE transaksi ADD COLUMN utang_id INTEGER REFERENCES utang(id)")
+        # Pembayaran insentif mitra terikat ke periode insentifnya (insentif Oktober
+        # biasanya dibayar November). Data lama tanpa periode dianggap periode bulan tanggalnya.
+        if "insentif_periode" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+            conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_periode TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS utang (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3147,10 +3152,8 @@ def keuangan_ringkasan(periode: str, request: Request):
             "SELECT COALESCE(SUM(jumlah),0), COUNT(*) FROM tagihan WHERE periode = ?", (periode,)
         ).fetchone()
         insentif = _hitung_insentif(conn, periode)
-        insentif_dibayar = conn.execute(
-            "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
-            "WHERE t.status='aktif' AND k.nama = 'Insentif mitra' AND t.tanggal >= ? AND t.tanggal < ?", (awal, akhir)
-        ).fetchone()[0]
+        insentif_dibayar = _insentif_dibayar(conn, periode)
+        insentif_tunggak = _insentif_tertunggak(conn, periode)
         pelanggan_aktif = conn.execute(
             "SELECT COUNT(*) FROM pelanggan WHERE status='aktif' AND gratis=0").fetchone()[0]
         utang_info = _ringkas_utang(conn)
@@ -3169,7 +3172,8 @@ def keuangan_ringkasan(periode: str, request: Request):
         "tagihan_periode": {"total": tagihan_periode[0], "jumlah": tagihan_periode[1]},
         "piutang_periode": {"total": piutang_periode[0], "jumlah": piutang_periode[1]},
         "piutang_total": {"total": piutang_total[0], "jumlah": piutang_total[1]},
-        "insentif_mitra": {"terhitung": insentif["total"], "dibayar": insentif_dibayar},
+        "insentif_mitra": {"terhitung": insentif["total"], "dibayar": insentif_dibayar,
+                           "tertunggak_total": insentif_tunggak["total"], "tertunggak_bulan": insentif_tunggak["bulan"]},
         "utang": utang_info,
         "tanpa_nota": tanpa_nota,
         "pelanggan_berbayar": pelanggan_aktif,
@@ -3632,6 +3636,130 @@ def proses_pengingat_utang(sekarang=None) -> None:
         conn.close()
 
 
+def _insentif_dibayar(conn, periode: str) -> int:
+    return conn.execute(
+        "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
+        "WHERE t.status='aktif' AND k.nama = ? AND COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) = ?",
+        (_KAT_INSENTIF, periode),
+    ).fetchone()[0]
+
+
+def _periode_insentif_awal(conn) -> Optional[str]:
+    r = conn.execute("SELECT MIN(periode) FROM tagihan").fetchone()[0]
+    return r
+
+
+def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
+    """Rekap per bulan dari periode tagihan pertama (maks. 24 bulan terakhir) s/d `sampai`."""
+    awal = _periode_insentif_awal(conn)
+    if not awal:
+        return []
+    awal = max(awal, _geser_periode(sampai, -(maks_bulan - 1)))
+    hasil, p = [], awal
+    while p <= sampai:
+        ins = _hitung_insentif(conn, p)
+        dibayar = _insentif_dibayar(conn, p)
+        sisa = ins["total"] - dibayar
+        hasil.append({"periode": p, "jumlah_pelanggan": ins["jumlah"], "jumlah_lunas": ins["jumlah_lunas"],
+                      "jumlah_gratis": ins["jumlah_gratis"], "per_pelanggan": ins["per_pelanggan"],
+                      "terhitung": ins["total"], "dibayar": dibayar, "sisa": max(0, sisa),
+                      "lebih": max(0, -sisa),
+                      "status": "lunas" if ins["total"] and sisa <= 0 else ("sebagian" if dibayar else
+                                                                            ("belum" if ins["total"] else "nihil"))})
+        p = _geser_periode(p, 1)
+    return hasil
+
+
+def _insentif_tertunggak(conn, sampai: str) -> dict:
+    bulan = [b for b in _rekap_insentif(conn, sampai) if b["sisa"] > 0]
+    return {"total": sum(b["sisa"] for b in bulan), "bulan": [{"periode": b["periode"], "sisa": b["sisa"]} for b in bulan]}
+
+
+def _pembayaran_insentif(conn, periode_list: list[str]) -> dict[str, list[dict]]:
+    if not periode_list:
+        return {}
+    tanda = ",".join("?" * len(periode_list))
+    hasil: dict[str, list[dict]] = {}
+    for r in conn.execute(
+        f"SELECT t.id, t.tanggal, t.jumlah, t.metode, t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.status, "
+        f"t.batal_alasan, COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) AS periode "
+        f"FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE k.nama = ? "
+        f"AND COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) IN ({tanda}) ORDER BY t.tanggal, t.id",
+        [_KAT_INSENTIF, *periode_list],
+    ):
+        hasil.setdefault(r["periode"], []).append(dict(r))
+    return hasil
+
+
+@app.get("/api/keuangan/insentif")
+def keuangan_insentif(request: Request, sampai: str = ""):
+    _wajib_admin(request)
+    sampai = sampai if _periode_valid(sampai) else datetime.now().strftime("%Y-%m")
+    conn = _billing_conn()
+    try:
+        rekap = _rekap_insentif(conn, sampai)
+        bayar = _pembayaran_insentif(conn, [b["periode"] for b in rekap])
+        nota = _daftar_nota(conn, "transaksi", [p["id"] for ps in bayar.values() for p in ps])
+    finally:
+        conn.close()
+    for b in rekap:
+        b["pembayaran"] = [dict(p, nota=nota.get(p["id"], [])) for p in bayar.get(b["periode"], [])]
+    rekap.reverse()      # terbaru di atas
+    return {"saya": request.state.user, "peran": request.state.peran,
+            "ringkasan": {"tertunggak": sum(b["sisa"] for b in rekap),
+                          "bulan_tertunggak": sum(1 for b in rekap if b["sisa"] > 0),
+                          "dibayar_total": sum(b["dibayar"] for b in rekap)},
+            "rekap": rekap}
+
+
+class BayarInsentifIn(BaseModel):
+    tanggal: str
+    jumlah: int
+    metode: str = "transfer"
+    penerima: Optional[str] = None
+    keterangan: Optional[str] = None
+
+
+@app.post("/api/keuangan/insentif/{periode}/bayar")
+def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
+    _wajib_admin(request)
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    _cek_tanggal_lalu(d.tanggal)
+    if d.metode not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode tidak valid.")
+    if d.tanggal[:7] < periode:
+        raise HTTPException(status_code=400, detail="Tanggal bayar tidak boleh sebelum bulan insentifnya.")
+    conn = _billing_conn()
+    try:
+        ins = _hitung_insentif(conn, periode)
+        sisa = ins["total"] - _insentif_dibayar(conn, periode)
+        if sisa <= 0:
+            raise HTTPException(status_code=400, detail=f"Insentif {_nama_periode(periode)} sudah lunas.")
+        if not 0 < d.jumlah <= sisa:
+            raise HTTPException(status_code=400, detail=f"Jumlah harus 1 sampai {_rp(sisa)} (sisa insentif).")
+        kid = conn.execute("SELECT id FROM kategori_kas WHERE nama = ? AND jenis = 'keluar'", (_KAT_INSENTIF,)).fetchone()
+        if not kid:
+            kid = (conn.execute("INSERT INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 1)",
+                                (_KAT_INSENTIF,)).lastrowid,)
+        penerima = (d.penerima or "").strip()[:60]
+        ket = f"Insentif {_nama_periode(periode)}" + (f" untuk {penerima}" if penerima else "") \
+            + (f" · {d.keterangan.strip()[:300]}" if d.keterangan and d.keterangan.strip() else "")
+        cur = conn.execute(
+            "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
+            "insentif_periode) VALUES (?, 'keluar', ?, ?, ?, ?, ?, ?, ?)",
+            (d.tanggal, kid[0], d.jumlah, d.metode, ket, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             periode),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "insentif_bayar",
+                    f"{_nama_periode(periode)}: bayar {_rp(d.jumlah)} ({d.metode})"
+                    + (f" ke {penerima}" if penerima else "") + f", sisa {_rp(sisa - d.jumlah)}")
+    return {"ok": True, "transaksi_id": cur.lastrowid, "sisa": sisa - d.jumlah}
+
+
 class TransaksiIn(BaseModel):
     tanggal: str
     jenis: str
@@ -3657,6 +3785,8 @@ def _cek_transaksi(conn, d: TransaksiIn) -> str:
         raise HTTPException(status_code=400, detail="Kategori tidak cocok dengan jenis transaksi.")
     if k["khusus"]:
         raise HTTPException(status_code=400, detail="Pembayaran utang dicatat dari tab Utang.")
+    if k["nama"] == _KAT_INSENTIF:
+        raise HTTPException(status_code=400, detail="Pembayaran insentif mitra dicatat dari tab Insentif (agar terikat ke bulannya).")
     return k["nama"]
 
 
@@ -3704,6 +3834,8 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
             raise HTTPException(status_code=400, detail="Transaksi yang sudah dibatalkan tidak bisa diubah.")
         if t["utang_id"]:
             raise HTTPException(status_code=400, detail="Pembayaran utang tidak bisa diubah. Batalkan, lalu bayar ulang dari tab Utang.")
+        if t["insentif_periode"]:
+            raise HTTPException(status_code=400, detail="Pembayaran insentif tidak bisa diubah. Batalkan, lalu bayar ulang dari tab Insentif.")
         _boleh_ubah_transaksi(request, t)
         kat = _cek_transaksi(conn, d)
         conn.execute(
@@ -3751,7 +3883,7 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
     awal, akhir = _batas_periode(periode)
     sql = ("SELECT t.id, t.tanggal, t.jenis, t.kategori_id, k.nama AS kategori, k.pengaruh_laba, t.jumlah, t.metode, "
            "t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.diubah_oleh, t.diubah_pada, t.status, "
-           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, "
+           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, "
            "(SELECT u.pemasok FROM utang u WHERE u.id = t.utang_id) AS pemasok "
            "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.tanggal >= ? AND t.tanggal < ?")
     arg: list = [awal, akhir]
@@ -3884,10 +4016,8 @@ def susun_laporan_bulanan(periode: str) -> str:
         ).fetchall()
         utang = _ringkas_utang(conn)
         insentif = _hitung_insentif(conn, periode)
-        ins_bayar = conn.execute(
-            "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
-            "WHERE t.status='aktif' AND k.nama='Insentif mitra' AND t.tanggal >= ? AND t.tanggal < ?", (awal, akhir)
-        ).fetchone()[0]
+        ins_bayar = _insentif_dibayar(conn, periode)
+        ins_tunggak = _insentif_tertunggak(conn, periode)
         pel = conn.execute(
             "SELECT SUM(status='aktif' AND gratis=0), SUM(status='aktif' AND gratis=1), "
             "SUM(status='berhenti' AND berhenti_sejak >= ? AND berhenti_sejak < ?) FROM pelanggan", (awal, akhir)
@@ -3954,11 +4084,14 @@ def susun_laporan_bulanan(periode: str) -> str:
         if utang["terdekat"]:
             t = utang["terdekat"]
             L.append(f"Terdekat: {_esc(t['pemasok'])} {_rp(t['sisa'])}, {t['jatuh_tempo'][8:10]}/{t['jatuh_tempo'][5:7]}")
-    if insentif["total"] or ins_bayar:
+    if insentif["total"] or ins_bayar or ins_tunggak["total"]:
         sisa = max(0, insentif["total"] - ins_bayar)
         L += ["", "<b>Insentif mitra</b>",
-              f"Terhitung {_rp(insentif['total'])} ({insentif['jumlah']} pelanggan), dibayar {_rp(ins_bayar)}"
-              + (f" — <b>kurang {_rp(sisa)}</b>" if sisa else " ✅")]
+              f"{nama_bln}: terhitung {_rp(insentif['total'])} ({insentif['jumlah']} pelanggan), dibayar {_rp(ins_bayar)}"
+              + (f" — <b>belum dibayar {_rp(sisa)}</b>" if sisa else " ✅")]
+        lain = [b for b in ins_tunggak["bulan"] if b["periode"] != periode]
+        if lain:
+            L.append("Tunggakan bulan lain: " + ", ".join(f"{_nama_periode(b['periode'])} {_rp(b['sisa'])}" for b in lain[:4]))
     L += ["", "<b>Pelanggan</b>",
           f"Aktif berbayar {pel[0] or 0}, gratis {pel[1] or 0}, berhenti bulan ini {pel[2] or 0}, terisolir saat ini {n_isolir}"]
     if ev:
@@ -4113,6 +4246,13 @@ def mitra_list_pelanggan(periode: str, request: Request):
             (periode,),
         ).fetchall()
         insentif = _hitung_insentif(conn, periode)
+        insentif["dibayar"] = _insentif_dibayar(conn, periode)
+        insentif["sisa"] = max(0, insentif["total"] - insentif["dibayar"])
+        # Mitra hanya melihat tanggal, jumlah, dan metode pembayaran (bukan catatan internal)
+        insentif["pembayaran"] = [{"tanggal": p["tanggal"], "jumlah": p["jumlah"], "metode": p["metode"]}
+                                  for p in _pembayaran_insentif(conn, [periode]).get(periode, [])
+                                  if p["status"] == "aktif"]
+        insentif["tertunggak_lain"] = [b for b in _insentif_tertunggak(conn, periode)["bulan"] if b["periode"] != periode]
     finally:
         conn.close()
     return {"akun": _oleh(request), "periode": periode, "insentif": insentif,

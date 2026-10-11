@@ -213,7 +213,7 @@
 <div class="overlay" id="keuanganModal"><div class="modal kuModal"><div class="modalHead"><h3>Keuangan</h3><button class="close" onclick="closeModal('keuanganModal')">Tutup</button></div><div class="modalBody">
 <div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor CSV</a><button class="btnS" id="kuLapBtn" style="display:none" onclick="pratinjauLaporan()">Laporan Telegram</button></div>
 <div id="kuLap" class="kuPanel" style="display:none;margin-bottom:10px"><h4>Pratinjau laporan Telegram <span class="plSub" id="kuLapInfo"></span></h4><div id="kuLapTeks" style="white-space:pre-wrap;font-size:12px;line-height:1.55;max-height:340px;overflow:auto;background:#f7faf8;border-radius:9px;padding:10px"></div><div class="plBtns"><button class="plSave" onclick="kirimLaporan()">Kirim ke Telegram owner</button><button class="plCancel" onclick="$('kuLap').style.display='none'">Tutup</button></div></div>
-<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ringkasan</button><button data-t="transaksi" onclick="tabKu('transaksi')">Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Utang <span id="kuNUtang"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Catat transaksi</button></div>
+<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ringkasan</button><button data-t="transaksi" onclick="tabKu('transaksi')">Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Utang <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Insentif mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Catat transaksi</button></div>
 <div class="plMsg" id="kuMsg"></div>
 <div id="kuRingkasan"></div>
 <input type="file" id="notaLangsung" accept="image/*,application/pdf" multiple style="display:none" onchange="unggahLangsung(this)">
@@ -227,6 +227,11 @@
  <div class="blSum"><div class="blBox"><small>Sisa utang</small><b id="utSisa" style="color:#b45309">—</b><small id="utSisaN"></small></div><div class="blBox"><small>Lewat jatuh tempo</small><b id="utLewat" style="color:#b42318">—</b><small id="utLewatN"></small></div><div class="blBox"><small>Jatuh tempo terdekat</small><b id="utDekat">—</b><small id="utDekatN"></small></div></div>
  <div class="blFilters utFilter"><button data-v="belum" class="on" onclick="setUtFilter('belum')">Belum lunas</button><button data-v="lunas" onclick="setUtFilter('lunas')">Lunas</button><button data-v="semua" onclick="setUtFilter('semua')">Semua</button><button onclick="kreditBaru()">+ Catat pembelian kredit</button></div>
  <div id="utList"></div>
+</div>
+<div id="kuInsentif" style="display:none">
+ <div class="blSum"><div class="blBox"><small>Insentif belum dibayar</small><b id="inTunggak" style="color:#b45309">—</b><small id="inTunggakN"></small></div><div class="blBox"><small>Sudah dibayar (24 bln)</small><b id="inDibayar" style="color:#0b7a3b">—</b><small>total</small></div><div class="blBox"><small>Tarif</small><b id="inTarif">—</b><small>per pelanggan lunas</small></div></div>
+ <div class="plSub" style="margin-bottom:8px">Insentif dihitung dari tagihan bulan itu yang sudah lunas (+ pelanggan gratis yang ditandai). Kalau ada pelanggan yang melunasi belakangan, insentif bulan itu ikut bertambah.</div>
+ <div id="inList"></div>
 </div>
 <div id="kuCatat" style="display:none"><div class="plForm">
  <b id="kuFormJudul" style="font-size:13px">Catat transaksi baru</b>
@@ -972,8 +977,8 @@ function tabKu(t){
  ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
- $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none';
- if(t==='ringkasan') muatRingkasanKu(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(!ku.edit) resetFormKu();
+ $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
+ if(t==='ringkasan') muatRingkasanKu(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit) resetFormKu();
 }
 function kotakKu(label,nilai,bawah,warna){ return `<div class="blBox"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
 async function muatRingkasanKu(){
@@ -989,7 +994,7 @@ async function muatRingkasanKu(){
  h+='<div class="kuSub">'
   +kotakKu('Tagihan bulan ini terkumpul',tagihanPersen==null?'—':tagihanPersen+'%',rp(d.tagihan_periode.total-d.piutang_periode.total)+' dari '+rp(d.tagihan_periode.total))
   +kotakKu('Piutang (belum bayar)',rp(d.piutang_total.total),d.piutang_total.jumlah+' tagihan s/d bulan ini',d.piutang_total.total?'#b45309':'')
-  +kotakKu('Insentif mitra',rp(ins.terhitung),ins.terhitung?(sisaIns?'belum dibayar '+rp(sisaIns):'sudah dibayar'):'—',sisaIns?'#b45309':'')
+  +kotakKu('Insentif mitra',rp(ins.terhitung),(ins.terhitung?(sisaIns?'belum dibayar '+rp(sisaIns):'sudah dibayar'):'—')+(ins.tertunggak_total>sisaIns?' · total tunggakan '+rp(ins.tertunggak_total):''),sisaIns||ins.tertunggak_total?'#b45309':'')
   +kotakKu('Utang belum dibayar',rp(d.utang.sisa),d.utang.jumlah?(d.utang.lewat_tempo?d.utang.lewat_tempo+' lewat jatuh tempo':d.utang.jumlah+' tagihan pemasok'):'tidak ada utang',d.utang.lewat_tempo?'#b42318':(d.utang.sisa?'#b45309':''))
   +kotakKu('Modal masuk / prive',rp(d.modal_masuk)+' / '+rp(d.prive),(d.bayar_utang?'bayar utang '+rp(d.bayar_utang)+' · ':'')+'tidak dihitung laba')+'</div>';
  // tren 6 bulan
@@ -1005,6 +1010,7 @@ async function muatRingkasanKu(){
   +((keluar.concat(masuk)).some(k=>!k.pengaruh_laba)?'<div class="plSub" style="margin-top:6px">* modal/prive: memengaruhi saldo kas, tidak dihitung laba.</div>':'')
   +(d.beban_kredit?'<div class="plSub" style="margin-top:6px">Pengeluaran termasuk pembelian kredit '+rp(d.beban_kredit)+' (belum tentu sudah dibayar).</div>':'')+'</div></div>';
  $('kuNUtang').textContent=d.utang.jumlah?'('+d.utang.jumlah+')':'';
+ $('kuNIns').textContent=d.insentif_mitra.tertunggak_bulan.length?'('+d.insentif_mitra.tertunggak_bulan.length+')':'';
  // transaksi terbaru
  h+='<div class="kuPanel" style="margin-top:12px"><h4>Transaksi terakhir dicatat</h4>'+(d.transaksi_terbaru.length?d.transaksi_terbaru.map(t=>`<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}</div><div class="plSub">${esc(tglPendek(t.tanggal))} · ${esc(t.keterangan||'')} · oleh ${esc(t.dicatat_oleh)}${t.status==='batal'?' · DIBATALKAN':''}</div></div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div></div></div>`).join(''):'<div class="muted">Belum ada transaksi. Mulai dari tab "+ Catat transaksi".</div>')+'</div>';
  const tn=d.tanpa_nota;
@@ -1047,17 +1053,17 @@ async function muatTransaksi(){
   const d=await jsonAtauError(await fetch('/api/keuangan/transaksi?'+q)); ku.trx=d;
   $('kuTrxInfo').innerHTML=d.ringkasan.jumlah+' transaksi · masuk <b class="naik">'+rp(d.ringkasan.masuk)+'</b> · keluar <b class="turun">'+rp(d.ringkasan.keluar)+'</b>'+(d.ringkasan.dibatalkan?' · '+d.ringkasan.dibatalkan+' dibatalkan':'')+' <span class="muted">(belum termasuk pembayaran langganan)</span>';
   $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>{
-   const aksi=bolehUbahKu(t)?(t.utang_id?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Batalkan</button>`:'';
+   const aksi=bolehUbahKu(t)?(t.utang_id||t.insentif_periode?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Batalkan</button>`:'';
    const info=esc(tglPendek(t.tanggal))+' · '+esc(t.metode)+' · dicatat '+esc(t.dicatat_oleh)+(t.diubah_oleh?' · diubah '+esc(t.diubah_oleh):'');
    const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dibatalkan ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
    const nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,t.jenis==='keluar'&&!t.utang_id&&t.status==='aktif');
-   return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
+   return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
   }).join(''):'<div class="muted">Belum ada transaksi di bulan ini.</div>';
  }catch(e){ $('kuTrxList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 function isiKategori(pilih){
  const kredit=ku.formJenis==='keluar'&&$('kuMetode').value==='kredit';
- $('kuKat').innerHTML=ku.kategori.filter(k=>k.jenis===ku.formJenis&&!k.khusus&&(!kredit||k.pengaruh_laba)&&(k.aktif||k.id===pilih)).map(k=>`<option value="${k.id}" ${k.id===pilih?'selected':''}>${esc(k.nama)}${k.pengaruh_laba?'':' (tidak dihitung laba)'}</option>`).join('');
+ $('kuKat').innerHTML=ku.kategori.filter(k=>k.jenis===ku.formJenis&&!k.khusus&&k.nama!=='Insentif mitra'&&(!kredit||k.pengaruh_laba)&&(k.aktif||k.id===pilih)).map(k=>`<option value="${k.id}" ${k.id===pilih?'selected':''}>${esc(k.nama)}${k.pengaruh_laba?'':' (tidak dihitung laba)'}</option>`).join('');
 }
 function setFormJenis(j,pilih){ ku.formJenis=j; document.querySelectorAll('.kuJenis button').forEach(b=>b.classList.toggle('on',b.dataset.j===j));
  const opt=$('kuMetode').querySelector('option[value="kredit"]'); opt.hidden=j!=='keluar'||ku.edit!=null; if(opt.hidden&&$('kuMetode').value==='kredit') $('kuMetode').value='tunai';
@@ -1228,15 +1234,55 @@ async function unggahLangsung(input){
  kuPesan('Mengunggah '+files.length+' nota…',true); const gagal=[];
  for(const f of files){ try{ await unggahNota(t.pemilik,t.id,f); }catch(e){ gagal.push(e.message); } }
  kuPesan(gagal.length?('Gagal: '+gagal.join('; ')):(files.length+' nota tersimpan.'),!gagal.length);
- if(ku.tab==='utang') muatUtang(); else if(ku.tab==='transaksi') muatTransaksi(); else muatRingkasanKu();
+ if(ku.tab==='utang') muatUtang(); else if(ku.tab==='transaksi') muatTransaksi(); else if(ku.tab==='insentif') muatInsentif(); else muatRingkasanKu();
 }
 async function hapusNota(id){
  if(!confirm('Hapus nota ini? (berkas tetap tersimpan di server sebagai arsip, tercatat di log)')) return;
  try{ await jsonAtauError(await fetch('/api/keuangan/nota/'+id,{method:'DELETE'})); kuPesan('Nota dihapus.',true);
   document.querySelectorAll(`a.notaThumb[href="/api/keuangan/nota/${id}"]`).forEach(e=>e.remove());
-  if(ku.tab==='utang') muatUtang(); else if(ku.tab==='transaksi') muatTransaksi(); }
+  if(ku.tab==='utang') muatUtang(); else if(ku.tab==='transaksi') muatTransaksi(); else if(ku.tab==='insentif') muatInsentif(); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 AKSI_LABEL.nota_unggah='Unggah nota'; AKSI_LABEL.nota_hapus='Hapus nota';
+
+// ===== Insentif mitra: rekap per bulan + pembayaran =====
+ku.ins=null; ku.inBayar=null;
+const IN_CHIP={lunas:'<span class="chip ok">Lunas</span>',sebagian:'<span class="chip warn">Sebagian</span>',belum:'<span class="chip bad">Belum dibayar</span>',nihil:'<span class="chip off">Tidak ada</span>'};
+async function muatInsentif(){
+ $('inList').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const d=await jsonAtauError(await fetch('/api/keuangan/insentif?sampai='+kuPeriodeIni())); ku.ins=d;
+  $('inTunggak').textContent=rp(d.ringkasan.tertunggak); $('inTunggakN').textContent=d.ringkasan.bulan_tertunggak+' bulan';
+  $('inDibayar').textContent=rp(d.ringkasan.dibayar_total); $('inTarif').textContent=d.rekap.length?rp(d.rekap[0].per_pelanggan):'—';
+  $('kuNIns').textContent=d.ringkasan.bulan_tertunggak?'('+d.ringkasan.bulan_tertunggak+')':'';
+  const hariIni=kuPeriodeIni();
+  $('inList').innerHTML=d.rekap.length?d.rekap.map((b,i)=>{
+   const berjalan=b.periode===hariIni;
+   const riw=b.pembayaran.length?'<div class="kuRiwBayar">'+b.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)} · ${esc(p.dicatat_oleh)}${p.status!=='aktif'?' · dibatalkan: '+esc(p.batal_alasan||''):''}${p.status==='aktif'&&bolehBatalBayar(p)?` <a href="#" onclick="batalBayarInsentif(${p.id});return false">batalkan</a>`:''}${htmlNota(p.nota,p.status==='aktif'&&bolehBatalBayar(p)?`tambahNota('transaksi',${p.id})`:null,false)}</div>`).join('')+'</div>':'';
+   const form=ku.inBayar===b.periode?`<div class="kuBayarForm" style="grid-template-columns:repeat(4,minmax(0,1fr)) auto"><div><small>Tanggal bayar</small><input type="date" id="ibTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>Jumlah (sisa ${rp(b.sisa)})</small><input id="ibJml" inputmode="numeric" value="${Number(b.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="ibMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><small>Penerima (opsional)</small><input id="ibPenerima" placeholder="nama mitra"></div><div><button class="btnS go" onclick="simpanBayarInsentif('${b.periode}')">Simpan</button></div></div><div class="plSub" style="margin-top:4px">Bukti transfer bisa dilampirkan setelah disimpan (tombol + Nota).</div>`:'';
+   const tombol=b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Bayar</button>`:'';
+   return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(namaPeriode(b.periode))}${berjalan?' <span class="plSub">(bulan berjalan, masih bisa bertambah)</span>':''}</div><div class="plSub">${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}${b.lebih?' · <b style="color:#1669aa">lebih bayar '+rp(b.lebih)+'</b>':''}</div></div><div class="blKanan"><div class="blAmt">${rp(b.terhitung)}</div><div class="plSub">dibayar ${rp(b.dibayar)}${b.sisa?' · sisa <b style="color:#b45309">'+rp(b.sisa)+'</b>':''}</div><div class="blAksi">${IN_CHIP[b.status]||''}${tombol}</div></div></div>${riw}${form}</div>`;
+  }).join(''):'<div class="muted">Belum ada data tagihan.</div>';
+ }catch(e){ $('inList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function bolehBatalBayar(p){
+ if(!ku.ins) return false; if(ku.ins.peran==='owner') return true;
+ return p.dicatat_oleh===ku.ins.saya&&(Date.now()-new Date(p.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
+}
+function bukaBayarInsentif(p){ ku.inBayar=ku.inBayar===p?null:p; muatInsentif(); }
+async function simpanBayarInsentif(periode){
+ const body={tanggal:$('ibTgl').value,jumlah:Number($('ibJml').value.replace(/\D/g,'')),metode:$('ibMetode').value,penerima:$('ibPenerima').value.trim()||null};
+ if(!(body.jumlah>0)){ kuPesan('Isi jumlah pembayaran.'); return; }
+ if(!confirm('Catat pembayaran insentif '+namaPeriode(periode)+' sebesar '+rp(body.jumlah)+'? Saldo kas akan berkurang.')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/bayar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  ku.inBayar=null; await muatInsentif(); kuPesan('Pembayaran insentif '+namaPeriode(periode)+' '+rp(body.jumlah)+' tercatat'+(d.sisa?(', sisa '+rp(d.sisa)):' — LUNAS')+'. Lampirkan bukti transfer dengan tombol + Nota.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function batalBayarInsentif(id){
+ const alasan=prompt('Batalkan pembayaran insentif ini? Tuliskan alasannya:'); if(alasan==null) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+AKSI_LABEL.insentif_bayar='Bayar insentif mitra';
 </script>
 </body></html>

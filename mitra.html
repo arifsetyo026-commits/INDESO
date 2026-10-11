@@ -38,7 +38,7 @@
 <div class="wrap">
  <div class="nav"><button class="btn" onclick="geser(-1)" aria-label="Bulan sebelumnya">‹</button><b id="periode">—</b><button class="btn" onclick="geser(1)" aria-label="Bulan berikutnya">›</button></div>
  <div class="cards">
-  <div class="card main"><small>Insentif bulan ini</small><strong id="insTotal">—</strong><span id="insRumus"></span></div>
+  <div class="card main"><small>Insentif bulan ini</small><strong id="insTotal">—</strong><span id="insRumus"></span><span id="insBayar" style="margin-top:6px"></span></div>
   <div class="card"><small>Sudah bayar</small><strong id="nLunas">—</strong><span>pelanggan</span></div>
   <div class="card"><small>Belum bayar</small><strong id="nBelum" style="color:#b45309">—</strong><span>pelanggan</span></div>
  </div>
@@ -103,6 +103,9 @@ async function muat(){
   const ins=d.insentif;
   $('insTotal').textContent=rp(ins.total);
   $('insRumus').textContent=ins.jumlah_lunas+' lunas'+(ins.jumlah_gratis?(' + '+ins.jumlah_gratis+' gratis'):'')+' × '+rp(ins.per_pelanggan);
+  const byr=(ins.pembayaran||[]).map(p=>rp(p.jumlah)+' ('+tgl(p.tanggal)+', '+p.metode+')').join(', ');
+  $('insBayar').innerHTML=ins.total?(ins.sisa?('<b style="color:#b45309">Belum dibayar '+esc(rp(ins.sisa))+'</b>'+(byr?' · sudah dibayar '+esc(byr):'')):('<b style="color:#0b7a3b">✓ Sudah dibayar</b> '+esc(byr))):'';
+  $('insBayar').innerHTML+=(ins.tertunggak_lain||[]).length?'<br>Belum dibayar bulan lain: '+ins.tertunggak_lain.map(b=>esc(BLN[+b.periode.slice(5)-1]+' '+b.periode.slice(0,4))+' '+esc(rp(b.sisa))).join(', '):'';
   const lunas=d.pelanggan.filter(p=>p.status_bayar==='lunas').length;
   $('nLunas').textContent=lunas; $('nBelum').textContent=d.pelanggan.filter(p=>p.status_bayar==='belum').length;
   render();

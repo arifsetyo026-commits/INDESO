@@ -32,7 +32,10 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   saat uang muka/cicilan dibayar; sisa utang, jatuh tempo, dan pengingat Telegram 3 hari
   sebelum jatuh tempo. **Foto nota** (JPG/PNG/WEBP/PDF, foto otomatis diperkecil) per
   transaksi dan per utang, disimpan di folder `nota/`; pengeluaran ≥ Rp 100.000 tanpa nota
-  ditandai di ringkasan dan laporan bulanan. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
+  ditandai di ringkasan dan laporan bulanan. **Insentif mitra**: rekap per bulan
+  (terhitung, dibayar, sisa), pembayaran dicatat dari tab Insentif dan terikat ke bulan
+  insentifnya (insentif Oktober yang dibayar November tetap tercatat untuk Oktober), bukti
+  transfer bisa dilampirkan; mitra melihat status pembayarannya. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
   bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
 - **Laporan keuangan bulanan ke Telegram owner** — tiap tanggal 1 (jam diatur, menyusul
   s/d tanggal 7 bila server mati) ke grup internal owner dan/atau chat pribadi owner: laba rugi vs bulan lalu, kas,
