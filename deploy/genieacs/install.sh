@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Pasang GenieACS (server TR-069) + WireGuard di VPS Ubuntu 22.04/24.04 untuk INDESO.
 #
-#   sudo PPPOE_SUBNET=10.10.0.0/16 LAN_SUBNET=192.168.50.0/24 bash install.sh
+#   sudo PPPOE_SUBNET=172.20.52.0/24 LAN_SUBNET=192.168.50.0/24 bash install.sh
 #
-# PPPOE_SUBNET : pool IP PPPoE pelanggan di MikroTik (ONU memakai IP ini)
+# PPPOE_SUBNET : pool IP PPPoE pelanggan di MikroTik (ONU memakai IP ini); boleh beberapa, pisahkan koma
 # LAN_SUBNET   : jaringan kantor tempat INDESO (HP Termux) berjalan
-# Semua layanan ACS hanya bisa diakses lewat terowongan WireGuard (10.99.0.0/24),
-# tidak terbuka ke internet. Lihat docs/genieacs.md untuk langkah lengkap.
+# Semua layanan ACS hanya mendengarkan di alamat terowongan WireGuard (10.99.0.1) atau
+# localhost, jadi tidak terbuka ke internet tanpa perlu mengubah firewall VPS.
+# Aman dipasang di VPS yang sudah menjalankan layanan lain: memakai antarmuka WireGuard
+# sendiri (wgacs) dan port UDP yang belum terpakai; firewall (ufw) tidak dinyalakan paksa.
+# Lihat docs/genieacs.md untuk langkah lengkap.
 set -euo pipefail
 
 PPPOE_SUBNET="${PPPOE_SUBNET:?Isi PPPOE_SUBNET, mis. 10.10.0.0/16}"
 LAN_SUBNET="${LAN_SUBNET:?Isi LAN_SUBNET, mis. 192.168.50.0/24}"
-WG_PORT="${WG_PORT:-51820}"
+WG_IF="${WG_IF:-wgacs}"
+WG_PORT="${WG_PORT:-}"
+MT_WG_PORT="${MT_WG_PORT:-13299}"   # listen-port antarmuka baru di MikroTik (beda dengan terowongan yang sudah ada)
 WG_VPS_IP="10.99.0.1"
 WG_MT_IP="10.99.0.2"
 GENIEACS_VERSI="${GENIEACS_VERSI:-1.2.13}"
@@ -26,8 +31,21 @@ case "$VERSION_CODENAME" in jammy|noble) ;; *) echo "Didukung: Ubuntu 22.04 (jam
 grep -qw avx /proc/cpuinfo || echo "PERINGATAN: CPU VPS tidak punya AVX — MongoDB 5+ tidak akan jalan. Pilih VPS lain."
 
 echo "== Paket dasar"
+NGINX_SUDAH_ADA=$(command -v nginx || true)
 apt-get update -y
-apt-get install -y curl gnupg ca-certificates nginx apache2-utils wireguard ufw openssl
+apt-get install -y curl gnupg ca-certificates nginx apache2-utils wireguard openssl
+# Pilih port UDP WireGuard yang belum dipakai (VPS mungkin sudah punya terowongan lain).
+if [ -z "$WG_PORT" ]; then
+  for p in $(seq 51820 51840); do
+    # Socket WireGuard milik kernel tidak tampil di ss, jadi cek juga "wg show".
+    { ss -lunH | awk '{print $4}'; wg show all listen-port 2>/dev/null | awk '{print ":"$2}'; } | grep -q ":$p\$" \
+      || { WG_PORT=$p; break; }
+  done
+fi
+echo "Port WireGuard ACS: ${WG_PORT}/udp, antarmuka ${WG_IF}"
+# Izinkan layanan mengikat alamat 10.99.0.1 walau terowongan belum naik (urutan boot bebas).
+sysctl -w net.ipv4.ip_nonlocal_bind=1 >/dev/null
+echo 'net.ipv4.ip_nonlocal_bind=1' > /etc/sysctl.d/99-genieacs-bind.conf
 
 # VPS RAM kecil (mis. 1 GB): tambah swap supaya MongoDB/Node tidak dimatikan kernel saat memori penuh.
 if [ "$RAM_MB" -lt 2000 ] && ! swapon --show | grep -q .; then
@@ -87,6 +105,8 @@ GENIEACS_DEBUG_FILE=/var/log/genieacs/genieacs-debug.yaml
 GENIEACS_EXT_DIR=/opt/genieacs/ext
 GENIEACS_NBI_INTERFACE=127.0.0.1
 GENIEACS_UI_INTERFACE=127.0.0.1
+GENIEACS_CWMP_INTERFACE=${WG_VPS_IP}
+GENIEACS_FS_INTERFACE=${WG_VPS_IP}
 GENIEACS_UI_JWT_SECRET=$(openssl rand -hex 32)
 ENV
   chmod 600 /opt/genieacs/genieacs.env
@@ -117,7 +137,6 @@ WantedBy=multi-user.target
 UNIT
 done
 systemctl daemon-reload
-for svc in $LAYANAN; do systemctl enable genieacs-${svc}; systemctl restart genieacs-${svc}; done
 
 echo "== WireGuard (VPS ${WG_VPS_IP} <-> MikroTik ${WG_MT_IP})"
 umask 077
@@ -125,19 +144,25 @@ umask 077
 [ -f /etc/wireguard/mikrotik.key ] || wg genkey > /etc/wireguard/mikrotik.key
 VPS_PRIV=$(cat /etc/wireguard/vps.key); VPS_PUB=$(wg pubkey < /etc/wireguard/vps.key)
 MT_PRIV=$(cat /etc/wireguard/mikrotik.key); MT_PUB=$(wg pubkey < /etc/wireguard/mikrotik.key)
-cat > /etc/wireguard/wg0.conf <<WG
+if [ -f "/etc/wireguard/${WG_IF}.conf" ] && ! grep -q "MikroTik kantor (INDESO ACS)" "/etc/wireguard/${WG_IF}.conf"; then
+  echo "/etc/wireguard/${WG_IF}.conf sudah ada dan bukan buatan skrip ini. Pakai WG_IF=nama-lain."; exit 1
+fi
+cat > /etc/wireguard/${WG_IF}.conf <<WG
 [Interface]
 Address = ${WG_VPS_IP}/24
 ListenPort = ${WG_PORT}
 PrivateKey = ${VPS_PRIV}
 
 [Peer]
-# MikroTik kantor. ONU (pool PPPoE) dan LAN kantor (INDESO) diakses lewat peer ini.
+# MikroTik kantor (INDESO ACS). ONU (pool PPPoE) dan LAN kantor (INDESO) diakses lewat peer ini.
 PublicKey = ${MT_PUB}
 AllowedIPs = ${WG_MT_IP}/32, ${PPPOE_SUBNET}, ${LAN_SUBNET}
 PersistentKeepalive = 25
 WG
-systemctl enable --now wg-quick@wg0 || systemctl restart wg-quick@wg0
+systemctl enable "wg-quick@${WG_IF}"
+systemctl restart "wg-quick@${WG_IF}"
+
+for svc in $LAYANAN; do systemctl enable "genieacs-${svc}"; systemctl restart "genieacs-${svc}"; done
 
 echo "== nginx: NBI (berpassword) & UI hanya di alamat terowongan"
 if [ ! -f /etc/nginx/genieacs-nbi.htpasswd ]; then
@@ -159,18 +184,19 @@ server {
 }
 NGX
 ln -sf /etc/nginx/sites-available/genieacs /etc/nginx/sites-enabled/genieacs
-# nginx harus menunggu wg0 (alamat 10.99.0.1) sudah ada
-mkdir -p /etc/systemd/system/nginx.service.d
-printf '[Unit]\nAfter=wg-quick@wg0.service\nRequires=wg-quick@wg0.service\n' > /etc/systemd/system/nginx.service.d/wg.conf
-systemctl daemon-reload
-nginx -t && systemctl restart nginx
+# nginx baru dipasang skrip ini: matikan situs bawaan (port 80) supaya tidak bentrok dengan layanan lain.
+[ -z "$NGINX_SUDAH_ADA" ] && rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload-or-restart nginx
 
 echo "== Firewall"
-ufw allow 22/tcp
-ufw allow "${WG_PORT}/udp"
-# 7567/3000 hanya dipakai bila FS/UI dinyalakan
-for port in 7547 7557 7567 3000; do ufw allow in on wg0 to any port "$port" proto tcp; done
-ufw --force enable
+# Layanan ACS hanya mendengarkan di 10.99.0.1/localhost, jadi firewall tidak wajib.
+# Bila ufw sudah aktif di VPS ini, buka port WireGuard dan port ACS di antarmuka terowongan saja.
+if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
+  ufw allow "${WG_PORT}/udp"
+  for port in 7547 7557 7567 3000; do ufw allow in on "${WG_IF}" to any port "$port" proto tcp; done
+else
+  echo "ufw tidak aktif — dilewati. Pastikan firewall penyedia VPS mengizinkan ${WG_PORT}/udp."
+fi
 
 echo "== Provision bawaan INDESO"
 sleep 3
@@ -195,7 +221,7 @@ cat <<SELESAI
 
  Tempel perintah ini di Terminal MikroTik (RouterOS v7):
 
-/interface wireguard add name=wg-acs listen-port=13231 private-key="${MT_PRIV}"
+/interface wireguard add name=wg-acs listen-port=${MT_WG_PORT} private-key="${MT_PRIV}"
 /interface wireguard peers add interface=wg-acs public-key="${VPS_PUB}" endpoint-address=${VPS_IP} endpoint-port=${WG_PORT} allowed-address=${WG_VPS_IP}/32 persistent-keepalive=25s
 /ip address add address=${WG_MT_IP}/24 interface=wg-acs
 /ip firewall filter add chain=forward in-interface=wg-acs src-address=${WG_VPS_IP} action=accept comment="ACS -> ONU (connection request)" place-before=0
