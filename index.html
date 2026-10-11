@@ -157,7 +157,7 @@
 <div class="plSub" id="khInfo"></div><div class="plMsg" id="khMsg"></div><div id="khList"></div>
 </div></div></div>
   
-<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan Dashboard</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody"><div class="detailGrid"><div class="detail"><small>Auto refresh</small><b>5 detik</b></div><div class="detail"><small>Backend</small><b>/api/status</b></div><div class="detail"><small>OLT</small><b>192.168.2.100</b></div><div class="detail"><small>Mode</small><b>Read-only monitoring</b></div></div><p class="muted" style="font-size:11px;line-height:1.6">Dashboard ini menampilkan data dari backend yang tersedia. Tidak ada perubahan konfigurasi MikroTik atau OLT dari halaman ini.</p></div></div></div>
+<div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan Dashboard</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody"><div class="detailGrid"><div class="detail"><small>Auto refresh</small><b>5 detik</b></div><div class="detail"><small>Backend</small><b>/api/status</b></div><div class="detail"><small>OLT</small><b>192.168.2.100</b></div><div class="detail"><small>Mode</small><b>Monitoring &amp; billing</b></div></div><p class="muted" style="font-size:11px;line-height:1.6">Dashboard ini menampilkan data dari backend yang tersedia. Perubahan ke MikroTik hanya terjadi lewat aksi isolir/buka isolir di menu Billing. OLT hanya dibaca (SNMP).</p></div></div></div>
 <script>
 const state={history:[],last:null};
 const $=id=>document.getElementById(id);
@@ -166,7 +166,7 @@ function fmt(n,d=2){return n==null||Number.isNaN(Number(n))?'—':Number(n).toFi
 function avg(arr){const a=arr.filter(v=>typeof v==='number'&&!Number.isNaN(v));return a.length?a.reduce((x,y)=>x+y,0)/a.length:null}
 function sum(arr){const a=arr.filter(v=>typeof v==='number'&&!Number.isNaN(v));return a.length?a.reduce((x,y)=>x+y,0):null}
 function statusClass(s){s=(s||'').toUpperCase();return s==='CRITICAL'?'crit':s==='WARNING'?'warn':''}
-function classifyRx(v){if(v==null)return ['UNKNOWN','']; if(v>=-25)return ['NORMAL','']; if(v>=-28)return ['WARNING','warn']; return ['CRITICAL','crit']}
+function classifyRx(v){if(v==null)return ['UNKNOWN','']; if(v>-23)return ['NORMAL','']; if(v>-27)return ['WARNING','warn']; return ['CRITICAL','crit']}
 function setMetric(id,pid,v,kind='normal'){ $(id).textContent=v==null?'—':v; const p=$(pid); p.textContent=kind==='crit'?'Critical':kind==='warn'?'Warning':'Normal'; p.className='pill '+(kind==='crit'?'crit':kind==='warn'?'warn':'');}
 function scrollToSection(id){document.getElementById(id)?.scrollIntoView({behavior:'smooth',block:'start'})}
 function openSettings(){$('settingsModal').classList.add('show')}
@@ -352,7 +352,7 @@ function setConn(id,ok,label='Online'){const e=$(id);e.textContent=`● ${ok?lab
 async function load(force=false){
  try{
   const r=await fetch('/api/status',{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status); const d=await r.json(); state.last=d;
-  const now=Date.now(); $('updated').textContent='Update '+new Date(d.timestamp||now).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'medium'});
+  const now=Date.now(); $('updated').textContent='Update '+(d.timestamp?new Date(d.timestamp.replace(' ','T')):new Date(now)).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'medium'});
   $('kpiCustomers').textContent=d.pppoe_active_count??d.pppoe_users?.length??0;
   $('kpiOnu').textContent=d.onu_online_count??0; $('kpiOnuSub').textContent=`Dari ${d.onu_total??0}`;
   $('kpiProblems').textContent=(d.onu_warning_count||0)+(d.onu_critical_count||0);
@@ -362,7 +362,7 @@ async function load(force=false){
   $('sideMik').innerHTML=`<i class="dot ${d.mikrotik_online?'':'off'}"></i>${d.mikrotik_online?'Online':'Offline'}`;
   $('sideOlt').innerHTML=`<i class="dot ${d.olt_online?'':'off'}"></i>${d.olt_online?'Online':'Offline'}`;
   const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); buildAlerts(onus); updateOptical(onus);
-  const rx=sum(users.map(x=>x.rx_mbps)),tx=avg(users.map(x=>x.tx_mbps)); $('rxNow').textContent=rx==null?'—':fmt(rx)+' Mbps';$('txNow').textContent=tx==null?'—':fmt(tx)+' Mbps';
+  const rx=sum(users.map(x=>x.rx_mbps)),tx=sum(users.map(x=>x.tx_mbps)); $('rxNow').textContent=rx==null?'—':fmt(rx)+' Mbps';$('txNow').textContent=tx==null?'—':fmt(tx)+' Mbps';
   state.history.push({rx:rx||0,tx:tx||0,t:Date.now()}); if(state.history.length>24)state.history.shift(); drawChart();
  }catch(e){$('overall').textContent='OFFLINE';$('overallSub').textContent='Dashboard tidak dapat mengambil data backend';$('updated').textContent='Gagal memuat: '+e.message}
 }
