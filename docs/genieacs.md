@@ -26,7 +26,14 @@ HP Termux (INDESO) ── LAN ─────┘
 
 ## 1. Siapkan VPS
 
-- Ubuntu **22.04** atau **24.04**, 2 vCPU, RAM 2–4 GB, disk 40 GB. Lokasi Indonesia (mis. Jakarta) supaya respons cepat.
+- Ubuntu **22.04** atau **24.04**, disk minimal 20 GB. Lokasi Indonesia (mis. Jakarta) supaya respons cepat.
+- **RAM 1 GB cukup** untuk ratusan ONU. Bila RAM < 2 GB, skrip otomatis:
+  - membuat **swap 2 GB**;
+  - membatasi cache MongoDB ke 256 MB;
+  - membatasi memori tiap layanan GenieACS;
+  - **tidak** menyalakan server firmware (FS). Server firmware hanya perlu untuk update firmware massal; nyalakan dengan `WITH_FS=1`.
+- Web admin GenieACS (UI) tetap dinyalakan untuk pemeriksaan. INDESO tidak memerlukannya, jadi bisa dimatikan dengan `WITH_UI=0` untuk menghemat ±100 MB.
+- Perkiraan pemakaian memori di VPS 1 GB: MongoDB ±250–350 MB, GenieACS ±250–350 MB, nginx + WireGuard + sistem ±150 MB.
 - CPU harus mendukung **AVX** (syarat MongoDB). Hampir semua VPS modern sudah mendukung. Skrip akan memperingatkan bila tidak.
 - MikroTik kantor memakai **RouterOS v7**, karena WireGuard baru ada di v7. Cek di MikroTik: `/system resource print`. Kalau masih v6, upgrade dulu ke v7.
 

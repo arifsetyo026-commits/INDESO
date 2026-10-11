@@ -16,6 +16,9 @@ WG_VPS_IP="10.99.0.1"
 WG_MT_IP="10.99.0.2"
 GENIEACS_VERSI="${GENIEACS_VERSI:-1.2.13}"
 NBI_USER="${NBI_USER:-indeso}"
+WITH_UI="${WITH_UI:-1}"     # web admin GenieACS (opsional; INDESO tidak membutuhkannya)
+WITH_FS="${WITH_FS:-0}"     # server file untuk update firmware massal (opsional)
+RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 
 [ "$(id -u)" -eq 0 ] || { echo "Jalankan dengan sudo."; exit 1; }
 . /etc/os-release
@@ -26,13 +29,40 @@ echo "== Paket dasar"
 apt-get update -y
 apt-get install -y curl gnupg ca-certificates nginx apache2-utils wireguard ufw openssl
 
+# VPS RAM kecil (mis. 1 GB): tambah swap supaya MongoDB/Node tidak dimatikan kernel saat memori penuh.
+if [ "$RAM_MB" -lt 2000 ] && ! swapon --show | grep -q .; then
+  echo "== RAM ${RAM_MB} MB: membuat swap 2 GB"
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  sysctl -w vm.swappiness=10 && echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf
+fi
+
 echo "== MongoDB 8.0"
 curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg --yes
 echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu ${VERSION_CODENAME}/mongodb-org/8.0 multiverse" \
   > /etc/apt/sources.list.d/mongodb-org-8.0.list
 apt-get update -y
 apt-get install -y mongodb-org
-systemctl enable --now mongod
+# Batasi cache MongoDB: bawaannya ±50% RAM, terlalu boros untuk VPS kecil. Hanya dengar localhost.
+CACHE_GB=$([ "$RAM_MB" -lt 2000 ] && echo 0.25 || echo 0.5)
+cat > /etc/mongod.conf <<MONGO
+storage:
+  dbPath: /var/lib/mongodb
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: ${CACHE_GB}
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+net:
+  port: 27017
+  bindIp: 127.0.0.1
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+MONGO
+systemctl enable mongod && systemctl restart mongod
 
 echo "== Node.js 20 + GenieACS ${GENIEACS_VERSI}"
 if ! command -v node >/dev/null || ! node -v | grep -q '^v20'; then
@@ -63,7 +93,12 @@ ENV
   chown genieacs:genieacs /opt/genieacs/genieacs.env
 fi
 
+LAYANAN="cwmp nbi"
+[ "$WITH_FS" = 1 ] && LAYANAN="$LAYANAN fs"
+[ "$WITH_UI" = 1 ] && LAYANAN="$LAYANAN ui"
 for svc in cwmp nbi fs ui; do
+  # Batas heap Node per layanan supaya muat di VPS 1 GB (cwmp paling sibuk).
+  HEAP=$([ "$svc" = cwmp ] && echo 256 || echo 160)
   cat > /etc/systemd/system/genieacs-${svc}.service <<UNIT
 [Unit]
 Description=GenieACS ${svc}
@@ -72,6 +107,7 @@ After=network.target mongod.service
 [Service]
 User=genieacs
 EnvironmentFile=/opt/genieacs/genieacs.env
+Environment=NODE_OPTIONS=--max-old-space-size=${HEAP}
 ExecStart=$(command -v genieacs-${svc})
 Restart=always
 RestartSec=5
@@ -81,7 +117,7 @@ WantedBy=multi-user.target
 UNIT
 done
 systemctl daemon-reload
-systemctl enable --now genieacs-cwmp genieacs-nbi genieacs-fs genieacs-ui
+for svc in $LAYANAN; do systemctl enable genieacs-${svc}; systemctl restart genieacs-${svc}; done
 
 echo "== WireGuard (VPS ${WG_VPS_IP} <-> MikroTik ${WG_MT_IP})"
 umask 077
@@ -132,6 +168,7 @@ nginx -t && systemctl restart nginx
 echo "== Firewall"
 ufw allow 22/tcp
 ufw allow "${WG_PORT}/udp"
+# 7567/3000 hanya dipakai bila FS/UI dinyalakan
 for port in 7547 7557 7567 3000; do ufw allow in on wg0 to any port "$port" proto tcp; done
 ufw --force enable
 
