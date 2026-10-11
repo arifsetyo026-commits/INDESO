@@ -3706,6 +3706,10 @@ def keuangan_list_utang(request: Request, status: str = "belum"):
         semua = [u for u in semua if u["status"] == "aktif" and u["sisa"] > 0]
     elif status == "lunas":
         semua = [u for u in semua if u["lunas"]]
+    elif status == "dihapus":
+        semua = [u for u in semua if u["status"] == "batal"]
+    else:
+        semua = [u for u in semua if u["status"] == "aktif"]
     for u in semua:
         u["pembayaran"] = bayar.get(u["id"], [])
     return {"saya": request.state.user, "peran": request.state.peran, "ringkasan": ringkas, "utang": semua}
@@ -3812,14 +3816,79 @@ def keuangan_batal_utang(uid: int, d: BatalIn, request: Request):
         if not u or u["status"] != "aktif":
             raise HTTPException(status_code=404, detail="Utang tidak ditemukan atau sudah dibatalkan.")
         _boleh_ubah_transaksi(request, u)
-        if conn.execute("SELECT 1 FROM transaksi WHERE utang_id = ? AND status='aktif'", (uid,)).fetchone():
-            raise HTTPException(status_code=400, detail="Sudah ada pembayaran. Batalkan pembayarannya dulu di tab Transaksi.")
+        # Pembayarannya (uang muka/cicilan) ikut dihapus dalam satu langkah. Admin hanya
+        # boleh bila semua pembayaran itu juga catatannya sendiri yang masih <= 24 jam.
+        bayar = conn.execute("SELECT * FROM transaksi WHERE utang_id = ? AND status='aktif'", (uid,)).fetchall()
+        for t in bayar:
+            _boleh_ubah_transaksi(request, t)
+        waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE utang SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
-                     (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), alasan[:300], uid))
+                     (_oleh(request), waktu, alasan[:300], uid))
+        conn.execute("UPDATE transaksi SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? "
+                     "WHERE utang_id = ? AND status='aktif'", (_oleh(request), waktu, f"utang #U{uid} dihapus: {alasan[:250]}", uid))
         conn.commit()
     finally:
         conn.close()
-    catat_aktivitas(_oleh(request), "utang_batal", f"#U{uid} {u['pemasok']} {_rp(u['jumlah'])} dibatalkan: {alasan[:120]}")
+    catat_aktivitas(_oleh(request), "utang_batal",
+                    f"#U{uid} {u['pemasok']} {_rp(u['jumlah'])} dihapus: {alasan[:120]}"
+                    + (f" (beserta {len(bayar)} pembayaran {_rp(sum(t['jumlah'] for t in bayar))})" if bayar else ""))
+    return {"ok": True, "pembayaran_ikut_dihapus": len(bayar)}
+
+
+def _wajib_owner(request: Request) -> None:
+    if request.state.peran != "owner":
+        raise HTTPException(status_code=403, detail="Hapus permanen hanya bisa dilakukan owner.")
+
+
+@app.delete("/api/keuangan/transaksi/{tid}")
+def keuangan_hapus_permanen(tid: int, request: Request):
+    """Owner: hapus permanen transaksi yang SUDAH dihapus (dibatalkan), mis. data uji coba.
+    Rinciannya tetap tersimpan di log aktivitas."""
+    _wajib_owner(request)
+    conn = _billing_conn()
+    try:
+        t = conn.execute("SELECT t.*, k.nama AS kategori FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
+                         "WHERE t.id = ?", (tid,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan.")
+        if t["status"] != "batal":
+            raise HTTPException(status_code=400, detail="Hapus (batalkan) dulu transaksinya, baru bisa dihapus permanen.")
+        conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE pemilik='transaksi' AND pemilik_id=? "
+                     "AND dihapus_pada IS NULL", (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid))
+        conn.execute("DELETE FROM transaksi WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_hapus_permanen",
+                    f"#{tid} {t['tanggal']} {t['jenis']} {_rp(t['jumlah'])} · {t['kategori']} · {t['keterangan'] or '-'} "
+                    f"(dicatat {t['dicatat_oleh']}, alasan hapus: {t['batal_alasan'] or '-'})")
+    return {"ok": True}
+
+
+@app.delete("/api/keuangan/utang/{uid}")
+def keuangan_hapus_utang_permanen(uid: int, request: Request):
+    _wajib_owner(request)
+    conn = _billing_conn()
+    try:
+        u = conn.execute("SELECT * FROM utang WHERE id = ?", (uid,)).fetchone()
+        if not u:
+            raise HTTPException(status_code=404, detail="Utang tidak ditemukan.")
+        if u["status"] != "batal":
+            raise HTTPException(status_code=400, detail="Hapus (batalkan) dulu utangnya, baru bisa dihapus permanen.")
+        waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ids = [r[0] for r in conn.execute("SELECT id FROM transaksi WHERE utang_id = ?", (uid,))]
+        conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE dihapus_pada IS NULL AND "
+                     "((pemilik='utang' AND pemilik_id=?) OR (pemilik='transaksi' AND pemilik_id IN "
+                     "(SELECT id FROM transaksi WHERE utang_id=?)))", (_oleh(request), waktu, uid, uid))
+        conn.execute("DELETE FROM transaksi WHERE utang_id = ?", (uid,))
+        conn.execute("DELETE FROM utang_cicilan WHERE utang_id = ?", (uid,))
+        conn.execute("DELETE FROM utang WHERE id = ?", (uid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_hapus_permanen",
+                    f"utang #U{uid} {u['tanggal']} {u['pemasok']} {_rp(u['jumlah'])} (dicatat {u['dicatat_oleh']}, "
+                    f"alasan hapus: {u['batal_alasan'] or '-'})" + (f", {len(ids)} pembayaran ikut terhapus" if ids else ""))
     return {"ok": True}
 
 
@@ -4124,13 +4193,16 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
 
 @app.get("/api/keuangan/transaksi")
 def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: Optional[int] = None,
-                  cari: str = "", batal: bool = True):
+                  cari: str = "", batal: bool = False):
     _wajib_admin(request)
     if not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
     conn = _billing_conn()
     try:
         rows = _query_transaksi(conn, periode, jenis, kategori_id, cari, batal)
+        awal, akhir = _batas_periode(periode)
+        conn_batal = conn.execute("SELECT COUNT(*) FROM transaksi WHERE status='batal' AND tanggal >= ? AND tanggal < ?",
+                                  (awal, akhir)).fetchone()[0]
     finally:
         conn.close()
     aktif = [r for r in rows if r["status"] == "aktif"]
@@ -4143,7 +4215,7 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
         "periode": periode, "saya": request.state.user, "peran": request.state.peran,
         "ringkasan": {"masuk": sum(r["jumlah"] for r in aktif if r["jenis"] == "masuk"),
                       "keluar": sum(r["jumlah"] for r in aktif if r["jenis"] == "keluar"),
-                      "jumlah": len(aktif), "dibatalkan": len(rows) - len(aktif)},
+                      "jumlah": len(aktif), "dibatalkan": conn_batal},
         "transaksi": [dict(r, nota=nota.get(r["id"], [])) for r in rows],
     }
 

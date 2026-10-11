@@ -556,3 +556,38 @@ def test_utang_cicilan_bulanan(siap):
     assert rs["bayar_utang"] == 420_000
     # tanggal akhir bulan
     assert main._tambah_bulan("2026-01-31", 1) == "2026-02-28" and main._tambah_bulan("2026-12-15", 1) == "2027-01-15"
+
+
+def test_hapus_transaksi_dan_utang(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    tgl = datetime.now().strftime("%Y-%m-%d")
+    per = tgl[:7]
+    kid = kat["Pembelian perangkat (ONT, router, kabel, dll.)"]
+    tid = k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kid,
+                                                  "jumlah": 50_000, "metode": "tunai"}).json()["id"]
+    # hapus permanen hanya untuk transaksi yang sudah dihapus, dan hanya owner
+    assert o.delete(f"/api/keuangan/transaksi/{tid}").status_code == 400
+    assert k.post(f"/api/keuangan/transaksi/{tid}/batal", json={"alasan": "salah input"}).status_code == 200
+    ids = [t["id"] for t in o.get(f"/api/keuangan/transaksi?periode={per}").json()["transaksi"]]
+    assert tid not in ids                                           # tidak tampil di daftar biasa
+    d = o.get(f"/api/keuangan/transaksi?periode={per}&batal=true").json()
+    assert tid in [t["id"] for t in d["transaksi"]] and d["ringkasan"]["dibatalkan"] == 1
+    assert k.delete(f"/api/keuangan/transaksi/{tid}").status_code == 403
+    assert o.delete(f"/api/keuangan/transaksi/{tid}").status_code == 200
+    assert tid not in [t["id"] for t in o.get(f"/api/keuangan/transaksi?periode={per}&batal=true").json()["transaksi"]]
+
+    # utang yang sudah ada pembayarannya tetap bisa dihapus, pembayarannya ikut terhapus
+    uid = k.post("/api/keuangan/utang", json={"tanggal": tgl, "pemasok": "Toko", "kategori_id": kid,
+                                              "jumlah": 300_000, "uang_muka": 100_000}).json()["id"]
+    k.post(f"/api/keuangan/utang/{uid}/bayar", json={"tanggal": tgl, "jumlah": 50_000})
+    assert o.get(f"/api/keuangan/ringkasan?periode={per}").json()["bayar_utang"] > 0
+    r = k.post(f"/api/keuangan/utang/{uid}/batal", json={"alasan": "salah input"}).json()
+    assert r["pembayaran_ikut_dihapus"] >= 1
+    rs = o.get(f"/api/keuangan/ringkasan?periode={per}").json()
+    assert rs["bayar_utang"] == 0 and rs["beban"] == 0 and rs["arus_kas"] == 0
+    assert uid not in [u["id"] for u in o.get("/api/keuangan/utang?status=semua").json()["utang"]]
+    assert uid in [u["id"] for u in o.get("/api/keuangan/utang?status=dihapus").json()["utang"]]
+    assert k.delete(f"/api/keuangan/utang/{uid}").status_code == 403
+    assert o.delete(f"/api/keuangan/utang/{uid}").status_code == 200
+    assert uid not in [u["id"] for u in o.get("/api/keuangan/utang?status=dihapus").json()["utang"]]

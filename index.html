@@ -221,13 +221,13 @@
 <input type="file" id="notaLangsung" accept="image/*,application/pdf" multiple style="display:none" onchange="unggahLangsung(this)">
 <div id="kuTransaksi" style="display:none">
  <div class="search"><input id="kuCari" placeholder="Cari keterangan, kategori, atau pencatat…" onkeydown="if(event.key==='Enter')muatTransaksi()"><button onclick="muatTransaksi()">Cari</button></div>
- <div class="blFilters kuFJenis"><button data-v="" class="on" onclick="setKuJenis('')">Semua</button><button data-v="keluar" onclick="setKuJenis('keluar')">Pengeluaran</button><button data-v="masuk" onclick="setKuJenis('masuk')">Pemasukan</button></div>
+ <div class="blFilters kuFJenis"><button data-v="" class="on" onclick="setKuJenis('')">Semua</button><button data-v="keluar" onclick="setKuJenis('keluar')">Pengeluaran</button><button data-v="masuk" onclick="setKuJenis('masuk')">Pemasukan</button><button data-v="dihapus" onclick="setKuJenis('dihapus')">Yang dihapus</button></div>
  <div class="plSub" id="kuTrxInfo" style="margin-bottom:6px"></div>
  <div id="kuTrxList"></div>
 </div>
 <div id="kuUtang" style="display:none">
  <div class="blSum"><div class="blBox"><small>Sisa utang</small><b id="utSisa" style="color:#b45309">—</b><small id="utSisaN"></small></div><div class="blBox"><small>Lewat jatuh tempo</small><b id="utLewat" style="color:#b42318">—</b><small id="utLewatN"></small></div><div class="blBox"><small>Jatuh tempo terdekat</small><b id="utDekat">—</b><small id="utDekatN"></small></div></div>
- <div class="blFilters utFilter"><button data-v="belum" class="on" onclick="setUtFilter('belum')">Belum lunas</button><button data-v="lunas" onclick="setUtFilter('lunas')">Lunas</button><button data-v="semua" onclick="setUtFilter('semua')">Semua</button><button onclick="kreditBaru()">+ Catat pembelian kredit</button></div>
+ <div class="blFilters utFilter"><button data-v="belum" class="on" onclick="setUtFilter('belum')">Belum lunas</button><button data-v="lunas" onclick="setUtFilter('lunas')">Lunas</button><button data-v="semua" onclick="setUtFilter('semua')">Semua</button><button data-v="dihapus" onclick="setUtFilter('dihapus')">Yang dihapus</button><button onclick="kreditBaru()">+ Catat pembelian kredit</button></div>
  <div id="utList"></div>
 </div>
 <div id="kuInsentif" style="display:none">
@@ -1066,13 +1066,16 @@ async function muatTransaksi(){
  document.querySelectorAll('.kuFJenis button').forEach(b=>b.classList.toggle('on',b.dataset.v===ku.jenis));
  $('kuTrxList').innerHTML='<div class="muted">Memuat…</div>';
  try{
-  const q=new URLSearchParams({periode:ku.periode,jenis:ku.jenis,cari:$('kuCari').value.trim()});
+  const lihatHapus=ku.jenis==='dihapus';
+  const q=new URLSearchParams({periode:ku.periode,jenis:lihatHapus?'':ku.jenis,cari:$('kuCari').value.trim(),batal:lihatHapus});
   const d=await jsonAtauError(await fetch('/api/keuangan/transaksi?'+q)); ku.trx=d;
-  $('kuTrxInfo').innerHTML=d.ringkasan.jumlah+' transaksi · masuk <b class="naik">'+rp(d.ringkasan.masuk)+'</b> · keluar <b class="turun">'+rp(d.ringkasan.keluar)+'</b>'+(d.ringkasan.dibatalkan?' · '+d.ringkasan.dibatalkan+' dibatalkan':'')+' <span class="muted">(belum termasuk pembayaran langganan)</span>';
+  if(lihatHapus) d.transaksi=d.transaksi.filter(t=>t.status==='batal');
+  $('kuTrxInfo').innerHTML=lihatHapus?(d.transaksi.length+' transaksi dihapus bulan ini — tidak dihitung di laporan.'+(d.peran==='owner'?' Owner bisa menghapus permanen.':'')):(d.ringkasan.jumlah+' transaksi · masuk <b class="naik">'+rp(d.ringkasan.masuk)+'</b> · keluar <b class="turun">'+rp(d.ringkasan.keluar)+'</b>'+(d.ringkasan.dibatalkan?' · '+d.ringkasan.dibatalkan+' dihapus':'')+' <span class="muted">(belum termasuk pembayaran langganan)</span>');
   $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>{
-   const aksi=bolehUbahKu(t)?(t.utang_id||t.insentif_periode?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Batalkan</button>`:'';
+   const aksi=bolehUbahKu(t)?(t.utang_id||t.insentif_periode?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Hapus</button>`
+    :(t.status==='batal'&&ku.trx.peran==='owner'?`<button class="btnS" onclick="hapusPermanen('transaksi',${t.id})">Hapus permanen</button>`:'');
    const info=esc(tglPendek(t.tanggal))+' · '+esc(t.metode)+' · dicatat '+esc(t.dicatat_oleh)+(t.diubah_oleh?' · diubah '+esc(t.diubah_oleh):'');
-   const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dibatalkan ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
+   const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dihapus ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
    const nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,t.jenis==='keluar'&&!t.utang_id&&t.status==='aktif');
    return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
   }).join(''):'<div class="muted">Belum ada transaksi di bulan ini.</div>';
@@ -1132,8 +1135,14 @@ async function simpanTransaksi(){
  }catch(e){ kuPesan('Gagal: '+e.message); }
 }
 async function batalTransaksi(i){
- const t=ku.trx.transaksi[i]; const alasan=prompt('Batalkan '+t.kategori+' '+rp(t.jumlah)+'?\nTuliskan alasannya (tercatat dan terlihat owner):'); if(alasan==null) return;
- try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+t.id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatTransaksi(); kuPesan('Transaksi dibatalkan.',true); }
+ const t=ku.trx.transaksi[i]; const alasan=prompt('Hapus '+t.kategori+' '+rp(t.jumlah)+'?\nTransaksi hilang dari daftar dan laporan. Tuliskan alasannya (tercatat untuk owner):'); if(alasan==null) return;
+ if(alasan.trim().length<3){ kuPesan('Alasan minimal 3 huruf, mis. "salah input".'); return; }
+ try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+t.id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatTransaksi(); kuPesan('Transaksi dihapus. Lihat di filter "Yang dihapus" bila perlu.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function hapusPermanen(jenis,id){
+ if(!confirm('HAPUS PERMANEN '+(jenis==='utang'?'utang #U':'transaksi #')+id+'?\nData dihapus dari database dan tidak bisa dikembalikan. Rinciannya tetap tercatat di Log aktivitas.')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/'+jenis+'/'+id,{method:'DELETE'})); kuPesan('Dihapus permanen.',true); if(jenis==='utang') muatUtang(); else muatTransaksi(); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 async function tambahKategori(){
@@ -1142,7 +1151,7 @@ async function tambahKategori(){
   ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori'))).kategori; isiKategori(d.id); kuPesan('Kategori "'+nama.trim()+'" ditambahkan.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-AKSI_LABEL.kas_catat='Catat kas'; AKSI_LABEL.kas_ubah='Ubah transaksi kas'; AKSI_LABEL.kas_batal='Batalkan transaksi kas'; AKSI_LABEL.kas_kategori='Kategori kas'; AKSI_LABEL.kas_ekspor='Ekspor keuangan';
+AKSI_LABEL.kas_catat='Catat kas'; AKSI_LABEL.kas_ubah='Ubah transaksi kas'; AKSI_LABEL.kas_batal='Hapus transaksi kas'; AKSI_LABEL.kas_kategori='Kategori kas'; AKSI_LABEL.kas_ekspor='Ekspor keuangan';
 
 // ===== Utang (pembelian kredit) =====
 ku.utFilter='belum'; ku.utang=null; ku.utBayar=null;
@@ -1186,9 +1195,9 @@ async function muatUtang(){
   $('kuNUtang').textContent=r.jumlah?'('+r.jumlah+')':'';
   $('utList').innerHTML=d.utang.length?d.utang.map((u,i)=>{
    const riw=u.pembayaran.length?'<div class="kuRiwBayar">'+u.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)}${p.keterangan?' · '+esc(p.keterangan):''} · ${esc(p.dicatat_oleh)}</div>`).join('')+'</div>':'';
-   const aksi=(u.status==='aktif'&&u.sisa>0?`<button class="btnS go" onclick="bukaBayar(${i})">Bayar</button>`:'')+(bolehUbahUtang(u)&&!u.pembayaran.some(p=>p.status==='aktif')?`<button class="btnS" onclick="batalUtang(${i})">Batalkan</button>`:'');
+   const aksi=(u.status==='aktif'&&u.sisa>0?`<button class="btnS go" onclick="bukaBayar(${i})">Bayar</button>`:'')+(bolehUbahUtang(u)?`<button class="btnS" onclick="batalUtang(${i})">Hapus</button>`:'')+(u.status==='batal'&&ku.utang.peran==='owner'?`<button class="btnS" onclick="hapusPermanen('utang',${u.id})">Hapus permanen</button>`:'');
    const form=ku.utBayar===u.id?`<div class="kuBayarForm"><div><small>Tanggal bayar</small><input type="date" id="byTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>${u.cicilan_ke?'Cicilan ke-'+u.cicilan_ke+' (sisa total '+rp(u.sisa)+')':'Jumlah (sisa '+rp(u.sisa)+')'}</small><input id="byJml" inputmode="numeric" value="${Number(u.tagihan_berikut??u.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="byMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><button class="btnS go" onclick="simpanBayar(${i})">Simpan</button></div></div>`:'';
-   const batal=u.status==='batal'?`<div class="plSub" style="color:#b42318">Dibatalkan ${esc(u.batal_oleh)}: ${esc(u.batal_alasan||'')}</div>`:'';
+   const batal=u.status==='batal'?`<div class="plSub" style="color:#b42318">Dihapus ${esc(u.batal_oleh)}: ${esc(u.batal_alasan||'')}</div>`:'';
    const CJ={lunas:'<span class="chip ok">Lunas</span>',sebagian:'<span class="chip warn">Sebagian</span>',belum:'<span class="chip off">Belum</span>',terlambat:'<span class="chip bad">Terlambat</span>'};
    const infoCicil=u.tenor?`<div class="plSub"><b>Cicilan ${u.tenor} × ${rp(u.cicilan)}</b> · ${u.cicilan_lunas}/${u.tenor} lunas${u.cicilan_ke&&u.status==='aktif'?' · berikutnya ke-'+u.cicilan_ke+' '+rp(u.tagihan_berikut)+' tgl '+esc(tglPendek(u.jatuh_tempo)):''} · harga barang ${rp(u.pokok)}${u.bunga?' + bunga/biaya '+rp(u.bunga):''}${u.uang_muka?' · uang muka '+rp(u.uang_muka):''} <a href="#" onclick="ku.utJadwal=ku.utJadwal===${u.id}?null:${u.id};muatUtang();return false">${ku.utJadwal===u.id?'tutup jadwal':'lihat jadwal'}</a></div>`
     +(ku.utJadwal===u.id?'<div class="kuRiwBayar">'+u.jadwal.map(c=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0"><span>Ke-${c.ke} · ${esc(tglPendek(c.jatuh_tempo))} ${c.jatuh_tempo.slice(0,4)}</span><span>${rp(c.jumlah)}${c.sisa&&c.dibayar?' (kurang '+rp(c.sisa)+')':''} ${CJ[c.status]||''}</span></div>`).join('')+'</div>':''):'';
@@ -1206,11 +1215,13 @@ async function simpanBayar(i){
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 async function batalUtang(i){
- const u=ku.utang.utang[i]; const alasan=prompt('Batalkan pembelian kredit '+u.pemasok+' '+rp(u.jumlah)+'?\nTuliskan alasannya:'); if(alasan==null) return;
- try{ await jsonAtauError(await fetch('/api/keuangan/utang/'+u.id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatUtang(); kuPesan('Utang dibatalkan.',true); }
+ const u=ku.utang.utang[i], nb=u.pembayaran.filter(p=>p.status==='aktif');
+ const alasan=prompt('Hapus pembelian kredit '+u.pemasok+' '+rp(u.jumlah)+'?'+(nb.length?'\n'+nb.length+' pembayaran ('+rp(nb.reduce((a,p)=>a+p.jumlah,0))+') ikut dihapus.':'')+'\nTuliskan alasannya:'); if(alasan==null) return;
+ if(alasan.trim().length<3){ kuPesan('Alasan minimal 3 huruf, mis. "salah input".'); return; }
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/utang/'+u.id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatUtang(); kuPesan('Utang dihapus'+(d.pembayaran_ikut_dihapus?' beserta '+d.pembayaran_ikut_dihapus+' pembayarannya':'')+'.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-AKSI_LABEL.utang_catat='Catat utang'; AKSI_LABEL.utang_bayar='Bayar utang'; AKSI_LABEL.utang_batal='Batalkan utang';
+AKSI_LABEL.utang_catat='Catat utang'; AKSI_LABEL.utang_bayar='Bayar utang'; AKSI_LABEL.utang_batal='Hapus utang'; AKSI_LABEL.kas_hapus_permanen='Hapus permanen';
 
 // ===== Laporan bulanan Telegram (owner) =====
 function htmlTelegram(t){ // tampilkan HTML Telegram (b/i/code) dengan aman
