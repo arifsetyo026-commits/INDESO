@@ -30,13 +30,17 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   pengeluaran, laba, saldo kas, piutang, insentif mitra, tren 6 bulan, per kategori,
   ekspor CSV. **Pembelian kredit (utang)**: biaya dihitung pada tanggal beli, kas berkurang
   saat uang muka/cicilan dibayar; sisa utang, jatuh tempo, dan pengingat Telegram 3 hari
-  sebelum jatuh tempo. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
+  sebelum jatuh tempo. **Foto nota** (JPG/PNG/WEBP/PDF, foto otomatis diperkecil) per
+  transaksi dan per utang, disimpan di folder `nota/`; pengeluaran ≥ Rp 100.000 tanpa nota
+  ditandai di ringkasan dan laporan bulanan. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
   bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
 - **Laporan keuangan bulanan ke Telegram owner** — tiap tanggal 1 (jam diatur, menyusul
-  s/d tanggal 7 bila server mati) ke chat pribadi owner: laba rugi vs bulan lalu, kas,
+  s/d tanggal 7 bila server mati) ke grup internal owner dan/atau chat pribadi owner: laba rugi vs bulan lalu, kas,
   tagihan & 5 penunggak terbesar, utang, insentif mitra, pelanggan, ringkasan gangguan,
   plus berkas CSV. Kirim `/laporan` atau `/laporan 2026-09` dari chat owner kapan saja.
-  Chat ID owner hanya bisa diubah owner (Pengaturan → Sistem); `/id` ke bot untuk melihatnya.
+  Chat ID tujuan hanya bisa diubah owner (Pengaturan → Sistem). Untuk grup: tambahkan bot
+  ke grup, kirim `/id` di grup itu (ID diawali minus). Bila Telegram meng-upgrade grup jadi
+  supergroup, chat ID baru dipakai otomatis.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.
 - **Akun mitra** — akun berperan mitra yang hanya bisa membuka halaman mitra:
@@ -77,6 +81,8 @@ Buka `http://<ip-server>:8000`. Pada instalasi baru, halaman login meminta Anda 
 - Login, logout, login gagal, dan semua perubahan akun tercatat di **Log aktivitas**.
 
 Saran operasional:
+- Backup harian hanya menyalin `billing.db`. Foto nota ada di folder `nota/` — salin folder
+  itu juga secara berkala (mis. ke Google Drive / komputer).
 - `chmod 600 .env` — berkas ini berisi password MikroTik dan token Telegram.
 - Koneksi masih HTTP. Untuk akses dari luar jaringan lokal, pasang HTTPS (mis. Cloudflare
   Tunnel atau reverse proxy); cookie otomatis bertanda `Secure` bila diakses lewat HTTPS.
