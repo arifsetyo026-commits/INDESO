@@ -4295,26 +4295,67 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
     _wajib_admin(request)
     if not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    awal, akhir = _batas_periode(periode)
     conn = _billing_conn()
     try:
-        rows = _query_transaksi(conn, periode, jenis, kategori_id, cari, batal)
-        awal, akhir = _batas_periode(periode)
+        manual = jenis in ("", "masuk", "keluar")
+        rows = _query_transaksi(conn, periode, jenis, kategori_id, cari, batal) if manual else []
         conn_batal = conn.execute("SELECT COUNT(*) FROM transaksi WHERE status='batal' AND tanggal >= ? AND tanggal < ?",
                                   (awal, akhir)).fetchone()[0]
-    finally:
-        conn.close()
-    aktif = [r for r in rows if r["status"] == "aktif"]
-    conn = _billing_conn()
-    try:
         nota = _daftar_nota(conn, "transaksi", [r["id"] for r in rows])
+        daftar = [dict(r, sumber="manual", nota=nota.get(r["id"], [])) for r in rows]
+        # Supaya riwayat satu bulan lengkap: pembayaran langganan (dari Billing) dan
+        # pembelian kredit (dari tab Utang) ikut ditampilkan, hanya-baca di sini.
+        # batal=True dipakai tampilan "Yang dihapus", jadi baris otomatis tidak disertakan.
+        q = f"%{cari.strip()}%"
+        if jenis in ("", "masuk", "langganan") and not kategori_id and not batal:
+            for r in conn.execute(
+                    "SELECT t.id, t.tgl_bayar, t.periode, t.jumlah, t.username, p.nama FROM tagihan t "
+                    "LEFT JOIN pelanggan p ON p.username = t.username "
+                    "WHERE t.status='lunas' AND t.tgl_bayar >= ? AND t.tgl_bayar < ? "
+                    "AND (? = '%%' OR t.username LIKE ? OR p.nama LIKE ? OR 'pembayaran langganan' LIKE ?)",
+                    (awal, akhir, q, q, q, q.lower())):
+                daftar.append({"id": r["id"], "sumber": "langganan", "tanggal": r["tgl_bayar"][:10], "jenis": "masuk",
+                               "kategori": "Pembayaran langganan", "pengaruh_laba": 1, "jumlah": r["jumlah"],
+                               "metode": "langganan", "status": "aktif", "username": r["username"],
+                               "keterangan": f"{r['nama'] or r['username']} ({r['username']}) · tagihan {_nama_periode(r['periode'])}",
+                               "dicatat_oleh": "Billing", "dicatat_pada": r["tgl_bayar"], "nota": []})
+        if jenis in ("", "keluar", "kredit") and not batal:
+            sql = ("SELECT u.id, u.tanggal, u.pemasok, u.jumlah, u.pokok, u.uang_muka, u.tenor, u.keterangan, "
+                   "u.dicatat_oleh, u.dicatat_pada, u.kategori_id, k.nama AS kategori, k.pengaruh_laba "
+                   "FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
+                   "WHERE u.status='aktif' AND u.tanggal >= ? AND u.tanggal < ?")
+            arg: list = [awal, akhir]
+            if kategori_id:
+                sql += " AND u.kategori_id = ?"
+                arg.append(kategori_id)
+            if cari.strip():
+                sql += " AND (u.pemasok LIKE ? OR u.keterangan LIKE ? OR k.nama LIKE ? OR u.dicatat_oleh LIKE ?)"
+                arg += [q] * 4
+            kredit = conn.execute(sql, arg).fetchall()
+            nota_u = _daftar_nota(conn, "utang", [r["id"] for r in kredit])
+            for r in kredit:
+                daftar.append({"id": r["id"], "sumber": "kredit", "tanggal": r["tanggal"], "jenis": "keluar",
+                               "kategori": r["kategori"], "pengaruh_laba": r["pengaruh_laba"], "jumlah": r["jumlah"],
+                               "pokok": r["pokok"], "tenor": r["tenor"], "uang_muka": r["uang_muka"],
+                               "metode": "kredit", "status": "aktif", "pemasok": r["pemasok"],
+                               "keterangan": r["keterangan"], "dicatat_oleh": r["dicatat_oleh"],
+                               "dicatat_pada": r["dicatat_pada"], "nota": nota_u.get(r["id"], [])})
     finally:
         conn.close()
+    daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=True)
+    aktif = [t for t in daftar if t["status"] == "aktif"]
+    tunai = [t for t in aktif if t["sumber"] != "kredit"]
     return {
         "periode": periode, "saya": request.state.user, "peran": request.state.peran,
-        "ringkasan": {"masuk": sum(r["jumlah"] for r in aktif if r["jenis"] == "masuk"),
-                      "keluar": sum(r["jumlah"] for r in aktif if r["jenis"] == "keluar"),
+        "ringkasan": {"masuk": sum(t["jumlah"] for t in tunai if t["jenis"] == "masuk"),
+                      "keluar": sum(t["jumlah"] for t in tunai if t["jenis"] == "keluar"),
+                      "langganan": sum(t["jumlah"] for t in aktif if t["sumber"] == "langganan"),
+                      "n_langganan": sum(1 for t in aktif if t["sumber"] == "langganan"),
+                      "kredit": sum(t["jumlah"] for t in aktif if t["sumber"] == "kredit"),
+                      "n_kredit": sum(1 for t in aktif if t["sumber"] == "kredit"),
                       "jumlah": len(aktif), "dibatalkan": conn_batal},
-        "transaksi": [dict(r, nota=nota.get(r["id"], [])) for r in rows],
+        "transaksi": daftar,
     }
 
 

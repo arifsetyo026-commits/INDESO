@@ -665,3 +665,30 @@ def test_keuangan_sejak_awal(siap):
     assert d["bulanan"][-1]["laba_kumulatif"] == d["total"]["laba"]
     assert {x["nama"]: x["total"] for x in d["per_kategori"]}["Listrik"] == 400_000
     assert d["terburuk"] == lalu[:7] and d["modal_kembali_persen"] == round(-250_000 * 100 / 2_000_000)
+
+
+def test_riwayat_transaksi_lengkap(siap):
+    """Tab Transaksi memuat juga pembayaran langganan dan pembelian kredit bulan itu."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now().strftime("%Y-%m-%d")
+    per = hari[:7]
+    o.post(f"/api/tagihan/buat?periode={per}")
+    t = o.get(f"/api/tagihan?periode={per}").json()["tagihan"][0]
+    o.post(f"/api/tagihan/{t['id']}/lunas")
+    k.post("/api/keuangan/transaksi", json={"tanggal": hari, "jenis": "keluar", "kategori_id": kat["Listrik"], "jumlah": 100_000})
+    k.post("/api/keuangan/utang", json={"tanggal": hari, "pemasok": "Toko Fiber", "jumlah": 500_000,
+                                        "kategori_id": kat["Pembelian perangkat (ONT, router, kabel, dll.)"]})
+    d = k.get(f"/api/keuangan/transaksi?periode={per}").json()
+    sumber = sorted(x["sumber"] for x in d["transaksi"])
+    assert sumber == ["kredit", "langganan", "manual"]
+    r = d["ringkasan"]
+    assert r["masuk"] == t["jumlah"] and r["langganan"] == t["jumlah"] and r["keluar"] == 100_000 and r["kredit"] == 500_000
+    assert [x["sumber"] for x in k.get(f"/api/keuangan/transaksi?periode={per}&jenis=langganan").json()["transaksi"]] == ["langganan"]
+    assert [x["sumber"] for x in k.get(f"/api/keuangan/transaksi?periode={per}&jenis=kredit").json()["transaksi"]] == ["kredit"]
+    assert {x["sumber"] for x in k.get(f"/api/keuangan/transaksi?periode={per}&jenis=keluar").json()["transaksi"]} == {"manual", "kredit"}
+    assert [x["sumber"] for x in k.get(f"/api/keuangan/transaksi?periode={per}&cari=Fiber").json()["transaksi"]] == ["kredit"]
+    nama = t.get("nama") or t["username"]
+    assert any(x["sumber"] == "langganan" for x in k.get(f"/api/keuangan/transaksi?periode={per}&cari={nama}").json()["transaksi"])
+    # tampilan yang dihapus tidak memuat baris otomatis
+    assert all(x["sumber"] == "manual" for x in k.get(f"/api/keuangan/transaksi?periode={per}&batal=true").json()["transaksi"])
