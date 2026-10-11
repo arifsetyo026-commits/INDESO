@@ -3295,7 +3295,9 @@ def _tanggal_valid(t: str) -> bool:
 
 
 def _batas_periode(periode: str) -> tuple[str, str]:
-    """('2026-10-01', '2026-11-01') — awal inklusif, akhir eksklusif."""
+    """('2026-10-01', '2026-11-01') — awal inklusif, akhir eksklusif. 'semua' = seluruh riwayat."""
+    if periode == "semua":
+        return "0000-01-01", "9999-12-31"
     awal = datetime.strptime(periode + "-01", "%Y-%m-%d")
     akhir = (awal + timedelta(days=32)).replace(day=1)
     return awal.strftime("%Y-%m-%d"), akhir.strftime("%Y-%m-%d")
@@ -4544,10 +4546,10 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
 
 @app.get("/api/keuangan/transaksi")
 def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: Optional[int] = None,
-                  cari: str = "", batal: bool = False):
+                  cari: str = "", batal: bool = False, urut: str = "tanggal"):
     _wajib_admin(request)
-    if not _periode_valid(periode):
-        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    if periode != "semua" and not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM atau 'semua'.")
     awal, akhir = _batas_periode(periode)
     conn = _billing_conn()
     try:
@@ -4597,7 +4599,11 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
                                "dicatat_pada": r["dicatat_pada"], "nota": nota_u.get(r["id"], [])})
     finally:
         conn.close()
-    daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=True)
+    if urut == "dicatat":
+        # Urut menurut waktu dicatat: yang baru diinput (berapa pun tanggal transaksinya) di atas.
+        daftar.sort(key=lambda t: (t.get("dicatat_pada") or "", t["id"]), reverse=True)
+    else:
+        daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=True)
     aktif = [t for t in daftar if t["status"] == "aktif"]
     tunai = [t for t in aktif if t["sumber"] != "kredit"]
     return {
@@ -4660,8 +4666,8 @@ def _buat_csv_keuangan(periode: str) -> str:
 @app.get("/api/keuangan/ekspor")
 def keuangan_ekspor(periode: str, request: Request):
     _wajib_admin(request)
-    if not _periode_valid(periode):
-        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    if periode != "semua" and not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM atau 'semua'.")
     isi = _buat_csv_keuangan(periode)
     catat_aktivitas(_oleh(request), "kas_ekspor", f"periode {periode}")
     return Response(isi, media_type="text/csv; charset=utf-8",

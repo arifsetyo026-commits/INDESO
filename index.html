@@ -226,6 +226,7 @@
 <div id="kuSemua" style="display:none"></div>
 <input type="file" id="notaLangsung" accept="image/*,application/pdf" multiple style="display:none" onchange="unggahLangsung(this)">
 <div id="kuTransaksi" style="display:none">
+ <div class="blFilters kuRentang" style="align-items:center"><button data-v="bulan" class="on" onclick="setKuRentang('bulan')">Bulan terpilih</button><button data-v="semua" onclick="setKuRentang('semua')">Semua waktu</button><select id="kuUrut" onchange="ku.urut=this.value;muatTransaksi()" style="border:1px solid var(--line);border-radius:999px;padding:6px 10px;font:inherit;font-size:12px;font-weight:700;background:#fff"><option value="tanggal">Urut: tanggal transaksi</option><option value="dicatat">Urut: terakhir dicatat</option></select></div>
  <div class="search"><input id="kuCari" placeholder="Cari keterangan, kategori, atau pencatat…" onkeydown="if(event.key==='Enter')muatTransaksi()"><button onclick="muatTransaksi()">Cari</button></div>
  <div class="blFilters kuFJenis"><button data-v="" class="on" onclick="setKuJenis('')">Semua</button><button data-v="keluar" onclick="setKuJenis('keluar')">Pengeluaran</button><button data-v="masuk" onclick="setKuJenis('masuk')">Pemasukan</button><button data-v="langganan" onclick="setKuJenis('langganan')">Langganan</button><button data-v="kredit" onclick="setKuJenis('kredit')">Kredit</button><button data-v="dihapus" onclick="setKuJenis('dihapus')">Yang dihapus</button></div>
  <div class="plSub" id="kuTrxInfo" style="margin-bottom:6px"></div>
@@ -1284,6 +1285,17 @@ async function muatKeseluruhan(){
  el.innerHTML=h; pasangTipTren(d.bulanan,'kuChartAll','kuTipAll');
 }
 function setKuJenis(j){ ku.jenis=j; muatTransaksi(); }
+function setKuRentang(r){ ku.rentang=r; muatTransaksi(); }
+// Judul pemisah di daftar: per bulan (urut tanggal, semua waktu) atau per hari dicatat (urut terakhir dicatat).
+function kepalaTrx(daftar,i){
+ const kunci=t=>ku.urut==='dicatat'?(t.dicatat_pada||t.tanggal).slice(0,10):(ku.rentang==='semua'?t.tanggal.slice(0,7):null);
+ const k=kunci(daftar[i]); if(!k||(i>0&&kunci(daftar[i-1])===k)) return '';
+ const grup=daftar.filter(t=>kunci(t)===k&&t.status==='aktif');
+ const masuk=grup.filter(t=>t.jenis==='masuk').reduce((a,t)=>a+t.jumlah,0), keluar=grup.filter(t=>t.jenis==='keluar'&&t.sumber!=='kredit').reduce((a,t)=>a+t.jumlah,0);
+ const hari=new Date().toLocaleDateString('sv-SE'), kemarin=new Date(Date.now()-864e5).toLocaleDateString('sv-SE');
+ const judul=ku.urut==='dicatat'?(k===hari?'Dicatat hari ini':k===kemarin?'Dicatat kemarin':'Dicatat '+tglPendek(k)+' '+k.slice(0,4)):namaPeriode(k);
+ return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:13px">${esc(judul)} <span class="plSub" style="font-weight:600">· ${grup.length} transaksi</span></b><span class="plSub">${masuk?'<span class="naik">+'+rp(masuk)+'</span> ':''}${keluar?'<span class="turun">−'+rp(keluar)+'</span>':''}</span></div>`;
+}
 function bolehUbahKu(t){
  if(t.status!=='aktif') return false; if(ku.trx&&ku.trx.peran==='owner') return true;
  return ku.trx&&t.dicatat_oleh===ku.trx.saya&&(Date.now()-new Date(t.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
@@ -1293,11 +1305,14 @@ async function muatTransaksi(){
  $('kuTrxList').innerHTML='<div class="muted">Memuat…</div>';
  try{
   const lihatHapus=ku.jenis==='dihapus';
-  const q=new URLSearchParams({periode:ku.periode,jenis:lihatHapus?'':ku.jenis,cari:$('kuCari').value.trim(),batal:lihatHapus});
+  const semua=ku.rentang==='semua', per=semua?'semua':ku.periode;
+  document.querySelectorAll('.kuRentang button').forEach(b=>b.classList.toggle('on',b.dataset.v===(semua?'semua':'bulan')));
+  $('kuUrut').value=ku.urut||'tanggal'; $('kuEkspor').href='/api/keuangan/ekspor?periode='+per;
+  const q=new URLSearchParams({periode:per,jenis:lihatHapus?'':ku.jenis,cari:$('kuCari').value.trim(),batal:lihatHapus,urut:ku.urut||'tanggal'});
   const d=await jsonAtauError(await fetch('/api/keuangan/transaksi?'+q)); ku.trx=d;
   if(lihatHapus) d.transaksi=d.transaksi.filter(t=>t.status==='batal');
-  $('kuTrxInfo').innerHTML=lihatHapus?(d.transaksi.length+' transaksi dihapus bulan ini — tidak dihitung di laporan.'+(d.peran==='owner'?' Owner bisa menghapus permanen.':'')):(()=>{ const r=d.ringkasan; return r.jumlah+' transaksi · uang masuk <b class="naik">'+rp(r.masuk)+'</b>'+(r.n_langganan?' <span class="muted">(termasuk '+r.n_langganan+' pembayaran langganan '+rp(r.langganan)+')</span>':'')+' · uang keluar <b class="turun">'+rp(r.keluar)+'</b>'+(r.n_kredit?' · pembelian kredit <b style="color:#b45309">'+rp(r.kredit)+'</b> <span class="muted">('+r.n_kredit+'x, kas berkurang saat dicicil)</span>':'')+(r.dibatalkan?' · '+r.dibatalkan+' dihapus':''); })();
-  $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>{
+  $('kuTrxInfo').innerHTML=lihatHapus?(d.transaksi.length+' transaksi dihapus'+(semua?'':' bulan ini')+' — tidak dihitung di laporan.'+(d.peran==='owner'?' Owner bisa menghapus permanen.':'')):(()=>{ const r=d.ringkasan; return r.jumlah+' transaksi · uang masuk <b class="naik">'+rp(r.masuk)+'</b>'+(r.n_langganan?' <span class="muted">(termasuk '+r.n_langganan+' pembayaran langganan '+rp(r.langganan)+')</span>':'')+' · uang keluar <b class="turun">'+rp(r.keluar)+'</b>'+(r.n_kredit?' · pembelian kredit <b style="color:#b45309">'+rp(r.kredit)+'</b> <span class="muted">('+r.n_kredit+'x, kas berkurang saat dicicil)</span>':'')+(r.dibatalkan?' · '+r.dibatalkan+' dihapus':''); })();
+  const barisTrx=(t,i)=>{
    if(t.sumber==='langganan') return `<div class="blRow"><div><div class="plName">${esc(t.kategori)} <span class="chip info">Billing</span></div><div class="plSub">${esc(t.keterangan)}</div><div class="plSub">${esc(tglPendek(t.tanggal))} · ditandai lunas di menu Billing</div></div><div class="blKanan"><div class="blAmt naik">+${rp(t.jumlah)}</div></div></div>`;
    if(t.sumber==='kredit'){ const bunga=t.pokok&&t.jumlah>t.pokok?t.jumlah-t.pokok:0;
     return `<div class="blRow"><div><div class="plName">${esc(t.kategori)} <span class="chip warn">Kredit</span> <span class="plSub">· ${esc(t.pemasok)} (#U${t.id})</span></div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${esc(tglPendek(t.tanggal))}${t.qty?' · <b>'+esc(teksQty(t.qty,t.satuan))+'</b> @'+rp(Math.round((t.pokok||t.jumlah)/t.qty)):''} · ${t.tenor?'cicilan '+t.tenor+'x':'sekali bayar'}${bunga?' · harga '+rp(t.pokok)+' + bunga '+rp(bunga):''}${t.uang_muka?' · uang muka '+rp(t.uang_muka):''} · dicatat ${esc(t.dicatat_oleh)}</div>${htmlNota(t.nota,`tambahNota('utang',${t.id})`,false)}</div><div class="blKanan"><div class="blAmt" style="color:#b45309">−${rp(t.jumlah)}</div><div class="blAksi"><button class="btnS" onclick="ku.utFilter='semua';tabKu('utang')">Lihat di Utang</button></div></div></div>`; }
@@ -1307,7 +1322,8 @@ async function muatTransaksi(){
    const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dihapus ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
    const nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,t.jenis==='keluar'&&!t.utang_id&&t.status==='aktif');
    return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plSub" style="font-weight:800;letter-spacing:.02em">${esc(t.nomor||'#'+t.id)}</div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
-  }).join(''):'<div class="muted">Belum ada transaksi di bulan ini.</div>';
+  };
+  $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>kepalaTrx(d.transaksi,i)+barisTrx(t,i)).join(''):'<div class="muted">Belum ada transaksi'+(semua?'.':' di bulan ini.')+'</div>';
  }catch(e){ $('kuTrxList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 function isiKategori(pilih){

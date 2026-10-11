@@ -781,3 +781,22 @@ def test_sop_keuangan(siap):
     assert "salinan data" in log and f"BKK-{yymm}-0002" in log
     aksi = [x["aksi"] for x in o.get("/api/aktivitas").json()["aktivitas"]]
     assert "tutup_buku" in aksi and "buka_buku" in aksi
+
+
+def test_riwayat_semua_waktu(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now()
+    lama = (hari.replace(day=1) - timedelta(days=70)).strftime("%Y-%m-%d")
+    tgl = hari.strftime("%Y-%m-%d")
+    a = k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kat["Listrik"], "jumlah": 1000}).json()["id"]
+    b = k.post("/api/keuangan/transaksi", json={"tanggal": lama, "jenis": "keluar", "kategori_id": kat["Listrik"], "jumlah": 2000}).json()["id"]
+    assert o.get("/api/keuangan/transaksi?periode=ngawur").status_code == 400
+    d = k.get("/api/keuangan/transaksi?periode=semua").json()
+    ids = [x["id"] for x in d["transaksi"] if x["sumber"] == "manual"]
+    assert ids == [a, b] and d["ringkasan"]["keluar"] == 3000                    # urut tanggal terbaru dulu
+    d = k.get("/api/keuangan/transaksi?periode=semua&urut=dicatat").json()
+    assert [x["id"] for x in d["transaksi"] if x["sumber"] == "manual"] == [b, a]  # yang terakhir diinput di atas
+    assert k.get(f"/api/keuangan/transaksi?periode={tgl[:7]}").json()["ringkasan"]["keluar"] == 1000
+    csv = k.get("/api/keuangan/ekspor?periode=semua").text
+    assert lama in csv and tgl in csv
