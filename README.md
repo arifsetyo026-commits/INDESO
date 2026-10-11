@@ -24,6 +24,12 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   tiap petugas di Pengaturan → Pengguna.
 - **Billing** — tagihan bulanan otomatis (dibuat di hari terakhir bulan), tandai lunas,
   pengingat WhatsApp, rekap belum bayar ke Telegram.
+- **Keuangan** — catat pengeluaran (perangkat, bandwidth, gaji, jasa, listrik, sewa, dll.)
+  dan pemasukan lain (biaya pasang, penjualan perangkat, setoran modal); pembayaran
+  tagihan pelanggan masuk otomatis dari Billing. Ringkasan per bulan: pendapatan,
+  pengeluaran, laba, saldo kas, piutang, insentif mitra, tren 6 bulan, per kategori,
+  ekspor CSV. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
+  bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.
 - **Akun mitra** — akun berperan mitra yang hanya bisa membuka halaman mitra:
@@ -53,7 +59,10 @@ Buka `http://<ip-server>:8000`. Pada instalasi baru, halaman login meminta Anda 
 - Semua halaman dan API wajib login. Sesi disimpan sebagai cookie `HttpOnly` +
   `SameSite=Strict`; berakhir setelah 12 jam tidak dipakai atau 7 hari sejak login.
 - Password di-hash PBKDF2-SHA256 (200.000 iterasi); token sesi hanya disimpan hash-nya.
-- Peran **admin** (akses penuh) dan **mitra** (hanya halaman mitra), dibatasi di server.
+- Peran **owner** (akses penuh, langsung disuguhi ringkasan keuangan saat login),
+  **admin** (operasional) dan **mitra** (hanya halaman mitra), dibatasi di server.
+  Peran owner hanya bisa diberikan/dicabut oleh owner, dan akun owner hanya bisa diubah
+  oleh owner. Akun pertama pada instalasi baru otomatis menjadi owner.
 - 5 kali gagal login per IP (atau 10 per username) dalam 15 menit → dikunci 15 menit.
 - Menonaktifkan akun, mengubah peran, atau reset password langsung mengeluarkan sesinya.
 - Request pengubah data dari situs lain ditolak (cek Origin), ditambah header keamanan
