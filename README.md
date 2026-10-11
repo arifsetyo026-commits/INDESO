@@ -30,6 +30,8 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   dan kesimpulan otomatis penyebab yang paling mungkin. Dengan server **GenieACS (TR-069)**
   di VPS: lihat perangkat di rumah pelanggan, ganti nama/password WiFi, dan reboot ONU dari
   pusat (tercatat di log). Setup VPS: `deploy/genieacs/install.sh`, panduan `docs/genieacs.md`.
+- **Jalan di VPS** — INDESO bisa dipindah dari HP ke VPS (HTTPS, bisa dibuka dari mana saja):
+  `deploy/indeso/install.sh` + `deploy/indeso/impor-data.sh`, panduan `docs/vps-indeso.md`.
 - **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
   nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
   ditagih, tidak diisolir otomatis, tidak dipantau putusnya). Saat ditandai Berhenti,
