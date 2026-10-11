@@ -1536,11 +1536,20 @@ def list_tagihan(periode: str):
         ).fetchall()
         total = sum(r["jumlah"] for r in rows)
         lunas = sum(r["jumlah"] for r in rows if r["status"] == "lunas")
+        # Pelanggan tanpa tagihan di periode ini (gratis, belum punya paket, atau
+        # tagihannya belum dibuat) tetap dikirim supaya bisa diisolir manual.
+        tanpa_tagihan = conn.execute(
+            "SELECT p.username, p.nama, p.no_hp, p.gratis, p.paket_id FROM pelanggan p "
+            "WHERE p.username NOT IN (SELECT username FROM tagihan WHERE periode = ?) "
+            "ORDER BY p.gratis DESC, p.nama COLLATE NOCASE",
+            (periode,),
+        ).fetchall()
         return {
             "periode": periode,
             "ringkasan": {"jumlah_tagihan": len(rows), "total": total,
                           "terbayar": lunas, "belum_bayar": total - lunas},
             "tagihan": [dict(r) for r in rows],
+            "tanpa_tagihan": [dict(r) for r in tanpa_tagihan],
         }
     finally:
         conn.close()
@@ -2337,6 +2346,11 @@ def _siapkan_tabel_isolir() -> None:
             "username TEXT PRIMARY KEY, profile_asal TEXT, "
             "sejak TEXT NOT NULL, otomatis INTEGER NOT NULL DEFAULT 1)"
         )
+        # buka_saat_lunas = 0: isolir manual tanpa tunggakan (mis. pelanggan gratis),
+        # hanya bisa dibuka manual — otomasi tidak boleh membukanya.
+        kolom = [r[1] for r in conn.execute("PRAGMA table_info(isolir)").fetchall()]
+        if "buka_saat_lunas" not in kolom:
+            conn.execute("ALTER TABLE isolir ADD COLUMN buka_saat_lunas INTEGER NOT NULL DEFAULT 1")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS otomasi_log ("
             "tanggal TEXT NOT NULL, jenis TEXT NOT NULL, PRIMARY KEY (tanggal, jenis))"
@@ -2414,13 +2428,23 @@ def isolir_pelanggan(daftar, otomatis=True) -> dict:
         return {u: (False, f"MikroTik tidak terbaca: {e}") for u in daftar}
     conn = _billing_conn()
     try:
+        punya_tunggakan = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT t.username FROM tagihan t JOIN pelanggan p ON p.username = t.username "
+                "WHERE t.status = 'belum' AND p.gratis = 0"
+            )
+        }
         for u, (ok, ket) in hasil.items():
             if ok:
                 asal = ket if ket and ket != profil_isolir else None
+                # Isolir otomatis selalu karena tunggakan. Isolir manual hanya dibuka
+                # otomatis kalau saat itu pelanggan memang punya tagihan belum bayar.
+                buka_saat_lunas = 1 if (otomatis or u in punya_tunggakan) else 0
                 conn.execute(
-                    "INSERT OR IGNORE INTO isolir (username, profile_asal, sejak, otomatis) "
-                    "VALUES (?,?,?,?)",
-                    (u, asal, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1 if otomatis else 0),
+                    "INSERT OR IGNORE INTO isolir (username, profile_asal, sejak, otomatis, buka_saat_lunas) "
+                    "VALUES (?,?,?,?,?)",
+                    (u, asal, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 1 if otomatis else 0,
+                     buka_saat_lunas),
                 )
         conn.commit()
     finally:
@@ -2481,19 +2505,30 @@ def proses_isolir(sekarang=None) -> None:
     batas = _batas_menunggak(sekarang)
 
     # --- A. Buka isolir yang sudah lunas ---
+    # Isolir otomatis dibuka begitu tidak ada lagi tagihan lewat jatuh tempo.
+    # Isolir manual dibuka begitu semua tagihan lunas (termasuk yang belum jatuh
+    # tempo). Isolir manual tanpa tunggakan (buka_saat_lunas=0) tidak disentuh.
     conn = _billing_conn()
     try:
-        terisolir = [r["username"] for r in conn.execute("SELECT username FROM isolir")]
+        terisolir = conn.execute(
+            "SELECT username, otomatis FROM isolir WHERE buka_saat_lunas = 1"
+        ).fetchall()
         nama = {r["username"]: r["nama"] for r in conn.execute("SELECT username, nama FROM pelanggan")}
         layak = []
         if terisolir:
-            masih = {
-                r[0] for r in conn.execute(
-                    "SELECT DISTINCT t.username FROM tagihan t JOIN pelanggan p ON p.username = t.username "
-                    "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0", (batas,)
-                )
-            }
-            layak = [u for u in terisolir if u not in masih]
+            masih_telat, masih_belum = set(), set()
+            for r in conn.execute(
+                "SELECT DISTINCT t.username, t.jatuh_tempo < ? AS telat FROM tagihan t "
+                "JOIN pelanggan p ON p.username = t.username "
+                "WHERE t.status = 'belum' AND p.gratis = 0", (batas,)
+            ):
+                masih_belum.add(r[0])
+                if r[1]:
+                    masih_telat.add(r[0])
+            layak = [
+                r["username"] for r in terisolir
+                if r["username"] not in (masih_telat if r["otomatis"] else masih_belum)
+            ]
     finally:
         conn.close()
     if layak:
@@ -2588,7 +2623,7 @@ def get_isolir():
     conn = _billing_conn()
     try:
         rows = conn.execute(
-            "SELECT i.username, p.nama, i.sejak, i.otomatis FROM isolir i "
+            "SELECT i.username, p.nama, i.sejak, i.otomatis, i.buka_saat_lunas FROM isolir i "
             "LEFT JOIN pelanggan p ON p.username = i.username ORDER BY i.sejak DESC"
         ).fetchall()
         return {"mode": CONFIG["ISOLIR_MODE"], "terisolir": [dict(r) for r in rows]}

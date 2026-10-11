@@ -146,7 +146,7 @@
 <div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
 <div class="search"><input id="blSearch" placeholder="Cari nama atau username…" oninput="renderBilling()"></div>
-<div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button></div>
+<div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
 <div class="plMsg" id="blMsg"></div><div id="blList"></div>
 </div></div></div>
 <div class="overlay" id="kesehatanModal"><div class="modal"><div class="modalHead"><h3>Kesehatan Jaringan</h3><button class="close" onclick="closeModal('kesehatanModal')">Tutup</button></div><div class="modalBody">
@@ -491,7 +491,7 @@ async function loadBilling(diam){
  try{
   const [r,ri]=await Promise.all([fetch('/api/tagihan?periode='+bl.periode),fetch('/api/isolir')]);
   if(!r.ok) throw new Error('HTTP '+r.status);
-  const d=await r.json(); bl.rows=d.tagihan||[]; bl.ring=d.ringkasan;
+  const d=await r.json(); bl.rows=d.tagihan||[]; bl.lain=d.tanpa_tagihan||[]; bl.ring=d.ringkasan;
   if(ri.ok){ const di=await ri.json(); bl.isolir=new Set((di.terisolir||[]).map(x=>x.username)); bl.modeIsolir=di.mode; }
   else { bl.isolir=new Set(); }
   renderBilling();
@@ -510,12 +510,13 @@ function renderBilling(){
  $('blTotalN').textContent=s.jumlah_tagihan+' tagihan'; $('blTerbayarN').textContent=nLunas+' tagihan'; $('blBelumN').textContent=(bl.rows.length-nLunas)+' tagihan';
  document.querySelectorAll('.blFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===bl.filter));
  const q=$('blSearch').value.trim().toLowerCase(), hari=new Date().toLocaleDateString('sv-SE');
- const lolosFilter=t=>bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':(bl.filter==='isolir'?iso.has(t.username):t.status!=='lunas'));
- const lolos=t=>lolosFilter(t)&&(!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q));
- const rows=bl.rows.filter(lolos);
+ const cari=t=>!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q);
+ const lolosFilter=t=>bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':(bl.filter==='isolir'?iso.has(t.username):(bl.filter==='belum'&&t.status!=='lunas')));
+ const rows=bl.rows.filter(t=>lolosFilter(t)&&cari(t));
+ // Pelanggan tanpa tagihan (gratis, belum punya paket, tagihan belum dibuat): tidak ditagih, tapi bisa diisolir manual
+ const lain=(bl.lain||[]).filter(p=>(bl.filter==='semua'||bl.filter==='lain'||(bl.filter==='isolir'&&iso.has(p.username)))&&cari(p));
  const info=infoIsolir();
- if(!bl.rows.length){ $('blList').innerHTML=info+'<div class="muted">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>'; return; }
- $('blList').innerHTML=info+(rows.length?rows.map(t=>{
+ const htmlTagihan=rows.map(t=>{
   const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari, terisolir=iso.has(t.username);
   const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
@@ -523,7 +524,17 @@ function renderBilling(){
   const tLunas=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="ubahLunas(${t.id},true)">Tandai lunas</button>`;
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolir(${t.id})">Buka isolir</button>`:(lunas?'':`<button class="btnS" onclick="isolirManual(${t.id})">Isolir</button>`);
   return `<div class="blRow"><div><div class="plName">${esc(t.nama)}</div><div class="plSub">${esc(t.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div><div class="blAksi">${chipIso}${chip}${tLunas}${tIso}</div></div></div>`;
- }).join(''):'<div class="muted">Tidak ada yang cocok.</div>');
+ }).join('');
+ const htmlLain=lain.map(p=>{
+  const terisolir=iso.has(p.username), i=bl.lain.indexOf(p);
+  const chip=p.gratis?'<span class="chip ok">Gratis</span>':'<span class="chip warn">'+(p.paket_id?'Belum ditagih':'Belum ada paket')+'</span>';
+  const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
+  const sub=p.gratis?'Tidak ditagih':(p.paket_id?'Tagihan periode ini belum dibuat':'Lengkapi paket di menu Pelanggan');
+  const tIso=terisolir?`<button class="btnS" onclick="bukaIsolirLain(${i})">Buka isolir</button>`:`<button class="btnS" onclick="isolirLain(${i})">Isolir</button>`;
+  return `<div class="blRow"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tIso}</div></div></div>`;
+ }).join('');
+ const kosong=!bl.rows.length?'<div class="muted" style="margin-bottom:8px">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>':'';
+ $('blList').innerHTML=info+kosong+((htmlTagihan||htmlLain)?htmlTagihan+(htmlLain&&htmlTagihan?'<div class="plSub" style="margin:12px 0 4px"><b>Gratis / tanpa tagihan</b></div>':'')+htmlLain:(bl.rows.length?'<div class="muted">Tidak ada yang cocok.</div>':''));
 }
 async function aksiIsolir(url,pesanOk){
  try{
@@ -537,6 +548,16 @@ async function isolirManual(id){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
  if(!confirm('ISOLIR '+t.nama+'? Internetnya dibatasi sampai tagihan dilunasi.')) return;
  await aksiIsolir('/api/isolir/'+encodeURIComponent(t.username),t.nama+' diisolir.');
+}
+async function isolirLain(i){
+ const p=(bl.lain||[])[i]; if(!p) return;
+ if(!confirm('ISOLIR '+p.nama+'? Pelanggan ini tidak punya tagihan, jadi isolir hanya bisa dibuka manual.')) return;
+ await aksiIsolir('/api/isolir/'+encodeURIComponent(p.username),p.nama+' diisolir.');
+}
+async function bukaIsolirLain(i){
+ const p=(bl.lain||[])[i]; if(!p) return;
+ if(!confirm('Buka isolir '+p.nama+'?')) return;
+ await aksiIsolir('/api/isolir/'+encodeURIComponent(p.username)+'/buka','Isolir '+p.nama+' dibuka.');
 }
 async function bukaIsolir(id){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
