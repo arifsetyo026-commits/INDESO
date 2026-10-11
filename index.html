@@ -17,7 +17,7 @@
 .alertList{padding:0}.alert{display:grid;grid-template-columns:9px 40px minmax(0,1fr) auto;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #edf2ee;font-size:9.5px}.alert:last-child{border-bottom:0}.aDot{width:9px;height:9px;border-radius:50%}.aTime{color:#71857a}.aText strong{display:block;font-size:9.7px;color:#244d3a}.aText span{display:block;color:#7b8c84;margin-top:2px;font-size:8.5px}.tag{font-size:7.5px;font-weight:900;border-radius:99px;padding:4px 7px}.tag.critical{background:#ffdada;color:#b42323}.tag.warning{background:#fff0bf;color:#9a6700}.tag.info{background:#dceeff;color:#1669aa}
 .footer{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:11px 4px 1px;color:#5f7669;font-size:8.5px}.footerRight{color:#4e9b39;font-style:italic;font-weight:850}
 .overlay{position:fixed;inset:0;background:rgba(0,35,18,.48);display:none;align-items:center;justify-content:center;padding:18px;z-index:50;backdrop-filter:blur(3px)}.overlay.show{display:flex}.modal{width:min(760px,100%);max-height:88vh;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.25)}.modalHead{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}.modalHead h3{margin:0;font-size:15px}.close,.search button{border:0;border-radius:9px;padding:8px 11px;background:#067d40;color:#fff;font-weight:750;font-size:11px}.modalBody{padding:14px;overflow:auto;max-height:calc(88vh - 62px)}.search{display:flex;gap:8px;margin-bottom:12px}.search input{flex:1;border:1px solid var(--line);border-radius:9px;padding:10px 11px;outline:none}.detailGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.detail{background:#f7faf8;border:1px solid #e5eee8;border-radius:10px;padding:10px;font-size:10px}.detail small{display:block;color:#7b8c84;margin-bottom:4px}.detail b{color:#214d38}
-@media(max-width:1000px){.shell{display:block;min-height:0}.sidebar{min-height:0;padding:10px 12px}.brand{border-bottom:0;padding-bottom:8px}.nav{display:flex;overflow-x:auto;gap:4px;padding:5px 0 2px}.nav a{flex:0 0 auto;height:37px;padding:0 10px;margin:0;font-size:11px}.system,.sideSlogan{display:none}.main{padding:12px}.statusBanner{grid-template-columns:1fr;padding:13px}.kpis{grid-template-columns:repeat(2,1fr)}.connectionGrid{grid-template-columns:repeat(2,1fr)}.grid2,.bottomGrid{grid-template-columns:1fr}.liveNums{position:static;width:auto;display:flex;gap:18px;margin-top:5px}.liveBox{margin:0}.chartWrap{height:auto}.chartSvg{display:block;width:100%;height:150px}.liveNums{margin-top:10px}.kpi strong{font-size:20px}.statusMain h2{font-size:25px}.statusIcon{width:58px;height:58px}.footer{display:block;line-height:1.6}.footerRight{margin-top:3px}.chev{display:none}.customerTable{min-width:0;font-size:11px}.customerTable th:nth-child(1),.customerTable td:nth-child(1),.customerTable th:nth-child(3),.customerTable td:nth-child(3),.customerTable th:nth-child(4),.customerTable td:nth-child(4),.customerTable th:nth-child(7),.customerTable td:nth-child(7),.customerTable th:nth-child(8),.customerTable td:nth-child(8){display:none}}
+@media(max-width:1000px){.shell{display:block;min-height:0}.sidebar{min-height:0;padding:10px 12px}.brand{border-bottom:0;padding-bottom:8px}.nav{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px;padding:5px 0 2px}.nav a{height:38px;padding:0 10px;margin:0;font-size:12px;gap:8px;min-width:0;white-space:nowrap;overflow:hidden}.system,.sideSlogan{display:none}.main{padding:12px}.statusBanner{grid-template-columns:1fr;padding:13px}.kpis{grid-template-columns:repeat(2,1fr)}.connectionGrid{grid-template-columns:repeat(2,1fr)}.grid2,.bottomGrid{grid-template-columns:1fr}.liveNums{position:static;width:auto;display:flex;gap:18px;margin-top:5px}.liveBox{margin:0}.chartWrap{height:auto}.chartSvg{display:block;width:100%;height:150px}.liveNums{margin-top:10px}.kpi strong{font-size:20px}.statusMain h2{font-size:25px}.statusIcon{width:58px;height:58px}.footer{display:block;line-height:1.6}.footerRight{margin-top:3px}.chev{display:none}.customerTable{min-width:0;font-size:11px}.customerTable th:nth-child(1),.customerTable td:nth-child(1),.customerTable th:nth-child(3),.customerTable td:nth-child(3),.customerTable th:nth-child(4),.customerTable td:nth-child(4),.customerTable th:nth-child(7),.customerTable td:nth-child(7),.customerTable th:nth-child(8),.customerTable td:nth-child(8){display:none}}
 .select{border:1px solid #cfe3d6;background:#f3faf5;color:#0b7a3b;font:700 11px inherit;padding:6px 12px;border-radius:999px;cursor:pointer;white-space:nowrap}
 
 .plRow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 4px;border-bottom:1px solid var(--line);cursor:pointer}
@@ -120,7 +120,7 @@
  <nav class="nav">
   <a class="active" href="#"><span class="ico">⌂</span>Beranda</a>
   <a href="#" onclick="openPelanggan();return false"><span class="ico">♙</span>Pelanggan</a>
-  <a href="#" onclick="scrollToSection('onu');return false"><span class="ico">▣</span>ONU / PON</a>
+  <a href="#" onclick="openCustomers();return false"><span class="ico">▣</span>ONU / PON</a>
   <a href="#" onclick="scrollToSection('traffic');return false"><span class="ico">⌖</span>Peta Jaringan</a>
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
    <a href="#" onclick="openDiagnosa();return false"><span class="ico">⌁</span>Diagnosa &amp; ONU</a>
@@ -172,7 +172,7 @@
  </div>
  <div class="footer"><div><b>Internet Desa</b> &nbsp; v3.1 &nbsp; | &nbsp; Monitoring &nbsp; • &nbsp; Pelanggan &nbsp; • &nbsp; Jaringan &nbsp; • &nbsp; Masa Depan Desa</div><div class="footerRight">Internet untuk Semua 🌿 <span id="updated"></span></div></div>
 </div></main></div>
-<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>Data Pelanggan &amp; ONU</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari username, PON, ONU, model, serial…" onkeydown="if(event.key==='Enter')searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div id="customerResults"></div></div></div></div>
+<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
 <div class="blNav"><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div>
@@ -519,14 +519,31 @@ async function load(force=false){
   state.history.push({rx:rx||0,tx:tx||0,t:Date.now()}); if(state.history.length>24)state.history.shift(); drawChart();
  }catch(e){$('overall').textContent='OFFLINE';$('overallSub').textContent='Dashboard tidak dapat mengambil data backend';$('updated').textContent='Gagal memuat: '+e.message}
 }
-async function searchCustomers(){
- const q=$('customerSearch').value.trim();
- if(!q){const d=state.last; if(!d){$('customerResults').innerHTML='<div class="muted">Belum ada data.</div>';return}
-  $('customerResults').innerHTML=(d.onu_list||[]).slice(0,30).map(o=>detailCard(o)).join(''); return;
+var onuFilter='semua';
+// Daftar semua ONU dari data monitoring terakhir, dikelompokkan per PON. Ketuk ONU yang sudah
+// terpetakan ke pelanggan untuk membuka Diagnosa.
+function searchCustomers(){
+ document.querySelectorAll('.onuFilter button').forEach(b=>b.classList.toggle('on',b.dataset.v===onuFilter));
+ const d=state.last; if(!d){ $('customerResults').innerHTML='<div class="muted">Memuat data OLT… coba lagi beberapa detik.</div>'; return; }
+ const q=$('customerSearch').value.trim().toLowerCase();
+ const nama=new Map((d.pppoe_users||[]).map(u=>[u.username,u.nama]));
+ const daftar=(d.onu_list||[]).filter(o=>{
+  if(onuFilter==='masalah'&&!['WARNING','CRITICAL'].includes(o.status)) return false;
+  if(onuFilter==='offline'&&o.online) return false;
+  if(onuFilter==='tanpa'&&o.pppoe_username) return false;
+  if(!q) return true;
+  return [o.pppoe_username,nama.get(o.pppoe_username),o.pon,o.pon+'/'+o.onu_id,o.model,o.serial_number,o.mac_address].some(x=>String(x||'').toLowerCase().includes(q));
+ }).sort((a,b)=>String(a.pon).localeCompare(String(b.pon),undefined,{numeric:true})||a.onu_id-b.onu_id);
+ const CH={OK:'<span class="chip ok">Normal</span>',WARNING:'<span class="chip warn">Warning</span>',CRITICAL:'<span class="chip bad">Kritis</span>'};
+ let pon=null, h='';
+ for(const o of daftar){
+  if(o.pon!==pon){ pon=o.pon; const semua=(d.onu_list||[]).filter(x=>x.pon===pon);
+   h+=`<div style="display:flex;justify-content:space-between;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:13px">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online</span></div>`; }
+  const u=o.pppoe_username, n=nama.get(u);
+  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa('${esc(u)}')"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'}</div><div class="plSub">${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
  }
- try{const r=await fetch('/api/pelanggan/'+encodeURIComponent(q),{cache:'no-store'});const d=await r.json();$('customerResults').innerHTML=d.found?d.results.map(detailCard).join(''):`<div class="muted">Tidak ditemukan: ${esc(q)}</div>`}catch(e){$('customerResults').innerHTML='<div class="muted">Gagal mengambil data.</div>'}
+ $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · ketuk ONU yang terpetakan untuk membuka Diagnosa</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');
 }
-function detailCard(o){return `<div class="detail" style="margin-bottom:8px"><small>${esc(o.pon||'—')} · ONU ${esc(o.onu_id||'—')}</small><b>${esc(o.pppoe_username||o.serial_number||'ONU tanpa username')}</b><div style="margin-top:7px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:9px"><span>OLT RX<br><b>${fmt(o.olt_rx_dbm)} dBm</b></span><span>ONU RX<br><b>${fmt(o.onu_rx_dbm)} dBm</b></span><span>Status<br><b>${esc(o.status||'—')}</b></span></div></div>`}
 // Muat ulang data berkala tanpa menumpuk: permintaan berikutnya baru dijadwalkan setelah
 // yang sebelumnya selesai. Berhenti saat tab tidak terlihat, dan melambat saat ada jendela
 // terbuka (data di belakangnya tidak sedang dilihat) supaya HP dan server tidak terbebani.
