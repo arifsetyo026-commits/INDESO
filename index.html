@@ -123,6 +123,7 @@
   <a href="#" onclick="scrollToSection('onu');return false"><span class="ico">▣</span>ONU / PON</a>
   <a href="#" onclick="scrollToSection('traffic');return false"><span class="ico">⌖</span>Peta Jaringan</a>
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Alert &amp; Event <span id="alertBadge" class="badge">0</span></a>
+   <a href="#" onclick="openDiagnosa();return false"><span class="ico">⌁</span>Diagnosa &amp; ONU</a>
    <a href="#" onclick="openTiket();return false"><span class="ico">⚒</span>Tiket Gangguan <span id="tiketBadge" class="badge" style="display:none">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan</a>
@@ -190,7 +191,7 @@
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
 <label class="plCek"><input type="checkbox" id="plMitra"> Tampilkan ke mitra (ikut dihitung insentif bila lunas)</label>
 <label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung insentif mitra tiap bulan</label>
-<div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button></div>
+<div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button><button class="plCancel" onclick="const u=$('plUser').value;closeModal('pelangganModal');openDiagnosa(u)">Diagnosa</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
 <div id="plPaketView" style="display:none">
 <div id="pkList"></div>
@@ -277,6 +278,11 @@
  <div class="plBtns"><button class="plSave" onclick="simpanTransaksi()">Simpan</button><button class="plCancel" onclick="hapusDraftKu();resetFormKu();tabKu('transaksi')">Batal</button></div>
  <div class="plSub" style="margin-top:8px">Pembayaran tagihan pelanggan tercatat otomatis dari menu Billing — tidak perlu dicatat di sini. Catatan bisa diubah/dibatalkan oleh pencatatnya dalam 24 jam; setelah itu hanya oleh owner.</div>
 </div></div>
+</div></div></div>
+<div class="overlay" id="diagModal"><div class="modal"><div class="modalHead"><h3>Diagnosa &amp; Perangkat Pelanggan</h3><button class="close" onclick="closeModal('diagModal')">Tutup</button></div><div class="modalBody">
+ <div class="search"><input id="dgUser" list="dgUserList" placeholder="Ketik nama atau username pelanggan…" autocomplete="off" onkeydown="if(event.key==='Enter')muatDiagnosa()"><datalist id="dgUserList"></datalist><button onclick="muatDiagnosa()">Periksa</button></div>
+ <div class="plMsg" id="dgMsg"></div>
+ <div id="dgIsi"><div class="muted">Pilih pelanggan yang melapor lemot/gangguan untuk melihat kondisi koneksi, redaman, pemakaian, dan perangkat ONU-nya.</div></div>
 </div></div></div>
 <div class="overlay" id="tiketModal"><div class="modal"><div class="modalHead"><h3 id="tkJudul">Tiket Gangguan</h3><button class="close" onclick="closeModal('tiketModal')">Tutup</button></div><div class="modalBody">
 <div id="tkListView">
@@ -449,7 +455,7 @@ window.addEventListener('click',e=>{if(e.target.classList.contains('overlay')&&_
 // Ingat jendela yang sedang terbuka, supaya kalau browser memuat ulang halaman (mis. HP
 // kehabisan memori saat membuka kamera untuk foto nota) jendelanya dibuka lagi.
 const _PEMBUKA={customerModal:()=>openCustomers(),pelangganModal:()=>openPelanggan(),billingModal:()=>openBilling(),kesehatanModal:()=>openKesehatan(),
- keuanganModal:()=>openKeuangan(),alertModal:()=>openAlertEvent(),settingsModal:()=>openSettings(),tiketModal:()=>openTiket()};
+ keuanganModal:()=>openKeuangan(),diagModal:()=>openDiagnosa(),alertModal:()=>openAlertEvent(),settingsModal:()=>openSettings(),tiketModal:()=>openTiket()};
 function _simpanModalAktif(){
  const buka=[...document.querySelectorAll('.overlay.show')].map(o=>o.id).filter(id=>_PEMBUKA[id]);
  // jendela ditutup: dashboard di belakangnya langsung diperbarui, tidak menunggu jeda 30 detik
@@ -1046,6 +1052,103 @@ async function muatRiwayat(){
  }catch(e){ $('aeRiwayatList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 
+// ===== Diagnosa & perangkat ONU =====
+const dg={user:null,data:null,acs:null,pelanggan:null};
+function dgPesan(t,ok){ const m=$('dgMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+async function openDiagnosa(username){
+ $('diagModal').classList.add('show'); dgPesan('');
+ if(!dg.pelanggan){ try{ dg.pelanggan=(await jsonAtauError(await fetch('/api/data-pelanggan'))).pelanggan.filter(p=>p.status!=='berhenti'); }catch(e){ dg.pelanggan=[]; } }
+ $('dgUserList').innerHTML=dg.pelanggan.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join('');
+ if(typeof username==='string'&&username){ $('dgUser').value=username; muatDiagnosa(); } else if(dg.user){ $('dgUser').value=dg.user; }
+ else $('dgUser').focus();
+}
+function dgDurasi(s){ if(s==null) return '—'; const h=Math.floor(s/86400), j=Math.floor(s%86400/3600), m=Math.floor(s%3600/60); return (h?h+' hari ':'')+(j?j+' jam ':'')+(!h?m+' menit':''); }
+async function muatDiagnosa(){
+ const isi=$('dgUser').value.trim(); if(!isi) return;
+ const p=(dg.pelanggan||[]).find(x=>x.username===isi)||(dg.pelanggan||[]).find(x=>(x.nama||'').toLowerCase()===isi.toLowerCase());
+ const u=p?p.username:isi; dg.user=u; dgPesan('');
+ $('dgIsi').innerHTML='<div class="muted">Memeriksa '+esc(u)+'… (membaca MikroTik, OLT'+(dg.acs===false?'':', dan ONU')+')</div>';
+ try{ dg.data=await jsonAtauError(await fetch('/api/diagnosa/'+encodeURIComponent(u),{cache:'no-store'})); }
+ catch(e){ $('dgIsi').innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
+ renderDiagnosa();
+}
+function renderDiagnosa(){
+ const d=dg.data, P=d.pelanggan, kotak=(a,b)=>`<div class="detail"><small>${a}</small><b>${b}</b></div>`;
+ const warna={bad:['#fff6f5','#f3b4ab','#b42318','✖'],warn:['#fffaf0','#f3d48a','#8a5a00','⚠'],ok:['#f3faf5','#bfe6cb','#0b7a3b','✔'],info:['#f2f7fd','#c8dcf2','#1669aa','ℹ']};
+ let h=`<div class="kuPanel" style="margin-bottom:10px"><div class="plName" style="font-size:15px">${esc(P.nama||P.username)} <span class="plSub">· ${esc(P.username)} · ${esc(P.paket||'tanpa paket')}${P.kecepatan_mbps?' ('+P.kecepatan_mbps+' Mbps)':''}</span></div><div class="plSub">${esc(P.alamat||'')}${P.no_hp?' · <a href="https://wa.me/'+esc(nomorWA(P.no_hp))+'" target="_blank" rel="noopener">WA '+esc(P.no_hp)+'</a>':''}${d.tiket_terbuka?' · <a href="#" onclick="closeModal(\'diagModal\');openTiket();bukaTiket('+d.tiket_terbuka.id+');return false">tiket #T'+d.tiket_terbuka.id+' terbuka</a>':''}</div></div>`;
+ h+='<div style="margin-bottom:10px">'+d.kesimpulan.map(k=>{ const w=warna[k.tingkat]||warna.info; return `<div style="background:${w[0]};border:1px solid ${w[1]};color:${w[2]};border-radius:10px;padding:9px 11px;margin-bottom:6px;font-size:12.5px;font-weight:700">${w[3]} ${esc(k.teks)}</div>`; }).join('')+'</div>';
+ const pp=d.pppoe, ll=d.lalu_lintas, lim=pp.limit_mbps;
+ const bar=(v)=>lim&&v!=null?`<div style="height:6px;background:#eef3ef;border-radius:9px;margin-top:4px"><div style="height:6px;border-radius:9px;width:${Math.min(100,v*100/lim)}%;background:${v>=0.9*lim?'#eb6834':'#2a78d6'}"></div></div>`:'';
+ h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Koneksi</div><div class="detailGrid" style="margin-bottom:6px">'
+  +kotak('PPPoE',pp.online?'<span style="color:#0b7a3b">● Online</span>':'<span style="color:#b42318">● Offline</span>')
+  +kotak('IP · uptime sesi',esc(pp.ip||'—')+' · '+esc(pp.uptime||'—'))
+  +kotak('Download sekarang',(ll&&ll.download_mbps!=null?ll.download_mbps+' Mbps':'—')+(lim?' / '+lim:'')+bar(ll&&ll.download_mbps))
+  +kotak('Upload sekarang',(ll&&ll.upload_mbps!=null?ll.upload_mbps+' Mbps':'—')+bar(ll&&ll.upload_mbps))
+  +kotak('Rata-rata pakai 24 jam',d.tren.pakai_rata_mbps!=null?d.tren.pakai_rata_mbps+' Mbps (puncak '+d.tren.pakai_puncak_mbps+')':'—')
+  +kotak('Putus-sambung 24 jam',(d.putus_24jam||0)+' kali')+'</div>';
+ h+=`<div class="tkAksi" style="margin:0 0 12px">${pp.online?'<button class="btnS go" onclick="tesPing()">Tes ping dari MikroTik</button>':''}<button class="btnS" onclick="muatDiagnosa()">Periksa ulang</button></div><div id="dgPing"></div>`;
+ const o=d.onu, t=d.tren;
+ h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Optik (OLT)</div><div class="detailGrid" style="margin-bottom:12px">'
+  +(o?kotak('ONU '+esc(o.pon)+'/'+esc(o.onu_id),(o.online?'Online':'<span style="color:#b42318">Offline</span>')+' · '+esc(o.status))
+     +kotak('Redaman ONU-RX / OLT-RX',esc(o.onu_rx_dbm??'—')+' / '+esc(o.olt_rx_dbm??'—')+' dBm')
+     +kotak('Suhu · tegangan',esc(o.temperature_c??'—')+'°C · '+esc(o.voltage_v??'—')+' V')
+     +kotak('Redaman 3 hari (min / rata)',t.onu_rx_min!=null?t.onu_rx_min+' / '+t.onu_rx_rata+' dBm':'—')
+     +kotak('Model · SN (OLT)',esc(o.model||'—')+' · '+esc(o.serial_number||'—'))
+   :kotak('ONU','tidak terpetakan ke pelanggan ini'))
+  +(d.terisolir?kotak('Isolir','<span style="color:#b42318">Sedang diisolir</span>'):'')
+  +(d.tunggakan.jumlah?kotak('Tagihan belum dibayar',d.tunggakan.jumlah+' bulan · '+rp(d.tunggakan.total)):'')+'</div>';
+ h+='<div id="dgAcs">'+htmlAcs(d.acs)+'</div>';
+ $('dgIsi').innerHTML=h;
+}
+function htmlAcs(a){
+ if(a==null) return '<div class="kuPanel" style="border-style:dashed"><b style="font-size:13px">Kendali ONU dari pusat belum aktif</b><div class="plSub">Hubungkan server ACS (GenieACS) untuk melihat perangkat terhubung, mengganti nama/password WiFi, dan reboot ONU dari sini. Panduan: <code>docs/genieacs.md</code>.</div></div>';
+ if(!a.terhubung) return `<div class="kuPanel" style="border-style:dashed"><b style="font-size:13px">ONU belum terhubung ke server ACS</b><div class="plSub">${esc(a.pesan||'')}</div></div>`;
+ const p=a.perangkat, kotak=(x,y)=>`<div class="detail"><small>${x}</small><b>${y}</b></div>`;
+ const lapor=p.lapor_menit_lalu==null?'—':(p.lapor_menit_lalu<2?'baru saja':p.lapor_menit_lalu<120?p.lapor_menit_lalu+' menit lalu':p.lapor_menit_lalu<2880?Math.round(p.lapor_menit_lalu/60)+' jam lalu':Math.round(p.lapor_menit_lalu/1440)+' hari lalu')+(p.lapor_menit_lalu!=null&&p.lapor_menit_lalu>60?' <span style="color:#b45309">(ONU mungkin mati / tidak terhubung)</span>':'');
+ let h=`<div class="plSub" style="font-weight:800;margin-bottom:4px">Perangkat ONU (TR-069)</div><div class="detailGrid" style="margin-bottom:8px">`
+  +kotak('Model',esc((p.pabrikan||'')+' '+(p.model||'')))+kotak('Firmware',esc(p.firmware||'—'))+kotak('ONU menyala',dgDurasi(p.uptime_detik))
+  +kotak('Lapor ke ACS',lapor)+kotak('Perangkat terhubung',p.perangkat_aktif+' aktif')+'</div>';
+ h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button></div>';
+ h+=p.wifi.map(w=>`<div class="kuPanel" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b style="font-size:13px">📶 ${esc(w.ssid)}</b> <span class="plSub">${esc(w.band)}${w.channel?' · channel '+esc(w.channel):''} · ${w.klien} terhubung${w.aktif?'':' · NONAKTIF'}</span></div><button class="btnS" onclick="const f=document.getElementById('dgW${w.index}');f.style.display=f.style.display==='none'?'block':'none'">Ganti nama / password</button></div>
+   <div id="dgW${w.index}" class="plForm" style="display:none;margin-top:4px"><label>Nama WiFi baru (kosongkan bila tetap)</label><input id="dgSsid${w.index}" maxlength="32" placeholder="${esc(w.ssid)}">
+   ${w.bisa_ganti_password?`<label>Password baru (8–63 karakter, kosongkan bila tetap)</label><div style="display:flex;gap:6px"><input id="dgPw${w.index}" maxlength="63" autocomplete="off" style="flex:1"><button class="btnS" type="button" onclick="$('dgPw${w.index}').value=passwordAcak()">Buat acak</button></div>`:'<div class="plSub" style="margin-top:8px">Model ONU ini tidak membuka pengaturan password lewat TR-069.</div>'}
+   <div class="plBtns"><button class="plSave" onclick="simpanWifi(${w.index})">Simpan ke ONU</button></div></div></div>`).join('');
+ if(p.perangkat.length) h+=`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer;font-weight:800">Daftar perangkat di rumah pelanggan (${p.perangkat.length})</summary>`+p.perangkat.map(x=>`<div class="blRow"><div><div class="plName" style="font-size:12px">${esc(x.nama)}</div><div class="plSub">${esc(x.ip||'')} · ${esc(x.mac||'')}${x.antarmuka?' · '+esc(x.antarmuka):''}</div></div>${x.aktif?'<span class="chip ok">aktif</span>':'<span class="chip off">tidak aktif</span>'}</div>`).join('')+'</details>';
+ return h;
+}
+function passwordAcak(){ const c='abcdefghjkmnpqrstuvwxyz23456789'; let s=''; const a=new Uint32Array(10); crypto.getRandomValues(a); a.forEach(x=>s+=c[x%c.length]); return s; }
+async function tesPing(){
+ $('dgPing').innerHTML='<div class="muted">Ping 10 kali dari MikroTik…</div>';
+ try{ const r=await jsonAtauError(await fetch('/api/diagnosa/'+encodeURIComponent(dg.user)+'/ping',{method:'POST'}));
+  const buruk=r.hilang_persen>10||(r.rata_ms||0)>100;
+  $('dgPing').innerHTML=`<div class="kuPanel" style="margin:-4px 0 12px;${buruk?'border-color:#f3b4ab;background:#fff6f5':''}"><b style="font-size:12.5px">Ping ${esc(r.ip)}: ${r.diterima}/${r.terkirim} balas · hilang ${r.hilang_persen}% · rata-rata ${r.rata_ms??'—'} ms (min ${r.min_ms??'—'}, maks ${r.maks_ms??'—'})</b><div class="plSub">${buruk?'Jalur ke pelanggan tidak stabil (paket hilang / respons lambat). Cek redaman dan kabel.':'Jalur dari server ke perangkat pelanggan normal.'}</div></div>`; }
+ catch(e){ $('dgPing').innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; }
+}
+async function segarkanOnu(diam){
+ if(!diam) $('dgAcs').innerHTML='<div class="muted">Meminta data terbaru dari ONU… (bisa sampai 30 detik)</div>';
+ try{ const a=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'?segarkan=true',{cache:'no-store'})); dg.data.acs=a; $('dgAcs').innerHTML=htmlAcs(a);
+  if(!diam) dgPesan(a.segarkan&&a.segarkan.status==='antre'?a.segarkan.pesan:'Data ONU diperbarui.',!(a.segarkan&&a.segarkan.status==='antre')); }
+ catch(e){ if(!diam) dgPesan('Gagal: '+e.message); $('dgAcs').innerHTML=htmlAcs(dg.data.acs); }
+}
+async function rebootOnu(){
+ if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;
+ try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/reboot',{method:'POST'})); dgPesan(r.status==='antre'?r.pesan:'Perintah reboot terkirim. ONU menyala lagi dalam ±2 menit.',r.status!=='antre'); }
+ catch(e){ dgPesan('Gagal: '+e.message); }
+}
+async function simpanWifi(i){
+ const ssid=$('dgSsid'+i).value.trim(), pwEl=$('dgPw'+i), password=pwEl?pwEl.value:'';
+ if(!ssid&&!password){ dgPesan('Isi nama WiFi baru dan/atau password baru.'); return; }
+ if(password&&(password.length<8||password.length>63)){ dgPesan('Password WiFi 8–63 karakter.'); return; }
+ if(!confirm('Simpan ke ONU '+dg.user+'?'+(ssid?'\nNama WiFi: '+ssid:'')+(password?'\nPassword: '+password:'')+'\n\nPerangkat pelanggan akan terputus dari WiFi dan perlu login ulang.')) return;
+ try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:i,ssid:ssid||null,password:password||null})}));
+  const P=dg.data.pelanggan, w=dg.data.acs.perangkat.wifi.find(x=>x.index===i), wa=nomorWA(P.no_hp);
+  const pesan='Yth. '+(P.nama||'')+', WiFi Internet Desa Anda sudah diperbarui.\nNama WiFi: '+(ssid||w.ssid)+(password?'\nPassword: '+password:'')+'\n\nSilakan sambungkan ulang perangkat Anda. Terima kasih.';
+  dgPesan((r.status==='antre'?r.pesan:'Tersimpan di ONU.')+' ',r.status!=='antre');
+  if(wa) $('dgMsg').innerHTML+=`<a class="btnS go" href="https://wa.me/${wa}?text=${encodeURIComponent(pesan)}" target="_blank" rel="noopener">Kirim ke WA pelanggan</a>`;
+  if(r.status!=='antre') setTimeout(()=>segarkanOnu(true),1500);
+ }catch(e){ dgPesan('Gagal: '+e.message); }
+}
+
 // ===== Tiket gangguan =====
 const tk={filter:'terbuka',data:null,cur:null,pelanggan:null};
 const TK_CHIP={baru:'<span class="chip bad">Baru</span>',dikerjakan:'<span class="chip warn">Dikerjakan</span>',selesai:'<span class="chip ok">Selesai</span>',batal:'<span class="chip off">Dibatalkan</span>'};
@@ -1099,7 +1202,7 @@ async function bukaTiket(id){
  tk.cur=id; tkView('detail'); const box=$('tkDetailView'); box.innerHTML='<div class="muted">Memuat…</div>';
  let d; try{ d=await jsonAtauError(await fetch('/api/tiket/'+id,{cache:'no-store'})); }catch(e){ box.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div><button class="btnS" onclick="tkView(\'list\')">‹ Kembali</button>'; return; }
  const t=d.tiket, k=d.kontak, g=d.diagnosa, kotak=(a,b)=>`<div class="detail"><small>${a}</small><b>${b}</b></div>`;
- let html=`<div class="blNav"><button class="btnS" onclick="tkView('list')">‹ Kembali</button><b>#T${t.id}</b>${TK_CHIP[t.status]||''}${t.prioritas==='tinggi'?'<span class="chip bad">🔺 Prioritas tinggi</span>':''}</div>`;
+ let html=`<div class="blNav"><button class="btnS" onclick="tkView('list')">‹ Kembali</button><b>#T${t.id}</b>${TK_CHIP[t.status]||''}${t.prioritas==='tinggi'?'<span class="chip bad">🔺 Prioritas tinggi</span>':''}${t.username?`<button class="btnS go" onclick="openDiagnosa('${esc(t.username)}')">Diagnosa</button>`:''}</div>`;
  html+=`<div class="kuPanel" style="margin-bottom:10px"><div class="plName" style="font-size:15px">${t.username?esc(t.nama||t.username):'Gangguan umum / jaringan'}</div>`;
  if(t.username) html+=`<div class="plSub">${esc(t.username)}${k&&k.alamat?' · '+esc(k.alamat):''}${k&&k.no_hp?' · <a href="https://wa.me/'+esc(nomorWA(k.no_hp))+'" target="_blank" rel="noopener">WA '+esc(k.no_hp)+'</a>':''}</div>`;
  html+=`<div style="margin-top:8px;font-size:13px"><b>${esc(t.kategori)}</b>${t.keterangan?' — '+esc(t.keterangan):''}</div><div class="plSub">Dilaporkan ${esc(t.dibuat_oleh)} · ${esc(khWaktu(t.dibuat_pada))} · ${t.terbuka?'sudah '+esc(t.umur):'ditangani dalam '+esc(t.umur)}${t.teknisi?' · teknisi <b>'+esc(t.teknisi)+'</b>':''}</div>`;
@@ -1143,7 +1246,7 @@ async function aksiTiket(aksi){
  }catch(e){ tkPesan('Gagal: '+e.message,false,'tkDMsg'); }
 }
 var _tkBadgeTerakhir=0;
-Object.assign(AKSI_LABEL,{tutup_buku:'Tutup buku',buka_buku:'Buka kembali buku',tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
+Object.assign(AKSI_LABEL,{onu_wifi:'Ganti WiFi ONU',onu_reboot:'Reboot ONU',tutup_buku:'Tutup buku',buka_buku:'Buka kembali buku',tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
 
 // ===== Keuangan =====
 const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};

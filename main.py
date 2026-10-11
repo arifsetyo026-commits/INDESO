@@ -218,7 +218,7 @@ class _SamarkanRahasia(logging.Filter):
 
 
 def _samarkan(teks: str) -> str:
-    for rahasia in (CONFIG.get("TELEGRAM_BOT_TOKEN"), CONFIG.get("MIKROTIK_PASSWORD")):
+    for rahasia in (CONFIG.get("TELEGRAM_BOT_TOKEN"), CONFIG.get("MIKROTIK_PASSWORD"), CONFIG.get("GENIEACS_PASS")):
         if rahasia:
             teks = teks.replace(f"bot{rahasia}", "bot***")
             if len(rahasia) >= 6:
@@ -1241,6 +1241,9 @@ def init_billing_db() -> None:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN secret_target TEXT")
         if "secret_nonaktif" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN secret_nonaktif INTEGER NOT NULL DEFAULT 0")
+        # ID perangkat di GenieACS (TR-069), diisi otomatis saat ONU pertama kali ditemukan.
+        if "acs_id" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN acs_id TEXT")
         # Pelunasan: metode (untuk rekonsiliasi kas vs bank), siapa & kapan mencatat.
         kol_tg = [r[1] for r in conn.execute("PRAGMA table_info(tagihan)").fetchall()]
         for kol in ("metode_bayar", "lunas_oleh", "lunas_pada"):
@@ -6821,6 +6824,430 @@ def test_telegram(request: Request):
     if not ok:
         raise HTTPException(status_code=502, detail="Telegram menolak pesan. Cek TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID.")
     return {"ok": True}
+
+
+
+# ============================================================
+# 9. PERANGKAT PELANGGAN (TR-069 lewat GenieACS) & DIAGNOSA
+# ============================================================
+# GenieACS berjalan di VPS. INDESO hanya memakai NBI (REST API, port 7557) yang
+# dilindungi password lewat nginx — lihat docs/genieacs.md. ONU dicocokkan ke
+# pelanggan lewat nomor seri GPON (sama dengan yang dibaca dari OLT) atau username
+# PPPoE yang tersimpan di ONU. Password WiFi tidak pernah disimpan/dicatat di INDESO.
+
+CONFIG.update({
+    "GENIEACS_URL": _env("GENIEACS_URL", "").rstrip("/"),     # mis. https://acs.contoh.id/nbi
+    "GENIEACS_USER": _env("GENIEACS_USER", ""),
+    "GENIEACS_PASS": _env("GENIEACS_PASS", ""),
+    "GENIEACS_TIMEOUT": int(_env("GENIEACS_TIMEOUT", "15")),
+})
+
+_IGD = "InternetGatewayDevice"
+_KUNCI_WIFI = ("KeyPassphrase", "PreSharedKey.1.KeyPassphrase", "PreSharedKey.1.PreSharedKey")
+
+
+def _acs_aktif() -> bool:
+    return bool(CONFIG["GENIEACS_URL"])
+
+
+def _acs(method: str, path: str, **kw):
+    if not _acs_aktif():
+        raise HTTPException(status_code=503, detail="Server ACS (GenieACS) belum diatur. Isi GENIEACS_URL di .env — lihat docs/genieacs.md.")
+    auth = (CONFIG["GENIEACS_USER"], CONFIG["GENIEACS_PASS"]) if CONFIG["GENIEACS_USER"] else None
+    try:
+        r = requests.request(method, CONFIG["GENIEACS_URL"] + path, auth=auth,
+                             timeout=kw.pop("timeout", CONFIG["GENIEACS_TIMEOUT"]), **kw)
+    except requests.RequestException as e:
+        logger.error(f"GenieACS tidak terjangkau: {e}")
+        raise HTTPException(status_code=502, detail="Server ACS tidak terjangkau. Cek VPS dan koneksi internet.")
+    if r.status_code in (401, 403):
+        raise HTTPException(status_code=502, detail="Server ACS menolak login. Cek GENIEACS_USER/GENIEACS_PASS di .env.")
+    return r
+
+
+def _nilai(doc: dict, path: str):
+    """Ambil _value parameter dari dokumen perangkat GenieACS (path bertitik)."""
+    cur = doc
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return None
+        cur = cur[p]
+    return cur.get("_value") if isinstance(cur, dict) else None
+
+
+def _ada(doc: dict, path: str) -> bool:
+    cur = doc
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return False
+        cur = cur[p]
+    return isinstance(cur, dict)
+
+
+def _anak(doc: dict, path: str) -> list[str]:
+    cur = doc
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return []
+        cur = cur[p]
+    return sorted((k for k in cur if k.isdigit()), key=int) if isinstance(cur, dict) else []
+
+
+def _sn_onu(username: str) -> Optional[str]:
+    if _latest_data is None:
+        return None
+    onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None)
+    return onu.serial_number if onu else None
+
+
+def _query_pppoe(username: str) -> dict:
+    jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username._value"
+             for w in range(1, 6) for p in range(1, 3)]
+    return {"$or": [{"VirtualParameters.pppoeUsername._value": username}] + [{j: username} for j in jalur]}
+
+
+def _cari_perangkat(username: str) -> Optional[dict]:
+    """Cari dokumen ONU di GenieACS: id tersimpan → nomor seri GPON → username PPPoE."""
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT acs_id FROM pelanggan WHERE username=?", (username,)).fetchone()
+    finally:
+        conn.close()
+    if r is None:
+        raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+    queries = []
+    if r["acs_id"]:
+        queries.append({"_id": r["acs_id"]})
+    sn = _sn_onu(username)
+    if sn:
+        queries.append({"_deviceId._SerialNumber": sn})
+        queries.append({"_deviceId._SerialNumber": sn.upper()})
+    queries.append(_query_pppoe(username))
+    for q in queries:
+        res = _acs("GET", "/devices/", params={"query": json.dumps(q)})
+        if res.ok and res.json():
+            doc = res.json()[0]
+            if doc["_id"] != r["acs_id"]:
+                conn = _billing_conn()
+                try:
+                    conn.execute("UPDATE pelanggan SET acs_id=? WHERE username=?", (doc["_id"], username))
+                    conn.commit()
+                finally:
+                    conn.close()
+            return doc
+    return None
+
+
+def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
+    """Kirim tugas + connection request. 200 = langsung dijalankan ONU, 202 = antre
+    (ONU belum bisa dihubungi; dijalankan saat ONU lapor berikutnya)."""
+    from urllib.parse import quote
+    r = _acs("POST", f"/devices/{quote(acs_id, safe='')}/tasks",
+             params={"connection_request": "", "timeout": str(tunggu * 1000)}, json=tugas, timeout=tunggu + 10)
+    if r.status_code == 200:
+        return {"status": "selesai"}
+    if r.status_code == 202:
+        return {"status": "antre", "pesan": "ONU belum merespons. Perintah tersimpan dan dijalankan saat ONU lapor ke server ACS berikutnya."}
+    raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
+
+
+def _ringkas_perangkat(doc: dict) -> dict:
+    di = doc.get("_deviceId", {})
+    wlan = []
+    for i in _anak(doc, f"{_IGD}.LANDevice.1.WLANConfiguration"):
+        b = f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"
+        ssid = _nilai(doc, f"{b}.SSID")
+        if ssid is None:
+            continue
+        kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
+        klien = _nilai(doc, f"{b}.TotalAssociations")
+        if klien is None:
+            klien = len(_anak(doc, f"{b}.AssociatedDevice"))
+        wlan.append({"index": int(i), "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
+                     "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
+                     "band": "5 GHz" if str(_nilai(doc, f"{b}.Channel") or "0").isdigit() and int(_nilai(doc, f"{b}.Channel") or 0) > 14 else "2,4 GHz",
+                     "klien": klien, "bisa_ganti_password": kunci is not None})
+    host = []
+    for i in _anak(doc, f"{_IGD}.LANDevice.1.Hosts.Host"):
+        b = f"{_IGD}.LANDevice.1.Hosts.Host.{i}"
+        aktif = _nilai(doc, f"{b}.Active")
+        host.append({"nama": _nilai(doc, f"{b}.HostName") or "-", "ip": _nilai(doc, f"{b}.IPAddress"),
+                     "mac": _nilai(doc, f"{b}.MACAddress"), "aktif": aktif in (True, "true", "1", 1),
+                     "antarmuka": _nilai(doc, f"{b}.InterfaceType")})
+    wan_ip = None
+    for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
+        for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
+            wan_ip = wan_ip or _nilai(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.ExternalIPAddress")
+    uptime = _nilai(doc, f"{_IGD}.DeviceInfo.UpTime")
+    return {
+        "id": doc.get("_id"), "pabrikan": di.get("_Manufacturer"), "model": di.get("_ProductClass"),
+        "serial": di.get("_SerialNumber"), "firmware": _nilai(doc, f"{_IGD}.DeviceInfo.SoftwareVersion"),
+        "uptime_detik": int(uptime) if str(uptime or "").isdigit() else None,
+        "lapor_terakhir": doc.get("_lastInform"), "wan_ip": wan_ip,
+        "wifi": wlan, "perangkat": host, "perangkat_aktif": sum(1 for h in host if h["aktif"]),
+    }
+
+
+def _lapor_terakhir_menit(teks: Optional[str]) -> Optional[int]:
+    if not teks:
+        return None
+    try:
+        t = datetime.fromisoformat(teks.replace("Z", "+00:00"))
+        return int((datetime.now(t.tzinfo) - t).total_seconds() // 60)
+    except ValueError:
+        return None
+
+
+def _info_acs(username: str, segarkan: bool = False) -> dict:
+    doc = _cari_perangkat(username)
+    if not doc:
+        return {"terhubung": False, "pesan": "ONU pelanggan ini belum terdaftar di server ACS. Pastikan TR-069 di ONU sudah "
+                                              "diarahkan ke server ACS (lihat docs/genieacs.md)."}
+    hasil_segar = None
+    if segarkan:
+        hasil_segar = _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1"}, tunggu=25)
+        doc = _cari_perangkat(username) or doc
+    info = _ringkas_perangkat(doc)
+    info["lapor_menit_lalu"] = _lapor_terakhir_menit(info["lapor_terakhir"])
+    return {"terhubung": True, "perangkat": info, "segarkan": hasil_segar}
+
+
+@app.get("/api/acs/status")
+def acs_status(request: Request):
+    _wajib_admin(request)
+    if not _acs_aktif():
+        return {"aktif": False}
+    r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_id"}, timeout=10)
+    return {"aktif": True, "terjangkau": r.ok, "jumlah_perangkat": len(r.json()) if r.ok else None}
+
+
+@app.get("/api/acs/{username}")
+def acs_info(username: str, request: Request, segarkan: bool = False):
+    _wajib_admin(request)
+    return _info_acs(username, segarkan)
+
+
+class WifiIn(BaseModel):
+    index: int
+    ssid: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.post("/api/acs/{username}/wifi")
+def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
+    _wajib_admin(request)
+    ssid = (d.ssid or "").strip()
+    pw = d.password or ""
+    if not ssid and not pw:
+        raise HTTPException(status_code=400, detail="Isi nama WiFi baru dan/atau password baru.")
+    if ssid and not (1 <= len(ssid) <= 32 and ssid.isprintable()):
+        raise HTTPException(status_code=400, detail="Nama WiFi 1–32 karakter.")
+    if pw and not (8 <= len(pw) <= 63 and all(32 <= ord(c) < 127 for c in pw)):
+        raise HTTPException(status_code=400, detail="Password WiFi 8–63 karakter, huruf/angka/simbol biasa (tanpa emoji).")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    b = f"{_IGD}.LANDevice.1.WLANConfiguration.{d.index}"
+    if _nilai(doc, f"{b}.SSID") is None:
+        raise HTTPException(status_code=404, detail="Jaringan WiFi itu tidak ditemukan di ONU.")
+    nilai = []
+    if ssid:
+        nilai.append([f"{b}.SSID", ssid, "xsd:string"])
+    if pw:
+        kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
+        if not kunci:
+            raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
+        nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
+    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else [])
+    catat_aktivitas(_oleh(request), "onu_wifi",
+                    f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}"
+                    + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+    return hasil
+
+
+@app.post("/api/acs/{username}/reboot")
+def acs_reboot(username: str, request: Request):
+    _wajib_admin(request)
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    hasil = _tugas_acs(doc["_id"], {"name": "reboot"})
+    catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({doc['_id']})"
+                    + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+    return hasil
+
+
+# --- Diagnosa pelanggan: "internetnya lemot" ---
+
+def _mikrotik_lalu_lintas(username: str) -> Optional[dict]:
+    """rx/tx sesaat dari interface PPPoE pelanggan (<pppoe-username>). rx di router =
+    upload pelanggan, tx = download pelanggan."""
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        r = api.get_resource("/interface").call("monitor-traffic", {"interface": f"<pppoe-{username}>", "once": ""})
+    except Exception as e:
+        logger.warning(f"monitor-traffic {username} gagal: {e}")
+        return None
+    finally:
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+    if not r:
+        return None
+    x = r[0]
+    def mbps(k):
+        try:
+            return round(int(x.get(k, 0)) / 1_000_000, 2)
+        except (TypeError, ValueError):
+            return None
+    return {"download_mbps": mbps("tx-bits-per-second"), "upload_mbps": mbps("rx-bits-per-second")}
+
+
+def _mikrotik_ping(ip: str, jumlah: int = 10) -> dict:
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        hasil = api.get_resource("/").call("ping", {"address": ip, "count": str(jumlah), "interval": "0.2"})
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Ping lewat MikroTik gagal: {e}")
+    finally:
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+    waktu = [w for w in (_ms(h.get("time")) for h in hasil or [] if h.get("status") != "timeout") if w is not None]
+    akhir = (hasil or [{}])[-1]
+    if akhir.get("sent"):
+        # RouterOS menyertakan statistik kumulatif di setiap baris; baris terakhir = ringkasan.
+        terkirim, diterima = int(akhir["sent"]), int(akhir.get("received", 0))
+        rata, mn, mx = _ms(akhir.get("avg-rtt")), _ms(akhir.get("min-rtt")), _ms(akhir.get("max-rtt"))
+    else:
+        terkirim, diterima = max(jumlah, len(hasil or [])), len(waktu)
+        rata = round(sum(waktu) / len(waktu), 1) if waktu else None
+        mn, mx = (min(waktu), max(waktu)) if waktu else (None, None)
+    hilang = round((terkirim - diterima) * 100 / terkirim) if terkirim else 100
+    return {"ip": ip, "terkirim": terkirim, "diterima": diterima, "hilang_persen": hilang,
+            "rata_ms": rata, "min_ms": mn, "maks_ms": mx}
+
+
+def _ms(t) -> Optional[float]:
+    """'1ms234us' / '12ms' / '850us' → milidetik."""
+    if not t:
+        return None
+    m = re.fullmatch(r"(?:(\d+)s)?(?:(\d+)ms)?(?:(\d+)us)?", str(t).replace(" ", ""))
+    if not m or not any(m.groups()):
+        return None
+    return round(int(m.group(1) or 0) * 1000 + int(m.group(2) or 0) + int(m.group(3) or 0) / 1000, 1)
+
+
+def _tren_optik(username: str, jam: int = 72) -> dict:
+    batas = (datetime.now() - timedelta(hours=jam)).isoformat(timespec="seconds")
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"])
+    try:
+        r = conn.execute("SELECT MIN(onu_rx_dbm), AVG(onu_rx_dbm), MAX(onu_rx_dbm), COUNT(*) FROM onu_history "
+                         "WHERE pppoe_username=? AND ts>=? AND onu_rx_dbm IS NOT NULL", (username, batas)).fetchone()
+        u = conn.execute("SELECT AVG(MAX(rx_mbps, tx_mbps)), MAX(MAX(rx_mbps, tx_mbps)), AVG(rate_limit_mbps), COUNT(*) "
+                         "FROM usage_history WHERE username=? AND ts>=?",
+                         (username, (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds"))).fetchone()
+    finally:
+        conn.close()
+    return {"onu_rx_min": r[0], "onu_rx_rata": round(r[1], 1) if r[1] is not None else None, "onu_rx_maks": r[2],
+            "sampel_optik": r[3], "pakai_rata_mbps": round(u[0], 2) if u[0] is not None else None,
+            "pakai_puncak_mbps": round(u[1], 2) if u[1] is not None else None,
+            "limit_mbps": u[2], "sampel_pakai": u[3]}
+
+
+def _kesimpulan(d: dict) -> list[dict]:
+    """Aturan sederhana untuk menunjuk penyebab paling mungkin. tingkat: bad/warn/ok/info."""
+    k = []
+    if d["terisolir"]:
+        k.append({"tingkat": "bad", "teks": "Pelanggan sedang DIISOLIR (tunggakan). Internet dibatasi karena itu, bukan gangguan."})
+    if not d["pppoe"]["online"]:
+        k.append({"tingkat": "bad", "teks": "PPPoE pelanggan tidak online. Cek ONU menyala/LOS, kabel, atau login PPPoE."})
+    onu = d.get("onu")
+    rx = onu.get("onu_rx_dbm") if onu else None
+    if rx is not None:
+        if rx < -27:
+            k.append({"tingkat": "bad", "teks": f"Redaman ONU {rx} dBm (buruk). Cek konektor/kabel drop, sambungan di ODP, atau tekukan kabel."})
+        elif rx < -25:
+            k.append({"tingkat": "warn", "teks": f"Redaman ONU {rx} dBm (mendekati batas). Bisa menyebabkan lemot/putus saat cuaca buruk."})
+    t = d.get("tren") or {}
+    if t.get("onu_rx_min") is not None and rx is not None and t["onu_rx_min"] < rx - 2:
+        k.append({"tingkat": "warn", "teks": f"Redaman sempat turun ke {t['onu_rx_min']} dBm dalam 3 hari terakhir (naik-turun) — kabel/konektor mungkin longgar."})
+    limit = d["pppoe"].get("limit_mbps")
+    live = d.get("lalu_lintas") or {}
+    pakai = max(live.get("download_mbps") or 0, live.get("upload_mbps") or 0)
+    if limit and pakai >= 0.9 * limit:
+        k.append({"tingkat": "warn", "teks": f"Pemakaian sekarang {pakai} Mbps dari paket {limit} Mbps (penuh). Lemot karena kuota dipakai banyak perangkat/unduhan — sarankan upgrade paket."})
+    elif limit and t.get("pakai_rata_mbps") and t["pakai_rata_mbps"] >= 0.7 * limit:
+        k.append({"tingkat": "warn", "teks": f"Rata-rata pemakaian 24 jam {t['pakai_rata_mbps']} Mbps dari {limit} Mbps — sering mendekati batas paket."})
+    if d.get("putus_24jam", 0) >= 3:
+        k.append({"tingkat": "warn", "teks": f"Putus-sambung {d['putus_24jam']} kali dalam 24 jam terakhir."})
+    acs = (d.get("acs") or {}).get("perangkat")
+    if acs:
+        if acs["perangkat_aktif"] >= 10:
+            k.append({"tingkat": "warn", "teks": f"{acs['perangkat_aktif']} perangkat terhubung ke ONU. Banyak perangkat berbagi bandwidth paket."})
+        if acs.get("uptime_detik") is not None and acs["uptime_detik"] < 1800:
+            k.append({"tingkat": "info", "teks": "ONU baru menyala/restart kurang dari 30 menit lalu."})
+    if not [x for x in k if x["tingkat"] in ("bad", "warn")]:
+        k.append({"tingkat": "ok", "teks": "Jaringan sampai ONU terlihat normal. Kemungkinan dari sisi WiFi di rumah: jarak/tembok, "
+                                           "sinyal lemah, channel bertabrakan, atau perangkat pelanggan. Coba tes ping, cek perangkat terhubung, atau reboot ONU."})
+    return k
+
+
+@app.get("/api/diagnosa/{username}")
+def diagnosa(username: str, request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        p = conn.execute("SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, k.nama AS paket, k.kecepatan_mbps "
+                         "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id WHERE p.username=?", (username,)).fetchone()
+        if not p:
+            raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+        terisolir = conn.execute("SELECT 1 FROM isolir WHERE username=?", (username,)).fetchone() is not None
+        tunggak = conn.execute("SELECT COUNT(*), COALESCE(SUM(jumlah),0) FROM tagihan WHERE username=? AND status='belum'",
+                               (username,)).fetchone()
+        tiket = conn.execute(f"SELECT id, kategori, status FROM tiket WHERE username=? AND status IN {_STATUS_TIKET_TERBUKA}",
+                             (username,)).fetchone()
+    finally:
+        conn.close()
+    u = next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
+    onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None) if _latest_data else None
+    hasil = {
+        "pelanggan": dict(p), "terisolir": terisolir, "tunggakan": {"jumlah": tunggak[0], "total": tunggak[1]},
+        "tiket_terbuka": dict(tiket) if tiket else None, "data_monitoring": _latest_data is not None,
+        "pppoe": {"online": u is not None, "ip": u.ip_address if u else None, "uptime": u.uptime if u else None,
+                  "limit_mbps": (u.rate_limit_mbps if u else None) or p["kecepatan_mbps"], "mac": u.caller_id if u else None},
+        "onu": (onu.model_dump() if hasattr(onu, "model_dump") else onu.dict()) if onu else None,
+        "lalu_lintas": _mikrotik_lalu_lintas(username) if u else None,
+        "tren": _tren_optik(username),
+    }
+    try:
+        hasil["putus_24jam"] = sum(1 for k in get_riwayat_putus(username, 24)["kejadian"] if k["jenis"] == "putus")
+    except Exception as e:
+        logger.warning(f"Riwayat putus {username} gagal: {e}")
+        hasil["putus_24jam"] = 0
+    if _acs_aktif():
+        try:
+            hasil["acs"] = _info_acs(username)
+        except HTTPException as e:
+            hasil["acs"] = {"terhubung": False, "pesan": e.detail}
+    else:
+        hasil["acs"] = None
+    hasil["kesimpulan"] = _kesimpulan(hasil)
+    return hasil
+
+
+@app.post("/api/diagnosa/{username}/ping")
+def diagnosa_ping(username: str, request: Request):
+    _wajib_admin(request)
+    u = next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
+    if not u:
+        raise HTTPException(status_code=400, detail="Pelanggan sedang tidak online, tidak bisa di-ping.")
+    return _mikrotik_ping(u.ip_address)
 
 
 if __name__ == "__main__":
