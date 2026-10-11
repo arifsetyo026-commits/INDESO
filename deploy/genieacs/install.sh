@@ -170,6 +170,9 @@ if [ ! -f /etc/nginx/genieacs-nbi.htpasswd ]; then
   htpasswd -bc /etc/nginx/genieacs-nbi.htpasswd "$NBI_USER" "$NBI_PASS"
   echo "$NBI_PASS" > /root/genieacs-nbi-password.txt; chmod 600 /root/genieacs-nbi-password.txt
 fi
+# Pekerja nginx (www-data) harus bisa membaca file password; umask 077 di atas membuatnya root saja (→ HTTP 500).
+chown root:www-data /etc/nginx/genieacs-nbi.htpasswd
+chmod 640 /etc/nginx/genieacs-nbi.htpasswd
 cat > /etc/nginx/sites-available/genieacs <<NGX
 server {
     listen ${WG_VPS_IP}:7557;
