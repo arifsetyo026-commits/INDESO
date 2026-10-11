@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+requests
+routeros-api
+python-dotenv
+pydantic
