@@ -116,6 +116,18 @@ Untuk uji coba tanpa benar-benar memutus pelanggan, ubah `ISOLIR_MODE` di `main.
 menjadi `"simulasi"`. Isolir otomatis ditahan bila jumlah pelanggan menunggak melebihi
 `ISOLIR_MAKS_SEKALI`.
 
+## Tes otomatis
+
+`tests/test_fitur.py` menguji semua fitur (login & keamanan, pelanggan, billing, isolir,
+mitra & insentif, keuangan, utang, nota, laporan & backup Telegram, alert & event,
+otomasi) dengan MikroTik, OLT, dan Telegram tiruan di folder sementara — data asli
+tidak tersentuh. Jalankan setelah setiap perubahan kode:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q tests/
+```
+
 ## Konfigurasi lain
 
 Tanggal jatuh tempo, mode isolir (aktif/simulasi), toleransi, jam otomasi, dan

@@ -55,6 +55,11 @@ from pydantic import BaseModel
 # Rahasia (password, token) dan alamat perangkat dibaca dari berkas .env
 # (lihat .env.example). Nilai lain cukup diubah langsung di bawah.
 
+# Semua berkas dirujuk dari folder main.py, bukan folder tempat perintah dijalankan,
+# supaya aman bila uvicorn dijalankan dari folder lain (mis. skrip autostart Termux).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 def _env(nama: str, default: str) -> str:
     """Baris kosong di .env (mis. OLT_SNMP_COMMUNITY=) dianggap belum diisi, bukan string kosong."""
     return os.environ.get(nama, "").strip() or default
@@ -130,8 +135,10 @@ CONFIG = {
     "MITRA_INSENTIF_PER_PELANGGAN": int(_env("MITRA_INSENTIF_PER_PELANGGAN", "10000")),
 
     # --- History Database (SQLite) ---
-    "HISTORY_DB_PATH": "isp_history.db",
-    "BILLING_DB_PATH": "billing.db",
+    # Folder data (database, backup, nota). Default: folder main.py; bisa diganti
+    # lewat INDESO_DATA_DIR (dipakai juga oleh tes otomatis agar data asli tak tersentuh).
+    "HISTORY_DB_PATH": os.path.join(_env("INDESO_DATA_DIR", BASE_DIR), "isp_history.db"),
+    "BILLING_DB_PATH": os.path.join(_env("INDESO_DATA_DIR", BASE_DIR), "billing.db"),
     "JATUH_TEMPO_TANGGAL": 5,
     "TAGIHAN_JAM": 8,                       # otomasi tagihan baru jalan setelah jam ini
     "TAGIHAN_PENGINGAT_HARI": [3, 5, 10],   # tanggal kirim daftar belum bayar ke Telegram
@@ -194,6 +201,29 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger("isp-dashboard")
+
+
+class _SamarkanRahasia(logging.Filter):
+    """Pesan error library HTTP menyertakan URL lengkap Telegram (.../bot<TOKEN>/...).
+    Token & password disamarkan sebelum ditulis ke log supaya tidak bocor."""
+    def filter(self, record):
+        pesan = record.getMessage()
+        bersih = _samarkan(pesan)
+        if bersih != pesan:
+            record.msg, record.args = bersih, ()
+        return True
+
+
+def _samarkan(teks: str) -> str:
+    for rahasia in (CONFIG.get("TELEGRAM_BOT_TOKEN"), CONFIG.get("MIKROTIK_PASSWORD")):
+        if rahasia:
+            teks = teks.replace(f"bot{rahasia}", "bot***")
+            if len(rahasia) >= 6:
+                teks = teks.replace(rahasia, "***")
+    return re.sub(r"bot\d+:[A-Za-z0-9_-]{20,}", "bot***", teks)
+
+
+logger.addFilter(_SamarkanRahasia())
 
 
 # ============================================================
@@ -307,15 +337,7 @@ def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
     untuk status mikrotik_online yang akurat, bukan ditebak dari isi list."""
     connection = None
     try:
-        connection = routeros_api.RouterOsApiPool(
-            CONFIG["MIKROTIK_HOST"],
-            username=CONFIG["MIKROTIK_USER"],
-            password=CONFIG["MIKROTIK_PASSWORD"],
-            port=CONFIG["MIKROTIK_PORT"],
-            use_ssl=CONFIG["MIKROTIK_USE_SSL"],
-            ssl_verify=False,
-            plaintext_login=True,
-        )
+        connection = _mikrotik_pool()
         api = connection.get_api()
         active_list = api.get_resource("/ppp/active").get()
 
@@ -1430,11 +1452,13 @@ async def daily_report_loop():
         ):
             try:
                 text = await asyncio.to_thread(_build_daily_report_text)
-                await asyncio.to_thread(send_telegram_message, text)
                 await asyncio.to_thread(cleanup_old_history)
-                await asyncio.to_thread(_tandai_laporan_terkirim, today_str)
-                _last_report_date = today_str
-                logger.info("Laporan harian terkirim.")
+                # Tandai terkirim hanya bila Telegram benar-benar menerima; kalau gagal
+                # dicoba lagi menit berikutnya (sebelumnya laporan hilang diam-diam).
+                if await asyncio.to_thread(kirim_telegram_ke, str(CONFIG["TELEGRAM_CHAT_ID"]), text):
+                    await asyncio.to_thread(_tandai_laporan_terkirim, today_str)
+                    _last_report_date = today_str
+                    logger.info("Laporan harian terkirim.")
             except Exception as e:
                 logger.error(f"Gagal kirim laporan harian: {e}")
         await asyncio.sleep(60)
@@ -1934,7 +1958,7 @@ class LoginIn(BaseModel):
 
 @app.get("/login")
 async def halaman_login():
-    return FileResponse("login.html", headers={"Cache-Control": "no-cache"})
+    return FileResponse(os.path.join(BASE_DIR, "login.html"), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/setup-status")
@@ -2242,7 +2266,7 @@ async def on_startup():
 async def serve_dashboard(request: Request):
     # no-cache: browser selalu cek ulang ke server, jadi update index.html langsung terpakai
     halaman = "mitra.html" if request.state.peran == "mitra" else "index.html"
-    return FileResponse(halaman, headers={"Cache-Control": "no-cache"})
+    return FileResponse(os.path.join(BASE_DIR, halaman), headers={"Cache-Control": "no-cache"})
 
 def _salin(model, **perubahan):
     """Salin objek Pydantic dengan nilai baru (jalan di Pydantic v1 maupun v2)."""
@@ -2659,15 +2683,7 @@ def hapus_paket(paket_id: int, request: Request):
     return {"ok": True}
 
 def fetch_ppp_secrets() -> list[dict]:
-    connection = routeros_api.RouterOsApiPool(
-        CONFIG["MIKROTIK_HOST"],
-        username=CONFIG["MIKROTIK_USER"],
-        password=CONFIG["MIKROTIK_PASSWORD"],
-        port=CONFIG["MIKROTIK_PORT"],
-        use_ssl=CONFIG["MIKROTIK_USE_SSL"],
-        ssl_verify=False,
-        plaintext_login=True,
-    )
+    connection = _mikrotik_pool()
     try:
         api = connection.get_api()
         rows = api.get_resource("/ppp/secret").get()
@@ -3405,7 +3421,7 @@ _JENIS_NOTA = {  # tanda tangan berkas (magic bytes) -> (mime, ekstensi)
 
 
 def _folder_nota() -> str:
-    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG["NOTA_FOLDER"])
+    folder = os.path.join(_env("INDESO_DATA_DIR", BASE_DIR), CONFIG["NOTA_FOLDER"])
     os.makedirs(folder, exist_ok=True)
     return folder
 
@@ -5496,7 +5512,7 @@ def cek_isolir():
         "pelanggan_berprofil_isolir": sorted(s.get("name") for s in secrets if s.get("profile") == nama),
     }
 def _folder_backup() -> str:
-    folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG["BACKUP_FOLDER"])
+    folder = os.path.join(_env("INDESO_DATA_DIR", BASE_DIR), CONFIG["BACKUP_FOLDER"])
     os.makedirs(folder, exist_ok=True)
     return folder
 
@@ -5797,7 +5813,7 @@ def test_telegram(request: Request):
                                      "text": f"✅ Tes notifikasi dari dashboard oleh {request.state.user}."}, timeout=10)
         ok = r.ok and r.json().get("ok")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Telegram tidak terjangkau: {e}")
+        raise HTTPException(status_code=502, detail=_samarkan(f"Telegram tidak terjangkau: {e}"))
     if not ok:
         raise HTTPException(status_code=502, detail="Telegram menolak pesan. Cek TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID.")
     return {"ok": True}
