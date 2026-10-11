@@ -1,0 +1,125 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#004f29"><title>Internet Desa — Mitra</title><style>
+:root{--g900:#004a27;--g700:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318;--amber:#8a5a00;--shadow:0 5px 18px rgba(0,55,28,.09)}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg)}button,input,textarea{font:inherit}button{cursor:pointer}
+.top{background:linear-gradient(105deg,#003c20,#006f38 65%,#087f3f);color:#fff;padding:16px}
+.topIn{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:12px}
+.mark{width:40px;height:40px;border-radius:12px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:950}
+.top b{font-size:16px}.top small{display:block;color:#bfe0cb;font-size:11px;margin-top:2px}
+.wrap{max-width:860px;margin:0 auto;padding:14px 16px 30px}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+.nav b{font-size:15px}
+.btn{border:1px solid #cfe3d6;background:#f3faf5;color:#0b7a3b;font-size:12px;font-weight:800;padding:8px 12px;border-radius:9px}
+.btn.go{background:#067d40;border-color:#067d40;color:#fff}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
+.card{background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:12px;min-width:0}
+.card small{display:block;color:var(--muted);font-size:11px}.card strong{display:block;font-size:20px;margin-top:4px}.card span{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+.card.main{background:linear-gradient(135deg,#e9f9ee,#d3f2dc);border-color:#bfe6cb}.card.main strong{color:#06703a}
+.panel{background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:12px}
+.search{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;outline:none;font-size:14px;margin-bottom:10px}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.filters button{border:1px solid var(--line);background:#fff;font-size:12px;font-weight:700;padding:6px 12px;border-radius:999px}
+.filters button.on{background:#067d40;border-color:#067d40;color:#fff}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 4px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}.row .info{min-width:0;cursor:pointer;flex:1}
+.name{font-weight:800;font-size:14px}.sub{font-size:12px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.chip{font-size:10.5px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.chip.ok{background:#dcf5e5;color:#0b7a3b}.chip.warn{background:#fff1c9;color:var(--amber)}.chip.bad{background:#fde4e1;color:var(--red)}.chip.off{background:#eef3ef;color:#5f7669}
+.muted{color:var(--muted);font-size:13px;padding:8px 2px}
+.msg{font-size:12px;font-weight:700;margin:6px 0}
+.form label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin:12px 0 4px}
+.form input,.form textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:14px;outline:none;background:#fff}
+.form textarea{min-height:70px;resize:vertical}
+.btns{display:flex;gap:8px;margin-top:16px}
+.note{font-size:11.5px;color:var(--muted);line-height:1.55;margin-top:10px}
+@media(max-width:620px){.cards{grid-template-columns:1fr 1fr}.card.main{grid-column:1/-1}.row{align-items:flex-start}}
+</style></head><body>
+<div class="top"><div class="topIn"><div class="mark">ID</div><div><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div></div></div>
+<div class="wrap">
+ <div class="nav"><button class="btn" onclick="geser(-1)" aria-label="Bulan sebelumnya">‹</button><b id="periode">—</b><button class="btn" onclick="geser(1)" aria-label="Bulan berikutnya">›</button></div>
+ <div class="cards">
+  <div class="card main"><small>Insentif bulan ini</small><strong id="insTotal">—</strong><span id="insRumus"></span></div>
+  <div class="card"><small>Sudah bayar</small><strong id="nLunas">—</strong><span>pelanggan</span></div>
+  <div class="card"><small>Belum bayar</small><strong id="nBelum" style="color:#b45309">—</strong><span>pelanggan</span></div>
+ </div>
+ <div class="panel" id="listView">
+  <input class="search" id="cari" placeholder="Cari nama atau username…" oninput="render()">
+  <div class="filters"><button data-f="semua" class="on" onclick="setFilter('semua')">Semua</button><button data-f="belum" onclick="setFilter('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilter('lunas')">Sudah bayar</button><button data-f="kontak" onclick="setFilter('kontak')">Kontak belum lengkap</button></div>
+  <div class="msg" id="msg"></div>
+  <div id="list"><div class="muted">Memuat…</div></div>
+  <div class="note">Insentif dihitung dari pelanggan yang tagihan bulan tersebut sudah <b>lunas</b>. Ketuk nama pelanggan untuk memperbarui nama, alamat, atau nomor HP.</div>
+ </div>
+ <div class="panel form" id="formView" style="display:none">
+  <b id="fJudul" style="font-size:14px">Ubah kontak</b>
+  <label>Username PPPoE</label><input id="fUser" disabled>
+  <label>Nama lengkap</label><input id="fNama">
+  <label>Alamat</label><textarea id="fAlamat"></textarea>
+  <label>Nomor HP / WhatsApp</label><input id="fHp" type="tel" inputmode="tel">
+  <div class="btns"><button class="btn go" onclick="simpan()">Simpan</button><button class="btn" onclick="tutupForm()">Batal</button></div>
+  <div class="msg" id="fMsg"></div>
+ </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const BLN=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+const st={periode:'',data:null,filter:'semua',cur:null};
+function rp(n){return 'Rp '+Number(n||0).toLocaleString('id-ID')}
+function tgl(s){if(!s)return '';const [y,m,d]=s.split('-');return (+d)+' '+BLN[+m-1].slice(0,3)}
+function geserP(p,n){const [y,m]=p.split('-').map(Number);const d=new Date(y,m-1+n,1);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')}
+function namaP(p){const [y,m]=p.split('-').map(Number);return BLN[m-1]+' '+y}
+function nomorWA(hp){let n=String(hp||'').replace(/\D/g,'');if(!n)return '';if(n.startsWith('0'))n='62'+n.slice(1);else if(n.startsWith('8'))n='62'+n;return n}
+async function geser(n){st.periode=geserP(st.periode,n);await muat()}
+function setFilter(f){st.filter=f;render()}
+async function muat(){
+ $('periode').textContent=namaP(st.periode);
+ $('list').innerHTML='<div class="muted">Memuat…</div>';
+ try{
+  const r=await fetch('/api/mitra/pelanggan?periode='+st.periode,{cache:'no-store'});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  st.data=d; $('akun').textContent='Masuk sebagai '+d.akun;
+  const ins=d.insentif;
+  $('insTotal').textContent=rp(ins.total);
+  $('insRumus').textContent=ins.jumlah_lunas+' pelanggan lunas × '+rp(ins.per_pelanggan);
+  const lunas=d.pelanggan.filter(p=>p.status_bayar==='lunas').length;
+  $('nLunas').textContent=lunas; $('nBelum').textContent=d.pelanggan.filter(p=>p.status_bayar==='belum').length;
+  render();
+ }catch(e){$('list').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'}
+}
+function render(){
+ const d=st.data; if(!d) return;
+ document.querySelectorAll('.filters button').forEach(b=>b.classList.toggle('on',b.dataset.f===st.filter));
+ const q=$('cari').value.trim().toLowerCase(), hari=new Date().toLocaleDateString('sv-SE');
+ const lolos=p=>(st.filter==='semua'||(st.filter==='lunas'&&p.status_bayar==='lunas')||(st.filter==='belum'&&p.status_bayar==='belum')||(st.filter==='kontak'&&!(p.alamat&&p.no_hp)))&&(!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q));
+ const rows=d.pelanggan.map((p,i)=>({p,i})).filter(({p})=>lolos(p));
+ $('list').innerHTML=rows.length?rows.map(({p,i})=>{
+  let chip;
+  if(p.status_bayar==='lunas') chip='<span class="chip ok">Lunas'+(p.tgl_bayar?' '+tgl(p.tgl_bayar):'')+'</span>';
+  else if(p.status_bayar==='belum') chip=p.jatuh_tempo<hari?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
+  else chip='<span class="chip off">Belum ada tagihan</span>';
+  const iso=(p.status==='berhenti'?'<span class="chip off">Berhenti</span>':'')+(p.terisolir?'<span class="chip bad">Isolir</span>':'');
+  const wa=nomorWA(p.no_hp);
+  const tombolWA=wa?`<a class="btn" href="https://wa.me/${wa}" target="_blank" rel="noopener">WA</a>`:'';
+  const sub=esc(p.username)+' · '+esc(p.paket||'—')+(p.alamat?' · '+esc(p.alamat):'')+(!p.no_hp?' · <i>no HP belum diisi</i>':'');
+  return `<div class="row"><div class="info" ${p.status==='berhenti'?'':`onclick="buka(${i})"`}><div class="name">${esc(p.nama)}</div><div class="sub">${sub}</div></div><div class="right">${iso}${chip}${tombolWA}</div></div>`;
+ }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
+}
+function buka(i){
+ const p=st.data.pelanggan[i]; st.cur=p.username;
+ $('fUser').value=p.username; $('fNama').value=p.nama||''; $('fAlamat').value=p.alamat||''; $('fHp').value=p.no_hp||''; $('fMsg').textContent='';
+ $('listView').style.display='none'; $('formView').style.display='block'; $('fNama').focus();
+}
+function tutupForm(){ $('formView').style.display='none'; $('listView').style.display='block'; }
+async function simpan(){
+ const body={nama:$('fNama').value.trim(),alamat:$('fAlamat').value.trim()||null,no_hp:$('fHp').value.trim()||null};
+ if(!body.nama){ $('fMsg').style.color='#b42318'; $('fMsg').textContent='Nama tidak boleh kosong.'; return; }
+ try{
+  const r=await fetch('/api/mitra/pelanggan/'+encodeURIComponent(st.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  tutupForm(); await muat(); $('msg').style.color='#0b7a3b'; $('msg').textContent='Data '+body.nama+' disimpan.';
+ }catch(e){ $('fMsg').style.color='#b42318'; $('fMsg').textContent='Gagal menyimpan: '+e.message; }
+}
+(function(){const t=new Date();st.periode=t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0');muat()})();
+</script>
+</body></html>

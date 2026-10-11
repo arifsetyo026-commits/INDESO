@@ -19,6 +19,11 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   pengingat WhatsApp, rekap belum bayar ke Telegram.
 - **Isolir otomatis** — pelanggan yang lewat jatuh tempo dipindah ke profil PPP
   `ISOLIR`, dibuka lagi otomatis begitu tagihannya ditandai lunas.
+- **Akun mitra** — login khusus (`MITRA_USERS`) yang hanya bisa membuka halaman mitra:
+  daftar pelanggan dan status bayarnya, ubah nama/alamat/no. HP, dan rekap insentif
+  (pelanggan dengan tagihan lunas bulan itu × `MITRA_INSENTIF_PER_PELANGGAN`, default
+  Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
+  tidak terlihat dan tidak dihitung. Semua API lain ditolak untuk akun mitra.
 - **Kesehatan jaringan** — skor per pelanggan (redaman, kestabilan sinyal, reconnect,
   ketersediaan) beserta saran untuk teknisi.
 - **Backup harian** `billing.db` ke folder `backup/`, dikirim mingguan ke Telegram.

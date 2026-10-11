@@ -119,6 +119,10 @@ CONFIG = {
     "DASHBOARD_USER": _env("DASHBOARD_USER", "admin"),
     "DASHBOARD_PASSWORD": os.environ.get("DASHBOARD_PASSWORD", ""),
     "DASHBOARD_USERS": os.environ.get("DASHBOARD_USERS", ""),
+    # Akun mitra: hanya bisa membuka halaman mitra (daftar pelanggan, ubah kontak,
+    # rekap insentif). Format sama: "nama:password,nama2:password2".
+    "MITRA_USERS": os.environ.get("MITRA_USERS", ""),
+    "MITRA_INSENTIF_PER_PELANGGAN": int(_env("MITRA_INSENTIF_PER_PELANGGAN", "10000")),
 
     # --- History Database (SQLite) ---
     "HISTORY_DB_PATH": "isp_history.db",
@@ -825,6 +829,11 @@ def init_billing_db() -> None:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN status TEXT NOT NULL DEFAULT 'aktif'")
         if "berhenti_sejak" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN berhenti_sejak TEXT")
+        # tampil_mitra = 0: disembunyikan dari akun mitra dan tidak dihitung insentif
+        # (mis. akun server/kantor). Saat kolom dibuat, pelanggan gratis disembunyikan.
+        if "tampil_mitra" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN tampil_mitra INTEGER NOT NULL DEFAULT 1")
+            conn.execute("UPDATE pelanggan SET tampil_mitra = 0 WHERE gratis = 1")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS aktivitas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1254,18 +1263,35 @@ app = FastAPI(title="ISP Monitoring Dashboard")
 # API (mis. mengisolir pelanggan).
 
 
-def _daftar_akun() -> dict[str, str]:
+def _parse_akun(teks: str) -> dict[str, str]:
     akun = {}
-    if CONFIG["DASHBOARD_PASSWORD"]:
-        akun[CONFIG["DASHBOARD_USER"]] = CONFIG["DASHBOARD_PASSWORD"]
-    for item in CONFIG["DASHBOARD_USERS"].split(","):
+    for item in teks.split(","):
         nama, _, pw = item.strip().partition(":")
         if nama.strip() and pw:
             akun[nama.strip()] = pw
     return akun
 
 
+def _daftar_akun() -> dict[str, tuple[str, str]]:
+    """{nama: (password, peran)}. Peran "admin" = akses penuh, "mitra" = halaman mitra saja."""
+    akun = {nama: (pw, "mitra") for nama, pw in _parse_akun(CONFIG["MITRA_USERS"]).items()}
+    admin = _parse_akun(CONFIG["DASHBOARD_USERS"])
+    if CONFIG["DASHBOARD_PASSWORD"]:
+        admin[CONFIG["DASHBOARD_USER"]] = CONFIG["DASHBOARD_PASSWORD"]
+    for nama in set(akun) & set(admin):
+        logger.warning(f"Akun '{nama}' ada di DASHBOARD_USERS dan MITRA_USERS — dipakai sebagai admin.")
+    akun.update({nama: (pw, "admin") for nama, pw in admin.items()})
+    if akun and not admin:
+        # Tanpa akun admin, siapa pun yang tidak login akan diperlakukan admin.
+        sys.exit("MITRA_USERS diisi tapi belum ada akun admin. Isi DASHBOARD_PASSWORD atau DASHBOARD_USERS dulu.")
+    return akun
+
+
 _AKUN = _daftar_akun()
+
+# Satu-satunya alamat yang boleh dibuka akun mitra. Selain ini ditolak 403,
+# jadi mitra tidak bisa membuka data tagihan, isolir, jaringan, dsb. walau tahu URL-nya.
+_JALUR_MITRA = re.compile(r"^/(|favicon\.ico|api/mitra/.*)$")
 
 
 @app.middleware("http")
@@ -1273,6 +1299,7 @@ async def wajib_login(request: Request, call_next):
     """HTTP Basic auth untuk semua halaman dan API, aktif bila ada akun di .env.
     Nama akun yang login disimpan di request.state.user untuk log aktivitas."""
     request.state.user = "tanpa-login"
+    request.state.peran = "admin"
     if _AKUN:
         user_ok = None
         skema, _, kredensial = request.headers.get("authorization", "").partition(" ")
@@ -1281,7 +1308,7 @@ async def wajib_login(request: Request, call_next):
                 user, _, pw = base64.b64decode(kredensial).decode("utf-8").partition(":")
                 benar = _AKUN.get(user)
                 # compare_digest tetap dijalankan walau user tidak ada, supaya waktunya sama
-                if secrets.compare_digest(pw.encode(), (benar or "\0").encode()) and benar is not None:
+                if secrets.compare_digest(pw.encode(), (benar[0] if benar else "\0").encode()) and benar is not None:
                     user_ok = user
             except Exception:
                 user_ok = None
@@ -1291,6 +1318,11 @@ async def wajib_login(request: Request, call_next):
                 headers={"WWW-Authenticate": 'Basic realm="Internet Desa", charset="UTF-8"'},
             )
         request.state.user = user_ok
+        request.state.peran = _AKUN[user_ok][1]
+        if request.state.peran == "mitra" and not _JALUR_MITRA.match(request.url.path):
+            return Response("Akun mitra tidak punya akses ke halaman ini.", status_code=403)
+    elif request.url.path.startswith("/api/mitra/"):
+        return Response("Fitur mitra butuh login. Isi MITRA_USERS dan akun admin di .env.", status_code=403)
     return await call_next(request)
 
 
@@ -1308,7 +1340,7 @@ async def on_startup():
     if not _AKUN:
         logger.warning("Belum ada akun login (DASHBOARD_PASSWORD / DASHBOARD_USERS): dashboard dan API bisa dibuka siapa saja di jaringan ini.")
     else:
-        logger.info(f"Login dashboard aktif untuk {len(_AKUN)} akun: {', '.join(sorted(_AKUN))}")
+        logger.info("Login dashboard aktif: " + ", ".join(f"{n} ({p})" for n, (_pw, p) in sorted(_AKUN.items())))
     # Simpan referensinya: task tanpa referensi bisa dibersihkan garbage collector.
     _background_tasks.extend([
         asyncio.create_task(background_monitor_loop()),
@@ -1320,9 +1352,10 @@ async def on_startup():
 
 
 @app.get("/")
-async def serve_dashboard():
+async def serve_dashboard(request: Request):
     # no-cache: browser selalu cek ulang ke server, jadi update index.html langsung terpakai
-    return FileResponse("index.html", headers={"Cache-Control": "no-cache"})
+    halaman = "mitra.html" if request.state.peran == "mitra" else "index.html"
+    return FileResponse(halaman, headers={"Cache-Control": "no-cache"})
 
 def _salin(model, **perubahan):
     """Salin objek Pydantic dengan nilai baru (jalan di Pydantic v1 maupun v2)."""
@@ -1600,6 +1633,7 @@ class PelangganIn(BaseModel):
     paket_id: Optional[int] = None
     gratis: bool = False
     status: Optional[str] = None    # "aktif" / "berhenti"; None = tidak diubah
+    tampil_mitra: Optional[bool] = None   # None = tidak diubah
 
 
 @app.get("/api/data-pelanggan")
@@ -1608,7 +1642,7 @@ def list_data_pelanggan():
     try:
         rows = conn.execute(
             "SELECT p.username, p.nama, p.alamat, p.no_hp, p.paket_id, p.gratis, "
-            "p.status, p.berhenti_sejak, k.nama AS paket, k.harga "
+            "p.status, p.berhenti_sejak, p.tampil_mitra, k.nama AS paket, k.harga "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "ORDER BY p.nama COLLATE NOCASE"
         ).fetchall()
@@ -1644,11 +1678,12 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
             berhenti_sejak = sekarang.strftime("%Y-%m-%d")
         elif status == "aktif":
             berhenti_sejak = None
+        tampil_mitra = lama["tampil_mitra"] if d.tampil_mitra is None else int(d.tampil_mitra)
         conn.execute(
-            "UPDATE pelanggan SET nama=?, alamat=?, no_hp=?, paket_id=?, gratis=?, status=?, berhenti_sejak=? "
-            "WHERE username=?",
+            "UPDATE pelanggan SET nama=?, alamat=?, no_hp=?, paket_id=?, gratis=?, status=?, berhenti_sejak=?, "
+            "tampil_mitra=? WHERE username=?",
             (nama, (d.alamat or "").strip() or None, (d.no_hp or "").strip() or None,
-             d.paket_id, int(d.gratis), status, berhenti_sejak, username),
+             d.paket_id, int(d.gratis), status, berhenti_sejak, tampil_mitra, username),
         )
         terhapus = 0
         if d.gratis:
@@ -1673,6 +1708,8 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
         perubahan.append("jadi GRATIS" if d.gratis else "tidak gratis lagi")
     if lama["status"] != status:
         perubahan.append(f"status {lama['status']} → {status}")
+    if lama["tampil_mitra"] != tampil_mitra:
+        perubahan.append("ditampilkan ke mitra" if tampil_mitra else "disembunyikan dari mitra")
     if (lama["alamat"] or "") != (d.alamat or "").strip() or (lama["no_hp"] or "") != (d.no_hp or "").strip():
         perubahan.append("kontak/alamat diubah")
     if terhapus:
@@ -1744,8 +1781,11 @@ def list_tagihan(periode: str):
             "ORDER BY p.gratis DESC, p.nama COLLATE NOCASE",
             (periode,),
         ).fetchall()
+        insentif = _hitung_insentif(conn, periode)
         return {
             "periode": periode,
+            "insentif_mitra": {"jumlah_lunas": insentif["jumlah_lunas"], "per_pelanggan": insentif["per_pelanggan"],
+                               "total": insentif["total"]} if CONFIG["MITRA_USERS"] else None,
             "ringkasan": {"jumlah_tagihan": len(rows), "total": total,
                           "terbayar": lunas, "belum_bayar": total - lunas},
             "tagihan": [dict(r) for r in rows],
@@ -1792,6 +1832,80 @@ def batalkan_lunas(tagihan_id: int, request: Request):
         conn.close()
     if t["status"] == "lunas":
         catat_aktivitas(_oleh(request), "tagihan_batal_lunas", f"{t['username']} {t['periode']} {_rp(t['jumlah'])}")
+    return {"ok": True}
+
+
+# ============================================================
+# 6e. HALAMAN MITRA — hanya pelanggan tampil_mitra=1, kontak saja yang bisa diubah
+# ============================================================
+
+def _hitung_insentif(conn, periode: str) -> dict:
+    """Insentif mitra = jumlah pelanggan (yang ditampilkan ke mitra) dengan tagihan
+    periode itu LUNAS x tarif per pelanggan. Gratis/menunggak/berhenti tanpa
+    pembayaran otomatis tidak terhitung karena tidak punya tagihan lunas."""
+    rows = conn.execute(
+        "SELECT p.username, p.nama, t.tgl_bayar FROM tagihan t JOIN pelanggan p ON p.username = t.username "
+        "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 ORDER BY p.nama COLLATE NOCASE",
+        (periode,),
+    ).fetchall()
+    tarif = CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
+    return {"periode": periode, "per_pelanggan": tarif, "jumlah_lunas": len(rows),
+            "total": len(rows) * tarif, "pelanggan": [dict(r) for r in rows]}
+
+
+@app.get("/api/mitra/pelanggan")
+def mitra_list_pelanggan(periode: str, request: Request):
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, k.nama AS paket, "
+            "t.status AS status_bayar, t.tgl_bayar, t.jatuh_tempo, "
+            "(SELECT 1 FROM isolir i WHERE i.username = p.username) AS terisolir "
+            "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
+            "LEFT JOIN tagihan t ON t.username = p.username AND t.periode = ? "
+            # Pelanggan yang berhenti tetap tampil bila masih punya tagihan bulan itu,
+            # supaya jumlahnya cocok dengan perhitungan insentif.
+            "WHERE p.tampil_mitra = 1 AND (p.status = 'aktif' OR t.id IS NOT NULL) "
+            "ORDER BY p.nama COLLATE NOCASE",
+            (periode,),
+        ).fetchall()
+        insentif = _hitung_insentif(conn, periode)
+    finally:
+        conn.close()
+    return {"akun": _oleh(request), "periode": periode, "insentif": insentif,
+            "pelanggan": [dict(r) for r in rows]}
+
+
+class KontakIn(BaseModel):
+    nama: str
+    alamat: Optional[str] = None
+    no_hp: Optional[str] = None
+
+
+@app.put("/api/mitra/pelanggan/{username}")
+def mitra_ubah_kontak(username: str, d: KontakIn, request: Request):
+    nama = d.nama.strip()
+    if not nama:
+        raise HTTPException(status_code=400, detail="Nama tidak boleh kosong.")
+    alamat = (d.alamat or "").strip() or None
+    no_hp = (d.no_hp or "").strip() or None
+    conn = _billing_conn()
+    try:
+        lama = conn.execute(
+            "SELECT nama, alamat, no_hp FROM pelanggan WHERE username=? AND tampil_mitra=1 AND status='aktif'",
+            (username,),
+        ).fetchone()
+        if not lama:
+            raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+        conn.execute("UPDATE pelanggan SET nama=?, alamat=?, no_hp=? WHERE username=?", (nama, alamat, no_hp, username))
+        conn.commit()
+    finally:
+        conn.close()
+    ubah = [f for f, a, b in (("nama", lama["nama"], nama), ("alamat", lama["alamat"], alamat), ("no HP", lama["no_hp"], no_hp)) if a != b]
+    if ubah:
+        catat_aktivitas(_oleh(request), "mitra_ubah_kontak", f"{username}: {', '.join(ubah)} diubah")
     return {"ok": True}
 
 
