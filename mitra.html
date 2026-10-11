@@ -2,7 +2,7 @@
 :root{--g900:#004a27;--g700:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318;--amber:#8a5a00;--shadow:0 5px 18px rgba(0,55,28,.09)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg)}button,input,textarea{font:inherit}button{cursor:pointer}
 .top{background:linear-gradient(105deg,#003c20,#006f38 65%,#087f3f);color:#fff;padding:16px}
-.topIn{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:12px}
+.topIn{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}
 .mark{width:40px;height:40px;border-radius:12px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:950}
 .top b{font-size:16px}.top small{display:block;color:#bfe0cb;font-size:11px;margin-top:2px}
 .wrap{max-width:860px;margin:0 auto;padding:14px 16px 30px}
@@ -30,11 +30,12 @@
 .form label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin:12px 0 4px}
 .form input,.form textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:14px;outline:none;background:#fff}
 .form textarea{min-height:70px;resize:vertical}
+.form select{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:14px;outline:none;background:#fff}
 .btns{display:flex;gap:8px;margin-top:16px}
 .note{font-size:11.5px;color:var(--muted);line-height:1.55;margin-top:10px}
 @media(max-width:620px){.cards{grid-template-columns:1fr 1fr}.card.main{grid-column:1/-1}.row{align-items:flex-start}}
 </style></head><body>
-<div class="top"><div class="topIn"><div class="mark">ID</div><div style="flex:1;min-width:0"><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div><button class="btn" onclick="bukaPassword()">Password</button><button class="btn" onclick="keluar()">Keluar</button></div></div>
+<div class="top"><div class="topIn"><div class="mark">ID</div><div style="flex:1;min-width:150px"><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div><button class="btn" onclick="bukaTiket()">Gangguan <span id="nTiket"></span></button><button class="btn" onclick="bukaPassword()">Password</button><button class="btn" onclick="keluar()">Keluar</button></div></div>
 <div class="wrap">
  <div class="nav"><button class="btn" onclick="geser(-1)" aria-label="Bulan sebelumnya">‹</button><b id="periode">—</b><button class="btn" onclick="geser(1)" aria-label="Bulan berikutnya">›</button></div>
  <div class="cards">
@@ -48,6 +49,17 @@
   <div class="msg" id="msg"></div>
   <div id="list"><div class="muted">Memuat…</div></div>
   <div class="note">Insentif dihitung dari pelanggan yang tagihan bulan tersebut sudah <b>lunas</b>, ditambah pelanggan gratis yang ditetapkan admin ikut dihitung. Ketuk nama pelanggan untuk memperbarui nama, alamat, atau nomor HP.</div>
+ </div>
+ <div class="panel form" id="tiketView" style="display:none">
+  <div class="nav" style="margin-bottom:4px"><b>Laporan gangguan</b><button class="btn" onclick="tutupForm()">‹ Kembali</button></div>
+  <div class="note" style="margin-top:0">Laporkan pelanggan yang internetnya bermasalah. Tim teknis langsung mendapat kabar di Telegram, dan statusnya bisa dipantau di sini.</div>
+  <label>Pelanggan</label><select id="tUser"></select>
+  <label>Jenis masalah</label><select id="tKat"></select>
+  <label>Keterangan</label><textarea id="tKet" placeholder="mis. Lampu LOS merah sejak pagi, sudah coba restart modem"></textarea>
+  <div class="btns"><button class="btn go" onclick="kirimTiket()">Kirim laporan</button></div>
+  <div class="msg" id="tMsg"></div>
+  <div style="margin-top:14px"><b style="font-size:13px">Laporan 30 hari terakhir</b></div>
+  <div id="tList"><div class="muted">Memuat…</div></div>
  </div>
  <div class="panel form" id="pwView" style="display:none">
   <b style="font-size:14px">Ganti password</b>
@@ -63,7 +75,7 @@
   <label>Nama lengkap</label><input id="fNama">
   <label>Alamat</label><textarea id="fAlamat"></textarea>
   <label>Nomor HP / WhatsApp</label><input id="fHp" type="tel" inputmode="tel">
-  <div class="btns"><button class="btn go" onclick="simpan()">Simpan</button><button class="btn" onclick="tutupForm()">Batal</button></div>
+  <div class="btns"><button class="btn go" onclick="simpan()">Simpan</button><button class="btn" onclick="tutupForm()">Batal</button><button class="btn" onclick="bukaTiket(st.cur)">Lapor gangguan</button></div>
   <div class="msg" id="fMsg"></div>
  </div>
 </div>
@@ -135,7 +147,33 @@ function buka(i){
  $('fUser').value=p.username; $('fNama').value=p.nama||''; $('fAlamat').value=p.alamat||''; $('fHp').value=p.no_hp||''; $('fMsg').textContent='';
  $('listView').style.display='none'; $('formView').style.display='block'; $('fNama').focus();
 }
-function tutupForm(){ $('formView').style.display='none'; $('pwView').style.display='none'; $('listView').style.display='block'; }
+function tutupForm(){ $('formView').style.display='none'; $('pwView').style.display='none'; $('tiketView').style.display='none'; $('listView').style.display='block'; }
+const T_CHIP={baru:'<span class="chip bad">Menunggu teknisi</span>',dikerjakan:'<span class="chip warn">Sedang dikerjakan</span>',selesai:'<span class="chip ok">Selesai</span>',batal:'<span class="chip off">Dibatalkan</span>'};
+function tWaktu(s){ if(!s) return ''; return tgl(s.slice(0,10))+' '+s.slice(11,16); }
+async function muatTiket(){
+ try{
+  const r=await fetch('/api/mitra/tiket',{cache:'no-store'}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  st.tiket=d; const buka=d.tiket.filter(t=>t.terbuka).length; $('nTiket').textContent=buka?'('+buka+')':'';
+  if($('tKat').options.length===0) $('tKat').innerHTML=d.kategori.map(k=>`<option>${esc(k)}</option>`).join('');
+  $('tList').innerHTML=d.tiket.length?d.tiket.map(t=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(t.nama||t.username)} <span class="sub" style="display:inline">· #T${t.id}</span></div><div class="sub">${esc(t.kategori)}${t.keterangan?' — '+esc(t.keterangan):''}</div><div class="sub">Dilaporkan ${esc(tWaktu(t.dibuat_pada))}${t.teknisi?' · teknisi '+esc(t.teknisi):''}${t.terbuka?' · sudah '+esc(t.umur):''}</div>${t.solusi&&t.status==='selesai'?`<div class="sub" style="color:#0b7a3b">✔ ${esc(t.solusi)}</div>`:''}</div><div class="right">${T_CHIP[t.status]||''}</div></div>`).join(''):'<div class="muted">Belum ada laporan.</div>';
+ }catch(e){ $('tList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function bukaTiket(username){
+ const daftar=(st.data?st.data.pelanggan:[]).filter(p=>p.status!=='berhenti');
+ $('tUser').innerHTML='<option value="">— pilih pelanggan —</option>'+daftar.map(p=>`<option value="${esc(p.username)}">${esc(p.nama)} (${esc(p.username)})</option>`).join('');
+ $('tUser').value=username||''; $('tKet').value=''; $('tMsg').textContent='';
+ $('listView').style.display='none'; $('formView').style.display='none'; $('pwView').style.display='none'; $('tiketView').style.display='block';
+ muatTiket();
+}
+async function kirimTiket(){
+ const body={username:$('tUser').value,kategori:$('tKat').value,keterangan:$('tKet').value.trim()||null}, m=$('tMsg');
+ if(!body.username){ m.style.color='#b42318'; m.textContent='Pilih pelanggannya dulu.'; return; }
+ try{
+  const r=await fetch('/api/mitra/tiket',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  m.style.color='#0b7a3b'; m.textContent='Laporan #T'+d.id+' terkirim ke tim teknis.'; $('tUser').value=''; $('tKet').value=''; muatTiket();
+ }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
 async function simpan(){
  const body={nama:$('fNama').value.trim(),alamat:$('fAlamat').value.trim()||null,no_hp:$('fHp').value.trim()||null};
  if(!body.nama){ $('fMsg').style.color='#b42318'; $('fMsg').textContent='Nama tidak boleh kosong.'; return; }
@@ -145,6 +183,6 @@ async function simpan(){
   tutupForm(); await muat(); $('msg').style.color='#0b7a3b'; $('msg').textContent='Data '+body.nama+' disimpan.';
  }catch(e){ $('fMsg').style.color='#b42318'; $('fMsg').textContent='Gagal menyimpan: '+e.message; }
 }
-(function(){const t=new Date();st.periode=t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0');muat()})();
+(function(){const t=new Date();st.periode=t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0');muat();muatTiket()})();
 </script>
 </body></html>

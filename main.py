@@ -191,7 +191,8 @@ CONFIG = {
     "POLL_INTERVAL_SECONDS": 120,
     "ALERT_COOLDOWN_MINUTES": 720,   # 12 jam: satu alert per ONU, lalu diam sampai 12 jam kemudian
     "PUTUS_TUNGGU_MENIT": 10,         # tunggu sekian menit sebelum kirim peringatan putus
-    "PUTUS_MASSAL_MIN": 5,            # sekian pelanggan putus bersamaan = satu pesan gangguan massal
+    "PUTUS_MASSAL_MIN": 5,
+    "TIKET_PENGINGAT_JAM": 24,        # tiket belum selesai sekian jam -> pengingat ke grup Telegram (0 = mati)            # sekian pelanggan putus bersamaan = satu pesan gangguan massal
     "ALERT_OFFLINE_LANGSUNG": False,  # False = matikan peringatan 'ONU OFFLINE' langsung yang lama
     "SNMP_TIMEOUT_SECONDS": 15,
 }
@@ -1131,6 +1132,10 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat pengingat utang: {e}")
         try:
+            await asyncio.to_thread(proses_pengingat_tiket)
+        except Exception as e:
+            logger.error(f"Error saat pengingat tiket: {e}")
+        try:
             await asyncio.to_thread(proses_backup_harian)
         except Exception as e:
             logger.error(f"Error saat proses backup harian: {e}")
@@ -1397,6 +1402,21 @@ def _build_daily_report_text() -> str:
         logger.error(f"Gagal hitung kandidat boncos untuk laporan: {e}")
 
     try:
+        conn = _billing_conn()
+        try:
+            terbuka = _tiket_terbuka(conn)
+        finally:
+            conn.close()
+        if terbuka:
+            tanpa = sum(1 for t in terbuka if not t["teknisi"])
+            lines.append("")
+            lines.append(f"🛠 <b>Tiket gangguan terbuka: {len(terbuka)}</b>" + (f" ({tanpa} belum ada teknisi)" if tanpa else ""))
+            for t in terbuka[:5]:
+                lines.append(f"- #T{t['id']} {_esc(t['nama'] or t['username'] or 'umum')}: {_esc(t['kategori'])}, {_durasi_teks(t['dibuat_pada'])}")
+    except Exception as e:
+        logger.error(f"Gagal hitung tiket untuk laporan: {e}")
+
+    try:
         putus = get_frequent_disconnect_candidates()
         if putus:
             lines.append("")
@@ -1550,6 +1570,7 @@ _HELP_TEXT = (
     "<code>/masalah</code> — daftar ONU WARNING/CRITICAL saat ini\n"
     "<code>/boncos</code> — kandidat upgrade paket\n"
     "<code>/putus</code> — pelanggan yang sering putus-nyambung\n"
+    "<code>/tiket</code> — tiket gangguan yang belum selesai\n"
     "<code>/id</code> — tampilkan chat ID (untuk chat owner)\n"
     "<code>/laporan</code> — laporan keuangan bulan lalu (hanya di chat owner)\n"
     "<code>/help</code> — tampilkan pesan ini"
@@ -1578,6 +1599,10 @@ def _handle_telegram_command(text: str) -> None:
 
     if command == "/putus":
         send_telegram_message(_format_putus_list())
+        return
+
+    if command == "/tiket":
+        send_telegram_message(_format_tiket_list())
         return
 
     if command == "/cek":
@@ -2245,6 +2270,7 @@ async def on_startup():
     await asyncio.to_thread(init_akun_db)
     await asyncio.to_thread(init_keuangan_db)
     await asyncio.to_thread(init_nota_db)
+    await asyncio.to_thread(init_tiket_db)
     await asyncio.to_thread(_muat_pengaturan)
     logger.info(
         f"Target: MikroTik {CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']}, "
@@ -2471,6 +2497,8 @@ _PENGATURAN = {
     "TAGIHAN_JAM": {"label": "Jam pembuatan tagihan otomatis (0-23)", "tipe": "int", "min": 0, "max": 23},
     "MITRA_INSENTIF_PER_PELANGGAN": {"label": "Insentif mitra per pelanggan lunas (Rp)", "tipe": "int", "min": 0, "max": 1_000_000},
     "PUTUS_TUNGGU_MENIT": {"label": "Tunggu sebelum alert putus (menit)", "tipe": "int", "min": 1, "max": 240},
+    "TIKET_PENGINGAT_JAM": {"label": "Ingatkan tiket gangguan yang belum selesai setelah (jam, 0 = mati)", "tipe": "int",
+                            "min": 0, "max": 168},
     "DAILY_REPORT_HOUR": {"label": "Jam laporan harian Telegram (0-23)", "tipe": "int", "min": 0, "max": 23},
     "LAPORAN_BULANAN_AKTIF": {"label": "Laporan keuangan bulanan ke Telegram owner", "tipe": "pilihan",
                               "pilihan": ["ya", "tidak"], "owner": True},
@@ -3706,6 +3734,10 @@ def keuangan_list_utang(request: Request, status: str = "belum"):
         semua = [u for u in semua if u["status"] == "aktif" and u["sisa"] > 0]
     elif status == "lunas":
         semua = [u for u in semua if u["lunas"]]
+    elif status == "dihapus":
+        semua = [u for u in semua if u["status"] == "batal"]
+    else:
+        semua = [u for u in semua if u["status"] == "aktif"]
     for u in semua:
         u["pembayaran"] = bayar.get(u["id"], [])
     return {"saya": request.state.user, "peran": request.state.peran, "ringkasan": ringkas, "utang": semua}
@@ -3812,14 +3844,79 @@ def keuangan_batal_utang(uid: int, d: BatalIn, request: Request):
         if not u or u["status"] != "aktif":
             raise HTTPException(status_code=404, detail="Utang tidak ditemukan atau sudah dibatalkan.")
         _boleh_ubah_transaksi(request, u)
-        if conn.execute("SELECT 1 FROM transaksi WHERE utang_id = ? AND status='aktif'", (uid,)).fetchone():
-            raise HTTPException(status_code=400, detail="Sudah ada pembayaran. Batalkan pembayarannya dulu di tab Transaksi.")
+        # Pembayarannya (uang muka/cicilan) ikut dihapus dalam satu langkah. Admin hanya
+        # boleh bila semua pembayaran itu juga catatannya sendiri yang masih <= 24 jam.
+        bayar = conn.execute("SELECT * FROM transaksi WHERE utang_id = ? AND status='aktif'", (uid,)).fetchall()
+        for t in bayar:
+            _boleh_ubah_transaksi(request, t)
+        waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE utang SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
-                     (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), alasan[:300], uid))
+                     (_oleh(request), waktu, alasan[:300], uid))
+        conn.execute("UPDATE transaksi SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? "
+                     "WHERE utang_id = ? AND status='aktif'", (_oleh(request), waktu, f"utang #U{uid} dihapus: {alasan[:250]}", uid))
         conn.commit()
     finally:
         conn.close()
-    catat_aktivitas(_oleh(request), "utang_batal", f"#U{uid} {u['pemasok']} {_rp(u['jumlah'])} dibatalkan: {alasan[:120]}")
+    catat_aktivitas(_oleh(request), "utang_batal",
+                    f"#U{uid} {u['pemasok']} {_rp(u['jumlah'])} dihapus: {alasan[:120]}"
+                    + (f" (beserta {len(bayar)} pembayaran {_rp(sum(t['jumlah'] for t in bayar))})" if bayar else ""))
+    return {"ok": True, "pembayaran_ikut_dihapus": len(bayar)}
+
+
+def _wajib_owner(request: Request) -> None:
+    if request.state.peran != "owner":
+        raise HTTPException(status_code=403, detail="Hapus permanen hanya bisa dilakukan owner.")
+
+
+@app.delete("/api/keuangan/transaksi/{tid}")
+def keuangan_hapus_permanen(tid: int, request: Request):
+    """Owner: hapus permanen transaksi yang SUDAH dihapus (dibatalkan), mis. data uji coba.
+    Rinciannya tetap tersimpan di log aktivitas."""
+    _wajib_owner(request)
+    conn = _billing_conn()
+    try:
+        t = conn.execute("SELECT t.*, k.nama AS kategori FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
+                         "WHERE t.id = ?", (tid,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan.")
+        if t["status"] != "batal":
+            raise HTTPException(status_code=400, detail="Hapus (batalkan) dulu transaksinya, baru bisa dihapus permanen.")
+        conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE pemilik='transaksi' AND pemilik_id=? "
+                     "AND dihapus_pada IS NULL", (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid))
+        conn.execute("DELETE FROM transaksi WHERE id = ?", (tid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_hapus_permanen",
+                    f"#{tid} {t['tanggal']} {t['jenis']} {_rp(t['jumlah'])} · {t['kategori']} · {t['keterangan'] or '-'} "
+                    f"(dicatat {t['dicatat_oleh']}, alasan hapus: {t['batal_alasan'] or '-'})")
+    return {"ok": True}
+
+
+@app.delete("/api/keuangan/utang/{uid}")
+def keuangan_hapus_utang_permanen(uid: int, request: Request):
+    _wajib_owner(request)
+    conn = _billing_conn()
+    try:
+        u = conn.execute("SELECT * FROM utang WHERE id = ?", (uid,)).fetchone()
+        if not u:
+            raise HTTPException(status_code=404, detail="Utang tidak ditemukan.")
+        if u["status"] != "batal":
+            raise HTTPException(status_code=400, detail="Hapus (batalkan) dulu utangnya, baru bisa dihapus permanen.")
+        waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ids = [r[0] for r in conn.execute("SELECT id FROM transaksi WHERE utang_id = ?", (uid,))]
+        conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE dihapus_pada IS NULL AND "
+                     "((pemilik='utang' AND pemilik_id=?) OR (pemilik='transaksi' AND pemilik_id IN "
+                     "(SELECT id FROM transaksi WHERE utang_id=?)))", (_oleh(request), waktu, uid, uid))
+        conn.execute("DELETE FROM transaksi WHERE utang_id = ?", (uid,))
+        conn.execute("DELETE FROM utang_cicilan WHERE utang_id = ?", (uid,))
+        conn.execute("DELETE FROM utang WHERE id = ?", (uid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_hapus_permanen",
+                    f"utang #U{uid} {u['tanggal']} {u['pemasok']} {_rp(u['jumlah'])} (dicatat {u['dicatat_oleh']}, "
+                    f"alasan hapus: {u['batal_alasan'] or '-'})" + (f", {len(ids)} pembayaran ikut terhapus" if ids else ""))
     return {"ok": True}
 
 
@@ -4124,13 +4221,16 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
 
 @app.get("/api/keuangan/transaksi")
 def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: Optional[int] = None,
-                  cari: str = "", batal: bool = True):
+                  cari: str = "", batal: bool = False):
     _wajib_admin(request)
     if not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
     conn = _billing_conn()
     try:
         rows = _query_transaksi(conn, periode, jenis, kategori_id, cari, batal)
+        awal, akhir = _batas_periode(periode)
+        conn_batal = conn.execute("SELECT COUNT(*) FROM transaksi WHERE status='batal' AND tanggal >= ? AND tanggal < ?",
+                                  (awal, akhir)).fetchone()[0]
     finally:
         conn.close()
     aktif = [r for r in rows if r["status"] == "aktif"]
@@ -4143,7 +4243,7 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
         "periode": periode, "saya": request.state.user, "peran": request.state.peran,
         "ringkasan": {"masuk": sum(r["jumlah"] for r in aktif if r["jenis"] == "masuk"),
                       "keluar": sum(r["jumlah"] for r in aktif if r["jenis"] == "keluar"),
-                      "jumlah": len(aktif), "dibatalkan": len(rows) - len(aktif)},
+                      "jumlah": len(aktif), "dibatalkan": conn_batal},
         "transaksi": [dict(r, nota=nota.get(r["id"], [])) for r in rows],
     }
 
@@ -4513,6 +4613,430 @@ def mitra_ubah_kontak(username: str, d: KontakIn, request: Request):
     if ubah:
         catat_aktivitas(_oleh(request), "mitra_ubah_kontak", f"{username}: {', '.join(ubah)} diubah")
     return {"ok": True}
+
+
+# ============================================================
+# TIKET GANGGUAN — keluhan pelanggan dicatat, ditugaskan, dipantau sampai selesai
+# ============================================================
+
+_KATEGORI_TIKET = ("Internet mati", "Internet lambat", "Putus-putus", "Kabel / ONU rusak",
+                   "Pindah / pasang baru", "Lainnya")
+_STATUS_TIKET_TERBUKA = ("baru", "dikerjakan")
+
+
+def init_tiket_db() -> None:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tiket (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                nama TEXT,
+                kategori TEXT NOT NULL,
+                keterangan TEXT,
+                prioritas TEXT NOT NULL DEFAULT 'normal',
+                status TEXT NOT NULL DEFAULT 'baru',
+                teknisi TEXT,
+                dibuat_oleh TEXT NOT NULL,
+                dibuat_pada TEXT NOT NULL,
+                diambil_pada TEXT,
+                selesai_pada TEXT,
+                solusi TEXT,
+                diingatkan_pada TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tiket_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tiket_id INTEGER NOT NULL REFERENCES tiket(id),
+                waktu TEXT NOT NULL,
+                oleh TEXT NOT NULL,
+                aksi TEXT NOT NULL,
+                catatan TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tiket_status ON tiket(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tiket_log ON tiket_log(tiket_id)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _sekarang_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _durasi_teks(mulai: str, sampai: Optional[str] = None) -> str:
+    try:
+        a = datetime.strptime(mulai, "%Y-%m-%d %H:%M:%S")
+        b = datetime.strptime(sampai, "%Y-%m-%d %H:%M:%S") if sampai else datetime.now()
+    except (TypeError, ValueError):
+        return "-"
+    return _teks_menit(int((b - a).total_seconds() // 60))
+
+
+def _teks_menit(menit: int) -> str:
+    menit = max(0, menit)
+    if menit < 1:
+        return "kurang dari 1 menit"
+    if menit < 60:
+        return f"{menit} menit"
+    jam, menit = divmod(menit, 60)
+    if jam < 24:
+        return f"{jam} jam {menit} menit" if menit else f"{jam} jam"
+    hari, jam = divmod(jam, 24)
+    return f"{hari} hari {jam} jam" if jam else f"{hari} hari"
+
+
+def _log_tiket(conn, tid: int, oleh: str, aksi: str, catatan: Optional[str] = None) -> None:
+    conn.execute("INSERT INTO tiket_log (tiket_id, waktu, oleh, aksi, catatan) VALUES (?,?,?,?,?)",
+                 (tid, _sekarang_str(), oleh, aksi, catatan))
+
+
+def _diagnosa_pelanggan(conn, username: Optional[str]) -> Optional[dict]:
+    """Kondisi pelanggan saat ini dari data monitoring terakhir, supaya teknisi
+    langsung tahu apakah PPPoE online, redaman ONU, isolir, atau tagihan menunggak."""
+    if not username:
+        return None
+    hasil = {"pppoe_online": None, "ip": None, "uptime": None, "onu": None,
+             "terisolir": False, "tagihan_belum": [], "data_monitoring": _latest_data is not None}
+    if _latest_data is not None:
+        u = next((x for x in _latest_data.pppoe_users if x.username == username), None)
+        hasil["pppoe_online"] = u is not None
+        if u:
+            hasil["ip"], hasil["uptime"] = u.ip_address, u.uptime
+        onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None)
+        if onu:
+            hasil["onu"] = {"pon": onu.pon, "onu_id": onu.onu_id, "status": onu.status, "online": onu.online,
+                            "olt_rx_dbm": onu.olt_rx_dbm, "onu_rx_dbm": onu.onu_rx_dbm,
+                            "serial": onu.serial_number, "model": onu.model}
+    try:
+        hasil["terisolir"] = conn.execute("SELECT 1 FROM isolir WHERE username=?", (username,)).fetchone() is not None
+    except sqlite3.OperationalError:
+        pass
+    hasil["tagihan_belum"] = [dict(r) for r in conn.execute(
+        "SELECT periode, jumlah, jatuh_tempo FROM tagihan WHERE username=? AND status='belum' ORDER BY periode",
+        (username,))]
+    return hasil
+
+
+def _baris_tiket(r) -> dict:
+    t = dict(r)
+    t["umur"] = _durasi_teks(t["dibuat_pada"], t["selesai_pada"])
+    t["terbuka"] = t["status"] in _STATUS_TIKET_TERBUKA
+    return t
+
+
+def _teks_tiket(t, judul: str) -> str:
+    siapa = f"{_esc(t['nama'] or t['username'])} ({_esc(t['username'])})" if t["username"] else "Umum / jaringan"
+    baris = [f"{judul} <b>#T{t['id']}</b>{' 🔺 PRIORITAS TINGGI' if t['prioritas'] == 'tinggi' else ''}",
+             f"Pelanggan: {siapa}", f"Masalah: {_esc(t['kategori'])}"]
+    if t["keterangan"]:
+        baris.append(f"Keterangan: {_esc(t['keterangan'])}")
+    return "\n".join(baris)
+
+
+def _kabar_tiket(teks: str) -> None:
+    try:
+        kirim_telegram_ke(str(CONFIG["TELEGRAM_CHAT_ID"]), teks)
+    except Exception as e:
+        logger.error(f"Gagal kirim kabar tiket: {e}")
+
+
+def _akun_teknisi(conn) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT username FROM akun WHERE aktif=1 AND peran IN ('owner','admin') ORDER BY username COLLATE NOCASE")]
+
+
+class TiketIn(BaseModel):
+    username: Optional[str] = None
+    kategori: str
+    keterangan: Optional[str] = None
+    prioritas: str = "normal"
+    teknisi: Optional[str] = None
+
+
+def _buat_tiket(d: TiketIn, oleh: str, hanya_mitra: bool = False) -> dict:
+    kategori = d.kategori.strip()
+    if kategori not in _KATEGORI_TIKET:
+        raise HTTPException(status_code=400, detail="Jenis masalah tidak dikenal.")
+    if d.prioritas not in ("normal", "tinggi"):
+        raise HTTPException(status_code=400, detail="Prioritas harus normal atau tinggi.")
+    keterangan = (d.keterangan or "").strip()[:1000] or None
+    username = (d.username or "").strip() or None
+    if hanya_mitra and not username:
+        raise HTTPException(status_code=400, detail="Pilih pelanggan yang mengalami gangguan.")
+    if not username and not keterangan:
+        raise HTTPException(status_code=400, detail="Tuliskan keterangan untuk tiket tanpa pelanggan.")
+    conn = _billing_conn()
+    try:
+        nama = None
+        if username:
+            sql = "SELECT nama FROM pelanggan WHERE username=?" + (" AND tampil_mitra=1 AND status='aktif'" if hanya_mitra else "")
+            p = conn.execute(sql, (username,)).fetchone()
+            if not p:
+                raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+            nama = p["nama"]
+            ada = conn.execute(
+                f"SELECT id FROM tiket WHERE username=? AND status IN {_STATUS_TIKET_TERBUKA}", (username,)).fetchone()
+            if ada:
+                raise HTTPException(status_code=409,
+                                    detail=f"Pelanggan ini sudah punya tiket terbuka #T{ada['id']}. Tambahkan catatan di tiket itu.")
+        teknisi = (d.teknisi or "").strip() or None
+        if teknisi and teknisi not in _akun_teknisi(conn):
+            raise HTTPException(status_code=400, detail="Teknisi harus akun admin/owner yang aktif.")
+        sekarang = _sekarang_str()
+        cur = conn.execute(
+            "INSERT INTO tiket (username, nama, kategori, keterangan, prioritas, status, teknisi, dibuat_oleh, "
+            "dibuat_pada, diambil_pada) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (username, nama, kategori, keterangan, d.prioritas, "dikerjakan" if teknisi else "baru",
+             teknisi, oleh, sekarang, sekarang if teknisi else None))
+        tid = cur.lastrowid
+        _log_tiket(conn, tid, oleh, "buat", keterangan)
+        if teknisi:
+            _log_tiket(conn, tid, oleh, "tugaskan", teknisi)
+        conn.commit()
+        t = conn.execute("SELECT * FROM tiket WHERE id=?", (tid,)).fetchone()
+    finally:
+        conn.close()
+    catat_aktivitas(oleh, "tiket_buat", f"#T{tid} {username or 'umum'}: {kategori}")
+    teks = _teks_tiket(t, "🛠 Tiket baru")
+    teks += f"\nDilaporkan: {_esc(oleh)}" + (f"\nTeknisi: {_esc(teknisi)}" if teknisi else "\nBelum ada teknisi — ambil di menu Tiket.")
+    _kabar_tiket(teks)
+    return {"ok": True, "id": tid}
+
+
+@app.get("/api/tiket")
+def list_tiket(request: Request, status: str = "terbuka", cari: str = "", limit: int = 300):
+    _wajib_admin(request)
+    where, arg = [], []
+    if status == "terbuka":
+        where.append(f"status IN {_STATUS_TIKET_TERBUKA}")
+    elif status in ("baru", "dikerjakan", "selesai", "batal"):
+        where.append("status = ?")
+        arg.append(status)
+    elif status == "saya":
+        where.append(f"status IN {_STATUS_TIKET_TERBUKA} AND teknisi = ?")
+        arg.append(_oleh(request))
+    if cari.strip():
+        q = f"%{cari.strip()}%"
+        where.append("(username LIKE ? OR nama LIKE ? OR keterangan LIKE ? OR kategori LIKE ? OR teknisi LIKE ? OR CAST(id AS TEXT) = ?)")
+        arg += [q, q, q, q, q, cari.strip().lstrip("#Tt")]
+    sql = "SELECT * FROM tiket" + (" WHERE " + " AND ".join(where) if where else "")
+    sql += " ORDER BY CASE WHEN status IN ('baru','dikerjakan') THEN 0 ELSE 1 END, " \
+           "CASE prioritas WHEN 'tinggi' THEN 0 ELSE 1 END, " \
+           "CASE WHEN status IN ('baru','dikerjakan') THEN dibuat_pada END ASC, id DESC LIMIT ?"
+    arg.append(max(1, min(limit, 1000)))
+    batas30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _billing_conn()
+    try:
+        rows = [_baris_tiket(r) for r in conn.execute(sql, arg)]
+        hitung = dict(conn.execute("SELECT status, COUNT(*) FROM tiket GROUP BY status").fetchall())
+        selesai30 = conn.execute(
+            "SELECT dibuat_pada, selesai_pada FROM tiket WHERE status='selesai' AND selesai_pada >= ?", (batas30,)).fetchall()
+        teknisi = _akun_teknisi(conn)
+    finally:
+        conn.close()
+    menit = [(datetime.strptime(b, "%Y-%m-%d %H:%M:%S") - datetime.strptime(a, "%Y-%m-%d %H:%M:%S")).total_seconds() / 60
+             for a, b in selesai30]
+    rata = int(sum(menit) / len(menit)) if menit else None
+    return {"saya": _oleh(request), "peran": request.state.peran, "kategori": list(_KATEGORI_TIKET), "teknisi": teknisi,
+            "ringkasan": {"baru": hitung.get("baru", 0), "dikerjakan": hitung.get("dikerjakan", 0),
+                          "terbuka": hitung.get("baru", 0) + hitung.get("dikerjakan", 0),
+                          "selesai_30hari": len(menit),
+                          "rata_selesai": _teks_menit(rata) if rata is not None else None},
+            "tiket": rows}
+
+
+@app.post("/api/tiket")
+def tambah_tiket(d: TiketIn, request: Request):
+    _wajib_admin(request)
+    return _buat_tiket(d, _oleh(request))
+
+
+@app.get("/api/tiket/{tid}")
+def detail_tiket(tid: int, request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        t = conn.execute("SELECT * FROM tiket WHERE id=?", (tid,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tiket tidak ditemukan.")
+        log = [dict(r) for r in conn.execute("SELECT waktu, oleh, aksi, catatan FROM tiket_log WHERE tiket_id=? ORDER BY id", (tid,))]
+        kontak = None
+        if t["username"]:
+            p = conn.execute("SELECT nama, alamat, no_hp FROM pelanggan WHERE username=?", (t["username"],)).fetchone()
+            kontak = dict(p) if p else None
+        riwayat = [dict(r) for r in conn.execute(
+            "SELECT id, kategori, status, dibuat_pada, solusi FROM tiket WHERE username=? AND id<>? ORDER BY id DESC LIMIT 5",
+            (t["username"], tid))] if t["username"] else []
+        diagnosa = _diagnosa_pelanggan(conn, t["username"]) if t["status"] in _STATUS_TIKET_TERBUKA else None
+    finally:
+        conn.close()
+    return {"tiket": _baris_tiket(t), "log": log, "kontak": kontak, "riwayat": riwayat, "diagnosa": diagnosa}
+
+
+class AksiTiketIn(BaseModel):
+    aksi: str                   # ambil | tugaskan | selesai | batal | buka | catatan | prioritas
+    catatan: Optional[str] = None
+    teknisi: Optional[str] = None
+    prioritas: Optional[str] = None
+
+
+@app.post("/api/tiket/{tid}/aksi")
+def aksi_tiket(tid: int, d: AksiTiketIn, request: Request):
+    _wajib_admin(request)
+    oleh = _oleh(request)
+    catatan = (d.catatan or "").strip()[:1000] or None
+    conn = _billing_conn()
+    try:
+        t = conn.execute("SELECT * FROM tiket WHERE id=?", (tid,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tiket tidak ditemukan.")
+        terbuka = t["status"] in _STATUS_TIKET_TERBUKA
+        sekarang = _sekarang_str()
+        kabar = None
+        if d.aksi in ("ambil", "tugaskan"):
+            if not terbuka:
+                raise HTTPException(status_code=400, detail="Tiket sudah ditutup. Buka lagi dulu bila perlu.")
+            teknisi = oleh if d.aksi == "ambil" else (d.teknisi or "").strip()
+            if teknisi not in _akun_teknisi(conn):
+                raise HTTPException(status_code=400, detail="Teknisi harus akun admin/owner yang aktif.")
+            conn.execute("UPDATE tiket SET teknisi=?, status='dikerjakan', diambil_pada=COALESCE(diambil_pada, ?) WHERE id=?",
+                         (teknisi, sekarang, tid))
+            _log_tiket(conn, tid, oleh, "tugaskan", teknisi)
+            if teknisi != oleh:
+                kabar = f"👷 Tiket <b>#T{tid}</b> ({_esc(t['nama'] or t['username'] or 'umum')}) ditugaskan ke <b>{_esc(teknisi)}</b> oleh {_esc(oleh)}."
+        elif d.aksi == "selesai":
+            if not terbuka:
+                raise HTTPException(status_code=400, detail="Tiket sudah ditutup.")
+            if not catatan or len(catatan) < 3:
+                raise HTTPException(status_code=400, detail="Tuliskan apa yang dikerjakan / penyebabnya.")
+            conn.execute("UPDATE tiket SET status='selesai', selesai_pada=?, solusi=?, "
+                         "teknisi=COALESCE(teknisi, ?), diambil_pada=COALESCE(diambil_pada, ?) WHERE id=?",
+                         (sekarang, catatan, oleh, sekarang, tid))
+            _log_tiket(conn, tid, oleh, "selesai", catatan)
+            kabar = (f"✅ Tiket <b>#T{tid}</b> selesai — {_esc(t['nama'] or t['username'] or 'umum')} ({_esc(t['kategori'])})\n"
+                     f"Solusi: {_esc(catatan)}\nOleh {_esc(oleh)} · waktu penanganan {_durasi_teks(t['dibuat_pada'], sekarang)}")
+        elif d.aksi == "batal":
+            if not terbuka:
+                raise HTTPException(status_code=400, detail="Tiket sudah ditutup.")
+            if not catatan or len(catatan) < 3:
+                raise HTTPException(status_code=400, detail="Tuliskan alasan pembatalan.")
+            conn.execute("UPDATE tiket SET status='batal', selesai_pada=?, solusi=? WHERE id=?", (sekarang, catatan, tid))
+            _log_tiket(conn, tid, oleh, "batal", catatan)
+        elif d.aksi == "buka":
+            if terbuka:
+                raise HTTPException(status_code=400, detail="Tiket masih terbuka.")
+            if t["username"]:
+                ada = conn.execute(f"SELECT id FROM tiket WHERE username=? AND id<>? AND status IN {_STATUS_TIKET_TERBUKA}",
+                                   (t["username"], tid)).fetchone()
+                if ada:
+                    raise HTTPException(status_code=409, detail=f"Pelanggan ini sudah punya tiket terbuka #T{ada['id']}.")
+            conn.execute("UPDATE tiket SET status=?, selesai_pada=NULL, solusi=NULL, diingatkan_pada=NULL WHERE id=?",
+                         ("dikerjakan" if t["teknisi"] else "baru", tid))
+            _log_tiket(conn, tid, oleh, "buka", catatan)
+        elif d.aksi == "catatan":
+            if not catatan:
+                raise HTTPException(status_code=400, detail="Catatan kosong.")
+            _log_tiket(conn, tid, oleh, "catatan", catatan)
+        elif d.aksi == "prioritas":
+            if d.prioritas not in ("normal", "tinggi"):
+                raise HTTPException(status_code=400, detail="Prioritas harus normal atau tinggi.")
+            conn.execute("UPDATE tiket SET prioritas=? WHERE id=?", (d.prioritas, tid))
+            _log_tiket(conn, tid, oleh, "prioritas", d.prioritas)
+        else:
+            raise HTTPException(status_code=400, detail="Aksi tidak dikenal.")
+        conn.commit()
+    finally:
+        conn.close()
+    if d.aksi != "catatan":
+        catat_aktivitas(oleh, f"tiket_{d.aksi}", f"#T{tid}" + (f": {catatan[:120]}" if catatan else "")
+                        + (f" → {d.teknisi}" if d.aksi == "tugaskan" else ""))
+    if kabar:
+        _kabar_tiket(kabar)
+    return {"ok": True}
+
+
+# --- Mitra: lapor gangguan untuk pelanggannya dan pantau statusnya ---
+
+@app.get("/api/mitra/tiket")
+def mitra_list_tiket(request: Request):
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT t.id, t.username, t.nama, t.kategori, t.keterangan, t.status, t.teknisi, t.dibuat_pada, "
+            "t.selesai_pada, t.solusi, t.dibuat_oleh FROM tiket t JOIN pelanggan p ON p.username = t.username "
+            "WHERE p.tampil_mitra = 1 AND (t.status IN ('baru','dikerjakan') OR t.dibuat_pada >= ?) "
+            "ORDER BY CASE WHEN t.status IN ('baru','dikerjakan') THEN 0 ELSE 1 END, t.id DESC LIMIT 100",
+            ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),)).fetchall()
+    finally:
+        conn.close()
+    return {"kategori": list(_KATEGORI_TIKET), "tiket": [_baris_tiket(r) for r in rows]}
+
+
+class TiketMitraIn(BaseModel):
+    username: str
+    kategori: str
+    keterangan: Optional[str] = None
+
+
+@app.post("/api/mitra/tiket")
+def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
+    return _buat_tiket(TiketIn(username=d.username, kategori=d.kategori, keterangan=d.keterangan),
+                       _oleh(request), hanya_mitra=True)
+
+
+# --- Pengingat: tiket terbuka terlalu lama ---
+
+def _tiket_terbuka(conn) -> list:
+    return conn.execute(
+        f"SELECT * FROM tiket WHERE status IN {_STATUS_TIKET_TERBUKA} "
+        "ORDER BY CASE prioritas WHEN 'tinggi' THEN 0 ELSE 1 END, dibuat_pada").fetchall()
+
+
+def proses_pengingat_tiket(sekarang=None) -> None:
+    """Satu pengingat per tiket setiap TIKET_PENGINGAT_JAM selama tiket belum selesai."""
+    sekarang = sekarang or datetime.now()
+    jam = int(CONFIG.get("TIKET_PENGINGAT_JAM", 24) or 0)
+    if jam <= 0:
+        return
+    batas = (sekarang - timedelta(hours=jam)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = _billing_conn()
+    try:
+        lama = conn.execute(
+            f"SELECT * FROM tiket WHERE status IN {_STATUS_TIKET_TERBUKA} AND dibuat_pada <= ? "
+            "AND (diingatkan_pada IS NULL OR diingatkan_pada <= ?) ORDER BY dibuat_pada", (batas, batas)).fetchall()
+        if not lama:
+            return
+        baris = [f"⏰ <b>{len(lama)} tiket belum selesai lebih dari {jam} jam</b>"]
+        for t in lama[:15]:
+            baris.append(f"- #T{t['id']} {_esc(t['nama'] or t['username'] or 'umum')} · {_esc(t['kategori'])} · "
+                         f"{_durasi_teks(t['dibuat_pada'], sekarang.strftime('%Y-%m-%d %H:%M:%S'))} · "
+                         f"{'teknisi ' + _esc(t['teknisi']) if t['teknisi'] else 'BELUM ADA TEKNISI'}")
+        if len(lama) > 15:
+            baris.append(f"… dan {len(lama) - 15} lainnya")
+        if kirim_telegram_ke(str(CONFIG["TELEGRAM_CHAT_ID"]), "\n".join(baris)):
+            conn.executemany("UPDATE tiket SET diingatkan_pada=? WHERE id=?",
+                             [(sekarang.strftime("%Y-%m-%d %H:%M:%S"), t["id"]) for t in lama])
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def _format_tiket_list() -> str:
+    conn = _billing_conn()
+    try:
+        rows = _tiket_terbuka(conn)
+    finally:
+        conn.close()
+    if not rows:
+        return "✅ Tidak ada tiket gangguan yang terbuka."
+    baris = [f"🛠 <b>Tiket terbuka ({len(rows)})</b>"]
+    for t in rows[:25]:
+        baris.append(f"- #T{t['id']}{' 🔺' if t['prioritas'] == 'tinggi' else ''} {_esc(t['nama'] or t['username'] or 'umum')} · "
+                     f"{_esc(t['kategori'])} · {_durasi_teks(t['dibuat_pada'])} · {_esc(t['teknisi'] or 'belum ada teknisi')}")
+    return "\n".join(baris)
 
 
 def _nilai_kesehatan(o, username, sinyal_rows, pakai_rows, total_snap):

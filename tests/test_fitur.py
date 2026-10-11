@@ -125,7 +125,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(main.requests, "post", fake_post)
     monkeypatch.setattr(main.requests, "get", lambda *a, **k: FakeResp(True, {"ok": True, "result": []}))
     for f in (main.init_history_db, main.init_event_db, main.init_billing_db, main.init_akun_db,
-              main.init_keuangan_db, main.init_nota_db, main._muat_pengaturan):
+              main.init_keuangan_db, main.init_nota_db, main.init_tiket_db, main._muat_pengaturan):
         f()
     main._mt = mt
     main._terkirim = terkirim
@@ -556,3 +556,89 @@ def test_utang_cicilan_bulanan(siap):
     assert rs["bayar_utang"] == 420_000
     # tanggal akhir bulan
     assert main._tambah_bulan("2026-01-31", 1) == "2026-02-28" and main._tambah_bulan("2026-12-15", 1) == "2027-01-15"
+
+
+def test_hapus_transaksi_dan_utang(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    tgl = datetime.now().strftime("%Y-%m-%d")
+    per = tgl[:7]
+    kid = kat["Pembelian perangkat (ONT, router, kabel, dll.)"]
+    tid = k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kid,
+                                                  "jumlah": 50_000, "metode": "tunai"}).json()["id"]
+    # hapus permanen hanya untuk transaksi yang sudah dihapus, dan hanya owner
+    assert o.delete(f"/api/keuangan/transaksi/{tid}").status_code == 400
+    assert k.post(f"/api/keuangan/transaksi/{tid}/batal", json={"alasan": "salah input"}).status_code == 200
+    ids = [t["id"] for t in o.get(f"/api/keuangan/transaksi?periode={per}").json()["transaksi"]]
+    assert tid not in ids                                           # tidak tampil di daftar biasa
+    d = o.get(f"/api/keuangan/transaksi?periode={per}&batal=true").json()
+    assert tid in [t["id"] for t in d["transaksi"]] and d["ringkasan"]["dibatalkan"] == 1
+    assert k.delete(f"/api/keuangan/transaksi/{tid}").status_code == 403
+    assert o.delete(f"/api/keuangan/transaksi/{tid}").status_code == 200
+    assert tid not in [t["id"] for t in o.get(f"/api/keuangan/transaksi?periode={per}&batal=true").json()["transaksi"]]
+
+    # utang yang sudah ada pembayarannya tetap bisa dihapus, pembayarannya ikut terhapus
+    uid = k.post("/api/keuangan/utang", json={"tanggal": tgl, "pemasok": "Toko", "kategori_id": kid,
+                                              "jumlah": 300_000, "uang_muka": 100_000}).json()["id"]
+    k.post(f"/api/keuangan/utang/{uid}/bayar", json={"tanggal": tgl, "jumlah": 50_000})
+    assert o.get(f"/api/keuangan/ringkasan?periode={per}").json()["bayar_utang"] > 0
+    r = k.post(f"/api/keuangan/utang/{uid}/batal", json={"alasan": "salah input"}).json()
+    assert r["pembayaran_ikut_dihapus"] >= 1
+    rs = o.get(f"/api/keuangan/ringkasan?periode={per}").json()
+    assert rs["bayar_utang"] == 0 and rs["beban"] == 0 and rs["arus_kas"] == 0
+    assert uid not in [u["id"] for u in o.get("/api/keuangan/utang?status=semua").json()["utang"]]
+    assert uid in [u["id"] for u in o.get("/api/keuangan/utang?status=dihapus").json()["utang"]]
+    assert k.delete(f"/api/keuangan/utang/{uid}").status_code == 403
+    assert o.delete(f"/api/keuangan/utang/{uid}").status_code == 200
+    assert uid not in [u["id"] for u in o.get("/api/keuangan/utang?status=dihapus").json()["utang"]]
+
+
+def test_tiket_gangguan(siap):
+    main, o, k, m = siap
+    main._terkirim.clear()
+    # mitra melapor untuk pelanggannya; server (tidak tampil ke mitra) ditolak
+    assert m.post("/api/mitra/tiket", json={"username": "server", "kategori": "Internet mati"}).status_code == 404
+    assert m.post("/api/mitra/tiket", json={"username": "budi", "kategori": "Ngawur"}).status_code == 400
+    r = m.post("/api/mitra/tiket", json={"username": "budi", "kategori": "Internet mati", "keterangan": "LOS merah"})
+    assert r.status_code == 200, r.text
+    tid = r.json()["id"]
+    assert any("Tiket baru" in x["data"].get("text", "") for x in main._terkirim)
+    # satu pelanggan satu tiket terbuka
+    assert k.post("/api/tiket", json={"username": "budi", "kategori": "Internet lambat"}).status_code == 409
+    # mitra tidak bisa memakai API admin
+    assert m.get("/api/tiket").status_code == 403
+    d = k.get("/api/tiket").json()
+    assert d["ringkasan"]["baru"] == 1 and d["tiket"][0]["id"] == tid and set(d["teknisi"]) == {"owner", "kasir"}
+    det = k.get(f"/api/tiket/{tid}").json()
+    assert det["diagnosa"] is not None and det["log"][0]["aksi"] == "buat"
+    # ambil, tugaskan, selesai tanpa solusi ditolak, lalu selesai
+    assert k.post(f"/api/tiket/{tid}/aksi", json={"aksi": "ambil"}).status_code == 200
+    assert k.post(f"/api/tiket/{tid}/aksi", json={"aksi": "tugaskan", "teknisi": "joko"}).status_code == 400  # mitra bukan teknisi
+    assert k.post(f"/api/tiket/{tid}/aksi", json={"aksi": "tugaskan", "teknisi": "owner"}).status_code == 200
+    assert k.get("/api/tiket?status=saya").json()["tiket"] == []
+    assert o.get("/api/tiket?status=saya").json()["tiket"][0]["id"] == tid
+    assert o.post(f"/api/tiket/{tid}/aksi", json={"aksi": "selesai"}).status_code == 400
+    main._terkirim.clear()
+    assert o.post(f"/api/tiket/{tid}/aksi", json={"aksi": "selesai", "catatan": "Konektor ODP diganti"}).status_code == 200
+    assert any("selesai" in x["data"].get("text", "") for x in main._terkirim)
+    t = [x for x in m.get("/api/mitra/tiket").json()["tiket"] if x["id"] == tid][0]
+    assert t["status"] == "selesai" and t["solusi"] == "Konektor ODP diganti" and t["teknisi"] == "owner"
+    assert k.get("/api/tiket?status=terbuka").json()["ringkasan"]["selesai_30hari"] == 1
+    # buka lagi, lalu batal
+    assert k.post(f"/api/tiket/{tid}/aksi", json={"aksi": "buka", "catatan": "masih mati"}).status_code == 200
+    assert k.post(f"/api/tiket/{tid}/aksi", json={"aksi": "batal", "catatan": "dobel"}).status_code == 200
+    # tiket umum harus ada keterangan
+    assert k.post("/api/tiket", json={"kategori": "Lainnya"}).status_code == 400
+    t2 = k.post("/api/tiket", json={"kategori": "Kabel / ONU rusak", "keterangan": "Tiang roboh di RT 3",
+                                   "prioritas": "tinggi", "teknisi": "kasir"}).json()["id"]
+    assert k.get(f"/api/tiket/{t2}").json()["tiket"]["status"] == "dikerjakan"
+    # pengingat: tiket lama diingatkan sekali per periode
+    conn = main._billing_conn()
+    conn.execute("UPDATE tiket SET dibuat_pada='2020-01-01 08:00:00' WHERE id=?", (t2,))
+    conn.commit(); conn.close()
+    main._terkirim.clear()
+    main.proses_pengingat_tiket()
+    main.proses_pengingat_tiket()
+    assert sum("belum selesai" in x["data"].get("text", "") for x in main._terkirim) == 1
+    assert "#T" in main._format_tiket_list()
+    assert "Tiket gangguan terbuka" in main._build_daily_report_text()

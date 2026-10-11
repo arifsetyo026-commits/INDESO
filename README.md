@@ -8,7 +8,7 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
 - **Monitoring** — pelanggan PPPoE aktif dan bandwidth dari MikroTik (RouterOS API),
   redaman/kesehatan ONU dari OLT C-Data (SNMP). ONU dicocokkan ke pelanggan lewat MAC.
 - **Alert Telegram** — redaman kritis, pelanggan putus lebih dari 10 menit, gangguan
-  massal, laporan harian. Perintah bot: `/cek nama`, `/masalah`, `/boncos`, `/putus`.
+  massal, laporan harian. Perintah bot: `/cek nama`, `/masalah`, `/boncos`, `/putus`, `/tiket`.
 - **Alert & Event** — *Aktif*: masalah yang sedang terjadi (MikroTik/OLT tidak terjangkau,
   redaman kritis, hardware ONT, pelanggan putus, CPU/memori router tinggi, login gagal ke
   MikroTik). *Riwayat*: log MikroTik (error/critical/warning, login gagal, link down/up,
@@ -16,6 +16,15 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   per ONU, ONU offline/online, perubahan redaman, ONU baru), bisa difilter per sumber,
   tingkat, dan waktu. Disimpan 90 hari. Event kritis MikroTik (login gagal, reboot) dan
   OLT/MikroTik tidak terjangkau diteruskan ke Telegram (maks. sekali per 30 menit per jenis).
+- **Tiket gangguan** — keluhan pelanggan (atau gangguan umum/jaringan) dicatat sebagai
+  tiket: jenis masalah, keterangan, prioritas, teknisi (akun admin/owner). Detail tiket
+  menampilkan kondisi pelanggan saat itu (PPPoE online/offline, redaman ONU, isolir,
+  tunggakan), riwayat penanganan, dan tiket sebelumnya. Status: Baru → Dikerjakan →
+  Selesai (wajib isi solusi) / Dibatalkan, bisa dibuka lagi. Satu pelanggan hanya boleh
+  punya satu tiket terbuka. Tiket baru, penugasan, dan penyelesaian dikabarkan ke grup
+  Telegram; tiket yang belum selesai lebih dari 24 jam (diatur di Pengaturan) diingatkan,
+  dan masuk laporan harian. Mitra bisa melapor gangguan untuk pelanggannya dan memantau
+  statusnya.
 - **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
   nama/alamat/no. HP, pelanggan gratis, status Aktif/Berhenti (yang berhenti tidak
   ditagih, tidak diisolir otomatis, tidak dipantau putusnya). Saat ditandai Berhenti,
