@@ -550,7 +550,14 @@ def test_utang_cicilan_bulanan(siap):
     # laba: pokok di kategori perangkat + bunga di kategori bunga, pada bulan pembelian
     per_beli = body["tanggal"][:7]
     rk = {x["nama"]: x["total"] for x in o.get(f"/api/keuangan/ringkasan?periode={per_beli}").json()["per_kategori"]}
-    assert rk["Pembelian perangkat (ONT, router, kabel, dll.)"] == 1_200_000 and rk["Bunga & biaya cicilan"] == 60_000
+    assert rk["Pembelian perangkat (ONT, router, kabel, dll.)"] == 1_200_000
+    # bunga 60.000 diakui 20.000 per cicilan, di bulan jatuh tempo masing-masing (akrual)
+    jadwal_bln = [c["jatuh_tempo"][:7] for c in u["jadwal"]]
+    for p in sorted(set(jadwal_bln)):
+        rkp = {x["nama"]: x["total"] for x in o.get(f"/api/keuangan/ringkasan?periode={p}").json()["per_kategori"]}
+        assert rkp.get("Bunga & biaya cicilan", 0) == 20_000 * jadwal_bln.count(p)
+    if per_beli not in jadwal_bln:
+        assert "Bunga & biaya cicilan" not in rk
     # kas hanya berkurang sebesar cicilan yang dibayar
     rs = o.get(f"/api/keuangan/ringkasan?periode={per}").json()
     assert rs["bayar_utang"] == 420_000
@@ -721,3 +728,56 @@ def test_qty_transaksi(siap):
     assert (u["qty"], u["satuan"]) == (3, "pcs")
     csv = k.get(f"/api/keuangan/ekspor?periode={per}").text
     assert ";Qty;Satuan;" in csv and ";150.5;meter;" in csv and ";3;pcs;" in csv
+
+
+def test_sop_keuangan(siap):
+    """Pelunasan, tutup buku, nomor bukti, neraca seimbang, jejak hapus permanen."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now()
+    tgl, per = hari.strftime("%Y-%m-%d"), hari.strftime("%Y-%m")
+    kemarin = (hari - timedelta(days=1)).strftime("%Y-%m-%d")
+    # --- pelunasan: tanggal & metode, tidak menimpa tanggal lama, batal wajib alasan
+    o.post(f"/api/tagihan/buat?periode={per}")
+    t = o.get(f"/api/tagihan?periode={per}").json()["tagihan"][0]
+    assert k.post(f"/api/tagihan/{t['id']}/lunas", json={"tanggal": "2999-01-01", "metode": "tunai"}).status_code == 400
+    assert k.post(f"/api/tagihan/{t['id']}/lunas", json={"tanggal": kemarin, "metode": "transfer"}).status_code == 200
+    assert k.post(f"/api/tagihan/{t['id']}/lunas").json().get("sudah_lunas")
+    t2 = [x for x in o.get(f"/api/tagihan?periode={per}").json()["tagihan"] if x["id"] == t["id"]][0]
+    assert (t2["tgl_bayar"], t2["metode_bayar"], t2["lunas_oleh"]) == (kemarin, "transfer", "kasir")
+    assert k.post(f"/api/tagihan/{t['id']}/batal", json={"alasan": ""}).status_code == 400
+    # --- nomor bukti berurutan per jenis & bulan
+    a = k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "masuk", "kategori_id": kat["Setoran modal pemilik"], "jumlah": 5_000_000}).json()
+    b = k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kat["Listrik"], "jumlah": 200_000}).json()
+    c = k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kat["Listrik"], "jumlah": 50_000}).json()
+    yymm = per[2:4] + per[5:7]
+    assert a["nomor"] == f"BKM-{yymm}-0001" and b["nomor"] == f"BKK-{yymm}-0001" and c["nomor"] == f"BKK-{yymm}-0002"
+    k.post("/api/keuangan/utang", json={"tanggal": tgl, "pemasok": "Toko", "kategori_id": kat["Jasa & perbaikan"],
+                                        "jumlah": 600_000, "jatuh_tempo": "2099-01-01"})
+    # --- neraca seimbang: kas = utang + modal - prive + laba
+    d = o.get("/api/keuangan/keseluruhan").json()
+    n = d["neraca"]
+    assert n["seimbang"] and n["total_aset"] == n["total_pasiva"] and n["kewajiban"]["utang_usaha"] == 600_000
+    assert n["aset"]["kas"] == t["jumlah"] + 5_000_000 - 250_000
+    # --- tutup buku: hanya owner; setelah ditutup semua perubahan bulan itu ditolak
+    assert k.post(f"/api/keuangan/tutup-buku/{per}", json={}).status_code == 403
+    assert o.post("/api/keuangan/tutup-buku/2999-01", json={}).status_code == 400
+    assert o.post(f"/api/keuangan/tutup-buku/{per}", json={"catatan": "sudah dicek"}).status_code == 200
+    assert o.get(f"/api/keuangan/ringkasan?periode={per}").json()["tutup_buku"]["oleh"] == "owner"
+    body = {"tanggal": tgl, "jenis": "keluar", "kategori_id": kat["Listrik"], "jumlah": 1000}
+    assert k.post("/api/keuangan/transaksi", json=body).status_code == 409
+    assert o.post("/api/keuangan/transaksi", json=body).status_code == 409          # owner pun harus buka buku dulu
+    assert k.put(f"/api/keuangan/transaksi/{b['id']}", json={**body, "jumlah": 300_000}).status_code == 409
+    assert k.post(f"/api/keuangan/transaksi/{b['id']}/batal", json={"alasan": "salah"}).status_code == 409
+    assert k.post(f"/api/tagihan/{t['id']}/batal", json={"alasan": "salah input"}).status_code == 409
+    assert k.post("/api/keuangan/utang", json={"tanggal": tgl, "pemasok": "X", "kategori_id": kat["Listrik"], "jumlah": 1}).status_code == 409
+    # buka kembali wajib alasan, lalu bisa dikoreksi lagi
+    assert o.post(f"/api/keuangan/tutup-buku/{per}/buka", json={"alasan": ""}).status_code == 400
+    assert o.post(f"/api/keuangan/tutup-buku/{per}/buka", json={"alasan": "koreksi listrik"}).status_code == 200
+    assert k.post(f"/api/keuangan/transaksi/{c['id']}/batal", json={"alasan": "dobel"}).status_code == 200
+    # --- hapus permanen menyimpan salinan lengkap di log
+    assert o.delete(f"/api/keuangan/transaksi/{c['id']}").status_code == 200
+    log = [x["detail"] for x in o.get("/api/aktivitas").json()["aktivitas"] if x["aksi"] == "kas_hapus_permanen"][0]
+    assert "salinan data" in log and f"BKK-{yymm}-0002" in log
+    aksi = [x["aksi"] for x in o.get("/api/aktivitas").json()["aktivitas"]]
+    assert "tutup_buku" in aksi and "buka_buku" in aksi

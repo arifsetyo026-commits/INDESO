@@ -29,6 +29,7 @@ mapping manual.
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -1240,6 +1241,11 @@ def init_billing_db() -> None:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN secret_target TEXT")
         if "secret_nonaktif" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN secret_nonaktif INTEGER NOT NULL DEFAULT 0")
+        # Pelunasan: metode (untuk rekonsiliasi kas vs bank), siapa & kapan mencatat.
+        kol_tg = [r[1] for r in conn.execute("PRAGMA table_info(tagihan)").fetchall()]
+        for kol in ("metode_bayar", "lunas_oleh", "lunas_pada"):
+            if kol not in kol_tg:
+                conn.execute(f"ALTER TABLE tagihan ADD COLUMN {kol} TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS aktivitas (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2850,16 +2856,19 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
             (nama, (d.alamat or "").strip() or None, (d.no_hp or "").strip() or None,
              d.paket_id, int(d.gratis), status, berhenti_sejak, tampil_mitra, insentif_gratis, username),
         )
-        terhapus = 0
+        terhapus, hapus_rinci = 0, []
+        syarat = None
         if d.gratis:
-            terhapus = conn.execute("DELETE FROM tagihan WHERE username=? AND status='belum'", (username,)).rowcount
+            syarat = ("username=? AND status='belum'", (username,))
         elif status == "berhenti" and lama["status"] != "berhenti":
             # Tagihan bulan-bulan setelah bulan berhenti dibatalkan; tunggakan
             # sampai bulan ini tetap ada karena layanannya sudah dipakai.
-            terhapus = conn.execute(
-                "DELETE FROM tagihan WHERE username=? AND status='belum' AND periode > ?",
-                (username, sekarang.strftime("%Y-%m")),
-            ).rowcount
+            syarat = ("username=? AND status='belum' AND periode > ?", (username, sekarang.strftime("%Y-%m")))
+        if syarat:
+            # Penghapusan piutang dicatat rinci (periode & nominal) sebagai jejak audit.
+            hapus_rinci = conn.execute(f"SELECT periode, jumlah FROM tagihan WHERE {syarat[0]} ORDER BY periode",
+                                       syarat[1]).fetchall()
+            terhapus = conn.execute(f"DELETE FROM tagihan WHERE {syarat[0]}", syarat[1]).rowcount
         conn.commit()
     finally:
         conn.close()
@@ -2880,7 +2889,8 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
     if (lama["alamat"] or "") != (d.alamat or "").strip() or (lama["no_hp"] or "") != (d.no_hp or "").strip():
         perubahan.append("kontak/alamat diubah")
     if terhapus:
-        perubahan.append(f"{terhapus} tagihan belum bayar dihapus")
+        perubahan.append(f"{terhapus} tagihan belum bayar dihapus ({_rp(sum(r['jumlah'] for r in hapus_rinci))}: "
+                         + ", ".join(f"{r['periode']} {_rp(r['jumlah'])}" for r in hapus_rinci[:12]) + ")")
     if perubahan:
         catat_aktivitas(_oleh(request), "pelanggan_ubah", f"{username}: " + "; ".join(perubahan))
 
@@ -3026,7 +3036,8 @@ def list_tagihan(periode: str):
     conn = _billing_conn()
     try:
         rows = conn.execute(
-            "SELECT t.id, t.username, p.nama, p.no_hp, t.jumlah, t.jatuh_tempo, t.status, t.tgl_bayar "
+            "SELECT t.id, t.username, p.nama, p.no_hp, t.jumlah, t.jatuh_tempo, t.status, t.tgl_bayar, "
+            "t.metode_bayar, t.lunas_oleh, t.lunas_pada "
             "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
             "WHERE t.periode = ? ORDER BY t.status ASC, p.nama COLLATE NOCASE",
             (periode,),
@@ -3065,34 +3076,64 @@ def _info_tagihan(conn, tagihan_id: int):
     return r
 
 
+class BatalIn(BaseModel):
+    alasan: str
+
+
+class LunasIn(BaseModel):
+    tanggal: Optional[str] = None       # tanggal uang diterima; kosong = hari ini
+    metode: str = "tunai"
+
+
 @app.post("/api/tagihan/{tagihan_id}/lunas")
-def tandai_lunas(tagihan_id: int, request: Request):
+def tandai_lunas(tagihan_id: int, request: Request, d: Optional[LunasIn] = None):
+    d = d or LunasIn()
+    tanggal = d.tanggal or datetime.now().strftime("%Y-%m-%d")
+    _cek_tanggal_lalu(tanggal, "Tanggal bayar")
+    if tanggal > datetime.now().strftime("%Y-%m-%d"):
+        raise HTTPException(status_code=400, detail="Tanggal bayar tidak boleh di masa depan.")
+    if d.metode not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode harus tunai, transfer, qris, atau lainnya.")
     conn = _billing_conn()
     try:
         t = _info_tagihan(conn, tagihan_id)
+        if t["status"] == "lunas":
+            # Jangan menimpa tanggal bayar lama: pendapatan bulan itu bisa pindah ke hari ini.
+            return {"ok": True, "sudah_lunas": True}
+        _wajib_buku_terbuka(conn, tanggal)
         conn.execute(
-            "UPDATE tagihan SET status='lunas', tgl_bayar=? WHERE id=?",
-            (datetime.now().strftime("%Y-%m-%d"), tagihan_id),
+            "UPDATE tagihan SET status='lunas', tgl_bayar=?, metode_bayar=?, lunas_oleh=?, lunas_pada=? WHERE id=?",
+            (tanggal, d.metode, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tagihan_id),
         )
         conn.commit()
     finally:
         conn.close()
-    if t["status"] != "lunas":
-        catat_aktivitas(_oleh(request), "tagihan_lunas", f"{t['username']} {t['periode']} {_rp(t['jumlah'])}")
+    catat_aktivitas(_oleh(request), "tagihan_lunas",
+                    f"{t['username']} {t['periode']} {_rp(t['jumlah'])} · dibayar {tanggal} ({d.metode})")
     return {"ok": True}
 
 
 @app.post("/api/tagihan/{tagihan_id}/batal")
-def batalkan_lunas(tagihan_id: int, request: Request):
+def batalkan_lunas(tagihan_id: int, d: BatalIn, request: Request):
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan pembatalan pelunasan.")
     conn = _billing_conn()
     try:
-        t = _info_tagihan(conn, tagihan_id)
-        conn.execute("UPDATE tagihan SET status='belum', tgl_bayar=NULL WHERE id=?", (tagihan_id,))
+        t = conn.execute("SELECT * FROM tagihan WHERE id=?", (tagihan_id,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tagihan tidak ditemukan.")
+        if t["status"] != "lunas":
+            return {"ok": True}
+        _wajib_buku_terbuka(conn, t["tgl_bayar"])
+        conn.execute("UPDATE tagihan SET status='belum', tgl_bayar=NULL, metode_bayar=NULL, lunas_oleh=NULL, "
+                     "lunas_pada=NULL WHERE id=?", (tagihan_id,))
         conn.commit()
     finally:
         conn.close()
-    if t["status"] == "lunas":
-        catat_aktivitas(_oleh(request), "tagihan_batal_lunas", f"{t['username']} {t['periode']} {_rp(t['jumlah'])}")
+    catat_aktivitas(_oleh(request), "tagihan_batal_lunas",
+                    f"{t['username']} {t['periode']} {_rp(t['jumlah'])} · pembayaran {t['tgl_bayar']} "
+                    f"({t['metode_bayar'] or '-'}, dicatat {t['lunas_oleh'] or '-'}) dibatalkan: {alasan[:150]}")
     return {"ok": True}
 
 
@@ -3129,6 +3170,17 @@ _METODE = ("tunai", "transfer", "qris", "lainnya")
 _KAT_BAYAR_UTANG = "Pembayaran utang"
 _KAT_INSENTIF = "Insentif mitra"     # dibayar lewat tab Insentif, terikat ke periode
 _KAT_BUNGA = "Bunga & biaya cicilan"  # selisih total cicilan dengan harga barang
+
+
+def _beri_nomor(conn, tid: int) -> str:
+    """Nomor bukti kas: BKM-YYMM-0001 (masuk) / BKK-YYMM-0001 (keluar), berurutan per bulan tanggal transaksi."""
+    jenis, tanggal = conn.execute("SELECT jenis, tanggal FROM transaksi WHERE id=?", (tid,)).fetchone()
+    awalan = f"{'BKM' if jenis == 'masuk' else 'BKK'}-{tanggal[2:4]}{tanggal[5:7]}-"
+    terakhir = conn.execute("SELECT MAX(CAST(substr(nomor, 10) AS INTEGER)) FROM transaksi WHERE nomor LIKE ?",
+                            (awalan + "%",)).fetchone()[0] or 0
+    nomor = f"{awalan}{terakhir + 1:04d}"
+    conn.execute("UPDATE transaksi SET nomor=? WHERE id=?", (nomor, tid))
+    return nomor
 
 
 def init_keuangan_db() -> None:
@@ -3180,9 +3232,13 @@ def init_keuangan_db() -> None:
         if "insentif_periode" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
             conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_periode TEXT")
         # Banyaknya barang (mis. 10 pcs, 150 meter) — opsional, untuk keterangan & harga satuan.
-        for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT")):
+        for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT"), ("nomor", "TEXT")):
             if kol not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
                 conn.execute(f"ALTER TABLE transaksi ADD COLUMN {kol} {tipe}")
+        # Nomor bukti kas berurutan per bulan: BKM (bukti kas masuk) / BKK (bukti kas keluar).
+        for (tid,) in conn.execute("SELECT id FROM transaksi WHERE nomor IS NULL ORDER BY tanggal, id").fetchall():
+            _beri_nomor(conn, tid)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_transaksi_nomor ON transaksi(nomor)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS utang (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3201,6 +3257,9 @@ def init_keuangan_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_utang_tanggal ON utang(tanggal)")
+        # Tutup buku: bulan yang sudah diperiksa owner dikunci, tidak bisa ditambah/diubah/dihapus.
+        conn.execute("CREATE TABLE IF NOT EXISTS tutup_buku (periode TEXT PRIMARY KEY, oleh TEXT NOT NULL, "
+                     "pada TEXT NOT NULL, catatan TEXT)")
         for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT")):
             if kol not in [r[1] for r in conn.execute("PRAGMA table_info(utang)")]:
                 conn.execute(f"ALTER TABLE utang ADD COLUMN {kol} {tipe}")
@@ -3242,6 +3301,20 @@ def _batas_periode(periode: str) -> tuple[str, str]:
     return awal.strftime("%Y-%m-%d"), akhir.strftime("%Y-%m-%d")
 
 
+def _bunga_diakui(conn, awal: str, akhir: str) -> tuple[int, int]:
+    """(total bunga, jumlah utang) yang diakui untuk cicilan jatuh tempo di [awal, akhir).
+    Bunga dibagi rata per cicilan; sisa pembulatan masuk cicilan terakhir."""
+    total, utang = 0, set()
+    for r in conn.execute(
+            "SELECT u.id, u.jumlah - u.pokok AS bunga, u.tenor, c.ke FROM utang u JOIN utang_cicilan c ON c.utang_id = u.id "
+            "WHERE u.status='aktif' AND u.pokok IS NOT NULL AND u.jumlah > u.pokok AND u.tenor > 0 "
+            "AND c.jatuh_tempo >= ? AND c.jatuh_tempo < ?", (awal, akhir)):
+        bagian = r["bunga"] // r["tenor"] + (r["bunga"] % r["tenor"] if r["ke"] == r["tenor"] else 0)
+        total += bagian
+        utang.add(r["id"])
+    return total, len(utang)
+
+
 def _ringkas_periode(conn, periode: str) -> dict:
     """Laba: pendapatan (langganan lunas + pemasukan) - beban (pengeluaran tunai +
     pembelian kredit, dihitung pada tanggal pembelian). Kas: hanya uang yang
@@ -3263,11 +3336,10 @@ def _ringkas_periode(conn, periode: str) -> dict:
         "WHERE u.status='aktif' AND u.tanggal >= ? AND u.tanggal < ? GROUP BY u.kategori_id",
         (awal, akhir),
     ).fetchall()}
-    # Bunga/biaya cicilan (total cicilan - harga barang) dibebankan ke kategorinya sendiri
-    bunga = conn.execute(
-        "SELECT COALESCE(SUM(u.jumlah - u.pokok),0), COUNT(*) FROM utang u WHERE u.status='aktif' "
-        "AND u.pokok IS NOT NULL AND u.jumlah > u.pokok AND u.tanggal >= ? AND u.tanggal < ?", (awal, akhir)
-    ).fetchone()
+    # Bunga/biaya cicilan (total cicilan - harga barang) adalah biaya pendanaan: diakui per
+    # bulan sesuai jadwal cicilan yang jatuh tempo di periode ini (basis akrual), bukan
+    # sekaligus di bulan pembelian.
+    bunga = _bunga_diakui(conn, awal, akhir)
     if bunga[0]:
         kb = conn.execute("SELECT id FROM kategori_kas WHERE nama = ? AND jenis='keluar'", (_KAT_BUNGA,)).fetchone()
         if kb:
@@ -3362,8 +3434,15 @@ def keuangan_ringkasan(periode: str, request: Request):
         ).fetchall()
     finally:
         conn.close()
+    conn = _billing_conn()
+    try:
+        tb = _buku_tertutup(conn, periode)
+    finally:
+        conn.close()
     return {
         **ini,
+        "tutup_buku": dict(tb) if tb else None,
+        "kas_negatif": saldo_akhir < 0,
         "bulan_lalu": {k: lalu[k] for k in ("pendapatan", "beban", "laba")},
         "tren": tren,
         "saldo_awal": saldo_awal, "saldo_akhir": saldo_akhir,
@@ -3412,6 +3491,9 @@ def keuangan_keseluruhan(request: Request):
             p = _geser_periode(p, 1)
         saldo_kas = _saldo_kas_sampai(conn, (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"))
         utang_info = _ringkas_utang(conn)
+        # Bunga cicilan yang jatuh tempo setelah bulan ini belum menjadi beban, jadi juga belum
+        # menjadi kewajiban yang sudah terjadi (dikurangkan dari sisa utang di neraca).
+        bunga_tangguh = _bunga_diakui(conn, _batas_periode(periode_ini)[1], "9999-12-31")[0]
         piutang = conn.execute(
             "SELECT COALESCE(SUM(t.jumlah),0), COUNT(*), COUNT(DISTINCT t.username) FROM tagihan t "
             "JOIN pelanggan p ON p.username = t.username WHERE t.status='belum'").fetchone()
@@ -3433,6 +3515,21 @@ def keuangan_keseluruhan(request: Request):
             t[k] += b[k]
         t["bulan"] += 1
     ada_data = [b for b in bulanan if b["pendapatan"] or b["beban"]]
+    # Neraca sederhana (posisi hari ini). Aset = Kewajiban + Ekuitas harus selalu seimbang;
+    # bila tidak, ada data yang janggal dan ditampilkan sebagai peringatan.
+    utang_bersih = utang_info["sisa"] - bunga_tangguh
+    aset = {"kas": saldo_kas, "bunga_dibayar_dimuka": max(0, -utang_bersih)}
+    kewajiban = {"utang_usaha": max(0, utang_bersih)}
+    ekuitas = {"modal_disetor": total["modal_masuk"], "prive": -total["prive"], "laba_ditahan": total["laba"]}
+    total_aset, total_pasiva = sum(aset.values()), sum(kewajiban.values()) + sum(ekuitas.values())
+    peringatan = []
+    if total_aset != total_pasiva:
+        peringatan.append(f"Neraca tidak seimbang (selisih {_rp(total_aset - total_pasiva)}). Periksa transaksi bertanggal di masa depan atau data yang diubah langsung di database.")
+    minus = [b["periode"] for b in bulanan if b["saldo_akhir"] < 0]
+    if minus:
+        peringatan.append(f"Saldo kas tercatat negatif pada {', '.join(_nama_periode(p) for p in minus[:6])}"
+                          f"{' dan bulan lain' if len(minus) > 6 else ''}. Uang tidak mungkin minus — kemungkinan ada "
+                          "setoran modal/pemasukan yang belum dicatat, atau pengeluaran tercatat dobel.")
     return {
         "mulai": mulai, "sampai": periode_ini, "jumlah_bulan": len(bulanan),
         "total": total, "saldo_kas": saldo_kas,
@@ -3445,6 +3542,10 @@ def keuangan_keseluruhan(request: Request):
         "piutang": {"total": piutang[0], "jumlah": piutang[1], "pelanggan": piutang[2]},
         "pelanggan": {"berbayar": pelanggan[0] or 0, "gratis": pelanggan[1] or 0, "berhenti": pelanggan[2] or 0},
         "jumlah_transaksi": jml_trx, "jumlah_pembayaran": jml_bayar,
+        "neraca": {"aset": aset, "kewajiban": kewajiban, "ekuitas": ekuitas, "total_aset": total_aset,
+                   "total_pasiva": total_pasiva, "seimbang": total_aset == total_pasiva,
+                   "piutang_belum_diakui": piutang[0], "bunga_belum_jatuh_tempo": bunga_tangguh},
+        "peringatan": peringatan,
         "bulanan": bulanan, "tahunan": list(tahunan.values()),
         "per_kategori": sorted(kategori.values(), key=lambda g: -g["total"]),
     }
@@ -3484,10 +3585,6 @@ def keuangan_tambah_kategori(d: KategoriIn, request: Request):
         conn.close()
     catat_aktivitas(_oleh(request), "kas_kategori", f"tambah kategori {d.jenis}: {nama}")
     return {"id": cur.lastrowid}
-
-
-class BatalIn(BaseModel):
-    alasan: str
 
 
 def _daftar_utang(conn, hanya_belum: bool = False) -> list[dict]:
@@ -3595,6 +3692,7 @@ def _catat_bayar_utang(conn, utang_id: int, d: BayarUtangIn, oleh: str) -> int:
         (d.tanggal, _id_kat_bayar_utang(conn), d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
          oleh, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), utang_id),
     )
+    _beri_nomor(conn, cur.lastrowid)
     return cur.lastrowid
 
 
@@ -3761,7 +3859,9 @@ def hapus_nota(nid: int, request: Request):
         r = conn.execute("SELECT * FROM nota WHERE id = ? AND dihapus_pada IS NULL", (nid,)).fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="Nota tidak ditemukan.")
-        _boleh_kelola_nota(request, _ambil_pemilik_nota(conn, r["pemilik"], r["pemilik_id"]))
+        item = _ambil_pemilik_nota(conn, r["pemilik"], r["pemilik_id"])
+        _boleh_kelola_nota(request, item)
+        _wajib_buku_terbuka(conn, item["tanggal"])
         conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE id=?",
                      (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), nid))
         conn.commit()
@@ -3798,6 +3898,89 @@ def _cek_tanggal_lalu(t: str, label: str = "Tanggal") -> None:
         raise HTTPException(status_code=400, detail=f"{label} tidak valid.")
     if t > (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"):
         raise HTTPException(status_code=400, detail=f"{label} tidak boleh di masa depan.")
+
+
+# ------------------------------------------------------------
+# Tutup buku. Setelah owner memeriksa satu bulan, bulan itu dikunci: tidak ada transaksi,
+# pelunasan, utang, pembayaran, atau penghapusan yang boleh bertanggal di bulan itu, supaya
+# laporan yang sudah dikirim/diperiksa tidak berubah diam-diam. Koreksi dicatat di bulan
+# berjalan, atau owner membuka kembali bukunya dengan alasan (tercatat di log).
+# ------------------------------------------------------------
+
+def _buku_tertutup(conn, tanggal: Optional[str]):
+    if not tanggal:
+        return None
+    try:
+        return conn.execute("SELECT * FROM tutup_buku WHERE periode = ?", (str(tanggal)[:7],)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+
+
+def _wajib_buku_terbuka(conn, *tanggal: Optional[str]) -> None:
+    for t in tanggal:
+        r = _buku_tertutup(conn, t)
+        if r:
+            raise HTTPException(status_code=409, detail=(
+                f"Buku {_nama_periode(r['periode'])} sudah ditutup oleh {r['oleh']}. Catat koreksinya di bulan berjalan, "
+                f"atau minta owner membuka kembali buku bulan itu."))
+
+
+class TutupBukuIn(BaseModel):
+    catatan: Optional[str] = None
+
+
+@app.get("/api/keuangan/tutup-buku")
+def daftar_tutup_buku(request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM tutup_buku ORDER BY periode DESC")]
+    finally:
+        conn.close()
+    return {"tutup_buku": rows}
+
+
+@app.post("/api/keuangan/tutup-buku/{periode}")
+def tutup_buku(periode: str, d: TutupBukuIn, request: Request):
+    _wajib_owner(request, "Tutup buku hanya bisa dilakukan owner.")
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    if periode > datetime.now().strftime("%Y-%m"):
+        raise HTTPException(status_code=400, detail="Bulan yang belum berjalan tidak bisa ditutup.")
+    conn = _billing_conn()
+    try:
+        if _buku_tertutup(conn, periode):
+            raise HTTPException(status_code=400, detail="Buku bulan ini sudah ditutup.")
+        r = _ringkas_periode(conn, periode)
+        conn.execute("INSERT INTO tutup_buku (periode, oleh, pada, catatan) VALUES (?,?,?,?)",
+                     (periode, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                      (d.catatan or "").strip()[:300] or None))
+        saldo = _saldo_kas_sampai(conn, _batas_periode(periode)[1])
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "tutup_buku",
+                    f"{_nama_periode(periode)} ditutup · pendapatan {_rp(r['pendapatan'])}, beban {_rp(r['beban'])}, "
+                    f"laba {_rp(r['laba'])}, saldo kas akhir {_rp(saldo)}" + (f" · {d.catatan.strip()[:120]}" if d.catatan and d.catatan.strip() else ""))
+    return {"ok": True}
+
+
+@app.post("/api/keuangan/tutup-buku/{periode}/buka")
+def buka_buku(periode: str, d: BatalIn, request: Request):
+    _wajib_owner(request, "Membuka kembali buku hanya bisa dilakukan owner.")
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan membuka kembali buku.")
+    conn = _billing_conn()
+    try:
+        if not _buku_tertutup(conn, periode):
+            raise HTTPException(status_code=404, detail="Buku bulan ini belum ditutup.")
+        conn.execute("DELETE FROM tutup_buku WHERE periode = ?", (periode,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "buka_buku", f"{_nama_periode(periode)} dibuka kembali: {alasan[:200]}")
+    return {"ok": True}
 
 
 @app.get("/api/keuangan/utang")
@@ -3868,6 +4051,7 @@ def keuangan_tambah_utang(d: UtangIn, request: Request):
         k = conn.execute("SELECT nama, jenis, pengaruh_laba, khusus FROM kategori_kas WHERE id = ?", (d.kategori_id,)).fetchone()
         if not k or k["jenis"] != "keluar" or k["khusus"] or not k["pengaruh_laba"]:
             raise HTTPException(status_code=400, detail="Pilih kategori pengeluaran (beban) untuk pembelian kredit.")
+        _wajib_buku_terbuka(conn, d.tanggal)
         oleh = _oleh(request)
         cur = conn.execute(
             "INSERT INTO utang (tanggal, pemasok, kategori_id, jumlah, jatuh_tempo, keterangan, dicatat_oleh, dicatat_pada, "
@@ -3912,6 +4096,7 @@ def keuangan_bayar_utang(uid: int, d: BayarUtangIn, request: Request):
             raise HTTPException(status_code=400, detail=f"Jumlah bayar harus 1 sampai {_rp(u['sisa'])} (sisa utang).")
         if d.tanggal < u["tanggal"]:
             raise HTTPException(status_code=400, detail="Tanggal bayar tidak boleh sebelum tanggal pembelian.")
+        _wajib_buku_terbuka(conn, d.tanggal)
         tid = _catat_bayar_utang(conn, uid, d, _oleh(request))
         conn.commit()
     finally:
@@ -3939,6 +4124,7 @@ def keuangan_batal_utang(uid: int, d: BatalIn, request: Request):
         bayar = conn.execute("SELECT * FROM transaksi WHERE utang_id = ? AND status='aktif'", (uid,)).fetchall()
         for t in bayar:
             _boleh_ubah_transaksi(request, t)
+        _wajib_buku_terbuka(conn, u["tanggal"], *[t["tanggal"] for t in bayar])
         waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("UPDATE utang SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
                      (_oleh(request), waktu, alasan[:300], uid))
@@ -3953,9 +4139,9 @@ def keuangan_batal_utang(uid: int, d: BatalIn, request: Request):
     return {"ok": True, "pembayaran_ikut_dihapus": len(bayar)}
 
 
-def _wajib_owner(request: Request) -> None:
+def _wajib_owner(request: Request, pesan: str = "Hapus permanen hanya bisa dilakukan owner.") -> None:
     if request.state.peran != "owner":
-        raise HTTPException(status_code=403, detail="Hapus permanen hanya bisa dilakukan owner.")
+        raise HTTPException(status_code=403, detail=pesan)
 
 
 @app.delete("/api/keuangan/transaksi/{tid}")
@@ -3971,6 +4157,7 @@ def keuangan_hapus_permanen(tid: int, request: Request):
             raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan.")
         if t["status"] != "batal":
             raise HTTPException(status_code=400, detail="Hapus (batalkan) dulu transaksinya, baru bisa dihapus permanen.")
+        _wajib_buku_terbuka(conn, t["tanggal"])
         conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE pemilik='transaksi' AND pemilik_id=? "
                      "AND dihapus_pada IS NULL", (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid))
         conn.execute("DELETE FROM transaksi WHERE id = ?", (tid,))
@@ -3979,7 +4166,9 @@ def keuangan_hapus_permanen(tid: int, request: Request):
         conn.close()
     catat_aktivitas(_oleh(request), "kas_hapus_permanen",
                     f"#{tid} {t['tanggal']} {t['jenis']} {_rp(t['jumlah'])} · {t['kategori']} · {t['keterangan'] or '-'} "
-                    f"(dicatat {t['dicatat_oleh']}, alasan hapus: {t['batal_alasan'] or '-'})")
+                    f"(dicatat {t['dicatat_oleh']}, alasan hapus: {t['batal_alasan'] or '-'})"
+                    # Salinan lengkap baris yang dihapus tetap tersimpan sebagai jejak audit.
+                    + " | salinan data: " + json.dumps(dict(t), ensure_ascii=False, default=str))
     return {"ok": True}
 
 
@@ -3994,7 +4183,9 @@ def keuangan_hapus_utang_permanen(uid: int, request: Request):
         if u["status"] != "batal":
             raise HTTPException(status_code=400, detail="Hapus (batalkan) dulu utangnya, baru bisa dihapus permanen.")
         waktu = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ids = [r[0] for r in conn.execute("SELECT id FROM transaksi WHERE utang_id = ?", (uid,))]
+        bayar = [dict(r) for r in conn.execute("SELECT * FROM transaksi WHERE utang_id = ?", (uid,))]
+        ids = [b["id"] for b in bayar]
+        _wajib_buku_terbuka(conn, u["tanggal"], *[b["tanggal"] for b in bayar])
         conn.execute("UPDATE nota SET dihapus_oleh=?, dihapus_pada=? WHERE dihapus_pada IS NULL AND "
                      "((pemilik='utang' AND pemilik_id=?) OR (pemilik='transaksi' AND pemilik_id IN "
                      "(SELECT id FROM transaksi WHERE utang_id=?)))", (_oleh(request), waktu, uid, uid))
@@ -4006,7 +4197,8 @@ def keuangan_hapus_utang_permanen(uid: int, request: Request):
         conn.close()
     catat_aktivitas(_oleh(request), "kas_hapus_permanen",
                     f"utang #U{uid} {u['tanggal']} {u['pemasok']} {_rp(u['jumlah'])} (dicatat {u['dicatat_oleh']}, "
-                    f"alasan hapus: {u['batal_alasan'] or '-'})" + (f", {len(ids)} pembayaran ikut terhapus" if ids else ""))
+                    f"alasan hapus: {u['batal_alasan'] or '-'})" + (f", {len(ids)} pembayaran ikut terhapus" if ids else "")
+                    + " | salinan data: " + json.dumps({"utang": dict(u), "pembayaran": bayar}, ensure_ascii=False, default=str))
     return {"ok": True}
 
 
@@ -4140,6 +4332,7 @@ def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
         raise HTTPException(status_code=400, detail="Tanggal bayar tidak boleh sebelum bulan insentifnya.")
     conn = _billing_conn()
     try:
+        _wajib_buku_terbuka(conn, d.tanggal)
         ins = _hitung_insentif(conn, periode)
         sisa = ins["total"] - _insentif_dibayar(conn, periode)
         if sisa <= 0:
@@ -4159,11 +4352,12 @@ def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
             (d.tanggal, kid[0], d.jumlah, d.metode, ket, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
              periode),
         )
+        nomor = _beri_nomor(conn, cur.lastrowid)
         conn.commit()
     finally:
         conn.close()
     catat_aktivitas(_oleh(request), "insentif_bayar",
-                    f"{_nama_periode(periode)}: bayar {_rp(d.jumlah)} ({d.metode})"
+                    f"{nomor} {_nama_periode(periode)}: bayar {_rp(d.jumlah)} ({d.metode})"
                     + (f" ke {penerima}" if penerima else "") + f", sisa {_rp(sisa - d.jumlah)}")
     return {"ok": True, "transaksi_id": cur.lastrowid, "sisa": sisa - d.jumlah}
 
@@ -4230,20 +4424,22 @@ def keuangan_tambah(d: TransaksiIn, request: Request):
     conn = _billing_conn()
     try:
         kat = _cek_transaksi(conn, d)
+        _wajib_buku_terbuka(conn, d.tanggal)
         cur = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
             "qty, satuan) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
              _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.qty, d.satuan),
         )
+        nomor = _beri_nomor(conn, cur.lastrowid)
         conn.commit()
     finally:
         conn.close()
     catat_aktivitas(_oleh(request), "kas_catat",
-                    f"#{cur.lastrowid} {'masuk' if d.jenis == 'masuk' else 'keluar'} {_rp(d.jumlah)} · {kat} · {d.tanggal}"
+                    f"{nomor} {'masuk' if d.jenis == 'masuk' else 'keluar'} {_rp(d.jumlah)} · {kat} · {d.tanggal}"
                     + (f" · {_teks_qty(d.qty, d.satuan)}" if d.qty else "")
                     + (f" · {d.keterangan.strip()[:80]}" if d.keterangan and d.keterangan.strip() else ""))
-    return {"id": cur.lastrowid}
+    return {"id": cur.lastrowid, "nomor": nomor}
 
 
 def _boleh_ubah_transaksi(request: Request, t) -> None:
@@ -4273,12 +4469,18 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
             raise HTTPException(status_code=400, detail="Pembayaran insentif tidak bisa diubah. Batalkan, lalu bayar ulang dari tab Insentif.")
         _boleh_ubah_transaksi(request, t)
         kat = _cek_transaksi(conn, d)
+        _wajib_buku_terbuka(conn, t["tanggal"], d.tanggal)
         conn.execute(
             "UPDATE transaksi SET tanggal=?, jenis=?, kategori_id=?, jumlah=?, metode=?, keterangan=?, "
             "qty=?, satuan=?, diubah_oleh=?, diubah_pada=? WHERE id=?",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
              d.qty, d.satuan, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
         )
+        nomor_baru = None
+        if d.jenis != t["jenis"] or d.tanggal[:7] != t["tanggal"][:7]:
+            # Bukti kas lama tidak berlaku lagi (jenis/bulan berubah): terbitkan nomor baru, nomor lama tercatat di log.
+            conn.execute("UPDATE transaksi SET nomor=NULL WHERE id=?", (tid,))
+            nomor_baru = _beri_nomor(conn, tid)
         conn.commit()
     finally:
         conn.close()
@@ -4287,8 +4489,10 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
         ("kategori", t["kategori"], kat), ("metode", t["metode"], d.metode),
         ("qty", _teks_qty(t["qty"], t["satuan"]) or "-", _teks_qty(d.qty, d.satuan) or "-"),
         ("keterangan", t["keterangan"] or "-", (d.keterangan or "").strip() or "-")) if a != b]
+    if nomor_baru:
+        ubah.append(f"nomor bukti: {t['nomor']} → {nomor_baru}")
     if ubah:
-        catat_aktivitas(_oleh(request), "kas_ubah", f"#{tid} " + "; ".join(ubah))
+        catat_aktivitas(_oleh(request), "kas_ubah", f"{nomor_baru or t['nomor'] or '#' + str(tid)} " + "; ".join(ubah))
     return {"ok": True}
 
 
@@ -4306,6 +4510,7 @@ def keuangan_batal(tid: int, d: BatalIn, request: Request):
         if t["status"] != "aktif":
             raise HTTPException(status_code=400, detail="Transaksi sudah dibatalkan.")
         _boleh_ubah_transaksi(request, t)
+        _wajib_buku_terbuka(conn, t["tanggal"])
         conn.execute("UPDATE transaksi SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
                      (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), alasan[:300], tid))
         conn.commit()
@@ -4319,7 +4524,7 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
     awal, akhir = _batas_periode(periode)
     sql = ("SELECT t.id, t.tanggal, t.jenis, t.kategori_id, k.nama AS kategori, k.pengaruh_laba, t.jumlah, t.metode, "
            "t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.diubah_oleh, t.diubah_pada, t.status, "
-           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, "
+           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, t.nomor, "
            "(SELECT u.pemasok FROM utang u WHERE u.id = t.utang_id) AS pemasok "
            "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.tanggal >= ? AND t.tanggal < ?")
     arg: list = [awal, akhir]
@@ -4427,22 +4632,22 @@ def _buat_csv_keuangan(periode: str) -> str:
         conn.close()
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
-    w.writerow(["Tanggal", "Jenis", "Kategori", "Jumlah", "Qty", "Satuan", "Metode", "Keterangan", "Dicatat oleh", "Status", "Alasan batal"])
+    w.writerow(["No. bukti", "Tanggal", "Jenis", "Kategori", "Jumlah", "Qty", "Satuan", "Metode", "Keterangan", "Dicatat oleh", "Status", "Alasan batal"])
     def aman(v):
         # Cegah formula injection saat CSV dibuka di Excel (=, +, -, @ di awal sel)
         v = "" if v is None else str(v)
         return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
     for b in bayar:
-        w.writerow([b["tgl_bayar"], "masuk", "Pembayaran langganan", b["jumlah"], "", "", "", aman(f"{b['nama']} ({b['username']}) periode {b['periode']}"), "billing", "aktif", ""])
+        w.writerow(["", b["tgl_bayar"], "masuk", "Pembayaran langganan", b["jumlah"], "", "", "", aman(f"{b['nama']} ({b['username']}) periode {b['periode']}"), "billing", "aktif", ""])
     for t in trx:
         ket = t["keterangan"] or ""
         if t["utang_id"]:
             ket = f"Bayar utang #U{t['utang_id']} {t['pemasok'] or ''}" + (f" · {ket}" if ket else "")
-        w.writerow([t["tanggal"], t["jenis"], aman(t["kategori"]), t["jumlah"], _angka_qty(t["qty"]) or "", aman(t["satuan"] or ""),
+        w.writerow([t["nomor"] or "", t["tanggal"], t["jenis"], aman(t["kategori"]), t["jumlah"], _angka_qty(t["qty"]) or "", aman(t["satuan"] or ""),
                     t["metode"], aman(ket),
                     aman(t["dicatat_oleh"]), t["status"], aman(t["batal_alasan"])])
     for u in utang:
-        w.writerow([u["tanggal"], "kredit (utang)", aman(u["kategori"]), u["jumlah"], _angka_qty(u["qty"]) or "", aman(u["satuan"] or ""), "kredit",
+        w.writerow([f"#U{u['id']}", u["tanggal"], "kredit (utang)", aman(u["kategori"]), u["jumlah"], _angka_qty(u["qty"]) or "", aman(u["satuan"] or ""), "kredit",
                     aman(f"#U{u['id']} {u['pemasok']}"
                          + (f" · cicilan {u['tenor']}x {u['cicilan']}, harga barang {u['pokok']}" if u["tenor"] else "")
                          + (f" · jatuh tempo {u['jatuh_tempo']}" if u["jatuh_tempo"] else "")
@@ -4590,6 +4795,13 @@ def susun_laporan_bulanan(periode: str) -> str:
         for d in tn["daftar"][:5]:
             L.append(f"  • {d['kode']} {d['tanggal'][8:10]}/{d['tanggal'][5:7]} {_esc(d['kategori'])}: {_rp(d['jumlah'])}"
                      f" ({_esc(d['dicatat_oleh'])})")
+    conn = _billing_conn()
+    try:
+        tb = _buku_tertutup(conn, periode)
+    finally:
+        conn.close()
+    L += ["", (f"🔒 Buku {nama_bln} sudah ditutup oleh {_esc(tb['oleh'])}." if tb else
+               f"⚠️ Buku {nama_bln} belum ditutup — periksa transaksinya lalu tutup buku di menu Keuangan → Ringkasan.")]
     L += ["", f"<i>{n_trx[0]} transaksi dicatat oleh {n_trx[1]} petugas"
           + (f", {n_batal} dibatalkan" if n_batal else "") + ". Rincian di berkas CSV terlampir.</i>"]
     teks = "\n".join(L)
