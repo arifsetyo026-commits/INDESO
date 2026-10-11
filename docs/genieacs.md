@@ -44,7 +44,7 @@ Masuk ke VPS lewat SSH, lalu:
 ```bash
 git clone https://github.com/arifsetyo026-commits/INDESO.git
 cd INDESO/deploy/genieacs
-sudo PPPOE_SUBNET=10.10.0.0/16 LAN_SUBNET=192.168.50.0/24 bash install.sh
+sudo PPPOE_SUBNET=172.20.52.0/24 LAN_SUBNET=192.168.50.0/24 bash install.sh
 ```
 
 Ganti kedua nilai sesuai jaringan Anda:
@@ -54,7 +54,11 @@ Ganti kedua nilai sesuai jaringan Anda:
 | `PPPOE_SUBNET` | Pool IP yang dibagikan ke pelanggan PPPoE | `/ip pool print` |
 | `LAN_SUBNET` | Jaringan kantor tempat HP Termux INDESO terhubung | `/ip address print` |
 
-Skrip ini memasang MongoDB, GenieACS, nginx, dan WireGuard, lalu menyalakan firewall.
+Skrip ini memasang MongoDB, GenieACS, nginx, dan WireGuard. Skrip aman untuk VPS yang sudah
+menjalankan layanan lain:
+- memakai antarmuka WireGuard sendiri (`wgacs`) dan port UDP yang belum terpakai (51820–51840);
+- semua layanan ACS hanya mendengarkan di 10.99.0.1 atau localhost;
+- firewall `ufw` tidak dinyalakan paksa. Bila sudah aktif, skrip hanya menambah izin yang diperlukan.
 Di akhir, skrip mencetak tiga hal. Simpan ketiganya:
 
 1. **Password NBI** untuk `.env` INDESO (juga tersimpan di `/root/genieacs-nbi-password.txt`).
