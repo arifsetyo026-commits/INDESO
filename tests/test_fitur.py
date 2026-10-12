@@ -1028,3 +1028,31 @@ def test_acs_ping_dari_onu(siap, monkeypatch):
     h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&segarkan=true").json()
     assert h["status"] == "selesai" and h["hilang_persen"] == 10 and h["rata_ms"] == 23
     assert acs.tugas[-1]["name"] == "getParameterValues"
+
+
+def test_koreksi_jam_olt(app):
+    """Jam OLT maju 2 jam 24 menit: waktu dying-gasp dikoreksi ke jam server."""
+    main = app
+    from datetime import datetime, timedelta
+    geser = timedelta(hours=2, minutes=24)
+    t0 = datetime(2026, 10, 12, 12, 50)
+
+    def onu(i, online, ev_waktu):
+        return main.ONUStatus(pon="0/0/1", onu_id=i, snmp_index=i, olt_rx_dbm=-20.0 if online else None,
+                              online=online, status="OK", last_event="DyingGasp",
+                              last_event_time=f'"{ev_waktu}"' if ev_waktu else None)
+
+    lama = (t0 - timedelta(days=3) + geser).strftime("%Y-%m-%d %H:%M:%S")
+    main._koreksi_jam_olt([onu(1, True, lama), onu(2, True, lama)], sekarang=t0)
+    assert main._jam_olt_geser == timedelta(0)       # event lama, belum ada bukti selisih
+    # ONU 1 baru saja mati pukul 12:59 (jam OLT: 15:23)
+    t1 = t0 + timedelta(minutes=9)
+    daftar = [onu(1, False, (t1 + geser).strftime("%Y-%m-%d %H:%M:%S")), onu(2, True, lama)]
+    main._koreksi_jam_olt(daftar, sekarang=t1 + timedelta(seconds=40))
+    assert abs(main._jam_olt_geser - geser) <= timedelta(minutes=1)   # meleset ≤ 1 siklus pemantauan
+    putus = datetime.strptime(daftar[0].last_event_time, "%Y-%m-%d %H:%M:%S")
+    assert abs(putus - t1) <= timedelta(minutes=1)
+    # Siklus berikutnya: tetap terkoreksi, tanpa sampel baru
+    d2 = [onu(1, False, (t1 + geser).strftime("%Y-%m-%d %H:%M:%S"))]
+    main._koreksi_jam_olt(d2, sekarang=t1 + timedelta(minutes=2))
+    assert d2[0].last_event_time == daftar[0].last_event_time

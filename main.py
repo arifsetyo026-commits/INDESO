@@ -628,7 +628,63 @@ async def fetch_all_onu() -> list[ONUStatus]:
         )
 
     results.sort(key=lambda o: (o.pon, o.onu_id))
+    _koreksi_jam_olt(results)
     return results
+
+
+# --- Koreksi jam OLT ---------------------------------------------------------
+# Waktu event (dying-gasp, LOS) berasal dari jam internal OLT. Kalau jam OLT tidak
+# sinkron, waktu itu meleset (mis. dying-gasp "15:23" untuk putus pukul 12:59).
+# Selisihnya diperkirakan dari ONU yang baru saja offline dengan event baru:
+# event itu pasti terjadi dalam satu siklus terakhir, jadi waktu OLT - waktu server
+# = selisih jam OLT.
+_FMT_WAKTU = "%Y-%m-%d %H:%M:%S"
+_jam_olt_lalu: dict = {}           # (pon, onu) -> (online, waktu event mentah)
+_jam_olt_sampel: list = []         # selisih detik, maks 9 sampel terakhir
+_jam_olt_geser = timedelta(0)
+
+
+def _parse_waktu_olt(teks):
+    try:
+        return datetime.strptime((teks or "").strip().strip('"').strip(), _FMT_WAKTU)
+    except ValueError:
+        return None
+
+
+def _koreksi_jam_olt(onu_list: list[ONUStatus], sekarang: Optional[datetime] = None) -> None:
+    global _jam_olt_geser
+    sekarang = sekarang or datetime.now()
+    terbaru = None
+    for o in onu_list:
+        key = (o.pon, o.onu_id)
+        w = _parse_waktu_olt(o.last_event_time)
+        lalu = _jam_olt_lalu.get(key)
+        if w is not None:
+            if lalu is not None and lalu[0] and not o.online and lalu[1] != o.last_event_time:
+                selisih = (w - sekarang).total_seconds()
+                if abs(selisih) < 86400:
+                    _jam_olt_sampel.append(selisih)
+                    del _jam_olt_sampel[:-9]
+            terbaru = w if terbaru is None or w > terbaru else terbaru
+        _jam_olt_lalu[key] = (o.online, o.last_event_time)
+
+    if _jam_olt_sampel:
+        urut = sorted(_jam_olt_sampel)
+        geser = urut[len(urut) // 2]
+    elif terbaru is not None and terbaru > sekarang + timedelta(minutes=5):
+        geser = (terbaru - sekarang).total_seconds()   # event "di masa depan": jam OLT pasti maju
+    else:
+        geser = _jam_olt_geser.total_seconds()
+    baru = timedelta(seconds=round(geser / 60) * 60) if abs(geser) >= 180 else timedelta(0)
+    if abs((baru - _jam_olt_geser).total_seconds()) >= 180:
+        logger.warning(f"Jam OLT selisih {int(baru.total_seconds() // 60)} menit dari server; waktu event OLT dikoreksi.")
+    _jam_olt_geser = baru
+
+    if _jam_olt_geser:
+        for o in onu_list:
+            w = _parse_waktu_olt(o.last_event_time)
+            if w is not None:
+                o.last_event_time = (w - _jam_olt_geser).strftime(_FMT_WAKTU)
 
 
 def _attach_pppoe_username(onu_list: list[ONUStatus], pppoe_users: list[PPPoEUser]) -> None:
