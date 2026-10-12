@@ -1,21 +1,23 @@
 <!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#004f29"><title>Masuk — Internet Desa</title><style>
-:root{--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;color:var(--ink)}
+@font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url(/static/inter.woff2) format('woff2')}
+:root{--fs-2xs:11px;--fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:18px;--fs-2xl:22px;--fs-3xl:28px;--font:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:var(--font);color:var(--ink)}
 body{background:linear-gradient(160deg,#003c20,#006f38 55%,#0a8a45);display:flex;align-items:center;justify-content:center;padding:24px 16px;min-height:100vh}
 .box{width:100%;max-width:380px;background:#fff;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.25);padding:26px 22px}
 .brand{display:flex;align-items:center;gap:12px;margin-bottom:20px}
-.mark{width:44px;height:44px;border-radius:12px;background:#75dc2e;display:grid;place-items:center;color:#06381f;font-weight:950;font-size:17px}
-.brand b{font-size:17px}.brand small{display:block;color:var(--muted);font-size:12px;margin-top:2px}
-h1{font-size:18px;margin:0 0 4px}.lead{color:var(--muted);font-size:13px;margin:0 0 16px;line-height:1.5}
-label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin:12px 0 5px}
-input{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font:inherit;font-size:15px;outline:none}
+.mark{width:44px;height:44px;border-radius:12px;background:#75dc2e;display:grid;place-items:center;color:#06381f;font-weight:900;font-size:var(--fs-lg)}
+.brand b{font-size:var(--fs-lg)}.brand small{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:2px}
+h1{font-size:var(--fs-xl);margin:0 0 4px}.lead{color:var(--muted);font-size:var(--fs-sm);margin:0 0 16px;line-height:1.5}
+label{display:block;font-size:var(--fs-xs);font-weight:800;color:#4b6355;margin:12px 0 5px}
+input{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;font:inherit;font-size:var(--fs-md);outline:none}
 input:focus{border-color:#07813f;box-shadow:0 0 0 3px rgba(7,129,63,.15)}
-.lihat{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);margin-top:8px;font-weight:600}
+.lihat{display:flex;align-items:center;gap:7px;font-size:var(--fs-xs);color:var(--muted);margin-top:8px;font-weight:600}
 .lihat input{width:auto}
-button{width:100%;margin-top:18px;border:0;border-radius:10px;padding:12px;background:#067d40;color:#fff;font:inherit;font-weight:800;font-size:14px;cursor:pointer}
+button{width:100%;margin-top:18px;border:0;border-radius:10px;padding:12px;background:#067d40;color:#fff;font:inherit;font-weight:800;font-size:var(--fs-md);cursor:pointer}
 button:disabled{opacity:.6;cursor:wait}
-.msg{min-height:18px;margin-top:12px;font-size:13px;font-weight:700;color:var(--red)}
-.note{font-size:11.5px;color:var(--muted);margin-top:14px;line-height:1.5}
+.msg{min-height:18px;margin-top:12px;font-size:var(--fs-sm);font-weight:700;color:var(--red)}
+.note{font-size:var(--fs-xs);color:var(--muted);margin-top:14px;line-height:1.5}
+body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media(max-width:760px){input,select,textarea{font-size:16px!important}}
 </style></head><body>
 <form class="box" id="form" autocomplete="on">
  <div class="brand"><div class="mark">ID</div><div><b>Internet Desa</b><small>Monitoring &amp; manajemen pelanggan</small></div></div>

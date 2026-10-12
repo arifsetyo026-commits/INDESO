@@ -60,6 +60,15 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   insentifnya (insentif Oktober yang dibayar November tetap tercatat untuk Oktober), bukti
   transfer bisa dilampirkan; mitra melihat status pembayarannya. Transaksi tidak bisa dihapus, hanya dibatalkan dengan alasan; admin hanya
   bisa mengubah catatannya sendiri dalam 24 jam, owner bisa semuanya.
+- **Laporan keuangan standar (SAK EMKM)** — tab *Laporan keuangan* menyajikan laba rugi,
+  arus kas (metode langsung: operasi, investasi, pendanaan), posisi keuangan (neraca) yang
+  diperiksa keseimbangannya, dan daftar aset tetap, per bulan atau per tahun; bisa dicetak/PDF.
+  Pembelian OLT, router, ONU, kabel fiber, dan alat kerja dicatat dengan kategori **Aset: …**
+  sehingga tidak langsung menjadi beban, melainkan disusutkan garis lurus mulai bulan
+  pembelian (perangkat & peralatan 4 tahun, kabel & instalasi 8 tahun, sesuai kelompok
+  harta pajak). Owner bisa **mengosongkan seluruh catatan kas** untuk dicatat ulang dari awal
+  (tab Sejak awal; wajib ketik konfirmasi + password). Database disalin dulu ke folder
+  backup (`billing-sebelum-kosongkan-*.db`); pembayaran tagihan pelanggan tidak tersentuh.
 - **Pengendalian keuangan (SOP)** — setiap transaksi kas bernomor bukti berurutan
   (`BKM-YYMM-0001` uang masuk, `BKK-YYMM-0001` uang keluar). Pelunasan tagihan mencatat
   tanggal uang diterima, metode (tunai/transfer/QRIS), dan petugasnya; tanggal pelunasan
