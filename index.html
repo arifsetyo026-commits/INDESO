@@ -1141,6 +1141,29 @@ function htmlAcs(a){
  if(p.perangkat.length) h+=`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer;font-weight:800">Daftar perangkat di rumah pelanggan (${p.perangkat.length})</summary>`+p.perangkat.map(x=>`<div class="blRow"><div><div class="plName" style="font-size:12px">${esc(x.nama)}</div><div class="plSub">${esc(x.ip||'')} · ${esc(x.mac||'')}${x.antarmuka?' · '+esc(x.antarmuka):''}</div></div>${x.aktif?'<span class="chip ok">aktif</span>':'<span class="chip off">tidak aktif</span>'}</div>`).join('')+'</details>';
  return h;
 }
+// Pantau perintah yang antre di GenieACS sampai ONU menjalankannya (atau menolaknya),
+// supaya pengguna tahu hasil akhirnya tanpa harus menebak.
+let _pantau=null;
+function pantauTugas(tid,judul,teksSelesai,ekstra){
+ clearInterval(_pantau); const user=dg.user, mulai=Date.now();
+ const tampil=(html,warna)=>{ const m=$('dgMsg'); m.style.color=warna; m.innerHTML=html+(ekstra?' '+ekstra:''); };
+ tampil(`⏳ ${esc(judul)}: menunggu ONU menjalankan perintah… (biasanya beberapa detik, paling lama ±5 menit — halaman ini akan memberi kabar)`,'#8a5a00');
+ if(!tid) return;
+ const cek=async()=>{
+  if(dg.user!==user||!$('diagModal').classList.contains('show')){ clearInterval(_pantau); return; }
+  let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+tid,{cache:'no-store'})); }catch(e){ return; }
+  const menit=Math.floor((Date.now()-mulai)/60000);
+  if(s.status==='selesai'){ clearInterval(_pantau); tampil('✅ '+esc(judul)+': '+esc(teksSelesai),'#0b7a3b'); setTimeout(()=>segarkanOnu(true),1500); }
+  else if(s.status==='gagal'){ clearInterval(_pantau); tampil('❌ '+esc(judul)+' gagal. '+esc(s.pesan)+` <button class="btnS" onclick="batalTugas('${tid}')">Batalkan perintah</button>`,'#b42318'); ekstra=''; }
+  else tampil(`⏳ ${esc(judul)}: masih menunggu ONU… (${menit} menit)`+(menit>=8?' — ONU mungkin mati/offline; perintah tetap dijalankan saat ONU kembali online.':''),'#8a5a00');
+ };
+ _pantau=setInterval(cek,8000); setTimeout(cek,3000);
+}
+async function batalTugas(tid){
+ if(!confirm('Batalkan perintah yang tertahan ini?')) return;
+ try{ await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/tugas/'+tid+'/batal',{method:'POST'})); dgPesan('Perintah dibatalkan.',true); }
+ catch(e){ dgPesan('Gagal: '+e.message); }
+}
 function passwordAcak(){ const c='abcdefghjkmnpqrstuvwxyz23456789'; let s=''; const a=new Uint32Array(10); crypto.getRandomValues(a); a.forEach(x=>s+=c[x%c.length]); return s; }
 async function tesPing(){
  $('dgPing').innerHTML='<div class="muted">Ping 10 kali dari MikroTik…</div>';
@@ -1157,7 +1180,9 @@ async function segarkanOnu(diam){
 }
 async function rebootOnu(){
  if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;
- try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/reboot',{method:'POST'})); dgPesan(r.status==='antre'?r.pesan:'Perintah reboot terkirim. ONU menyala lagi dalam ±2 menit.',r.status!=='antre'); }
+ try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/reboot',{method:'POST'}));
+  if(r.status==='antre') pantauTugas(r.tugas_id,'Reboot ONU','ONU sedang reboot, internet pelanggan menyala lagi dalam ±2 menit.');
+  else dgPesan('✅ Perintah reboot diterima ONU. Internet pelanggan menyala lagi dalam ±2 menit.',true); }
  catch(e){ dgPesan('Gagal: '+e.message); }
 }
 async function simpanWifi(i){
@@ -1168,9 +1193,9 @@ async function simpanWifi(i){
  try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:i,ssid:ssid||null,password:password||null})}));
   const P=dg.data.pelanggan, w=dg.data.acs.perangkat.wifi.find(x=>x.index===i), wa=nomorWA(P.no_hp);
   const pesan='Yth. '+(P.nama||'')+', WiFi Internet Desa Anda sudah diperbarui.\nNama WiFi: '+(ssid||w.ssid)+(password?'\nPassword: '+password:'')+'\n\nSilakan sambungkan ulang perangkat Anda. Terima kasih.';
-  dgPesan((r.status==='antre'?r.pesan:'Tersimpan di ONU.')+' ',r.status!=='antre');
-  if(wa) $('dgMsg').innerHTML+=`<a class="btnS go" href="https://wa.me/${wa}?text=${encodeURIComponent(pesan)}" target="_blank" rel="noopener">Kirim ke WA pelanggan</a>`;
-  if(r.status!=='antre') setTimeout(()=>segarkanOnu(true),1500);
+  const tombolWA=wa?`<a class="btnS go" href="https://wa.me/${wa}?text=${encodeURIComponent(pesan)}" target="_blank" rel="noopener">Kirim ke WA pelanggan</a>`:'';
+  if(r.status==='antre') pantauTugas(r.tugas_id,'Ganti WiFi','WiFi di ONU sudah diperbarui. Perangkat pelanggan perlu tersambung ulang.',tombolWA);
+  else { dgPesan('✅ Sudah diterapkan di ONU. ',true); $('dgMsg').innerHTML+=tombolWA; setTimeout(()=>segarkanOnu(true),1500); }
  }catch(e){ dgPesan('Gagal: '+e.message); }
 }
 
@@ -1271,7 +1296,7 @@ async function aksiTiket(aksi){
  }catch(e){ tkPesan('Gagal: '+e.message,false,'tkDMsg'); }
 }
 var _tkBadgeTerakhir=0;
-Object.assign(AKSI_LABEL,{onu_wifi:'Ganti WiFi ONU',onu_reboot:'Reboot ONU',tutup_buku:'Tutup buku',buka_buku:'Buka kembali buku',tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
+Object.assign(AKSI_LABEL,{onu_wifi:'Ganti WiFi ONU',onu_reboot:'Reboot ONU',onu_batal_tugas:'Batalkan perintah ONU',tutup_buku:'Tutup buku',buka_buku:'Buka kembali buku',tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
 
 // ===== Keuangan =====
 const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};

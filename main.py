@@ -6958,11 +6958,58 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     from urllib.parse import quote
     r = _acs("POST", f"/devices/{quote(acs_id, safe='')}/tasks",
              params={"connection_request": "", "timeout": str(tunggu * 1000)}, json=tugas, timeout=tunggu + 10)
+    try:
+        tid = (r.json() or {}).get("_id")
+    except ValueError:
+        tid = None
     if r.status_code == 200:
-        return {"status": "selesai"}
+        return {"status": "selesai", "tugas_id": tid}
     if r.status_code == 202:
-        return {"status": "antre", "pesan": "ONU belum merespons. Perintah tersimpan dan dijalankan saat ONU lapor ke server ACS berikutnya."}
+        return {"status": "antre", "tugas_id": tid,
+                "pesan": "ONU belum merespons langsung. Perintah tersimpan dan dijalankan saat ONU lapor ke server "
+                         "berikutnya (paling lama ±5 menit)."}
     raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
+
+
+def _status_tugas(acs_id: str, tid: str) -> dict:
+    """antre = masih menunggu ONU; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
+    q = json.dumps({"device": acs_id})
+    r = _acs("GET", "/faults/", params={"query": q})
+    for f in (r.json() if r.ok else []):
+        if f.get("channel") == f"task_{tid}":
+            return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"),
+                    "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"}
+    r = _acs("GET", "/tasks/", params={"query": q})
+    if r.ok and any(str(t.get("_id")) == tid for t in r.json()):
+        return {"status": "antre"}
+    return {"status": "selesai"}
+
+
+@app.get("/api/acs/{username}/tugas/{tid}")
+def acs_status_tugas(username: str, tid: str, request: Request):
+    _wajib_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{24}", tid):
+        raise HTTPException(status_code=400, detail="ID tugas tidak valid.")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    return _status_tugas(doc["_id"], tid)
+
+
+@app.post("/api/acs/{username}/tugas/{tid}/batal")
+def acs_batal_tugas(username: str, tid: str, request: Request):
+    """Hapus perintah yang tertahan (mis. ditolak ONU) beserta catatan fault-nya."""
+    _wajib_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{24}", tid):
+        raise HTTPException(status_code=400, detail="ID tugas tidak valid.")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    from urllib.parse import quote
+    _acs("DELETE", f"/tasks/{tid}")
+    _acs("DELETE", f"/faults/{quote(doc['_id'] + ':task_' + tid, safe='')}")
+    catat_aktivitas(_oleh(request), "onu_batal_tugas", f"{username} ({doc['_id']}) tugas {tid} dibatalkan")
+    return {"ok": True}
 
 
 def _band_wifi(doc: dict, b: str, ssid: str) -> str:

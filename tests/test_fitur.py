@@ -825,6 +825,7 @@ class FakeACS:
                 "WANDevice": {"1": {"WANConnectionDevice": {"1": {"WANPPPConnection": {"1": {
                     "Username": {"_value": "budi"}, "ExternalIPAddress": {"_value": "10.0.0.2"}}}}}}}}}}
         self.tugas, self.antre = [], False
+        self.antrean, self.faults = {}, []
 
     def _cocok(self, doc, q):
         if "$or" in q:
@@ -844,9 +845,21 @@ class FakeACS:
             return FakeResp(True, [d for d in self.dev.values() if self._cocok(d, q)])
         if "/tasks" in url and method == "POST":
             self.tugas.append(json)
-            r = FakeResp(True, {})
+            tid = f"{len(self.tugas):024x}"
+            if self.antre:
+                self.antrean[tid] = json
+            r = FakeResp(True, dict(json, _id=tid))
             r.status_code = 202 if self.antre else 200
             return r
+        if url.endswith("/tasks/") and method == "GET":
+            return FakeResp(True, [dict(t, _id=k) for k, t in self.antrean.items()])
+        if url.endswith("/faults/") and method == "GET":
+            return FakeResp(True, list(self.faults))
+        if method == "DELETE":
+            tid = url.rsplit("/", 1)[-1]
+            self.antrean.pop(tid, None)
+            self.faults = [f for f in self.faults if not url.endswith(f["_id"].replace(":", "%3A"))]
+            return FakeResp(True, {})
         r = FakeResp(False, {})
         r.status_code = 404
         return r
@@ -944,3 +957,31 @@ def test_ringkas_perangkat_fiberhome(app):
     assert w["fh_5G_ssid2"]["band"] == "5 GHz" and w["KANJENG MAMI"]["band"] == "5 GHz"
     assert w["Awas ada SULE"]["band"] == "2,4 GHz"
     assert r["perangkat_wifi"] == 1 and all(x["klien"] is None for x in r["wifi"])
+
+
+def test_acs_pantau_tugas(siap, monkeypatch):
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    r = k.post("/api/acs/budi/wifi", json={"index": 1, "password": "rahasia123"}).json()
+    assert r["status"] == "selesai" and len(r["tugas_id"]) == 24
+    acs.antre = True
+    r = k.post("/api/acs/budi/wifi", json={"index": 1, "password": "rahasia456"}).json()
+    tid = r["tugas_id"]
+    assert r["status"] == "antre"
+    assert k.get(f"/api/acs/budi/tugas/{tid}").json()["status"] == "antre"
+    assert k.get("/api/acs/budi/tugas/bukan-id").status_code == 400
+    assert m.get(f"/api/acs/budi/tugas/{tid}").status_code == 403
+    # ONU menolak -> gagal dengan alasan, lalu bisa dibatalkan
+    acs.faults.append({"_id": f"ZTE-F609-ZTEGC1234567:task_{tid}", "channel": f"task_{tid}",
+                       "device": "ZTE-F609-ZTEGC1234567", "code": "cwmp.9007", "message": "Invalid parameter value"})
+    g = k.get(f"/api/acs/budi/tugas/{tid}").json()
+    assert g["status"] == "gagal" and "9007" in g["pesan"]
+    assert k.post(f"/api/acs/budi/tugas/{tid}/batal").json()["ok"]
+    assert k.get(f"/api/acs/budi/tugas/{tid}").json()["status"] == "selesai" and not acs.faults
+    # tugas antre yang kemudian dijalankan ONU -> selesai
+    r = k.post("/api/acs/budi/reboot").json()
+    assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "antre"
+    acs.antrean.clear()
+    assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "selesai"
