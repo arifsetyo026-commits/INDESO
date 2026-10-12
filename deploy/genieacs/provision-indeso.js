@@ -3,6 +3,13 @@
 const sekarang = Date.now();
 const jam = 3600 * 1000;
 
+// Kredensial connection request (ACS "mengetuk" ONU agar perintah langsung jalan).
+// Dikirim lewat args preset (tidak tersimpan di repo). Password tidak bisa dibaca balik dari ONU,
+// jadi disegarkan harian: bila beda, GenieACS memasangnya lagi dan menyimpan nilainya.
+if (args && args[0] && args[1]) {
+  declare("InternetGatewayDevice.ManagementServer.ConnectionRequestUsername", {value: sekarang - 24 * jam}, {value: args[0]});
+  declare("InternetGatewayDevice.ManagementServer.ConnectionRequestPassword", {value: sekarang - 24 * jam}, {value: args[1]});
+}
 declare("InternetGatewayDevice.ManagementServer.PeriodicInformEnable", {value: 1}, {value: true});
 declare("InternetGatewayDevice.ManagementServer.PeriodicInformInterval", {value: 1}, {value: 300});
 
