@@ -6958,11 +6958,75 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     from urllib.parse import quote
     r = _acs("POST", f"/devices/{quote(acs_id, safe='')}/tasks",
              params={"connection_request": "", "timeout": str(tunggu * 1000)}, json=tugas, timeout=tunggu + 10)
+    try:
+        tid = (r.json() or {}).get("_id")
+    except ValueError:
+        tid = None
     if r.status_code == 200:
-        return {"status": "selesai"}
+        return {"status": "selesai", "tugas_id": tid}
     if r.status_code == 202:
-        return {"status": "antre", "pesan": "ONU belum merespons. Perintah tersimpan dan dijalankan saat ONU lapor ke server ACS berikutnya."}
+        return {"status": "antre", "tugas_id": tid,
+                "pesan": "ONU belum merespons langsung. Perintah tersimpan dan dijalankan saat ONU lapor ke server "
+                         "berikutnya (paling lama ±5 menit)."}
     raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
+
+
+def _status_tugas(acs_id: str, tid: str) -> dict:
+    """antre = masih menunggu ONU; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
+    q = json.dumps({"device": acs_id})
+    r = _acs("GET", "/faults/", params={"query": q})
+    for f in (r.json() if r.ok else []):
+        if f.get("channel") == f"task_{tid}":
+            return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"),
+                    "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"}
+    r = _acs("GET", "/tasks/", params={"query": q})
+    if r.ok and any(str(t.get("_id")) == tid for t in r.json()):
+        return {"status": "antre"}
+    return {"status": "selesai"}
+
+
+@app.get("/api/acs/{username}/tugas/{tid}")
+def acs_status_tugas(username: str, tid: str, request: Request):
+    _wajib_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{24}", tid):
+        raise HTTPException(status_code=400, detail="ID tugas tidak valid.")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    return _status_tugas(doc["_id"], tid)
+
+
+@app.post("/api/acs/{username}/tugas/{tid}/batal")
+def acs_batal_tugas(username: str, tid: str, request: Request):
+    """Hapus perintah yang tertahan (mis. ditolak ONU) beserta catatan fault-nya."""
+    _wajib_admin(request)
+    if not re.fullmatch(r"[0-9a-f]{24}", tid):
+        raise HTTPException(status_code=400, detail="ID tugas tidak valid.")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    from urllib.parse import quote
+    _acs("DELETE", f"/tasks/{tid}")
+    _acs("DELETE", f"/faults/{quote(doc['_id'] + ':task_' + tid, safe='')}")
+    catat_aktivitas(_oleh(request), "onu_batal_tugas", f"{username} ({doc['_id']}) tugas {tid} dibatalkan")
+    return {"ok": True}
+
+
+def _band_wifi(doc: dict, b: str, ssid: str) -> str:
+    """2,4 / 5 GHz: dari parameter band (nama berbeda per vendor), channel, standar, atau nama SSID."""
+    cur = doc
+    for p in b.split("."):
+        cur = cur.get(p, {}) if isinstance(cur, dict) else {}
+    for k, v in (cur.items() if isinstance(cur, dict) else []):
+        if ("Band" in k or "Frequency" in k) and isinstance(v, dict) and v.get("_value") not in (None, ""):
+            return "5 GHz" if "5" in str(v["_value"]) else "2,4 GHz"
+    ch = str(_nilai(doc, f"{b}.Channel") or "")
+    if ch.isdigit() and int(ch) > 14:
+        return "5 GHz"
+    std = str(_nilai(doc, f"{b}.Standard") or "").lower()
+    if std and ("ac" in std or "ax" in std or std in ("a", "a,n", "an")):
+        return "5 GHz"
+    return "5 GHz" if re.search(r"5\s*g", ssid or "", re.I) else "2,4 GHz"
 
 
 def _ringkas_perangkat(doc: dict) -> dict:
@@ -6974,13 +7038,12 @@ def _ringkas_perangkat(doc: dict) -> dict:
         if ssid is None:
             continue
         kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
-        klien = _nilai(doc, f"{b}.TotalAssociations")
-        if klien is None:
-            klien = len(_anak(doc, f"{b}.AssociatedDevice"))
+        # Sebagian ONU (mis. Fiberhome) tidak mengisi TotalAssociations; pakai yang terbesar.
+        total = _nilai(doc, f"{b}.TotalAssociations")
+        klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
         wlan.append({"index": int(i), "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
                      "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
-                     "band": "5 GHz" if str(_nilai(doc, f"{b}.Channel") or "0").isdigit() and int(_nilai(doc, f"{b}.Channel") or 0) > 14 else "2,4 GHz",
-                     "klien": klien, "bisa_ganti_password": kunci is not None})
+                     "band": _band_wifi(doc, b, ssid), "klien": klien, "bisa_ganti_password": kunci is not None})
     host = []
     for i in _anak(doc, f"{_IGD}.LANDevice.1.Hosts.Host"):
         b = f"{_IGD}.LANDevice.1.Hosts.Host.{i}"
@@ -6988,6 +7051,10 @@ def _ringkas_perangkat(doc: dict) -> dict:
         host.append({"nama": _nilai(doc, f"{b}.HostName") or "-", "ip": _nilai(doc, f"{b}.IPAddress"),
                      "mac": _nilai(doc, f"{b}.MACAddress"), "aktif": aktif in (True, "true", "1", 1),
                      "antarmuka": _nilai(doc, f"{b}.InterfaceType")})
+    host_wifi = sum(1 for h in host if h["aktif"] and "802.11" in str(h["antarmuka"] or ""))
+    if host_wifi and not any(w["klien"] for w in wlan):
+        for w in wlan:
+            w["klien"] = None          # ONU tidak melaporkan jumlah klien per WiFi
     wan_ip = None
     for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
         for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
@@ -6999,6 +7066,7 @@ def _ringkas_perangkat(doc: dict) -> dict:
         "uptime_detik": int(uptime) if str(uptime or "").isdigit() else None,
         "lapor_terakhir": doc.get("_lastInform"), "wan_ip": wan_ip,
         "wifi": wlan, "perangkat": host, "perangkat_aktif": sum(1 for h in host if h["aktif"]),
+        "perangkat_wifi": host_wifi,
     }
 
 
@@ -7078,6 +7146,75 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
                     f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
     return hasil
+
+
+_PING_ONU = f"{_IGD}.IPPingDiagnostics"
+
+
+class PingOnuIn(BaseModel):
+    host: str = "google.com"
+    jumlah: int = 10
+
+
+def _param(doc: dict, path: str) -> dict:
+    cur = doc
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return {}
+        cur = cur[p]
+    return cur if isinstance(cur, dict) else {}
+
+
+@app.post("/api/acs/{username}/ping")
+def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
+    """Suruh ONU pelanggan ping ke host (default google.com) lewat TR-069 IPPingDiagnostics.
+    Hasilnya dibaca lewat GET /api/acs/{username}/ping setelah ONU selesai."""
+    _wajib_admin(request)
+    host = d.host.strip()
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host):
+        raise HTTPException(status_code=400, detail="Alamat tujuan tidak valid (mis. google.com atau 8.8.8.8).")
+    jumlah = max(3, min(d.jumlah, 30))
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if not _ada(doc, _PING_ONU):
+        raise HTTPException(status_code=400, detail="ONU ini tidak menyediakan tes ping lewat TR-069.")
+    mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    nilai = [[f"{_PING_ONU}.Host", host, "xsd:string"],
+             [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
+    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah)
+
+
+@app.get("/api/acs/{username}/ping")
+def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool = False):
+    """menunggu → ONU belum selesai / hasil belum terbaca; selesai → angka hasil ping."""
+    _wajib_admin(request)
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if segarkan:
+        # Hasil belum masuk: minta ONU mengirim nilai IPPingDiagnostics (sekali, dari sisi browser).
+        _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
+            f"{_PING_ONU}.{k}" for k in ("DiagnosticsState", "SuccessCount", "FailureCount",
+                                         "AverageResponseTime", "MinimumResponseTime", "MaximumResponseTime")]}, tunggu=15)
+        doc = _cari_perangkat(username) or doc
+    st = _param(doc, f"{_PING_ONU}.DiagnosticsState")
+    keadaan, waktu = st.get("_value"), str(st.get("_timestamp") or "")
+    if not keadaan or keadaan in ("Requested", "None") or waktu < mulai:
+        return {"status": "menunggu", "keadaan": keadaan}
+    angka = lambda k: (lambda v: int(v) if str(v).lstrip("-").isdigit() else None)(_nilai(doc, f"{_PING_ONU}.{k}"))
+    sukses, gagal = angka("SuccessCount"), angka("FailureCount")
+    total = (sukses or 0) + (gagal or 0)
+    return {"status": "selesai", "keadaan": keadaan, "host": _nilai(doc, f"{_PING_ONU}.Host"),
+            "sukses": sukses, "gagal": gagal,
+            "hilang_persen": round((gagal or 0) * 100 / total) if total else None,
+            "rata_ms": angka("AverageResponseTime"), "min_ms": angka("MinimumResponseTime"),
+            "maks_ms": angka("MaximumResponseTime")}
 
 
 @app.post("/api/acs/{username}/reboot")

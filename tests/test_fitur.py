@@ -825,6 +825,7 @@ class FakeACS:
                 "WANDevice": {"1": {"WANConnectionDevice": {"1": {"WANPPPConnection": {"1": {
                     "Username": {"_value": "budi"}, "ExternalIPAddress": {"_value": "10.0.0.2"}}}}}}}}}}
         self.tugas, self.antre = [], False
+        self.antrean, self.faults = {}, []
 
     def _cocok(self, doc, q):
         if "$or" in q:
@@ -844,9 +845,21 @@ class FakeACS:
             return FakeResp(True, [d for d in self.dev.values() if self._cocok(d, q)])
         if "/tasks" in url and method == "POST":
             self.tugas.append(json)
-            r = FakeResp(True, {})
+            tid = f"{len(self.tugas):024x}"
+            if self.antre:
+                self.antrean[tid] = json
+            r = FakeResp(True, dict(json, _id=tid))
             r.status_code = 202 if self.antre else 200
             return r
+        if url.endswith("/tasks/") and method == "GET":
+            return FakeResp(True, [dict(t, _id=k) for k, t in self.antrean.items()])
+        if url.endswith("/faults/") and method == "GET":
+            return FakeResp(True, list(self.faults))
+        if method == "DELETE":
+            tid = url.rsplit("/", 1)[-1]
+            self.antrean.pop(tid, None)
+            self.faults = [f for f in self.faults if not url.endswith(f["_id"].replace(":", "%3A"))]
+            return FakeResp(True, {})
         r = FakeResp(False, {})
         r.status_code = 404
         return r
@@ -924,3 +937,78 @@ def test_keamanan_dasar(siap):
         main._gagal_login[f"ip:x{i}"] = [lama_t]
     main._catat_gagal("ip:baru", datetime.now())
     assert len(main._gagal_login) < 100
+
+
+def test_ringkas_perangkat_fiberhome(app):
+    """Slot WiFi nonaktif tanpa channel tetap dikenali band-nya; jumlah klien tidak dilaporkan → None."""
+    main = app
+    v = lambda x: {"_value": x}
+    doc = {"_id": "000AC2-HG6145D2-FHTT9D2674A0",
+           "_deviceId": {"_Manufacturer": "FiberHome", "_ProductClass": "HG6145D2", "_SerialNumber": "FHTT9D2674A0"},
+           "InternetGatewayDevice": {"LANDevice": {"1": {
+               "WLANConfiguration": {
+                   "1": {"SSID": v("Awas ada SULE"), "Enable": v(True), "Channel": v(6), "TotalAssociations": v(0),
+                         "PreSharedKey": {"1": {"KeyPassphrase": v("")}}},
+                   "6": {"SSID": v("fh_5G_ssid2"), "Enable": v(False)},
+                   "5": {"SSID": v("KANJENG MAMI"), "Enable": v(True), "X_FH_Band": v("5G")}},
+               "Hosts": {"Host": {"1": {"HostName": v("hp"), "Active": v(True), "InterfaceType": v("802.11")}}}}}}}
+    r = main._ringkas_perangkat(doc)
+    w = {x["ssid"]: x for x in r["wifi"]}
+    assert w["fh_5G_ssid2"]["band"] == "5 GHz" and w["KANJENG MAMI"]["band"] == "5 GHz"
+    assert w["Awas ada SULE"]["band"] == "2,4 GHz"
+    assert r["perangkat_wifi"] == 1 and all(x["klien"] is None for x in r["wifi"])
+
+
+def test_acs_pantau_tugas(siap, monkeypatch):
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    r = k.post("/api/acs/budi/wifi", json={"index": 1, "password": "rahasia123"}).json()
+    assert r["status"] == "selesai" and len(r["tugas_id"]) == 24
+    acs.antre = True
+    r = k.post("/api/acs/budi/wifi", json={"index": 1, "password": "rahasia456"}).json()
+    tid = r["tugas_id"]
+    assert r["status"] == "antre"
+    assert k.get(f"/api/acs/budi/tugas/{tid}").json()["status"] == "antre"
+    assert k.get("/api/acs/budi/tugas/bukan-id").status_code == 400
+    assert m.get(f"/api/acs/budi/tugas/{tid}").status_code == 403
+    # ONU menolak -> gagal dengan alasan, lalu bisa dibatalkan
+    acs.faults.append({"_id": f"ZTE-F609-ZTEGC1234567:task_{tid}", "channel": f"task_{tid}",
+                       "device": "ZTE-F609-ZTEGC1234567", "code": "cwmp.9007", "message": "Invalid parameter value"})
+    g = k.get(f"/api/acs/budi/tugas/{tid}").json()
+    assert g["status"] == "gagal" and "9007" in g["pesan"]
+    assert k.post(f"/api/acs/budi/tugas/{tid}/batal").json()["ok"]
+    assert k.get(f"/api/acs/budi/tugas/{tid}").json()["status"] == "selesai" and not acs.faults
+    # tugas antre yang kemudian dijalankan ONU -> selesai
+    r = k.post("/api/acs/budi/reboot").json()
+    assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "antre"
+    acs.antrean.clear()
+    assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "selesai"
+
+
+def test_acs_ping_dari_onu(siap, monkeypatch):
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    # ONU tanpa IPPingDiagnostics -> ditolak dengan pesan jelas
+    assert k.post("/api/acs/budi/ping", json={}).status_code == 400
+    igd = acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]
+    igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None", "_timestamp": "2020-01-01T00:00:00.000Z"}}
+    assert k.post("/api/acs/budi/ping", json={"host": "google.com; rm -rf /"}).status_code == 400
+    r = k.post("/api/acs/budi/ping", json={"jumlah": 99}).json()
+    assert r["jumlah"] == 30 and r["host"] == "google.com"
+    nilai = {p[0].rsplit(".", 1)[-1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert nilai["Host"] == "google.com" and nilai["DiagnosticsState"] == "Requested"
+    assert m.get(f"/api/acs/budi/ping?mulai={r['mulai']}").status_code == 403
+    assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}").json()["status"] == "menunggu"
+    # ONU selesai: nilai diagnostik baru masuk
+    baru = "2999-01-01T00:00:00.000Z"
+    igd["IPPingDiagnostics"].update({
+        "DiagnosticsState": {"_value": "Complete", "_timestamp": baru}, "Host": {"_value": "google.com"},
+        "SuccessCount": {"_value": 9}, "FailureCount": {"_value": 1}, "AverageResponseTime": {"_value": 23},
+        "MinimumResponseTime": {"_value": 18}, "MaximumResponseTime": {"_value": 41}})
+    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&segarkan=true").json()
+    assert h["status"] == "selesai" and h["hilang_persen"] == 10 and h["rata_ms"] == 23
+    assert acs.tugas[-1]["name"] == "getParameterValues"

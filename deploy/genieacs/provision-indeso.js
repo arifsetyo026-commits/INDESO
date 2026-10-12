@@ -15,6 +15,7 @@ declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.TotalAssociations
 declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.KeyPassphrase", {path: sekarang - 24 * jam});
 declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.PreSharedKey.*.KeyPassphrase", {path: sekarang - 24 * jam});
 declare("InternetGatewayDevice.LANDevice.1.Hosts.Host.*.*", {path: sekarang - jam, value: sekarang - jam});
+declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.AssociatedDevice.*.*", {path: sekarang - jam, value: sekarang - jam});
 declare("InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Username", {path: sekarang - 24 * jam, value: sekarang - 24 * jam});
 declare("InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.ExternalIPAddress", {path: sekarang - 24 * jam, value: sekarang - jam});
 declare("VirtualParameters.pppoeUsername", {value: sekarang - 24 * jam});
