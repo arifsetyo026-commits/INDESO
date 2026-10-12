@@ -1709,7 +1709,8 @@ async def telegram_command_listener():
 # 7. FASTAPI APP
 # ============================================================
 
-app = FastAPI(title="ISP Monitoring Dashboard")
+# /docs, /redoc, /openapi.json dimatikan: dashboard terbuka ke internet, peta API tidak perlu diumbar.
+app = FastAPI(title="ISP Monitoring Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
 
 # Dashboard dan API dilayani dari origin yang sama, jadi CORS tidak dibuka:
 # dengan CORS "*" situs lain yang dibuka admin di browser bisa ikut memanggil
@@ -1726,7 +1727,7 @@ app = FastAPI(title="ISP Monitoring Dashboard")
 # terkirim dari situs lain -> aman dari CSRF), Secure bila lewat HTTPS.
 
 _COOKIE_SESI = "indeso_sesi"
-_PBKDF2_ITERASI = 200_000
+_PBKDF2_ITERASI = 600_000   # rekomendasi OWASP untuk PBKDF2-SHA256; hash lama di-upgrade saat login
 _POLA_USERNAME = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
 _PERAN = ("owner", "admin", "mitra")
 _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
@@ -1894,6 +1895,11 @@ def _terkunci(kunci: str, batas: int, sekarang: datetime) -> Optional[int]:
 
 
 def _catat_gagal(kunci: str, sekarang: datetime) -> None:
+    # Bersihkan catatan kedaluwarsa supaya penyerang yang berganti-ganti IP/username
+    # tidak bisa membuat memori server membengkak.
+    if len(_gagal_login) > 5000:
+        for k in [k for k, v in _gagal_login.items() if not v or sekarang - v[-1] >= _JENDELA_GAGAL]:
+            _gagal_login.pop(k, None)
     _gagal_login.setdefault(kunci, []).append(sekarang)
 
 
@@ -2050,6 +2056,14 @@ def login(d: LoginIn, request: Request):
         raise HTTPException(status_code=401, detail="Username atau password salah." if not ok
                             else "Akun ini sedang dinonaktifkan. Hubungi admin.")
     _gagal_login.pop(f"user:{username.lower()}", None)
+    if not (r[1] or "").startswith(f"pbkdf2_sha256${_PBKDF2_ITERASI}$"):
+        # Password tersimpan dengan iterasi lama: simpan ulang dengan iterasi sekarang.
+        conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"])
+        try:
+            conn.execute("UPDATE akun SET password_hash=? WHERE username=?", (_hash_password(d.password), r[0]))
+            conn.commit()
+        finally:
+            conn.close()
     token = _buat_sesi(r[0], request)
     catat_aktivitas(r[0], "login", f"dari {ip}")
     resp = JSONResponse({"ok": True, "peran": r[2]})
