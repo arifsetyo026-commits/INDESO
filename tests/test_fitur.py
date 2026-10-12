@@ -924,3 +924,23 @@ def test_keamanan_dasar(siap):
         main._gagal_login[f"ip:x{i}"] = [lama_t]
     main._catat_gagal("ip:baru", datetime.now())
     assert len(main._gagal_login) < 100
+
+
+def test_ringkas_perangkat_fiberhome(app):
+    """Slot WiFi nonaktif tanpa channel tetap dikenali band-nya; jumlah klien tidak dilaporkan → None."""
+    main = app
+    v = lambda x: {"_value": x}
+    doc = {"_id": "000AC2-HG6145D2-FHTT9D2674A0",
+           "_deviceId": {"_Manufacturer": "FiberHome", "_ProductClass": "HG6145D2", "_SerialNumber": "FHTT9D2674A0"},
+           "InternetGatewayDevice": {"LANDevice": {"1": {
+               "WLANConfiguration": {
+                   "1": {"SSID": v("Awas ada SULE"), "Enable": v(True), "Channel": v(6), "TotalAssociations": v(0),
+                         "PreSharedKey": {"1": {"KeyPassphrase": v("")}}},
+                   "6": {"SSID": v("fh_5G_ssid2"), "Enable": v(False)},
+                   "5": {"SSID": v("KANJENG MAMI"), "Enable": v(True), "X_FH_Band": v("5G")}},
+               "Hosts": {"Host": {"1": {"HostName": v("hp"), "Active": v(True), "InterfaceType": v("802.11")}}}}}}}
+    r = main._ringkas_perangkat(doc)
+    w = {x["ssid"]: x for x in r["wifi"]}
+    assert w["fh_5G_ssid2"]["band"] == "5 GHz" and w["KANJENG MAMI"]["band"] == "5 GHz"
+    assert w["Awas ada SULE"]["band"] == "2,4 GHz"
+    assert r["perangkat_wifi"] == 1 and all(x["klien"] is None for x in r["wifi"])

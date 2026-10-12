@@ -6965,6 +6965,23 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
 
 
+def _band_wifi(doc: dict, b: str, ssid: str) -> str:
+    """2,4 / 5 GHz: dari parameter band (nama berbeda per vendor), channel, standar, atau nama SSID."""
+    cur = doc
+    for p in b.split("."):
+        cur = cur.get(p, {}) if isinstance(cur, dict) else {}
+    for k, v in (cur.items() if isinstance(cur, dict) else []):
+        if ("Band" in k or "Frequency" in k) and isinstance(v, dict) and v.get("_value") not in (None, ""):
+            return "5 GHz" if "5" in str(v["_value"]) else "2,4 GHz"
+    ch = str(_nilai(doc, f"{b}.Channel") or "")
+    if ch.isdigit() and int(ch) > 14:
+        return "5 GHz"
+    std = str(_nilai(doc, f"{b}.Standard") or "").lower()
+    if std and ("ac" in std or "ax" in std or std in ("a", "a,n", "an")):
+        return "5 GHz"
+    return "5 GHz" if re.search(r"5\s*g", ssid or "", re.I) else "2,4 GHz"
+
+
 def _ringkas_perangkat(doc: dict) -> dict:
     di = doc.get("_deviceId", {})
     wlan = []
@@ -6974,13 +6991,12 @@ def _ringkas_perangkat(doc: dict) -> dict:
         if ssid is None:
             continue
         kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
-        klien = _nilai(doc, f"{b}.TotalAssociations")
-        if klien is None:
-            klien = len(_anak(doc, f"{b}.AssociatedDevice"))
+        # Sebagian ONU (mis. Fiberhome) tidak mengisi TotalAssociations; pakai yang terbesar.
+        total = _nilai(doc, f"{b}.TotalAssociations")
+        klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
         wlan.append({"index": int(i), "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
                      "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
-                     "band": "5 GHz" if str(_nilai(doc, f"{b}.Channel") or "0").isdigit() and int(_nilai(doc, f"{b}.Channel") or 0) > 14 else "2,4 GHz",
-                     "klien": klien, "bisa_ganti_password": kunci is not None})
+                     "band": _band_wifi(doc, b, ssid), "klien": klien, "bisa_ganti_password": kunci is not None})
     host = []
     for i in _anak(doc, f"{_IGD}.LANDevice.1.Hosts.Host"):
         b = f"{_IGD}.LANDevice.1.Hosts.Host.{i}"
@@ -6988,6 +7004,10 @@ def _ringkas_perangkat(doc: dict) -> dict:
         host.append({"nama": _nilai(doc, f"{b}.HostName") or "-", "ip": _nilai(doc, f"{b}.IPAddress"),
                      "mac": _nilai(doc, f"{b}.MACAddress"), "aktif": aktif in (True, "true", "1", 1),
                      "antarmuka": _nilai(doc, f"{b}.InterfaceType")})
+    host_wifi = sum(1 for h in host if h["aktif"] and "802.11" in str(h["antarmuka"] or ""))
+    if host_wifi and not any(w["klien"] for w in wlan):
+        for w in wlan:
+            w["klien"] = None          # ONU tidak melaporkan jumlah klien per WiFi
     wan_ip = None
     for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
         for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
@@ -6999,6 +7019,7 @@ def _ringkas_perangkat(doc: dict) -> dict:
         "uptime_detik": int(uptime) if str(uptime or "").isdigit() else None,
         "lapor_terakhir": doc.get("_lastInform"), "wan_ip": wan_ip,
         "wifi": wlan, "perangkat": host, "perangkat_aktif": sum(1 for h in host if h["aktif"]),
+        "perangkat_wifi": host_wifi,
     }
 
 
