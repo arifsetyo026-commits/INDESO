@@ -84,6 +84,7 @@ Mulai sekarang, **jangan nyalakan lagi INDESO di HP.**
 | Update INDESO (setelah PR di-merge) | `sudo git -C /opt/indeso pull && sudo systemctl restart indeso` |
 | Ubah pengaturan `.env` | `sudo nano /etc/indeso/indeso.env` lalu restart |
 | Lokasi data | `/var/lib/indeso` (billing.db, nota/, backup/) |
+| Lupa password dashboard | `sudo -u indeso python3 /opt/indeso/deploy/indeso/reset-password.py` lalu `sudo systemctl restart indeso` |
 
 Sertifikat HTTPS diperbarui otomatis oleh certbot. Backup harian dan mingguan ke Telegram tetap berjalan seperti biasa.
 
