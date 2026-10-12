@@ -1,39 +1,41 @@
 <!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#004f29"><title>Internet Desa — Mitra</title><style>
-:root{--g900:#004a27;--g700:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318;--amber:#8a5a00;--shadow:0 5px 18px rgba(0,55,28,.09)}
-*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--bg)}button,input,textarea{font:inherit}button{cursor:pointer}
+@font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url(/static/inter.woff2) format('woff2')}
+:root{--fs-2xs:11px;--fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:18px;--fs-2xl:22px;--fs-3xl:28px;--font:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;--g900:#004a27;--g700:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318;--amber:#8a5a00;--shadow:0 5px 18px rgba(0,55,28,.09)}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:var(--font);color:var(--ink);background:var(--bg)}button,input,textarea{font:inherit}button{cursor:pointer}
 .top{background:linear-gradient(105deg,#003c20,#006f38 65%,#087f3f);color:#fff;padding:16px}
 .topIn{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}
-.mark{width:40px;height:40px;border-radius:12px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:950}
-.top b{font-size:16px}.top small{display:block;color:#bfe0cb;font-size:11px;margin-top:2px}
+.mark{width:40px;height:40px;border-radius:12px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:900}
+.top b{font-size:var(--fs-lg)}.top small{display:block;color:#bfe0cb;font-size:var(--fs-xs);margin-top:2px}
 .wrap{max-width:860px;margin:0 auto;padding:14px 16px 30px}
 .nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
-.nav b{font-size:15px}
-.btn{border:1px solid #cfe3d6;background:#f3faf5;color:#0b7a3b;font-size:12px;font-weight:800;padding:8px 12px;border-radius:9px}
+.nav b{font-size:var(--fs-md)}
+.btn{border:1px solid #cfe3d6;background:#f3faf5;color:#0b7a3b;font-size:var(--fs-xs);font-weight:800;padding:8px 12px;border-radius:9px}
 .btn.go{background:#067d40;border-color:#067d40;color:#fff}
 .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:12px}
 .card{background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:12px;min-width:0}
-.card small{display:block;color:var(--muted);font-size:11px}.card strong{display:block;font-size:20px;margin-top:4px}.card span{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+.card small{display:block;color:var(--muted);font-size:var(--fs-xs)}.card strong{display:block;font-size:var(--fs-xl);margin-top:4px}.card span{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:3px}
 .card.main{background:linear-gradient(135deg,#e9f9ee,#d3f2dc);border-color:#bfe6cb}.card.main strong{color:#06703a}
 .panel{background:#fff;border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow);padding:12px}
-.search{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;outline:none;font-size:14px;margin-bottom:10px}
+.search{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;outline:none;font-size:var(--fs-md);margin-bottom:10px}
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
-.filters button{border:1px solid var(--line);background:#fff;font-size:12px;font-weight:700;padding:6px 12px;border-radius:999px}
+.filters button{border:1px solid var(--line);background:#fff;font-size:var(--fs-xs);font-weight:700;padding:6px 12px;border-radius:999px}
 .filters button.on{background:#067d40;border-color:#067d40;color:#fff}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 4px;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:0}.row .info{min-width:0;cursor:pointer;flex:1}
-.name{font-weight:800;font-size:14px}.sub{font-size:12px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.name{font-weight:800;font-size:var(--fs-md)}.sub{font-size:var(--fs-xs);color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
 .right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.chip{font-size:10.5px;font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}
+.chip{font-size:var(--fs-2xs);font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}
 .chip.ok{background:#dcf5e5;color:#0b7a3b}.chip.warn{background:#fff1c9;color:var(--amber)}.chip.bad{background:#fde4e1;color:var(--red)}.chip.off{background:#eef3ef;color:#5f7669}
-.muted{color:var(--muted);font-size:13px;padding:8px 2px}
-.msg{font-size:12px;font-weight:700;margin:6px 0}
-.form label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin:12px 0 4px}
-.form input,.form textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:14px;outline:none;background:#fff}
+.muted{color:var(--muted);font-size:var(--fs-sm);padding:8px 2px}
+.msg{font-size:var(--fs-xs);font-weight:700;margin:6px 0}
+.form label{display:block;font-size:var(--fs-xs);font-weight:800;color:#4b6355;margin:12px 0 4px}
+.form input,.form textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:var(--fs-md);outline:none;background:#fff}
 .form textarea{min-height:70px;resize:vertical}
-.form select{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:14px;outline:none;background:#fff}
+.form select{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;font-size:var(--fs-md);outline:none;background:#fff}
 .btns{display:flex;gap:8px;margin-top:16px}
-.note{font-size:11.5px;color:var(--muted);line-height:1.55;margin-top:10px}
+.note{font-size:var(--fs-xs);color:var(--muted);line-height:1.55;margin-top:10px}
 @media(max-width:620px){.cards{grid-template-columns:1fr 1fr}.card.main{grid-column:1/-1}.row{align-items:flex-start}}
+body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media(max-width:760px){input,select,textarea{font-size:16px!important}}
 </style></head><body>
 <div class="top"><div class="topIn"><div class="mark">ID</div><div style="flex:1;min-width:150px"><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div><button class="btn" onclick="bukaTiket()">Gangguan <span id="nTiket"></span></button><button class="btn" onclick="bukaPassword()">Password</button><button class="btn" onclick="keluar()">Keluar</button></div></div>
 <div class="wrap">
@@ -58,11 +60,11 @@
   <label>Keterangan</label><textarea id="tKet" placeholder="mis. Lampu LOS merah sejak pagi, sudah coba restart modem"></textarea>
   <div class="btns"><button class="btn go" onclick="kirimTiket()">Kirim laporan</button></div>
   <div class="msg" id="tMsg"></div>
-  <div style="margin-top:14px"><b style="font-size:13px">Laporan 30 hari terakhir</b></div>
+  <div style="margin-top:14px"><b style="font-size:var(--fs-sm)">Laporan 30 hari terakhir</b></div>
   <div id="tList"><div class="muted">Memuat…</div></div>
  </div>
  <div class="panel form" id="pwView" style="display:none">
-  <b style="font-size:14px">Ganti password</b>
+  <b style="font-size:var(--fs-md)">Ganti password</b>
   <label>Password lama</label><input id="pwLama" type="password" autocomplete="current-password">
   <label>Password baru (min. 8 karakter)</label><input id="pwBaru" type="password" autocomplete="new-password">
   <label>Ulangi password baru</label><input id="pwBaru2" type="password" autocomplete="new-password">
@@ -70,7 +72,7 @@
   <div class="msg" id="pwMsg"></div>
  </div>
  <div class="panel form" id="formView" style="display:none">
-  <b id="fJudul" style="font-size:14px">Ubah kontak</b>
+  <b id="fJudul" style="font-size:var(--fs-md)">Ubah kontak</b>
   <label>Username PPPoE</label><input id="fUser" disabled>
   <label>Nama lengkap</label><input id="fNama">
   <label>Alamat</label><textarea id="fAlamat"></textarea>
