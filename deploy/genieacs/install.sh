@@ -228,8 +228,11 @@ curl -fsS -X PUT --data-binary @"$DIR/provision-diagnostik.js" "$NBI/provisions/
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"weight":0,"channel":"","events":{"8 DIAGNOSTICS COMPLETE":true},"precondition":"","configurations":[{"type":"provision","name":"indeso-diagnostik","args":null}]}' \
   "$NBI/presets/indeso-diagnostik"
+# Password connection request bersama untuk semua ONU (disimpan hanya di VPS & di preset).
+[ -f /root/genieacs-cr-password.txt ] || { openssl rand -hex 12 > /root/genieacs-cr-password.txt; chmod 600 /root/genieacs-cr-password.txt; }
+CR_PASS=$(cat /root/genieacs-cr-password.txt)
 curl -fsS -X PUT -H 'Content-Type: application/json' \
-  --data '{"weight":0,"channel":"","events":{},"precondition":"","configurations":[{"type":"provision","name":"indeso-default","args":null}]}' \
+  --data "{\"weight\":0,\"channel\":\"\",\"events\":{},\"precondition\":\"\",\"configurations\":[{\"type\":\"provision\",\"name\":\"indeso-default\",\"args\":[\"indeso\",\"${CR_PASS}\"]}]}" \
   "$NBI/presets/indeso-default"
 
 VPS_IP=$(curl -fsS https://api.ipify.org || echo "IP_PUBLIK_VPS")
