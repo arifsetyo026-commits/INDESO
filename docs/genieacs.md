@@ -94,7 +94,7 @@ atau buka web ONU dari kantor. Nama menu bisa sedikit berbeda antar firmware.
 | ACS URL | `http://10.99.0.1:7547/` |
 | ACS Username / Password | kosongkan |
 | Periodic Inform | Aktif, interval `300` detik |
-| Connection Request Username / Password | isi bebas, mis. `indeso` / password acak (GenieACS membacanya otomatis) |
+| Connection Request Username / Password | samakan dengan ACS username/password (mis. `INDESO` / `INDESO26`); server memasangnya otomatis dari `/root/genieacs-cr-user.txt` & `/root/genieacs-cr-password.txt` |
 | WAN Connection / Interface | pilih koneksi **INTERNET (PPPoE)** |
 
 **Fiberhome (HG6243C, AN5506, dll.)**: *Management / Application → TR-069* (atau *Remote Management*). Isinya sama: aktifkan, ACS URL `http://10.99.0.1:7547/`, periodic inform 300 detik, WAN = koneksi internet/PPPoE.
