@@ -7148,6 +7148,75 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     return hasil
 
 
+_PING_ONU = f"{_IGD}.IPPingDiagnostics"
+
+
+class PingOnuIn(BaseModel):
+    host: str = "google.com"
+    jumlah: int = 10
+
+
+def _param(doc: dict, path: str) -> dict:
+    cur = doc
+    for p in path.split("."):
+        if not isinstance(cur, dict) or p not in cur:
+            return {}
+        cur = cur[p]
+    return cur if isinstance(cur, dict) else {}
+
+
+@app.post("/api/acs/{username}/ping")
+def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
+    """Suruh ONU pelanggan ping ke host (default google.com) lewat TR-069 IPPingDiagnostics.
+    Hasilnya dibaca lewat GET /api/acs/{username}/ping setelah ONU selesai."""
+    _wajib_admin(request)
+    host = d.host.strip()
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", host):
+        raise HTTPException(status_code=400, detail="Alamat tujuan tidak valid (mis. google.com atau 8.8.8.8).")
+    jumlah = max(3, min(d.jumlah, 30))
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if not _ada(doc, _PING_ONU):
+        raise HTTPException(status_code=400, detail="ONU ini tidak menyediakan tes ping lewat TR-069.")
+    mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    nilai = [[f"{_PING_ONU}.Host", host, "xsd:string"],
+             [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
+    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah)
+
+
+@app.get("/api/acs/{username}/ping")
+def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool = False):
+    """menunggu → ONU belum selesai / hasil belum terbaca; selesai → angka hasil ping."""
+    _wajib_admin(request)
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if segarkan:
+        # Hasil belum masuk: minta ONU mengirim nilai IPPingDiagnostics (sekali, dari sisi browser).
+        _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
+            f"{_PING_ONU}.{k}" for k in ("DiagnosticsState", "SuccessCount", "FailureCount",
+                                         "AverageResponseTime", "MinimumResponseTime", "MaximumResponseTime")]}, tunggu=15)
+        doc = _cari_perangkat(username) or doc
+    st = _param(doc, f"{_PING_ONU}.DiagnosticsState")
+    keadaan, waktu = st.get("_value"), str(st.get("_timestamp") or "")
+    if not keadaan or keadaan in ("Requested", "None") or waktu < mulai:
+        return {"status": "menunggu", "keadaan": keadaan}
+    angka = lambda k: (lambda v: int(v) if str(v).lstrip("-").isdigit() else None)(_nilai(doc, f"{_PING_ONU}.{k}"))
+    sukses, gagal = angka("SuccessCount"), angka("FailureCount")
+    total = (sukses or 0) + (gagal or 0)
+    return {"status": "selesai", "keadaan": keadaan, "host": _nilai(doc, f"{_PING_ONU}.Host"),
+            "sukses": sukses, "gagal": gagal,
+            "hilang_persen": round((gagal or 0) * 100 / total) if total else None,
+            "rata_ms": angka("AverageResponseTime"), "min_ms": angka("MinimumResponseTime"),
+            "maks_ms": angka("MaximumResponseTime")}
+
+
 @app.post("/api/acs/{username}/reboot")
 def acs_reboot(username: str, request: Request):
     _wajib_admin(request)

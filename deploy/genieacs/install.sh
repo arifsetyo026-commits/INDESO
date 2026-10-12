@@ -224,6 +224,10 @@ done
 DIR="$(cd "$(dirname "$0")" && pwd)"
 curl -fsS -X PUT --data-binary @"$DIR/provision-indeso.js" "$NBI/provisions/indeso-default"
 curl -fsS -X PUT --data-binary @"$DIR/vp-pppoeUsername.js" "$NBI/virtual_parameters/pppoeUsername"
+curl -fsS -X PUT --data-binary @"$DIR/provision-diagnostik.js" "$NBI/provisions/indeso-diagnostik"
+curl -fsS -X PUT -H 'Content-Type: application/json' \
+  --data '{"weight":0,"channel":"","events":{"8 DIAGNOSTICS COMPLETE":true},"precondition":"","configurations":[{"type":"provision","name":"indeso-diagnostik","args":null}]}' \
+  "$NBI/presets/indeso-diagnostik"
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"weight":0,"channel":"","events":{},"precondition":"","configurations":[{"type":"provision","name":"indeso-default","args":null}]}' \
   "$NBI/presets/indeso-default"

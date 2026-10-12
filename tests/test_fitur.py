@@ -985,3 +985,30 @@ def test_acs_pantau_tugas(siap, monkeypatch):
     assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "antre"
     acs.antrean.clear()
     assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "selesai"
+
+
+def test_acs_ping_dari_onu(siap, monkeypatch):
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    # ONU tanpa IPPingDiagnostics -> ditolak dengan pesan jelas
+    assert k.post("/api/acs/budi/ping", json={}).status_code == 400
+    igd = acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]
+    igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None", "_timestamp": "2020-01-01T00:00:00.000Z"}}
+    assert k.post("/api/acs/budi/ping", json={"host": "google.com; rm -rf /"}).status_code == 400
+    r = k.post("/api/acs/budi/ping", json={"jumlah": 99}).json()
+    assert r["jumlah"] == 30 and r["host"] == "google.com"
+    nilai = {p[0].rsplit(".", 1)[-1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert nilai["Host"] == "google.com" and nilai["DiagnosticsState"] == "Requested"
+    assert m.get(f"/api/acs/budi/ping?mulai={r['mulai']}").status_code == 403
+    assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}").json()["status"] == "menunggu"
+    # ONU selesai: nilai diagnostik baru masuk
+    baru = "2999-01-01T00:00:00.000Z"
+    igd["IPPingDiagnostics"].update({
+        "DiagnosticsState": {"_value": "Complete", "_timestamp": baru}, "Host": {"_value": "google.com"},
+        "SuccessCount": {"_value": 9}, "FailureCount": {"_value": 1}, "AverageResponseTime": {"_value": 23},
+        "MinimumResponseTime": {"_value": 18}, "MaximumResponseTime": {"_value": 41}})
+    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&segarkan=true").json()
+    assert h["status"] == "selesai" and h["hilang_persen"] == 10 and h["rata_ms"] == 23
+    assert acs.tugas[-1]["name"] == "getParameterValues"
