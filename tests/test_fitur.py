@@ -959,6 +959,22 @@ def test_ringkas_perangkat_fiberhome(app):
     assert r["perangkat_wifi"] == 1 and all(x["klien"] is None for x in r["wifi"])
 
 
+def test_ringkas_perangkat_zte(app):
+    """ZTE: X_ZTE-COM_BandWidth (lebar kanal) tidak boleh dikira frekuensi; channel 153 = 5 GHz."""
+    main = app
+    v = lambda x: {"_value": x}
+    doc = {"_id": "B08B92-F670L-ZTEGD08EDDF5",
+           "_deviceId": {"_Manufacturer": "ZTE", "_ProductClass": "F670L", "_SerialNumber": "ZTEGD08EDDF5"},
+           "InternetGatewayDevice": {"LANDevice": {"1": {"WLANConfiguration": {
+               "1": {"SSID": v("GHARIL"), "Enable": v(True), "Channel": v(4), "X_ZTE-COM_BandWidth": v("Auto")},
+               "5": {"SSID": v("ZTE_5G_2zNUEZ"), "Enable": v(True), "Channel": v(153),
+                     "X_ZTE-COM_BandWidth": v("20MHz/40MHz/80MHz")},
+               "6": {"SSID": v("Tamu"), "Enable": v(True), "Channel": v(0), "X_ZTE-COM_WlanStandard": v("a,n,ac"),
+                     "Standard": v("ac")}}}}}}
+    w = {x["ssid"]: x["band"] for x in main._ringkas_perangkat(doc)["wifi"]}
+    assert w == {"GHARIL": "2,4 GHz", "ZTE_5G_2zNUEZ": "5 GHz", "Tamu": "5 GHz"}
+
+
 def test_acs_pantau_tugas(siap, monkeypatch):
     main, o, k, m = siap
     acs = FakeACS()

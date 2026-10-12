@@ -7013,16 +7013,19 @@ def acs_batal_tugas(username: str, tid: str, request: Request):
 
 
 def _band_wifi(doc: dict, b: str, ssid: str) -> str:
-    """2,4 / 5 GHz: dari parameter band (nama berbeda per vendor), channel, standar, atau nama SSID."""
+    """2,4 / 5 GHz: dari channel, parameter band (nama berbeda per vendor), standar, atau nama SSID."""
+    ch = str(_nilai(doc, f"{b}.Channel") or "")
+    if ch.isdigit() and int(ch) > 0:
+        return "5 GHz" if int(ch) > 14 else "2,4 GHz"
     cur = doc
     for p in b.split("."):
         cur = cur.get(p, {}) if isinstance(cur, dict) else {}
     for k, v in (cur.items() if isinstance(cur, dict) else []):
+        # ZTE punya X_ZTE-COM_BandWidth (20/40 MHz) — itu lebar kanal, bukan frekuensi
+        if "Width" in k or "Steering" in k:
+            continue
         if ("Band" in k or "Frequency" in k) and isinstance(v, dict) and v.get("_value") not in (None, ""):
             return "5 GHz" if "5" in str(v["_value"]) else "2,4 GHz"
-    ch = str(_nilai(doc, f"{b}.Channel") or "")
-    if ch.isdigit() and int(ch) > 14:
-        return "5 GHz"
     std = str(_nilai(doc, f"{b}.Standard") or "").lower()
     if std and ("ac" in std or "ax" in std or std in ("a", "a,n", "an")):
         return "5 GHz"
