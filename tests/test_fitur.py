@@ -899,3 +899,28 @@ def test_acs_dan_diagnosa(siap, monkeypatch):
     dg = k.get("/api/diagnosa/ani").json()
     assert not dg["pppoe"]["online"] and "tidak online" in dg["kesimpulan"][0]["teks"]
     assert k.get("/api/diagnosa/tidakada").status_code == 404
+
+
+def test_keamanan_dasar(siap):
+    main, o, k, m = siap
+    # dokumentasi API otomatis tidak tersedia
+    for p in ("/docs", "/redoc", "/openapi.json"):
+        assert o.get(p).status_code == 404
+    # hash password lama (iterasi lebih kecil) di-upgrade saat login
+    conn = main._billing_conn()
+    import hashlib, secrets
+    g = secrets.token_hex(16)
+    lama = f"pbkdf2_sha256$200000${g}${hashlib.pbkdf2_hmac('sha256', b'kasirpass1', bytes.fromhex(g), 200000).hex()}"
+    conn.execute("UPDATE akun SET password_hash=? WHERE username='kasir'", (lama,))
+    conn.commit()
+    assert klien(main, "kasir", "kasirpass1")
+    baru = conn.execute("SELECT password_hash FROM akun WHERE username='kasir'").fetchone()[0]
+    conn.close()
+    assert baru.startswith(f"pbkdf2_sha256${main._PBKDF2_ITERASI}$") and main._cek_password("kasirpass1", baru)
+    # pembatas login: catatan kedaluwarsa dibersihkan
+    from datetime import datetime, timedelta
+    lama_t = datetime.now() - timedelta(hours=1)
+    for i in range(5001):
+        main._gagal_login[f"ip:x{i}"] = [lama_t]
+    main._catat_gagal("ip:baru", datetime.now())
+    assert len(main._gagal_login) < 100

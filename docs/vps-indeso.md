@@ -90,3 +90,11 @@ Sertifikat HTTPS diperbarui otomatis oleh certbot. Backup harian dan mingguan ke
 
 **Kembali ke HP (darurat):** jalankan `sudo systemctl stop indeso && sudo systemctl disable indeso` di VPS.
 Setelah itu, salin balik `/var/lib/indeso/billing.db` ke HP sebelum INDESO dinyalakan di sana. Kalau tidak disalin, HP memakai data versi lama.
+
+## Keamanan (ringkasan)
+- Dashboard hanya lewat HTTPS (HSTS). Cookie sesi `HttpOnly`, `Secure`, dan `SameSite=Strict`, ditambah pemeriksaan Origin untuk setiap perubahan data.
+- Login dibatasi 5 percobaan gagal per IP dan 10 percobaan per username dalam 15 menit. IP asli pengunjung diteruskan oleh nginx (`--proxy-headers`). Password disimpan dengan PBKDF2-SHA256 600.000 iterasi.
+- `/docs` dan `/openapi.json` dimatikan.
+- INDESO hanya mendengarkan di `127.0.0.1:8000`. GenieACS (API/UI), MongoDB, dan PostgreSQL hanya dapat diakses dari localhost atau terowongan.
+- Web admin GenieACS (`10.99.0.1:3000`) hanya untuk jaringan kantor (`LAN_SUBNET`) dan MikroTik. Pelanggan PPPoE hanya bisa menjangkau port lapor ONU (7547).
+- SSH hanya menerima kunci, tanpa password.

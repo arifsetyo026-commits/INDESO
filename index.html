@@ -354,6 +354,10 @@
 </div>
 </div></div></div>
 <script>
+// Nilai teks untuk dipakai di dalam atribut onclick="...": di-encode sebagai string JS
+// (JSON) lalu di-escape HTML. esc() saja tidak cukup karena &#39; didekode browser
+// kembali menjadi ' sebelum JavaScript dijalankan.
+function jsq(v){ return String(JSON.stringify(String(v??''))).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 // Sesi habis / logout di perangkat lain -> kembali ke halaman login
 const _fetchAsli=window.fetch.bind(window);
 window.fetch=async(...arg)=>{const r=await _fetchAsli(...arg); if(r.status===401){location.replace('/login');} return r;};
@@ -540,7 +544,7 @@ function searchCustomers(){
   if(o.pon!==pon){ pon=o.pon; const semua=(d.onu_list||[]).filter(x=>x.pon===pon);
    h+=`<div style="display:flex;justify-content:space-between;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:13px">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online</span></div>`; }
   const u=o.pppoe_username, n=nama.get(u);
-  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa('${esc(u)}')"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'}</div><div class="plSub">${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
+  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'}</div><div class="plSub">${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
  }
  $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · ketuk ONU yang terpetakan untuk membuka Diagnosa</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');
 }
@@ -1219,7 +1223,7 @@ async function bukaTiket(id){
  tk.cur=id; tkView('detail'); const box=$('tkDetailView'); box.innerHTML='<div class="muted">Memuat…</div>';
  let d; try{ d=await jsonAtauError(await fetch('/api/tiket/'+id,{cache:'no-store'})); }catch(e){ box.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div><button class="btnS" onclick="tkView(\'list\')">‹ Kembali</button>'; return; }
  const t=d.tiket, k=d.kontak, g=d.diagnosa, kotak=(a,b)=>`<div class="detail"><small>${a}</small><b>${b}</b></div>`;
- let html=`<div class="blNav"><button class="btnS" onclick="tkView('list')">‹ Kembali</button><b>#T${t.id}</b>${TK_CHIP[t.status]||''}${t.prioritas==='tinggi'?'<span class="chip bad">🔺 Prioritas tinggi</span>':''}${t.username?`<button class="btnS go" onclick="openDiagnosa('${esc(t.username)}')">Diagnosa</button>`:''}</div>`;
+ let html=`<div class="blNav"><button class="btnS" onclick="tkView('list')">‹ Kembali</button><b>#T${t.id}</b>${TK_CHIP[t.status]||''}${t.prioritas==='tinggi'?'<span class="chip bad">🔺 Prioritas tinggi</span>':''}${t.username?`<button class="btnS go" onclick="openDiagnosa(${jsq(t.username)})">Diagnosa</button>`:''}</div>`;
  html+=`<div class="kuPanel" style="margin-bottom:10px"><div class="plName" style="font-size:15px">${t.username?esc(t.nama||t.username):'Gangguan umum / jaringan'}</div>`;
  if(t.username) html+=`<div class="plSub">${esc(t.username)}${k&&k.alamat?' · '+esc(k.alamat):''}${k&&k.no_hp?' · <a href="https://wa.me/'+esc(nomorWA(k.no_hp))+'" target="_blank" rel="noopener">WA '+esc(k.no_hp)+'</a>':''}</div>`;
  html+=`<div style="margin-top:8px;font-size:13px"><b>${esc(t.kategori)}</b>${t.keterangan?' — '+esc(t.keterangan):''}</div><div class="plSub">Dilaporkan ${esc(t.dibuat_oleh)} · ${esc(khWaktu(t.dibuat_pada))} · ${t.terbuka?'sudah '+esc(t.umur):'ditangani dalam '+esc(t.umur)}${t.teknisi?' · teknisi <b>'+esc(t.teknisi)+'</b>':''}</div>`;

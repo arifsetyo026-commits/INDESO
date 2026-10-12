@@ -173,9 +173,13 @@ fi
 # Pekerja nginx (www-data) harus bisa membaca file password; umask 077 di atas membuatnya root saja (→ HTTP 500).
 chown root:www-data /etc/nginx/genieacs-nbi.htpasswd
 chmod 640 /etc/nginx/genieacs-nbi.htpasswd
+IZIN_KANTOR=$(for net in $(echo "$LAN_SUBNET" | tr ',' ' ') "${WG_MT_IP}"; do printf '    allow %s;\n' "$net"; done; printf '    deny all;')
 cat > /etc/nginx/sites-available/genieacs <<NGX
 server {
     listen ${WG_VPS_IP}:7557;
+    # Hanya kantor (LAN) & MikroTik. Pelanggan PPPoE juga bisa menjangkau 10.99.0.1
+    # (perlu untuk lapor ONU ke 7547), jadi API & web admin wajib dibatasi.
+${IZIN_KANTOR}
     auth_basic "GenieACS NBI";
     auth_basic_user_file /etc/nginx/genieacs-nbi.htpasswd;
     client_max_body_size 50m;
@@ -183,6 +187,7 @@ server {
 }
 server {
     listen ${WG_VPS_IP}:3000;
+${IZIN_KANTOR}
     location / { proxy_pass http://127.0.0.1:3000; proxy_set_header Host \$host; }
 }
 NGX

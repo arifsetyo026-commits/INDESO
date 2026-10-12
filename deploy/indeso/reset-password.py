@@ -28,7 +28,7 @@ if len(pw) < 8:
     sys.exit("Password minimal 8 karakter.")
 if pw != getpass.getpass("Ulangi password baru: "):
     sys.exit("Ulangi password tidak sama.")
-iterasi = 200_000   # sama dengan _PBKDF2_ITERASI di main.py
+iterasi = 600_000   # sama dengan _PBKDF2_ITERASI di main.py
 garam = secrets.token_hex(16)
 h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(garam), iterasi).hex()
 conn.execute("UPDATE akun SET password_hash=?, aktif=1 WHERE username=?", (f"pbkdf2_sha256${iterasi}${garam}${h}", nama))
