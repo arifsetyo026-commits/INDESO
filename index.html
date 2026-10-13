@@ -1412,8 +1412,8 @@ async function muatRingkasanKu(){
  if(d.kas_negatif) h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:var(--fs-sm)">⚠ Saldo kas akhir bulan negatif ('+rp(d.saldo_akhir)+')</b><div class="plSub">Uang tidak mungkin minus. Kemungkinan ada setoran modal atau penerimaan yang belum dicatat, atau pengeluaran tercatat ganda.</div></div>';
  h+='<div class="kuKpi">'
   +kotakKu('Pendapatan',rp(d.pendapatan),selisih(d.pendapatan,d.bulan_lalu.pendapatan,true))
-  +kotakKu('Beban',rp(d.beban),selisih(d.beban,d.bulan_lalu.beban,false))
-  +kotakKu('Laba bersih',rp(d.laba),selisih(d.laba,d.bulan_lalu.laba,true),d.laba<0?'#b42318':'#0b7a3b')
+  +kotakKu('Beban',rp(d.beban),(d.penyusutan?'termasuk penyusutan '+rp(d.penyusutan)+' (bukan uang keluar) · ':'')+selisih(d.beban,d.bulan_lalu.beban,false))
+  +kotakKu('Laba bersih',rp(d.laba),selisih(d.laba,d.bulan_lalu.laba,true)+(d.penyusutan?' · kinerja usaha, bukan saldo uang':''),d.laba<0?'#b42318':'#0b7a3b')
   +kotakKu('Saldo kas akhir periode',rp(d.saldo_akhir),'awal bulan '+rp(d.saldo_awal))+'</div>';
  h+='<div class="kuSub">'
   +kotakKu('Tingkat penagihan bulan ini',tagihanPersen==null?'—':tagihanPersen+'%',rp(d.tagihan_periode.total-d.piutang_periode.total)+' dari '+rp(d.tagihan_periode.total))
