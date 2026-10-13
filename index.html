@@ -1175,17 +1175,25 @@ async function batalTugas(tid){
 // Tes ping dari ONU pelanggan ke internet (TR-069 IPPingDiagnostics).
 let _pantauPing=null;
 const PING_GAGAL={Error_CannotResolveHostName:'ONU tidak bisa menerjemahkan nama alamat (DNS bermasalah).',Error_Internal:'ONU mengalami kesalahan internal saat ping.',Error_Other:'ONU gagal menjalankan ping.'};
-async function pingOnu(host,catatan){
+async function pingOnu(host,catatan,tanpaWan){
  host=host||'google.com'; clearInterval(_pantauPing); const user=dg.user, box=$('dgPingOnu');
  box.innerHTML=(catatan||'')+'<div class="muted">⏳ Menyuruh ONU ping ke '+esc(host)+' 10 kali…</div>';
- let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10})})); }
+ let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10,lewat_wan:!tanpaWan})})); }
  catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
  const awal=Date.now(); let disegarkan=false;
  const cek=async()=>{
   if(dg.user!==user||!$('diagModal').classList.contains('show')){ clearInterval(_pantauPing); return; }
   const dtk=Math.round((Date.now()-awal)/1000), segar=!disegarkan&&dtk>=30;
   if(segar) disegarkan=true;
-  let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping?mulai='+encodeURIComponent(r.mulai)+(segar?'&segarkan=true':''),{cache:'no-store'})); }catch(e){ return; }
+  let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping?mulai='+encodeURIComponent(r.mulai)+(r.tugas_id?'&tugas='+r.tugas_id:'')+(segar?'&segarkan=true':''),{cache:'no-store'})); }catch(e){ return; }
+  if(s.status==='gagal'){
+   clearInterval(_pantauPing);
+   // Perintah ditolak ONU: hapus dari antrean supaya tidak diulang terus setiap ONU lapor.
+   try{ await fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+s.tugas_id+'/batal',{method:'POST'}); }catch(e){}
+   if(r.lewat_wan&&!tanpaWan){ pingOnu(host,catatan,true); return; }   // ulang tanpa memilih jalur WAN
+   box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div></div>`;
+   return;
+  }
   if(s.status!=='selesai'){
    box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU sedang ping ke ${esc(host)}… (${dtk} detik)${dtk>90?' — ONU lambat merespons; hasil muncul begitu ONU lapor ke server (maks. ±5 menit).':''}</div>`;
    if(dtk>360){ clearInterval(_pantauPing); box.innerHTML='<div class="muted">Belum ada hasil setelah 6 menit. ONU mungkin offline atau tidak mendukung tes ping. Coba lagi nanti.</div>'; }

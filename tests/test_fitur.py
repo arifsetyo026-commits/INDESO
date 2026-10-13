@@ -1155,3 +1155,43 @@ def test_nama_kategori_baku(app):
     c.close()
     assert "Pelunasan liabilitas" in nama and "Pembayaran utang" not in nama and "Listrik" not in nama
     assert not any("utang" in n.lower() or "cicilan" in n.lower() for n in nama)
+
+
+def test_acs_onu_diganti_dan_ping_lewat_wan(siap, monkeypatch):
+    """ONU pelanggan diganti: nomor seri dari OLT menang atas id lama. Ping diarahkan ke PPPoE;
+    bila ONU menolak perintahnya, status 'gagal' langsung dilaporkan."""
+    import copy
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    assert k.get("/api/acs/budi").json()["perangkat"]["id"] == "ZTE-F609-ZTEGC1234567"   # id tersimpan
+    baru = copy.deepcopy(acs.dev["ZTEGC1234567"])
+    baru.update(_id="ZTE-F670L-ZTEGDBARU0001", _lastInform="2026-02-01T00:00:00.000Z",
+                _deviceId={"_Manufacturer": "ZTE", "_ProductClass": "F670L", "_SerialNumber": "ZTEGDBARU0001"})
+    acs.dev["ZTEGDBARU0001"] = baru
+    # Belum ada data OLT: dua ONU sama-sama menyimpan username budi -> id tersimpan (ONU lama) dipakai
+    assert k.get("/api/acs/budi").json()["perangkat"]["id"] == "ZTE-F609-ZTEGC1234567"
+    # OLT kini melihat ONU baru untuk budi -> ONU baru yang dipakai dan id tersimpan diperbarui
+    onu = main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                         serial_number="ZTEGDBARU0001", pppoe_username="budi")
+    main._latest_data = main._build_dashboard([], None, [onu])
+    assert k.get("/api/acs/budi").json()["perangkat"]["id"] == "ZTE-F670L-ZTEGDBARU0001"
+    main._latest_data = None
+    assert k.get("/api/acs/budi").json()["perangkat"]["id"] == "ZTE-F670L-ZTEGDBARU0001"
+
+    igd = baru["InternetGatewayDevice"]
+    igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}, "Interface": {"_value": ""}}
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    nilai = {p[0].rsplit(".", 1)[-1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert r["lewat_wan"] and nilai["Interface"] == "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1"
+    r2 = k.post("/api/acs/budi/ping", json={"lewat_wan": False}).json()
+    assert not r2["lewat_wan"] and "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
+    # ONU menolak (fault) -> gagal, bukan menunggu terus
+    acs.antre = True
+    r3 = k.post("/api/acs/budi/ping", json={}).json()
+    tid = r3["tugas_id"]
+    acs.faults.append({"_id": f"{baru['_id']}:task_{tid}", "channel": f"task_{tid}", "device": baru["_id"],
+                       "code": "cwmp.9007", "message": "Invalid parameter value"})
+    h = k.get(f"/api/acs/budi/ping?mulai={r3['mulai']}&tugas={tid}").json()
+    assert h["status"] == "gagal" and "9007" in h["pesan"]

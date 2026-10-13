@@ -7263,7 +7263,9 @@ def _query_pppoe(username: str) -> dict:
 
 
 def _cari_perangkat(username: str) -> Optional[dict]:
-    """Cari dokumen ONU di GenieACS: id tersimpan → nomor seri GPON → username PPPoE."""
+    """Cari dokumen ONU di GenieACS: nomor seri GPON dari OLT → id tersimpan → username PPPoE.
+    Nomor seri didahulukan: bila ONU pelanggan diganti, dokumen ONU lama masih ada di GenieACS
+    (dengan id tersimpan & username PPPoE yang sama), jadi id tersimpan saja bisa salah ONU."""
     conn = _billing_conn()
     try:
         r = conn.execute("SELECT acs_id FROM pelanggan WHERE username=?", (username,)).fetchone()
@@ -7272,17 +7274,20 @@ def _cari_perangkat(username: str) -> Optional[dict]:
     if r is None:
         raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
     queries = []
-    if r["acs_id"]:
-        queries.append({"_id": r["acs_id"]})
     sn = _sn_onu(username)
     if sn:
         queries.append({"_deviceId._SerialNumber": sn})
-        queries.append({"_deviceId._SerialNumber": sn.upper()})
+        if sn.upper() != sn:
+            queries.append({"_deviceId._SerialNumber": sn.upper()})
+    if r["acs_id"]:
+        queries.append({"_id": r["acs_id"]})
     queries.append(_query_pppoe(username))
     for q in queries:
         res = _acs("GET", "/devices/", params={"query": json.dumps(q)})
         if res.ok and res.json():
-            doc = res.json()[0]
+            # Beberapa dokumen cocok (mis. ONU lama & baru sama-sama menyimpan username PPPoE):
+            # pakai yang paling baru melapor.
+            doc = max(res.json(), key=lambda d: str(d.get("_lastInform") or ""))
             if doc["_id"] != r["acs_id"]:
                 conn = _billing_conn()
                 try:
@@ -7499,6 +7504,18 @@ _PING_ONU = f"{_IGD}.IPPingDiagnostics"
 class PingOnuIn(BaseModel):
     host: str = "google.com"
     jumlah: int = 10
+    lewat_wan: bool = True      # arahkan ping lewat koneksi PPPoE (bukan jalur manajemen/LAN)
+
+
+def _wan_ppp_aktif(doc: dict) -> Optional[str]:
+    """Path WANPPPConnection yang sedang tersambung (punya IP), untuk IPPingDiagnostics.Interface."""
+    for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
+        for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
+            b = f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}"
+            ip = str(_nilai(doc, f"{b}.ExternalIPAddress") or "")
+            if ip and ip != "0.0.0.0":
+                return b
+    return None
 
 
 def _param(doc: dict, path: str) -> dict:
@@ -7525,23 +7542,32 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     if not _ada(doc, _PING_ONU):
         raise HTTPException(status_code=400, detail="ONU ini tidak menyediakan tes ping lewat TR-069.")
     mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
-    nilai = [[f"{_PING_ONU}.Host", host, "xsd:string"],
+    # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
+    # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
+    wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
+    nilai = ([[f"{_PING_ONU}.Interface", wan, "xsd:string"]] if wan else []) + [
+             [f"{_PING_ONU}.Host", host, "xsd:string"],
              [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"],
              [f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
              [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"],
              [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
-    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah)
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan))
 
 
 @app.get("/api/acs/{username}/ping")
-def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool = False):
-    """menunggu → ONU belum selesai / hasil belum terbaca; selesai → angka hasil ping."""
+def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool = False, tugas: Optional[str] = None):
+    """menunggu → ONU belum selesai / hasil belum terbaca; gagal → ONU menolak perintah ping;
+    selesai → angka hasil ping."""
     _wajib_admin(request)
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if tugas and re.fullmatch(r"[0-9a-f]{24}", tugas):
+        st = _status_tugas(doc["_id"], tugas)
+        if st["status"] == "gagal":
+            return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas}
     if segarkan:
         # Hasil belum masuk: minta ONU mengirim nilai IPPingDiagnostics (sekali, dari sisi browser).
         _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [

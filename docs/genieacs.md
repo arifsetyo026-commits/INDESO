@@ -128,11 +128,30 @@ dan tidak dicatat di INDESO. Setelah ganti password, ada tombol untuk mengirimka
 |---|---|---|
 | ONU tidak muncul di GenieACS | ACS URL salah, WAN TR-069 bukan koneksi internet, terowongan putus | Di MikroTik: `/ping 10.99.0.1`, `/interface wireguard peers print`. Di VPS: `sudo wg show`, `sudo tail -f /var/log/genieacs/genieacs-cwmp-access.log` |
 | Perintah berstatus "menunggu ONU online" | GenieACS tidak bisa menghubungi ONU balik | Aturan firewall `forward` MikroTik dari skrip harus berada di urutan atas. Connection Request di ONU harus aktif |
+| Perintah lama (≈5 menit), ping "ONU lambat merespons" | Ketukan (connection request) ditolak/tidak sampai | Uji dari VPS: `curl -s -o /dev/null --digest -u "$(sudo cat /root/genieacs-cr-user.txt):$(sudo cat /root/genieacs-cr-password.txt)" -w "%{http_code}\n" URL_CR_ONU`. **401** = kredensial beda (samakan ACS user/pass di OLT/ONU dengan file itu); **000** = tidak sampai (ZTE: cek *Security → Service Control/ACL*, izinkan TR-069 dari WAN) |
+| Ping dari ONU: "DNS bermasalah" | ONU tidak bisa resolve nama | INDESO otomatis mengulang ke 8.8.8.8. Bila 8.8.8.8 berhasil, perbaiki DNS di WAN PPPoE ONU / profil PPPoE MikroTik |
+| Perintah ke ONU tertentu selalu gagal | Ada *fault* tertahan | `curl -s http://127.0.0.1:7557/faults/ \| python3 -m json.tool` di VPS. Fault tugas bisa dihapus dari dashboard (tombol Batalkan) |
 | Dashboard: "Server ACS tidak terjangkau" | HP Termux tidak bisa mencapai 10.99.0.1 | Dari Termux: `curl -u indeso:PASSWORD http://10.99.0.1:7557/devices/?projection=_id`. Pastikan `LAN_SUBNET` di skrip sesuai |
 | "Model ONU ini tidak membuka pengaturan password" | Firmware ONU tidak menyediakan parameter password lewat TR-069 | Tekan *Ambil data terbaru dari ONU* sekali; kalau tetap, ganti lewat web ONU |
 | "Server ACS menolak login" | Isi `GENIEACS_USER/PASS` salah | Bandingkan dengan `/root/genieacs-nbi-password.txt` di VPS |
 
 ## Keamanan & perawatan
+
+- **Wajibkan login ACS** setelah semua ONU diisi ACS Username/Password yang sama (mis. `INDESO` / `INDESO26`).
+  Tanpa ini, pelanggan mana pun di jaringan PPPoE bisa mendaftarkan "ONU palsu" ke ACS:
+  ```
+  sudo bash ~/INDESO/deploy/genieacs/wajibkan-login-acs.sh aktifkan
+  ```
+  Skrip mencatat ONU yang aktif, mengaktifkan login, menunggu 7 menit, lalu **membatalkan otomatis**
+  bila ada ONU yang tidak bisa lapor (dan menampilkan daftarnya). Kembalikan kapan saja dengan `… matikan`.
+  Setelah aktif, setiap ONU baru wajib diisi ACS Username/Password tersebut.
+- Pemeriksaan cepat kesehatan ACS di VPS:
+  ```
+  systemctl is-active mongod genieacs-cwmp genieacs-nbi wg-quick@wgacs
+  sudo wg show wgacs latest-handshakes          # harus < 2-3 menit yang lalu
+  curl -s 'http://127.0.0.1:7557/devices/?projection=_id,_lastInform' | python3 -m json.tool | grep -c _id
+  curl -s http://127.0.0.1:7557/faults/ | python3 -m json.tool | grep -c '"_id"'   # idealnya 0
+  ```
 
 - Port 7547/7557/3000 hanya terbuka lewat WireGuard (diatur `ufw` oleh skrip). Jangan membukanya ke internet.
 - Backup database GenieACS mingguan di VPS, misalnya lewat cron:
