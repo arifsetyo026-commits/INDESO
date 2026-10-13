@@ -7339,7 +7339,7 @@ def _status_tugas(acs_id: str, tid: str) -> dict:
     r = _acs("GET", "/faults/", params={"query": q})
     for f in (r.json() if r.ok else []):
         if f.get("channel") == f"task_{tid}":
-            ditolak = [p.rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail"))]
+            ditolak = [p.rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail")) if p.strip()]
             return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"), "parameter": ditolak,
                     "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"
                              + (f" — kolom ditolak: {', '.join(ditolak[:6])}" if ditolak else "")}
