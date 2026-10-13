@@ -1195,3 +1195,23 @@ def test_acs_onu_diganti_dan_ping_lewat_wan(siap, monkeypatch):
                        "code": "cwmp.9007", "message": "Invalid parameter value"})
     h = k.get(f"/api/acs/budi/ping?mulai={r3['mulai']}&tugas={tid}").json()
     assert h["status"] == "gagal" and "9007" in h["pesan"]
+
+
+def test_acs_ping_minimal_dan_detail_fault(siap, monkeypatch):
+    """ZTE F609 menolak ping (9003): mode minimal hanya mengirim Host/jumlah/mulai; kolom yang ditolak disebut."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}}
+    r = k.post("/api/acs/budi/ping", json={"minimal": True}).json()
+    assert r["minimal"] and [p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]] == [
+        "Host", "NumberOfRepetitions", "DiagnosticsState"]
+    acs.antre = True
+    tid = k.post("/api/acs/budi/ping", json={}).json()["tugas_id"]
+    acs.faults.append({"_id": f"ZTE-F609-ZTEGC1234567:task_{tid}", "channel": f"task_{tid}", "device": "ZTE-F609-ZTEGC1234567",
+                       "code": "cwmp.9003", "message": "Invalid arguments",
+                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
+                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.DataBlockSize", "faultCode": "9007"}]}})
+    st = k.get(f"/api/acs/budi/tugas/{tid}").json()
+    assert st["status"] == "gagal" and st["parameter"] == ["DataBlockSize"] and "DataBlockSize" in st["pesan"]
