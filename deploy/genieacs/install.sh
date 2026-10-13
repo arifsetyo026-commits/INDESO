@@ -228,11 +228,18 @@ curl -fsS -X PUT --data-binary @"$DIR/provision-diagnostik.js" "$NBI/provisions/
 curl -fsS -X PUT -H 'Content-Type: application/json' \
   --data '{"weight":0,"channel":"","events":{"8 DIAGNOSTICS COMPLETE":true},"precondition":"","configurations":[{"type":"provision","name":"indeso-diagnostik","args":null}]}' \
   "$NBI/presets/indeso-diagnostik"
-# Password connection request bersama untuk semua ONU (disimpan hanya di VPS & di preset).
+# Kredensial connection request bersama untuk semua ONU (disimpan hanya di VPS & di preset).
+# Sebaiknya sama dengan ACS username/password yang diisi teknisi di OLT/ONU: sebagian ONU
+# (mis. ZTE yang diatur lewat OLT) memakai pasangan itu juga untuk connection request.
+# Ubah dengan: CR_USER=INDESO CR_PASS=INDESO26 sudo -E bash install.sh, atau edit kedua file.
+[ -n "${CR_USER:-}" ] && { echo "$CR_USER" > /root/genieacs-cr-user.txt; chmod 600 /root/genieacs-cr-user.txt; }
+[ -n "${CR_PASS:-}" ] && { echo "$CR_PASS" > /root/genieacs-cr-password.txt; chmod 600 /root/genieacs-cr-password.txt; }
+[ -f /root/genieacs-cr-user.txt ] || { echo indeso > /root/genieacs-cr-user.txt; chmod 600 /root/genieacs-cr-user.txt; }
 [ -f /root/genieacs-cr-password.txt ] || { openssl rand -hex 12 > /root/genieacs-cr-password.txt; chmod 600 /root/genieacs-cr-password.txt; }
+CR_USER=$(cat /root/genieacs-cr-user.txt)
 CR_PASS=$(cat /root/genieacs-cr-password.txt)
 curl -fsS -X PUT -H 'Content-Type: application/json' \
-  --data "{\"weight\":0,\"channel\":\"\",\"events\":{},\"precondition\":\"\",\"configurations\":[{\"type\":\"provision\",\"name\":\"indeso-default\",\"args\":[\"indeso\",\"${CR_PASS}\"]}]}" \
+  --data "{\"weight\":0,\"channel\":\"\",\"events\":{},\"precondition\":\"\",\"configurations\":[{\"type\":\"provision\",\"name\":\"indeso-default\",\"args\":[\"${CR_USER}\",\"${CR_PASS}\"]}]}" \
   "$NBI/presets/indeso-default"
 
 VPS_IP=$(curl -fsS https://api.ipify.org || echo "IP_PUBLIK_VPS")
