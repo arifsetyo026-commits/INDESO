@@ -7545,6 +7545,27 @@ def _param(doc: dict, path: str) -> dict:
     return cur if isinstance(cur, dict) else {}
 
 
+def _bersihkan_tugas_ping(acs_id: str) -> int:
+    """Hapus perintah ping lama yang masih tertahan (mis. pernah ditolak ONU) beserta fault-nya.
+    GenieACS mengirim ulang tugas yang tertahan setiap ONU lapor dan menggabungkannya dengan
+    perintah baru dalam satu SetParameterValues, sehingga satu tugas rusak membuat semua ping
+    berikutnya ikut ditolak (terjadi pada ZTE F609: 9003 terus-menerus)."""
+    from urllib.parse import quote
+    q = json.dumps({"device": acs_id})
+    r = _acs("GET", "/tasks/", params={"query": q})
+    n = 0
+    for t in (r.json() if r.ok else []):
+        pv = t.get("parameterValues") or []
+        if t.get("name") == "setParameterValues" and any(str(p[0]).startswith(_PING_ONU) for p in pv if p):
+            tid = str(t.get("_id"))
+            _acs("DELETE", f"/tasks/{tid}")
+            _acs("DELETE", f"/faults/{quote(acs_id + ':task_' + tid, safe='')}")
+            n += 1
+    if n:
+        logger.info(f"{n} perintah ping lama yang tertahan dihapus untuk {acs_id}")
+    return n
+
+
 @app.post("/api/acs/{username}/ping")
 def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     """Suruh ONU pelanggan ping ke host (default google.com) lewat TR-069 IPPingDiagnostics.
@@ -7559,19 +7580,19 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
     if not _ada(doc, _PING_ONU):
         raise HTTPException(status_code=400, detail="ONU ini tidak menyediakan tes ping lewat TR-069.")
+    _bersihkan_tugas_ping(doc["_id"])
     mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
     # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
     # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
     wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
     if d.minimal:
         wan = None
+    # Timeout/DataBlockSize sengaja tidak dikirim: bawaan ONU sudah wajar, dan makin sedikit
+    # kolom makin kecil kemungkinan ditolak (teruji di ZTE F609 V7 & Fiberhome HG6145D2).
     nilai = ([[f"{_PING_ONU}.Interface", wan, "xsd:string"]] if wan else []) + [
              [f"{_PING_ONU}.Host", host, "xsd:string"],
-             [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"]]
-    if not d.minimal:
-        nilai += [[f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
-                  [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"]]
-    nilai.append([f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"])
+             [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"],
+             [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
     # Pakai tipe data yang dilaporkan ONU sendiri (mis. ZTE melaporkan NumberOfRepetitions
     # sebagai xsd:int): tipe yang tidak cocok dijawab sebagian ONU dengan 9003 Invalid arguments.
     for v in nilai:

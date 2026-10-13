@@ -1228,3 +1228,23 @@ def test_acs_ping_ikut_tipe_onu(siap, monkeypatch):
     k.post("/api/acs/budi/ping", json={"minimal": True})
     tipe = {p[0].rsplit(".", 1)[-1]: p[2] for p in acs.tugas[-1]["parameterValues"]}
     assert tipe == {"Host": "xsd:string", "NumberOfRepetitions": "xsd:int", "DiagnosticsState": "xsd:string"}
+
+
+def test_acs_ping_bersihkan_tugas_tertahan(siap, monkeypatch):
+    """Perintah ping lama yang tertahan (fault 9003) dihapus sebelum ping baru dikirim."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}}
+    lama = "a" * 24
+    acs.antrean[lama] = {"name": "setParameterValues", "parameterValues": [
+        ["InternetGatewayDevice.IPPingDiagnostics.Host", "google.com", "xsd:string"]]}
+    acs.antrean["b" * 24] = {"name": "reboot"}
+    acs.faults.append({"_id": f"ZTE-F609-ZTEGC1234567:task_{lama}", "channel": f"task_{lama}",
+                       "device": "ZTE-F609-ZTEGC1234567", "code": "cwmp.9003", "message": "Invalid arguments"})
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    assert r["status"] == "selesai"
+    assert lama not in acs.antrean and "b" * 24 in acs.antrean and not acs.faults   # tugas lain tidak disentuh
+    kolom = [p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]]
+    assert "Timeout" not in kolom and "DataBlockSize" not in kolom and kolom[-1] == "DiagnosticsState"
