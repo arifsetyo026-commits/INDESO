@@ -119,6 +119,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .lapTbl tr.lapSub td{font-weight:700;border-top:1px solid var(--line)}.lapTbl tr.lapTotal td{font-weight:800;border-top:2px solid var(--ink);border-bottom:3px double var(--ink)}
 @media print{body *{visibility:hidden}#kuLaporan,#kuLaporan *{visibility:visible}#kuLaporan{position:absolute;left:0;top:0;width:100%;padding:0 8mm}.noPrint{display:none!important}.kuPanel{box-shadow:none;break-inside:avoid}.lapGrid{grid-template-columns:1fr 1fr}}
 .menuBtn,.botNav{display:none}
+.blBox.kasPlus{background:#e6f6ea;border-color:#8fd3a5}.blBox.kasPlus b{color:#067d40}.blBox.kasPlus small{color:#2f6b47}
+.blBox.kasMinus{background:#fdebe8;border-color:#ef9a8e}.blBox.kasMinus b{color:#b42318}.blBox.kasMinus small{color:#8a2a1d}
 .utGrup{border:1px solid var(--line);border-radius:12px;margin:8px 0;background:#fff;overflow:hidden}
 .utGrupHead{width:100%;display:flex;align-items:center;gap:10px;padding:11px 12px;background:#fff;border:0;text-align:left;font-family:inherit;color:inherit;cursor:pointer}
 .utGrup.buka .utGrupHead{background:#f3faf5;border-bottom:1px solid var(--line)}.utPanah{color:#4e7b61;font-size:var(--fs-md);width:14px}
@@ -1412,7 +1414,9 @@ function rincianKas(d){
  const keluar=bagian.reduce((a,x)=>a+x[1],0);
  return 'awal '+rp(d.saldo_awal)+(masuk?' · masuk +'+rp(masuk):'')+(keluar?' · keluar −'+rp(keluar)+' ('+bagian.map(x=>x[0]+' '+rp(x[1])).join(', ')+')':'');
 }
-function kotakKu(label,nilai,bawah,warna){ return `<div class="blBox"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
+function kotakKu(label,nilai,bawah,warna,kelas){ return `<div class="blBox${kelas?' '+kelas:''}"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
+// Kotak saldo kas: hijau bila plus, merah bila minus (mudah dikenali sekilas)
+function kelasKas(n){ return n<0?'kasMinus':(n>0?'kasPlus':''); }
 async function muatRingkasanKu(){
  const el=$('kuRingkasan'); el.innerHTML='<div class="muted">Memuat…</div>';
  let d; try{ d=await jsonAtauError(await fetch('/api/keuangan/ringkasan?periode='+ku.periode)); ku.data=d; }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
@@ -1423,9 +1427,9 @@ async function muatRingkasanKu(){
  if(d.kas_negatif) h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:var(--fs-sm)">⚠ Saldo kas akhir bulan negatif ('+rp(d.saldo_akhir)+')</b><div class="plSub">Uang tidak mungkin minus. Kemungkinan ada setoran modal atau penerimaan yang belum dicatat, atau pengeluaran tercatat ganda.</div></div>';
  h+='<div class="kuKpi">'
   +kotakKu('Pendapatan',rp(d.pendapatan),selisih(d.pendapatan,d.bulan_lalu.pendapatan,true))
-  +kotakKu('Beban',rp(d.beban),(d.penyusutan?'termasuk penyusutan '+rp(d.penyusutan)+' (bukan uang keluar) · ':'')+selisih(d.beban,d.bulan_lalu.beban,false))
-  +kotakKu('Laba bersih',rp(d.laba),selisih(d.laba,d.bulan_lalu.laba,true)+(d.penyusutan?' · kinerja usaha, bukan saldo uang':''),d.laba<0?'#b42318':'#0b7a3b')
-  +kotakKu('Saldo kas akhir periode',rp(d.saldo_akhir),rincianKas(d))+'</div>';
+  +kotakKu('Beban',rp(d.beban),[d.penyusutan?'termasuk penyusutan '+rp(d.penyusutan)+' (bukan uang keluar)':'',selisih(d.beban,d.bulan_lalu.beban,false)].filter(Boolean).join(' · '))
+  +kotakKu('Laba bersih',rp(d.laba),[selisih(d.laba,d.bulan_lalu.laba,true),d.penyusutan?'kinerja usaha, bukan saldo uang':''].filter(Boolean).join(' · '),d.laba<0?'#b42318':'#0b7a3b')
+  +kotakKu('Saldo kas akhir periode',rp(d.saldo_akhir),rincianKas(d),'',kelasKas(d.saldo_akhir))+'</div>';
  h+='<div class="kuSub">'
   +kotakKu('Tingkat penagihan bulan ini',tagihanPersen==null?'—':tagihanPersen+'%',rp(d.tagihan_periode.total-d.piutang_periode.total)+' dari '+rp(d.tagihan_periode.total))
   +kotakKu('Piutang usaha',rp(d.piutang_total.total),d.piutang_total.jumlah+' tagihan s/d bulan ini',d.piutang_total.total?'#b45309':'')
@@ -1502,7 +1506,7 @@ async function muatKeseluruhan(){
   +kotakKu('Total pendapatan',rp(T.pendapatan),'langganan '+rpS(T.pendapatan_langganan)+(T.pendapatan_lain?' · lain '+rpS(T.pendapatan_lain):''))
   +kotakKu('Total beban',rp(T.beban),d.insentif_dibayar?'termasuk komisi mitra '+rpS(d.insentif_dibayar):'')
   +kotakKu('Laba bersih total',rp(T.laba),'rata-rata '+rp(d.rata_laba)+'/bulan',T.laba<0?'#b42318':'#0b7a3b')
-  +kotakKu('Saldo kas saat ini',rp(d.saldo_kas),'saldo menurut catatan',d.saldo_kas<0?'#b42318':'')+'</div>';
+  +kotakKu('Saldo kas saat ini',rp(d.saldo_kas),d.saldo_kas<0?'minus — periksa catatan':'saldo menurut catatan','',kelasKas(d.saldo_kas))+'</div>';
  h+='<div class="kuSub">'
   +kotakKu('Modal disetor',rp(T.modal_masuk),d.modal_kembali_persen==null?'tidak ada setoran modal tercatat':'laba sudah menutup '+d.modal_kembali_persen+'% modal',d.modal_kembali_persen>=100?'#0b7a3b':'')
   +kotakKu('Prive (penarikan pemilik)',rp(T.prive),'tidak dihitung laba')
