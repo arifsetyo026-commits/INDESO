@@ -1304,3 +1304,25 @@ def test_transaksi_kembar_ditolak(siap):
     assert o.post("/api/keuangan/transaksi", json=body).status_code == 200                        # beda pencatat: boleh
     n = len([t for t in o.get("/api/keuangan/transaksi?periode=2026-10").json()["transaksi"] if t["sumber"] == "manual"])
     assert n == 3
+
+
+def test_riwayat_transaksi_filter(siap):
+    """Riwayat transaksi: rentang tanggal, metode, kategori, dan urutan terlama/terbaru."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    for tgl, jml, met in [("2026-08-02", 10_000, "tunai"), ("2026-09-15", 20_000, "transfer"), ("2026-10-01", 30_000, "tunai"),
+                          ("2026-10-09", 40_000, "qris")]:
+        assert k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kat["Beban listrik"],
+                                                       "jumlah": jml, "metode": met}).status_code == 200
+    k.post("/api/keuangan/transaksi", json={"tanggal": "2026-09-20", "jenis": "keluar", "kategori_id": kat["Beban gaji & upah"],
+                                            "jumlah": 99_000})
+    jml = lambda **q: [t["jumlah"] for t in o.get("/api/keuangan/transaksi", params=q).json()["transaksi"] if t["sumber"] == "manual"]
+    assert jml() == [40_000, 30_000, 99_000, 20_000, 10_000]                       # bawaan: semua waktu, terbaru dulu
+    assert jml(urut="lama") == [10_000, 20_000, 99_000, 30_000, 40_000]
+    assert jml(dari="2026-09-01", sampai="2026-10-01") == [30_000, 99_000, 20_000]
+    assert jml(sampai="2026-09-30", dari="2026-09-16") == [99_000]
+    assert jml(metode="tunai") == [30_000, 99_000, 10_000]          # 99.000: metode bawaan tunai
+    assert jml(kategori_id=kat["Beban listrik"], metode="qris") == [40_000]
+    r = o.get("/api/keuangan/transaksi", params={"dari": "2026-10-01"}).json()
+    assert r["ringkasan"]["keluar"] == 70_000
+    assert o.get("/api/keuangan/transaksi", params={"dari": "2026-13-01"}).status_code == 400

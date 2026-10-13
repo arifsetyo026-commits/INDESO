@@ -4965,11 +4965,19 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
 
 
 @app.get("/api/keuangan/transaksi")
-def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: Optional[int] = None,
-                  cari: str = "", batal: bool = False, urut: str = "tanggal"):
+def keuangan_list(request: Request, periode: str = "semua", jenis: str = "", kategori_id: Optional[int] = None,
+                  cari: str = "", batal: bool = False, urut: str = "tanggal", dari: str = "", sampai: str = "",
+                  metode: str = ""):
+    """Riwayat transaksi. dari/sampai (YYYY-MM-DD, inklusif) mempersempit periode; metode = tunai/
+    transfer/qris/lainnya/kredit/langganan; urut = tanggal (terbaru dulu) | lama | dicatat."""
     _wajib_admin(request)
     if periode != "semua" and not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM atau 'semua'.")
+    for t in (dari, sampai):
+        if t and not _tanggal_valid(t):
+            raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD.")
+    if dari and sampai and dari > sampai:
+        dari, sampai = sampai, dari
     awal, akhir = _batas_periode(periode)
     conn = _billing_conn()
     try:
@@ -4985,14 +4993,14 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
         q = f"%{cari.strip()}%"
         if jenis in ("", "masuk", "langganan") and not kategori_id and not batal:
             for r in conn.execute(
-                    "SELECT t.id, t.tgl_bayar, t.periode, t.jumlah, t.username, p.nama FROM tagihan t "
+                    "SELECT t.id, t.tgl_bayar, t.periode, t.jumlah, t.username, t.metode_bayar, p.nama FROM tagihan t "
                     "LEFT JOIN pelanggan p ON p.username = t.username "
                     "WHERE t.status='lunas' AND t.tgl_bayar >= ? AND t.tgl_bayar < ? "
                     "AND (? = '%%' OR t.username LIKE ? OR p.nama LIKE ? OR 'pembayaran langganan' LIKE ?)",
                     (awal, akhir, q, q, q, q.lower())):
                 daftar.append({"id": r["id"], "sumber": "langganan", "tanggal": r["tgl_bayar"][:10], "jenis": "masuk",
                                "kategori": "Pembayaran langganan", "pengaruh_laba": 1, "jumlah": r["jumlah"],
-                               "metode": "langganan", "status": "aktif", "username": r["username"],
+                               "metode": r["metode_bayar"] or "tunai", "status": "aktif", "username": r["username"],
                                "keterangan": f"{r['nama'] or r['username']} ({r['username']}) · tagihan {_nama_periode(r['periode'])}",
                                "dicatat_oleh": "Billing", "dicatat_pada": r["tgl_bayar"], "nota": []})
         if jenis in ("", "keluar", "kredit") and not batal:
@@ -5019,11 +5027,17 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
                                "dicatat_pada": r["dicatat_pada"], "nota": nota_u.get(r["id"], [])})
     finally:
         conn.close()
+    if dari:
+        daftar = [t for t in daftar if t["tanggal"] >= dari]
+    if sampai:
+        daftar = [t for t in daftar if t["tanggal"] <= sampai]
+    if metode:
+        daftar = [t for t in daftar if (t.get("metode") or "") == metode]
     if urut == "dicatat":
         # Urut menurut waktu dicatat: yang baru diinput (berapa pun tanggal transaksinya) di atas.
         daftar.sort(key=lambda t: (t.get("dicatat_pada") or "", t["id"]), reverse=True)
     else:
-        daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=True)
+        daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=(urut != "lama"))
     aktif = [t for t in daftar if t["status"] == "aktif"]
     tunai = [t for t in aktif if t["sumber"] != "kredit"]
     return {
