@@ -7318,14 +7318,31 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
 
 
+def _param_ditolak(detail) -> list[str]:
+    """Nama parameter yang ditolak ONU dari detail fault GenieACS (SetParameterValuesFault)."""
+    hasil = []
+    if isinstance(detail, dict):
+        for k, v in detail.items():
+            if k.lower() == "parametername" and isinstance(v, str):
+                hasil.append(v)
+            else:
+                hasil += _param_ditolak(v)
+    elif isinstance(detail, list):
+        for v in detail:
+            hasil += _param_ditolak(v)
+    return hasil
+
+
 def _status_tugas(acs_id: str, tid: str) -> dict:
     """antre = masih menunggu ONU; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
     q = json.dumps({"device": acs_id})
     r = _acs("GET", "/faults/", params={"query": q})
     for f in (r.json() if r.ok else []):
         if f.get("channel") == f"task_{tid}":
-            return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"),
-                    "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"}
+            ditolak = [p.rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail"))]
+            return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"), "parameter": ditolak,
+                    "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"
+                             + (f" — kolom ditolak: {', '.join(ditolak[:6])}" if ditolak else "")}
     r = _acs("GET", "/tasks/", params={"query": q})
     if r.ok and any(str(t.get("_id")) == tid for t in r.json()):
         return {"status": "antre"}
@@ -7505,6 +7522,7 @@ class PingOnuIn(BaseModel):
     host: str = "google.com"
     jumlah: int = 10
     lewat_wan: bool = True      # arahkan ping lewat koneksi PPPoE (bukan jalur manajemen/LAN)
+    minimal: bool = False       # hanya Host + jumlah + mulai (untuk ONU yang menolak Timeout/DataBlockSize)
 
 
 def _wan_ppp_aktif(doc: dict) -> Optional[str]:
@@ -7545,15 +7563,18 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
     # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
     wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
+    if d.minimal:
+        wan = None
     nilai = ([[f"{_PING_ONU}.Interface", wan, "xsd:string"]] if wan else []) + [
              [f"{_PING_ONU}.Host", host, "xsd:string"],
-             [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"],
-             [f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
-             [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"],
-             [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
+             [f"{_PING_ONU}.NumberOfRepetitions", jumlah, "xsd:unsignedInt"]]
+    if not d.minimal:
+        nilai += [[f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
+                  [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"]]
+    nilai.append([f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
-    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan))
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=d.minimal)
 
 
 @app.get("/api/acs/{username}/ping")
