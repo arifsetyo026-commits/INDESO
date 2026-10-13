@@ -1248,3 +1248,17 @@ def test_acs_ping_bersihkan_tugas_tertahan(siap, monkeypatch):
     assert lama not in acs.antrean and "b" * 24 in acs.antrean and not acs.faults   # tugas lain tidak disentuh
     kolom = [p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]]
     assert "Timeout" not in kolom and "DataBlockSize" not in kolom and kolom[-1] == "DiagnosticsState"
+
+
+def test_acs_ping_segarkan_tidak_menumpuk(siap, monkeypatch):
+    """Permintaan hasil ping diulang berkala dari browser, tapi tidak ditumpuk bila ONU belum menjawab."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}}
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    acs.antre = True
+    for _ in range(3):
+        assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&segarkan=true").json()["status"] == "menunggu"
+    assert sum(1 for t in acs.tugas if t["name"] == "getParameterValues") == 1

@@ -1182,12 +1182,17 @@ async function pingOnu(host,catatan,tahap){
  box.innerHTML=(catatan||'')+'<div class="muted">⏳ Menyuruh ONU ping ke '+esc(host)+' 10 kali…</div>';
  let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10,lewat_wan:tahap===0})})); }
  catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
- const awal=Date.now(); let disegarkan=false;
+ // ONU ZTE tidak mengabari server saat ping selesai: minta hasilnya berkala (detik 12, 27, 42, … s/d 2 menit,
+ // lalu tiap 30 detik). Permintaan tidak ditumpuk selama yang sebelumnya belum kembali.
+ const awal=Date.now(); let segarBerikut=12, sibuk=false;
  const cek=async()=>{
   if(dg.user!==user||!$('diagModal').classList.contains('show')){ clearInterval(_pantauPing); return; }
-  const dtk=Math.round((Date.now()-awal)/1000), segar=!disegarkan&&dtk>=30;
-  if(segar) disegarkan=true;
+  if(sibuk) return;
+  const dtk=Math.round((Date.now()-awal)/1000), segar=dtk>=segarBerikut;
+  if(segar) segarBerikut=dtk+(dtk<120?15:30);
+  sibuk=true;
   let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping?mulai='+encodeURIComponent(r.mulai)+(r.tugas_id?'&tugas='+r.tugas_id:'')+(segar?'&segarkan=true':''),{cache:'no-store'})); }catch(e){ return; }
+  finally{ sibuk=false; }
   if(s.status==='gagal'){
    clearInterval(_pantauPing);
    // Perintah ditolak ONU: hapus dari antrean supaya tidak diulang terus setiap ONU lapor.
