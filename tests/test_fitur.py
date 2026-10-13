@@ -1215,3 +1215,16 @@ def test_acs_ping_minimal_dan_detail_fault(siap, monkeypatch):
                            {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.DataBlockSize", "faultCode": "9007"}]}})
     st = k.get(f"/api/acs/budi/tugas/{tid}").json()
     assert st["status"] == "gagal" and st["parameter"] == ["DataBlockSize"] and "DataBlockSize" in st["pesan"]
+
+
+def test_acs_ping_ikut_tipe_onu(siap, monkeypatch):
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["IPPingDiagnostics"] = {
+        "DiagnosticsState": {"_value": "None", "_type": "xsd:string"},
+        "NumberOfRepetitions": {"_value": 1, "_type": "xsd:int"}}
+    k.post("/api/acs/budi/ping", json={"minimal": True})
+    tipe = {p[0].rsplit(".", 1)[-1]: p[2] for p in acs.tugas[-1]["parameterValues"]}
+    assert tipe == {"Host": "xsd:string", "NumberOfRepetitions": "xsd:int", "DiagnosticsState": "xsd:string"}
