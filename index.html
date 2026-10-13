@@ -1175,12 +1175,12 @@ async function batalTugas(tid){
 // Tes ping dari ONU pelanggan ke internet (TR-069 IPPingDiagnostics).
 let _pantauPing=null;
 const PING_GAGAL={Error_CannotResolveHostName:'ONU tidak bisa menerjemahkan nama alamat (DNS bermasalah).',Error_Internal:'ONU mengalami kesalahan internal saat ping.',Error_Other:'ONU gagal menjalankan ping.'};
-// tahap: 0 = lengkap lewat WAN PPPoE, 1 = tanpa memilih WAN, 2 = perintah minimal (ONU yang rewel, mis. ZTE F609)
+// tahap: 0 = lewat WAN PPPoE, 1 = tanpa memilih WAN (bila ONU menolak kolom Interface)
 async function pingOnu(host,catatan,tahap){
  tahap=tahap||0;
  host=host||'google.com'; clearInterval(_pantauPing); const user=dg.user, box=$('dgPingOnu');
  box.innerHTML=(catatan||'')+'<div class="muted">⏳ Menyuruh ONU ping ke '+esc(host)+' 10 kali…</div>';
- let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10,lewat_wan:tahap===0,minimal:tahap>=2})})); }
+ let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10,lewat_wan:tahap===0})})); }
  catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
  const awal=Date.now(); let disegarkan=false;
  const cek=async()=>{
@@ -1192,7 +1192,7 @@ async function pingOnu(host,catatan,tahap){
    clearInterval(_pantauPing);
    // Perintah ditolak ONU: hapus dari antrean supaya tidak diulang terus setiap ONU lapor.
    try{ await fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+s.tugas_id+'/batal',{method:'POST'}); }catch(e){}
-   if(tahap<2){ pingOnu(host,catatan,(r.lewat_wan||tahap===1)?tahap+1:2); return; }   // ulang dengan perintah lebih sederhana
+   if(tahap===0&&r.lewat_wan){ pingOnu(host,catatan,1); return; }   // ulang tanpa memilih jalur WAN
    box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div></div>`;
    return;
   }
