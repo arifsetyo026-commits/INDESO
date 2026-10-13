@@ -68,7 +68,7 @@
 .plForm textarea{min-height:70px;resize:vertical}
 .plBtns{display:flex;gap:8px;margin-top:16px}
 .plBtns button{border:0;border-radius:9px;padding:10px 14px;font-weight:800;font-size:var(--fs-xs);cursor:pointer}
-.plSave{background:#067d40;color:#fff}
+.plSave{background:#067d40;color:#fff}.plSave:disabled,.plCancel:disabled{opacity:.6;cursor:wait}
 .plCancel{background:#eef3ef;color:#234}
 .plMsg{font-size:var(--fs-xs);margin-top:10px;font-weight:700}
 .btnS{border:1px solid #cfe3d6;background:#f3faf5;color:#0b7a3b;font:inherit;font-size:var(--fs-xs);font-weight:800;padding:6px 10px;border-radius:9px;cursor:pointer;white-space:nowrap}
@@ -310,7 +310,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="notaWrap" id="kuNotaBaru"></div>
  <input type="file" id="kuNotaInput" accept="image/*,application/pdf" multiple style="margin-top:6px" onchange="pilihNota(this)">
  <div class="plSub" style="margin-top:4px">Foto dari kamera atau galeri (otomatis diperkecil), atau PDF. Maks. 6 berkas.</div>
- <div class="plBtns"><button class="plSave" onclick="simpanTransaksi()">Simpan</button><button class="plCancel" onclick="hapusDraftKu();resetFormKu();tabKu('transaksi')">Batal</button></div>
+ <div class="plMsg" id="kuMsgForm" role="status" aria-live="polite"></div>
+ <div class="plBtns"><button class="plSave" id="kuSimpanBtn" onclick="kirimTransaksi(this)">Simpan</button><button class="plCancel" onclick="hapusDraftKu();resetFormKu();tabKu('transaksi')">Batal</button></div>
  <div class="plSub" style="margin-top:8px">Pembayaran tagihan pelanggan tercatat otomatis dari menu Penagihan, sehingga tidak perlu dicatat di sini. Catatan bisa diubah/dibatalkan oleh pencatatnya dalam 24 jam; setelah itu hanya oleh owner.</div>
 </div></div>
 </div></div></div>
@@ -1380,7 +1381,7 @@ Object.assign(AKSI_LABEL,{onu_ping:'Ping dari ONU',onu_wifi:'Ganti WiFi ONU',onu
 // ===== Keuangan =====
 const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};
 function kuPeriodeIni(){ const t=new Date(); return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0'); }
-function kuPesan(t,ok){ const m=$('kuMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+function kuPesan(t,ok){ for(const id of ['kuMsg','kuMsgForm']){ const m=$(id); if(!m) continue; m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; } }
 function rpS(n){ const a=Math.abs(n); const t=a>=1e9?(a/1e9).toFixed(1).replace('.',',')+' M':a>=1e6?(a/1e6).toFixed(1).replace('.',',')+' jt':a>=1e3?Math.round(a/1e3)+' rb':String(a); return (n<0?'−':'')+t; }
 function selisih(ini,lalu,naikBaik){
  if(!lalu) return '';
@@ -1694,6 +1695,15 @@ function editTransaksi(i){
  $('kuTgl').value=t.tanggal; $('kuJumlah').value=Number(t.jumlah).toLocaleString('id-ID'); $('kuMetode').value=t.metode; $('kuKet').value=t.keterangan||'';
  $('kuQty').value=t.qty?String(t.qty).replace('.',','):''; $('kuSatuan').value=t.qty?(t.satuan||'pcs'):''; infoQty();
  $('kuNotaAda').innerHTML=(t.nota||[]).map(n=>thumbNota(n,true)).join('');
+}
+// Tombol Simpan: dikunci selama proses (kirim data + unggah nota bisa beberapa detik) supaya
+// tidak tertekan dua kali dan tercatat dobel; pesan juga tampil tepat di atas tombol.
+let _kuMenyimpan=false;
+async function kirimTransaksi(btn){
+ if(_kuMenyimpan) return;
+ _kuMenyimpan=true; const label=btn.textContent; btn.disabled=true; btn.textContent='Menyimpan…'; kuPesan('');
+ try{ await simpanTransaksi(); }
+ finally{ _kuMenyimpan=false; btn.disabled=false; btn.textContent=label; }
 }
 async function simpanTransaksi(){
  if(ku.edit==null&&ku.formJenis==='keluar'&&$('kuMetode').value==='kredit') return simpanKredit();

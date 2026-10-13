@@ -1289,3 +1289,18 @@ def test_kelola_kategori(siap):
     assert rk["beli_aset"] == 6_500_000 and rk["beban"] == 6_500_000 // 48
     assert "OLT C DATA" not in _kat(o)
     assert o.delete(f"/api/keuangan/kategori/{a['id']}").json()["dipindah"] == 0
+
+
+def test_transaksi_kembar_ditolak(siap):
+    """Tombol Simpan tertekan dua kali: kiriman kedua yang persis sama ditolak, bukan dicatat dobel."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    body = {"tanggal": "2026-10-05", "jenis": "keluar", "kategori_id": kat["Beban listrik"], "jumlah": 50_000,
+            "keterangan": "token"}
+    assert k.post("/api/keuangan/transaksi", json=body).status_code == 200
+    r = k.post("/api/keuangan/transaksi", json=body)
+    assert r.status_code == 409 and "baru saja tercatat" in r.json()["detail"]
+    assert k.post("/api/keuangan/transaksi", json={**body, "jumlah": 50_001}).status_code == 200   # beda nominal: boleh
+    assert o.post("/api/keuangan/transaksi", json=body).status_code == 200                        # beda pencatat: boleh
+    n = len([t for t in o.get("/api/keuangan/transaksi?periode=2026-10").json()["transaksi"] if t["sumber"] == "manual"])
+    assert n == 3
