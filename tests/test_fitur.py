@@ -1262,3 +1262,30 @@ def test_acs_ping_segarkan_tidak_menumpuk(siap, monkeypatch):
     for _ in range(3):
         assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&segarkan=true").json()["status"] == "menunggu"
     assert sum(1 for t in acs.tugas if t["name"] == "getParameterValues") == 1
+
+
+def test_kelola_kategori(siap):
+    """Kategori buatan sendiri: bisa aset tetap; owner bisa menghapus & memindahkan catatannya."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    r = k.post("/api/keuangan/kategori", json={"nama": "OLT C DATA", "jenis": "keluar"}).json()
+    salah = r["id"]
+    a = k.post("/api/keuangan/kategori", json={"nama": "perangkat server", "jenis": "keluar", "umur_bulan": 48}).json()
+    assert a["nama"] == "Aset: perangkat server"
+    assert k.post("/api/keuangan/kategori", json={"nama": "x", "jenis": "masuk", "umur_bulan": 48}).status_code == 400
+    assert k.post("/api/keuangan/kategori", json={"nama": "y", "jenis": "keluar", "umur_bulan": 12}).status_code == 400
+    t = k.post("/api/keuangan/transaksi", json={"tanggal": "2026-10-05", "jenis": "keluar", "kategori_id": salah,
+                                                "jumlah": 6_500_000, "keterangan": "OLT C-Data 4 port"}).json()
+    assert o.get("/api/keuangan/ringkasan?periode=2026-10").json()["beban"] == 6_500_000   # salah: jadi beban
+    daftar = {x["nama"]: x for x in o.get("/api/keuangan/kategori").json()["kategori"]}
+    assert daftar["OLT C DATA"]["dipakai"] == 1 and not daftar["OLT C DATA"]["bawaan"] and daftar["Beban listrik"]["bawaan"]
+    aset = kat["Aset: perangkat jaringan (OLT, router, switch, ONU, AP)"]
+    assert k.delete(f"/api/keuangan/kategori/{salah}?pindah_ke={aset}").status_code == 403          # admin
+    assert o.delete(f"/api/keuangan/kategori/{salah}").status_code == 400                            # dipakai
+    assert o.delete(f"/api/keuangan/kategori/{salah}?pindah_ke={kat['Setoran modal']}").status_code == 400  # beda jenis
+    assert o.delete(f"/api/keuangan/kategori/{kat['Beban listrik']}").status_code == 400             # bawaan
+    assert o.delete(f"/api/keuangan/kategori/{salah}?pindah_ke={aset}").json()["dipindah"] == 1
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-10").json()
+    assert rk["beli_aset"] == 6_500_000 and rk["beban"] == 6_500_000 // 48
+    assert "OLT C DATA" not in _kat(o)
+    assert o.delete(f"/api/keuangan/kategori/{a['id']}").json()["dipindah"] == 0

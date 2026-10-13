@@ -3851,17 +3851,26 @@ def keuangan_kategori(request: Request):
     _wajib_admin(request)
     conn = _billing_conn()
     try:
-        rows = conn.execute("SELECT id, nama, jenis, pengaruh_laba, aktif, khusus, umur_bulan FROM kategori_kas "
-                            "ORDER BY jenis DESC, umur_bulan IS NOT NULL, id").fetchall()
+        rows = conn.execute("SELECT k.id, k.nama, k.jenis, k.pengaruh_laba, k.aktif, k.khusus, k.umur_bulan, "
+                            "(SELECT COUNT(*) FROM transaksi t WHERE t.kategori_id=k.id) + "
+                            "(SELECT COUNT(*) FROM utang u WHERE u.kategori_id=k.id) AS dipakai FROM kategori_kas k "
+                            "ORDER BY k.jenis DESC, k.umur_bulan IS NOT NULL, k.id").fetchall()
     finally:
         conn.close()
-    return {"kategori": [dict(r) for r in rows]}
+    bawaan = _nama_kategori_bawaan()
+    return {"kategori": [dict(r, bawaan=r["nama"] in bawaan or bool(r["khusus"])) for r in rows]}
 
 
 class KategoriIn(BaseModel):
     nama: str
     jenis: str
     pengaruh_laba: bool = True
+    umur_bulan: Optional[int] = None     # diisi (48/96) = kategori aset tetap yang disusutkan
+
+
+def _nama_kategori_bawaan() -> set:
+    return ({n for n, _j, _l in _KATEGORI_AWAL} | {n for n, _u in _KAT_ASET_AWAL}
+            | {_KAT_BAYAR_UTANG, _KAT_INSENTIF, _KAT_BUNGA})
 
 
 @app.post("/api/keuangan/kategori")
@@ -3870,18 +3879,56 @@ def keuangan_tambah_kategori(d: KategoriIn, request: Request):
     nama = d.nama.strip()
     if not nama or len(nama) > 80 or d.jenis not in ("masuk", "keluar"):
         raise HTTPException(status_code=400, detail="Nama kategori wajib (maks. 80 karakter) dan jenis masuk/keluar.")
+    if d.umur_bulan is not None and (d.jenis != "keluar" or d.umur_bulan not in (48, 96)):
+        raise HTTPException(status_code=400, detail="Umur aset tetap: 48 bulan (4 tahun) atau 96 bulan (8 tahun), khusus pengeluaran.")
+    if d.umur_bulan and not nama.lower().startswith("aset"):
+        nama = f"Aset: {nama}"
     conn = _billing_conn()
     try:
         try:
-            cur = conn.execute("INSERT INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?,?,?)",
-                               (nama, d.jenis, int(d.pengaruh_laba)))
+            cur = conn.execute("INSERT INTO kategori_kas (nama, jenis, pengaruh_laba, umur_bulan) VALUES (?,?,?,?)",
+                               (nama, d.jenis, int(d.pengaruh_laba or bool(d.umur_bulan)), d.umur_bulan))
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="Kategori itu sudah ada.")
         conn.commit()
     finally:
         conn.close()
-    catat_aktivitas(_oleh(request), "kas_kategori", f"tambah kategori {d.jenis}: {nama}")
-    return {"id": cur.lastrowid}
+    catat_aktivitas(_oleh(request), "kas_kategori", f"tambah kategori {d.jenis}: {nama}"
+                    + (f" (aset tetap, {d.umur_bulan // 12} th)" if d.umur_bulan else ""))
+    return {"id": cur.lastrowid, "nama": nama}
+
+
+@app.delete("/api/keuangan/kategori/{kid}")
+def keuangan_hapus_kategori(kid: int, request: Request, pindah_ke: Optional[int] = None):
+    """Owner: hapus kategori buatan sendiri. Bila sudah dipakai, transaksi & liabilitasnya
+    dipindahkan dulu ke kategori lain (jenis sama). Kategori bawaan tidak bisa dihapus."""
+    _wajib_owner(request, "Menghapus kategori hanya bisa dilakukan owner.")
+    conn = _billing_conn()
+    try:
+        k = conn.execute("SELECT * FROM kategori_kas WHERE id=?", (kid,)).fetchone()
+        if not k:
+            raise HTTPException(status_code=404, detail="Kategori tidak ditemukan.")
+        if k["khusus"] or k["nama"] in _nama_kategori_bawaan():
+            raise HTTPException(status_code=400, detail="Kategori bawaan tidak bisa dihapus.")
+        tgl = [r[0] for r in conn.execute("SELECT tanggal FROM transaksi WHERE kategori_id=? UNION ALL "
+                                          "SELECT tanggal FROM utang WHERE kategori_id=?", (kid, kid))]
+        tujuan = None
+        if tgl:
+            if pindah_ke is None:
+                raise HTTPException(status_code=400, detail=f"Kategori ini dipakai {len(tgl)} catatan. Pilih kategori tujuan pemindahan.")
+            tujuan = conn.execute("SELECT * FROM kategori_kas WHERE id=?", (pindah_ke,)).fetchone()
+            if not tujuan or tujuan["id"] == kid or tujuan["jenis"] != k["jenis"] or tujuan["khusus"]:
+                raise HTTPException(status_code=400, detail="Kategori tujuan harus kategori lain dengan jenis yang sama.")
+            _wajib_buku_terbuka(conn, *tgl)
+            conn.execute("UPDATE transaksi SET kategori_id=? WHERE kategori_id=?", (pindah_ke, kid))
+            conn.execute("UPDATE utang SET kategori_id=? WHERE kategori_id=?", (pindah_ke, kid))
+        conn.execute("DELETE FROM kategori_kas WHERE id=?", (kid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_kategori", f"hapus kategori {k['jenis']}: {k['nama']}"
+                    + (f" — {len(tgl)} catatan dipindah ke {tujuan['nama']}" if tujuan else ""))
+    return {"ok": True, "dipindah": len(tgl)}
 
 
 def _daftar_utang(conn, hanya_belum: bool = False) -> list[dict]:
