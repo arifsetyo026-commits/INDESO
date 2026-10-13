@@ -119,6 +119,10 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .lapTbl tr.lapSub td{font-weight:700;border-top:1px solid var(--line)}.lapTbl tr.lapTotal td{font-weight:800;border-top:2px solid var(--ink);border-bottom:3px double var(--ink)}
 @media print{body *{visibility:hidden}#kuLaporan,#kuLaporan *{visibility:visible}#kuLaporan{position:absolute;left:0;top:0;width:100%;padding:0 8mm}.noPrint{display:none!important}.kuPanel{box-shadow:none;break-inside:avoid}.lapGrid{grid-template-columns:1fr 1fr}}
 .menuBtn,.botNav{display:none}
+.utGrup{border:1px solid var(--line);border-radius:12px;margin:8px 0;background:#fff;overflow:hidden}
+.utGrupHead{width:100%;display:flex;align-items:center;gap:10px;padding:11px 12px;background:#fff;border:0;text-align:left;font-family:inherit;color:inherit;cursor:pointer}
+.utGrup.buka .utGrupHead{background:#f3faf5;border-bottom:1px solid var(--line)}.utPanah{color:#4e7b61;font-size:var(--fs-md);width:14px}
+.utGrupIsi{padding:0 10px}.utGrupIsi .blRow:last-child{border-bottom:0}
 /* Jam hidup menutup jam bawaan gambar header (gambar 1519x300; posisi dalam persen) */
 .heroJam{position:absolute;left:87.6%;top:71%;width:10.1%;height:23.5%;display:flex;flex-direction:column;justify-content:center;gap:.25vw;
  background:linear-gradient(90deg,rgb(4,39,37),rgb(15,54,41));color:#fff;line-height:1;font-family:var(--font);pointer-events:none}
@@ -291,7 +295,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <div class="plSub" id="kuQtyInfo" style="margin-top:4px"></div>
  <label>Metode</label><select id="kuMetode" onchange="aturKredit()"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option><option value="kredit">Kredit (pembayaran ditangguhkan)</option></select>
  <div id="kuKreditWrap" style="display:none">
-  <label>Pemasok / toko</label><input id="kuPemasok" placeholder="mis. Toko Fiber Jaya, Shopee PayLater">
+  <label>Pemasok / toko / perorangan</label><input id="kuPemasok" list="kuDaftarPemasok" autocomplete="off" placeholder="mis. Toko Fiber Jaya, Pak Budi, Shopee PayLater"><datalist id="kuDaftarPemasok"></datalist>
   <label>Cara pelunasan</label>
   <div class="kuJenis kuCara"><button type="button" data-c="sekali" class="on masuk" onclick="setCaraKredit('sekali')">Sekali bayar</button><button type="button" data-c="cicilan" class="masuk" onclick="setCaraKredit('cicilan')">Angsuran bulanan</button></div>
   <div id="kuCicilanWrap" style="display:none">
@@ -1379,7 +1383,7 @@ var _tkBadgeTerakhir=0;
 Object.assign(AKSI_LABEL,{onu_ping:'Ping dari ONU',onu_wifi:'Ganti WiFi ONU',onu_reboot:'Reboot ONU',onu_batal_tugas:'Batalkan perintah ONU',tutup_buku:'Tutup buku',buka_buku:'Buka kembali buku',tiket_buat:'Buat tiket',tiket_ambil:'Ambil tiket',tiket_tugaskan:'Tugaskan tiket',tiket_selesai:'Tiket selesai',tiket_batal:'Batalkan tiket',tiket_buka:'Buka lagi tiket',tiket_prioritas:'Prioritas tiket'});
 
 // ===== Keuangan =====
-const ku={periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};
+const ku={utBuka:new Set(),periode:'',tab:'ringkasan',kategori:[],jenis:'',formJenis:'keluar',edit:null,data:null,trx:null};
 function kuPeriodeIni(){ const t=new Date(); return t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0'); }
 function kuPesan(t,ok){ for(const id of ['kuMsg','kuMsgForm']){ const m=$(id); if(!m) continue; m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; } }
 function rpS(n){ const a=Math.abs(n); const t=a>=1e9?(a/1e9).toFixed(1).replace('.',',')+' M':a>=1e6?(a/1e6).toFixed(1).replace('.',',')+' jt':a>=1e3?Math.round(a/1e3)+' rb':String(a); return (n<0?'−':'')+t; }
@@ -1642,7 +1646,13 @@ function petunjukKat(){
 function setFormJenis(j,pilih){ ku.formJenis=j; document.querySelectorAll('.kuJenis button').forEach(b=>b.classList.toggle('on',b.dataset.j===j));
  const opt=$('kuMetode').querySelector('option[value="kredit"]'); opt.hidden=j!=='keluar'||ku.edit!=null; if(opt.hidden&&$('kuMetode').value==='kredit') $('kuMetode').value='tunai';
  aturKredit(pilih); }
-function aturKredit(pilih){ const k=ku.formJenis==='keluar'&&$('kuMetode').value==='kredit'; $('kuKreditWrap').style.display=k?'block':'none';
+// Usulan nama pemasok yang sudah pernah dipakai, supaya ejaannya seragam (grup di tab Liabilitas).
+async function isiDaftarPemasok(){
+ if(ku.daftarPemasok) return;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/utang?status=semua')); const g=kelompokPemasok(d.utang);
+  ku.daftarPemasok=g.map(x=>x.nama); $('kuDaftarPemasok').innerHTML=ku.daftarPemasok.map(n=>`<option value="${esc(n)}">`).join(''); }catch(e){}
+}
+function aturKredit(pilih){ const k=ku.formJenis==='keluar'&&$('kuMetode').value==='kredit'; $('kuKreditWrap').style.display=k?'block':'none'; if(k) isiDaftarPemasok();
  $('kuJumlahLabel').textContent=k?'Harga barang / jasa (Rp)':'Jumlah (Rp)'; isiKategori(pilih??Number($('kuKat').value)); }
 function angka(id){ return Number(($(id).value||'').replace(/\D/g,''))||0; }
 function setCaraKredit(c){
@@ -1817,12 +1827,12 @@ async function muatUtang(){
  document.querySelectorAll('.utFilter button[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===ku.utFilter));
  $('utList').innerHTML='<div class="muted">Memuat…</div>';
  try{
-  const d=await jsonAtauError(await fetch('/api/keuangan/utang?status='+ku.utFilter)); ku.utang=d; const r=d.ringkasan;
+  const d=await jsonAtauError(await fetch('/api/keuangan/utang?status='+ku.utFilter)); ku.utang=d; const r=d.ringkasan; ku.daftarPemasok=null;
   $('utSisa').textContent=rp(r.sisa); $('utSisaN').textContent=r.jumlah+' liabilitas belum dilunasi';
   $('utLewat').textContent=rp(r.lewat_tempo_total); $('utLewatN').textContent=r.lewat_tempo+' liabilitas';
   $('utDekat').textContent=r.terdekat?rp(r.terdekat.sisa):'—'; $('utDekatN').textContent=r.terdekat?(r.terdekat.pemasok+(r.terdekat.cicilan_ke?' (angsuran '+r.terdekat.cicilan_ke+'/'+r.terdekat.tenor+')':'')+' · '+tglPendek(r.terdekat.jatuh_tempo)):'';
   $('kuNUtang').textContent=r.jumlah?'('+r.jumlah+')':'';
-  $('utList').innerHTML=d.utang.length?d.utang.map((u,i)=>{
+  const kartu=(u,i)=>{
    const riw=u.pembayaran.length?'<div class="kuRiwBayar">'+u.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)}${p.keterangan?' · '+esc(p.keterangan):''} · ${esc(p.dicatat_oleh)}</div>`).join('')+'</div>':'';
    const aksi=(u.status==='aktif'&&u.sisa>0?`<button class="btnS go" onclick="bukaBayar(${i})">Lunasi</button>`:'')+(bolehUbahUtang(u)?`<button class="btnS" onclick="batalUtang(${i})">Hapus</button>`:'')+(u.status==='batal'&&ku.utang.peran==='owner'?`<button class="btnS" onclick="hapusPermanen('utang',${u.id})">Hapus permanen</button>`:'');
    const form=ku.utBayar===u.id?`<div class="kuBayarForm"><div><small>Tanggal bayar</small><input type="date" id="byTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>${u.cicilan_ke?'Angsuran ke-'+u.cicilan_ke+' (sisa total '+rp(u.sisa)+')':'Jumlah (sisa '+rp(u.sisa)+')'}</small><input id="byJml" inputmode="numeric" value="${Number(u.tagihan_berikut??u.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="byMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><button class="btnS go" onclick="simpanBayar(${i})">Simpan</button></div></div>`:'';
@@ -1831,9 +1841,39 @@ async function muatUtang(){
    const infoCicil=u.tenor?`<div class="plSub"><b>Angsuran ${u.tenor} × ${rp(u.cicilan)}</b> · ${u.cicilan_lunas}/${u.tenor} lunas${u.cicilan_ke&&u.status==='aktif'?' · berikutnya ke-'+u.cicilan_ke+' '+rp(u.tagihan_berikut)+' tgl '+esc(tglPendek(u.jatuh_tempo)):''} · harga barang ${rp(u.pokok)}${u.bunga?' + bunga/biaya '+rp(u.bunga):''}${u.uang_muka?' · uang muka '+rp(u.uang_muka):''} <a href="#" onclick="ku.utJadwal=ku.utJadwal===${u.id}?null:${u.id};muatUtang();return false">${ku.utJadwal===u.id?'tutup jadwal':'lihat jadwal'}</a></div>`
     +(ku.utJadwal===u.id?'<div class="kuRiwBayar">'+u.jadwal.map(c=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0"><span>Ke-${c.ke} · ${esc(tglPendek(c.jatuh_tempo))} ${c.jatuh_tempo.slice(0,4)}</span><span>${rp(c.jumlah)}${c.sisa&&c.dibayar?' (kurang '+rp(c.sisa)+')':''} ${CJ[c.status]||''}</span></div>`).join('')+'</div>':''):'';
    return `<div class="blRow ${u.status==='batal'?'kuBatal':''}" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(u.pemasok)} <span class="plSub">#U${u.id}</span></div><div class="plSub">${esc(u.kategori)}${u.qty?' · <b>'+esc(teksQty(u.qty,u.satuan))+'</b> @'+rp(Math.round((u.pokok||u.jumlah)/u.qty)):''} · perolehan ${esc(tglPendek(u.tanggal))}${u.jatuh_tempo?' · jatuh tempo '+esc(tglPendek(u.jatuh_tempo)):''} · dicatat ${esc(u.dicatat_oleh)}</div>${infoCicil}${u.keterangan?`<div class="plSub">${esc(u.keterangan)}</div>`:''}${batal}${htmlNota(u.nota,bolehUbahUtang(u)?`tambahNota('utang',${u.id})`:null,u.status==='aktif')}</div><div class="blKanan"><div class="blAmt">${rp(u.jumlah)}</div><div class="plSub">dibayar ${rp(u.dibayar)}${u.status==='aktif'&&u.sisa>0?' · sisa <b style="color:#b45309">'+rp(u.sisa)+'</b>':''}</div><div class="blAksi">${infoTempo(u)}${aksi}</div></div></div>${riw}${form}</div>`;
+  };
+  // Kelompokkan per pemasok (toko / perorangan); ketuk nama untuk melihat rinciannya.
+  const grup=kelompokPemasok(d.utang);
+  $('utList').innerHTML=grup.length?grup.map(g=>{
+   const buka=ku.utBuka.has(g.kunci)||g.item.length===1||g.item.some(x=>x.u.id===ku.utBayar||x.u.id===ku.utJadwal);
+   const aktif=g.item.filter(x=>x.u.status==='aktif'), sisa=aktif.reduce((a,x)=>a+(x.u.sisa||0),0);
+   const lewat=aktif.filter(x=>x.u.lewat_tempo).length, tempo=aktif.map(x=>x.u.jatuh_tempo).filter(Boolean).sort()[0];
+   const total=g.item.filter(x=>x.u.status!=='batal').reduce((a,x)=>a+(x.u.jumlah||0),0);
+   return `<div class="utGrup${buka?' buka':''}"><button type="button" class="utGrupHead" onclick="bukaGrupUtang(${jsq(g.kunci)})" aria-expanded="${buka}">
+    <span class="utPanah">${buka?'▾':'▸'}</span><span style="min-width:0;flex:1"><b class="plName">${esc(g.nama)}</b>
+    <span class="plSub" style="display:block">${g.item.length} tagihan${g.variasi>1?' · nama ditulis '+g.variasi+' cara':''}${tempo?' · jatuh tempo terdekat '+esc(tglPendek(tempo)):''}${lewat?' · <b style="color:#b42318">'+lewat+' lewat tempo</b>':''}</span></span>
+    <span style="text-align:right;white-space:nowrap"><b class="blAmt ${sisa?'turun':''}">${rp(sisa)}</b><span class="plSub" style="display:block">sisa dari ${rp(total)}</span></span></button>
+    ${buka?'<div class="utGrupIsi">'+g.item.map(x=>kartu(x.u,x.i)).join('')+'</div>':''}</div>`;
   }).join(''):'<div class="muted">'+(ku.utFilter==='belum'?'Tidak ada liabilitas yang belum dilunasi.':'Belum ada data.')+'</div>';
  }catch(e){ $('utList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
+// Nama pemasok dianggap sama tanpa peduli huruf besar/kecil, spasi ganda, atau tanda baca.
+function kunciPemasok(n){ return String(n||'').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g,' ').trim()||'(tanpa nama)'; }
+function kelompokPemasok(daftar){
+ const m=new Map();
+ (daftar||[]).forEach((u,i)=>{ const k=kunciPemasok(u.pemasok); if(!m.has(k)) m.set(k,{kunci:k,item:[],ejaan:new Map()});
+  const g=m.get(k); g.item.push({u,i}); const e=String(u.pemasok||'').trim().replace(/\s+/g,' '); g.ejaan.set(e,(g.ejaan.get(e)||0)+1); });
+ // Judul grup: ejaan yang paling sering; bila sama banyak, utamakan huruf campuran ("Toko Fiber Jaya")
+ // daripada huruf besar/kecil semua. Bila semua ejaan seragam besar/kecil, dibuat Huruf Awal Kapital.
+ const campur=e=>e!==e.toUpperCase()&&e!==e.toLowerCase();
+ const judul=e=>e.toLowerCase().replace(/(^|[\s.(/-])\S/g,c=>c.toUpperCase());
+ return [...m.values()].map(g=>{ const urut=[...g.ejaan.entries()].sort((a,b)=>b[1]-a[1]||campur(b[0])-campur(a[0]));
+  const pilih=(urut.find(x=>x[1]===urut[0][1]&&campur(x[0]))||urut[0])[0].replace(/[.,;:]+$/,'');
+  const nama=(campur(pilih)?pilih:judul(pilih))||'(tanpa nama)';
+  const sisa=g.item.reduce((a,x)=>a+(x.u.status==='aktif'?(x.u.sisa||0):0),0);
+  return {...g,nama,variasi:g.ejaan.size,sisa}; }).sort((a,b)=>b.sisa-a.sisa||a.nama.localeCompare(b.nama,'id'));
+}
+function bukaGrupUtang(k){ ku.utBuka.has(k)?ku.utBuka.delete(k):ku.utBuka.add(k); muatUtang(); }
 function bukaBayar(i){ const u=ku.utang.utang[i]; ku.utBayar=ku.utBayar===u.id?null:u.id; muatUtang(); }
 async function simpanBayar(i){
  const u=ku.utang.utang[i], body={tanggal:$('byTgl').value,jumlah:Number($('byJml').value.replace(/\D/g,'')),metode:$('byMetode').value};
