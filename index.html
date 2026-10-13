@@ -279,7 +279,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="kuJenis"><button type="button" data-j="keluar" class="on keluar" onclick="setFormJenis('keluar')">− Pengeluaran Kas</button><button type="button" data-j="masuk" class="masuk" onclick="setFormJenis('masuk')">+ Penerimaan Kas</button></div>
  <label>Tanggal</label><input id="kuTgl" type="date">
  <label>Kategori</label><select id="kuKat" onchange="petunjukKat()"></select><div class="plSub" id="kuKatInfo" style="display:none;margin-top:4px;color:#0b5d33"></div>
- <div class="plSub" style="margin-top:4px"><a href="#" onclick="tambahKategori();return false">+ Tambah kategori baru</a></div>
+ <div class="plSub" style="margin-top:4px"><a href="#" onclick="tambahKategori();return false">+ Tambah kategori baru</a><span id="kuKelolaLink"> · <a href="#" onclick="kelolaKategori();return false">Kelola kategori</a></span></div>
+ <div id="kuKatPanel" class="kuPanel" style="display:none;margin-top:8px"></div>
  <label id="kuJumlahLabel">Jumlah (Rp)</label><input id="kuJumlah" inputmode="numeric" placeholder="mis. 250.000" oninput="formatJumlah(this);hitungCicilan(true);infoQty();petunjukKat()">
   <label>Banyaknya barang (opsional)</label>
   <div style="display:grid;grid-template-columns:minmax(0,1fr) 110px;gap:8px"><input id="kuQty" inputmode="decimal" placeholder="mis. 10" oninput="infoQty()"><input id="kuSatuan" list="kuSatuanList" placeholder="pcs" oninput="infoQty()"></div>
@@ -1390,7 +1391,7 @@ async function openKeuangan(){
 }
 function geserKu(n){ ku.periode=geserPeriode(ku.periode,n); tabKu(ku.tab==='catat'?'ringkasan':ku.tab); }
 function tabKu(t){
- ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
+ ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuKelolaLink').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
  $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuLaporan').style.display=t==='laporan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
@@ -1716,10 +1717,46 @@ async function hapusPermanen(jenis,id){
  try{ await jsonAtauError(await fetch('/api/keuangan/'+jenis+'/'+id,{method:'DELETE'})); kuPesan('Dihapus permanen.',true); if(jenis==='utang') muatUtang(); else muatTransaksi(); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-async function tambahKategori(){
- const nama=prompt('Nama kategori '+(ku.formJenis==='keluar'?'pengeluaran':'pemasukan')+' baru:'); if(!nama||!nama.trim()) return;
- try{ const d=await jsonAtauError(await fetch('/api/keuangan/kategori',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nama:nama.trim(),jenis:ku.formJenis,pengaruh_laba:true})}));
-  ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori'))).kategori; isiKategori(d.id); kuPesan('Kategori "'+nama.trim()+'" ditambahkan.',true); }
+// Kategori = pos akun (mis. "Beban listrik", "Aset: perangkat jaringan"), bukan nama barang.
+function tambahKategori(){
+ const el=$('kuKatPanel'), keluar=ku.formJenis==='keluar';
+ if(el.style.display!=='none'&&el.dataset.mode==='baru'){ el.style.display='none'; return; }
+ el.dataset.mode='baru'; el.style.display='';
+ el.innerHTML=`<b style="font-size:var(--fs-xs)">Kategori ${keluar?'pengeluaran':'penerimaan'} baru</b>
+  <div class="plSub" style="margin:2px 0 6px">Kategori adalah <b>pos akun</b>, bukan nama barang. Contoh benar: "Beban sewa server". Nama barang/merek (mis. "OLT C-Data 4 port") ditulis di kolom <b>Keterangan</b>.</div>
+  <input id="kkNama" maxlength="80" placeholder="Nama kategori" style="width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 10px">
+  <select id="kkJenis" style="width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 10px;margin-top:6px">${keluar
+   ?'<option value="beban">Beban usaha (habis dipakai bulan ini)</option><option value="48">Aset tetap: disusutkan 4 tahun (perangkat, alat kerja)</option><option value="96">Aset tetap: disusutkan 8 tahun (kabel, tiang, instalasi)</option>'
+   :'<option value="pendapatan">Pendapatan usaha</option><option value="modal">Modal (bukan pendapatan)</option>'}</select>
+  <div class="plBtns"><button class="plSave" onclick="simpanKategori()">Simpan kategori</button><button class="plCancel" onclick="$('kuKatPanel').style.display='none'">Batal</button></div>`;
+}
+async function simpanKategori(){
+ const nama=$('kkNama').value.trim(), j=$('kkJenis').value; if(!nama){ kuPesan('Isi nama kategori.'); return; }
+ const body={nama,jenis:ku.formJenis,pengaruh_laba:j!=='modal'}; if(j==='48'||j==='96') body.umur_bulan=+j;
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/kategori',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori'))).kategori; isiKategori(d.id); $('kuKatPanel').style.display='none'; kuPesan('Kategori "'+d.nama+'" ditambahkan.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function kelolaKategori(){
+ const el=$('kuKatPanel');
+ if(el.style.display!=='none'&&el.dataset.mode==='kelola'){ el.style.display='none'; return; }
+ el.dataset.mode='kelola'; el.style.display='';
+ try{ ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori',{cache:'no-store'}))).kategori; }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
+ const buatan=ku.kategori.filter(k=>!k.bawaan);
+ const tujuan=j=>ku.kategori.filter(k=>k.jenis===j&&!k.khusus&&k.nama!=='Beban komisi mitra');
+ el.innerHTML='<b style="font-size:var(--fs-xs)">Kategori buatan sendiri</b><div class="plSub" style="margin:2px 0 6px">Kategori bawaan tidak bisa dihapus. Bila kategori sudah dipakai, pilih ke mana catatannya dipindahkan; mis. "OLT C DATA" → "Aset: perangkat jaringan".</div>'
+  +(buatan.length?buatan.map(k=>`<div class="blRow" style="align-items:center;flex-wrap:wrap;gap:6px"><div style="min-width:0"><div class="plName">${esc(k.nama)}</div><div class="plSub">${k.jenis==='keluar'?(k.umur_bulan?'aset tetap '+k.umur_bulan/12+' th':'pengeluaran'):'penerimaan'} · dipakai ${k.dipakai} catatan</div></div>
+   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">${k.dipakai?`<select id="kkTujuan${k.id}" style="max-width:220px;border:1px solid var(--line);border-radius:9px;padding:6px 8px"><option value="">Pindahkan ke…</option>${tujuan(k.jenis).filter(t=>t.id!==k.id).map(t=>`<option value="${t.id}">${esc(t.nama)}</option>`).join('')}</select>`:''}<button class="btnS" onclick="hapusKategori(${k.id})">${k.dipakai?'Pindahkan & hapus':'Hapus'}</button></div></div>`).join('')
+   :'<div class="muted">Belum ada kategori buatan sendiri.</div>');
+}
+async function hapusKategori(id){
+ const k=ku.kategori.find(x=>x.id===id), sel=$('kkTujuan'+id);
+ let q=''; if(k.dipakai){ if(!sel||!sel.value){ kuPesan('Pilih kategori tujuan untuk '+k.dipakai+' catatan di "'+k.nama+'".'); return; } q='?pindah_ke='+sel.value; }
+ const t=k.dipakai?ku.kategori.find(x=>x.id===+sel.value):null;
+ if(!confirm('Hapus kategori "'+k.nama+'"'+(t?' dan pindahkan '+k.dipakai+' catatannya ke "'+t.nama+'"':'')+'?')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/kategori/'+id+q,{method:'DELETE'}));
+  kuPesan('Kategori "'+k.nama+'" dihapus'+(t?', '+k.dipakai+' catatan dipindah ke "'+t.nama+'".':'.'),true);
+  ku.kategori=(await jsonAtauError(await fetch('/api/keuangan/kategori'))).kategori; isiKategori(); $('kuKatPanel').dataset.mode=''; kelolaKategori(); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 AKSI_LABEL.kas_catat='Catat kas'; AKSI_LABEL.kas_ubah='Ubah transaksi kas'; AKSI_LABEL.kas_batal='Hapus transaksi kas'; AKSI_LABEL.kas_kategori='Kategori kas'; AKSI_LABEL.kas_ekspor='Ekspor keuangan';
