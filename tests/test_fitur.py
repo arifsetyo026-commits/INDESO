@@ -1326,3 +1326,32 @@ def test_riwayat_transaksi_filter(siap):
     r = o.get("/api/keuangan/transaksi", params={"dari": "2026-10-01"}).json()
     assert r["ringkasan"]["keluar"] == 70_000
     assert o.get("/api/keuangan/transaksi", params={"dari": "2026-13-01"}).status_code == 400
+
+
+def test_dana_talangan_pemilik(siap):
+    """Uang pribadi pemilik yang dipinjamkan ke usaha: kas & neraca benar, bukan modal/pendapatan;
+    saldo kas terendah harian menunjukkan kapan kas sempat minus."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    t = lambda tgl, j, n, x: k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": j, "kategori_id": kat[n], "jumlah": x})
+    assert t("2026-08-01", "masuk", "Setoran modal", 1_000_000).status_code == 200
+    assert t("2026-08-05", "keluar", "Beban bandwidth (upstream)", 1_500_000).status_code == 200    # kas sempat -500 rb
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-08").json()
+    assert rk["kas_negatif"] and rk["kas_terendah"] == {"tanggal": "2026-08-05", "saldo": -500_000}
+    # catat talangan pemilik di tanggal yang sama -> kas tidak lagi minus
+    assert t("2026-08-05", "masuk", "Dana talangan pemilik (pinjaman)", 600_000).status_code == 200
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-08").json()
+    assert not rk["kas_negatif"] and rk["saldo_akhir"] == 100_000
+    assert rk["talangan_masuk"] == 600_000 and rk["modal_masuk"] == 1_000_000 and rk["pendapatan"] == 0
+    assert rk["talangan_sisa"] == 600_000
+    # dikembalikan sebagian bulan berikutnya
+    assert t("2026-09-02", "masuk", "Pendapatan jasa pemasangan", 900_000).status_code == 200
+    assert t("2026-09-03", "keluar", "Pengembalian dana talangan pemilik", 400_000).status_code == 200
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-09").json()
+    assert rk["prive"] == 0 and rk["talangan_kembali"] == 400_000 and rk["talangan_sisa"] == 200_000
+    assert rk["laba"] == 900_000 and rk["saldo_akhir"] == 100_000 + 900_000 - 400_000
+    lap = o.get("/api/keuangan/laporan?periode=2026-09").json()
+    p = lap["posisi"]
+    assert p["seimbang"] and p["kewajiban"]["utang_pemilik"] == 200_000 and p["ekuitas"]["modal_disetor"] == 1_000_000
+    assert lap["arus_kas"]["cocok"] and lap["arus_kas"]["bersih"]["pendanaan"] == -400_000
+    assert o.get("/api/keuangan/keseluruhan").json()["neraca"]["seimbang"]

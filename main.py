@@ -3251,6 +3251,10 @@ _KAT_BAYAR_UTANG = "Pelunasan liabilitas"
 _KAT_INSENTIF = "Beban komisi mitra"  # dibayar lewat tab Komisi Mitra, terikat ke periode
 _KAT_BUNGA = "Beban bunga & biaya angsuran"  # selisih total cicilan dengan harga barang
 _KAT_PENYUSUTAN = "Beban penyusutan aset tetap"
+# Dana talangan pemilik: uang pribadi pemilik yang dipinjamkan ke usaha dan nanti dikembalikan.
+# Bukan pendapatan dan bukan modal — dicatat sebagai utang usaha kepada pemilik.
+_KAT_TALANGAN_MASUK = "Dana talangan pemilik (pinjaman)"
+_KAT_TALANGAN_KEMBALI = "Pengembalian dana talangan pemilik"
 # Aset tetap (SAK EMKM): dicatat sebagai aset, lalu dibebankan bertahap lewat penyusutan
 # garis lurus. Umur manfaat mengikuti kelompok harta pajak (PMK 72/2023): kelompok 1 = 4 tahun,
 # kelompok 2 = 8 tahun.
@@ -3394,6 +3398,8 @@ def init_keuangan_db() -> None:
         """)
         conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 1)",
                      (_KAT_BUNGA,))
+        conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'masuk', 0)", (_KAT_TALANGAN_MASUK,))
+        conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 0)", (_KAT_TALANGAN_KEMBALI,))
         # Aset tetap: umur_bulan terisi = pembelian dicatat sebagai aset, disusutkan per bulan.
         if "umur_bulan" not in [r[1] for r in conn.execute("PRAGMA table_info(kategori_kas)")]:
             conn.execute("ALTER TABLE kategori_kas ADD COLUMN umur_bulan INTEGER")
@@ -3541,8 +3547,11 @@ def _ringkas_antara(conn, awal: str, akhir: str, periode: Optional[str] = None) 
     masuk_ops = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and r["pengaruh_laba"])
     keluar_tunai = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["pengaruh_laba"] and not aset(r))
     beli_aset_tunai = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and aset(r))
-    masuk_lain = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and not r["pengaruh_laba"])
-    prive = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and not r["pengaruh_laba"] and not r["khusus"] and not aset(r))
+    talangan_masuk = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and r["nama"] == _KAT_TALANGAN_MASUK)
+    talangan_kembali = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["nama"] == _KAT_TALANGAN_KEMBALI)
+    masuk_lain = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and not r["pengaruh_laba"]) - talangan_masuk
+    prive = (sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and not r["pengaruh_laba"] and not r["khusus"] and not aset(r))
+             - talangan_kembali)
     bayar_utang = sum(r["total"] for r in per_kat if r["khusus"])
     beban_kredit = sum(r["total"] for r in kredit.values() if not aset(r))
     beli_aset_kredit = sum(r["total"] for r in kredit.values() if aset(r))
@@ -3575,7 +3584,9 @@ def _ringkas_antara(conn, awal: str, akhir: str, periode: Optional[str] = None) 
         "beli_aset": beli_aset_tunai + beli_aset_kredit, "beli_aset_tunai": beli_aset_tunai,
         "beli_aset_kredit": beli_aset_kredit,
         "modal_masuk": masuk_lain, "prive": prive, "bayar_utang": bayar_utang,
-        "arus_kas": pendapatan + masuk_lain - keluar_tunai - beli_aset_tunai - prive - bayar_utang,
+        "talangan_masuk": talangan_masuk, "talangan_kembali": talangan_kembali,
+        "arus_kas": (pendapatan + masuk_lain + talangan_masuk - keluar_tunai - beli_aset_tunai - prive - bayar_utang
+                     - talangan_kembali),
         "per_kategori": sorted(gabung.values(), key=lambda g: -g["total"]),
     }
 
@@ -3588,6 +3599,24 @@ def _saldo_kas_sampai(conn, tanggal_eksklusif: str) -> int:
     keluar = conn.execute("SELECT COALESCE(SUM(jumlah),0) FROM transaksi WHERE status='aktif' AND jenis='keluar' AND tanggal < ?",
                           (tanggal_eksklusif,)).fetchone()[0]
     return lunas + masuk - keluar
+
+
+def _kas_terendah(conn, awal: str, akhir: str, saldo_awal: int) -> dict:
+    """Saldo kas terendah di akhir hari selama [awal, akhir): menunjukkan kapan kas sempat minus
+    (biasanya karena ada uang pribadi pemilik yang terpakai tapi belum dicatat)."""
+    harian: dict = {}
+    for tgl, n in conn.execute("SELECT substr(tgl_bayar,1,10), SUM(jumlah) FROM tagihan WHERE status='lunas' "
+                               "AND tgl_bayar >= ? AND tgl_bayar < ? GROUP BY 1", (awal, akhir)):
+        harian[tgl] = harian.get(tgl, 0) + n
+    for tgl, n in conn.execute("SELECT tanggal, SUM(CASE WHEN jenis='masuk' THEN jumlah ELSE -jumlah END) FROM transaksi "
+                               "WHERE status='aktif' AND tanggal >= ? AND tanggal < ? GROUP BY 1", (awal, akhir)):
+        harian[tgl] = harian.get(tgl, 0) + n
+    saldo, terendah = saldo_awal, {"tanggal": None, "saldo": saldo_awal}
+    for tgl in sorted(harian):
+        saldo += harian[tgl]
+        if saldo < terendah["saldo"]:
+            terendah = {"tanggal": tgl, "saldo": saldo}
+    return terendah
 
 
 def _geser_periode(periode: str, n: int) -> str:
@@ -3613,6 +3642,9 @@ def keuangan_ringkasan(periode: str, request: Request):
             tren.append({k: r[k] for k in ("periode", "pendapatan", "beban", "laba")})
         saldo_awal = _saldo_kas_sampai(conn, awal)
         saldo_akhir = _saldo_kas_sampai(conn, akhir)
+        kas_terendah = _kas_terendah(conn, awal, akhir, saldo_awal)
+        kum = _ringkas_antara(conn, "0000-01-01", akhir)
+        talangan_sisa = kum["talangan_masuk"] - kum["talangan_kembali"]
         piutang_periode = conn.execute(
             "SELECT COALESCE(SUM(jumlah),0), COUNT(*) FROM tagihan WHERE periode = ? AND status='belum'", (periode,)
         ).fetchone()
@@ -3644,7 +3676,8 @@ def keuangan_ringkasan(periode: str, request: Request):
     return {
         **ini,
         "tutup_buku": dict(tb) if tb else None,
-        "kas_negatif": saldo_akhir < 0,
+        "kas_negatif": saldo_akhir < 0 or kas_terendah["saldo"] < 0,
+        "kas_terendah": kas_terendah, "talangan_sisa": talangan_sisa,
         "bulan_lalu": {k: lalu[k] for k in ("pendapatan", "beban", "laba")},
         "tren": tren,
         "saldo_awal": saldo_awal, "saldo_akhir": saldo_akhir,
@@ -3686,7 +3719,10 @@ def _posisi_keuangan(conn, akhir: str) -> dict:
     utang = _sisa_utang_per(conn, akhir)
     aset = {"kas": kas, "aset_tetap": at["harga_perolehan"], "akumulasi_penyusutan": -at["akumulasi"],
             "bunga_dibayar_dimuka": max(0, -utang)}
-    kewajiban = {"utang_usaha": max(0, utang)}
+    talangan = kum["talangan_masuk"] - kum["talangan_kembali"]
+    kewajiban = {"utang_usaha": max(0, utang), "utang_pemilik": max(0, talangan)}
+    if talangan < 0:                       # dikembalikan melebihi talangan: kelebihannya piutang kepada pemilik
+        aset["piutang_pemilik"] = -talangan
     ekuitas = {"modal_disetor": kum["modal_masuk"], "prive": -kum["prive"], "laba_ditahan": kum["laba"]}
     total_aset, total_pasiva = sum(aset.values()), sum(kewajiban.values()) + sum(ekuitas.values())
     piutang = conn.execute("SELECT COALESCE(SUM(t.jumlah),0) FROM tagihan t JOIN pelanggan p ON p.username=t.username "
@@ -3738,6 +3774,9 @@ def keuangan_laporan(periode: str, request: Request):
                  {"nama": "Pembayaran liabilitas pembelian aset", "jumlah": -bayar_aset}]
     pendanaan = [{"nama": "Setoran modal pemilik", "jumlah": r["modal_masuk"]},
                  {"nama": "Pengambilan pribadi pemilik (prive)", "jumlah": -r["prive"]}]
+    if r["talangan_masuk"] or r["talangan_kembali"]:
+        pendanaan += [{"nama": "Dana talangan dari pemilik", "jumlah": r["talangan_masuk"]},
+                      {"nama": "Pengembalian dana talangan pemilik", "jumlah": -r["talangan_kembali"]}]
     bersih = {k: sum(x["jumlah"] for x in L) for k, L in (("operasi", operasi), ("investasi", investasi), ("pendanaan", pendanaan))}
     return {
         "periode": periode, "nama": nama, "awal": awal,
@@ -3870,7 +3909,7 @@ class KategoriIn(BaseModel):
 
 def _nama_kategori_bawaan() -> set:
     return ({n for n, _j, _l in _KATEGORI_AWAL} | {n for n, _u in _KAT_ASET_AWAL}
-            | {_KAT_BAYAR_UTANG, _KAT_INSENTIF, _KAT_BUNGA})
+            | {_KAT_BAYAR_UTANG, _KAT_INSENTIF, _KAT_BUNGA, _KAT_TALANGAN_MASUK, _KAT_TALANGAN_KEMBALI})
 
 
 @app.post("/api/keuangan/kategori")

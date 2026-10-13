@@ -1424,8 +1424,8 @@ function tabKu(t){
 }
 // Rekonsiliasi kas bulan ini: awal + uang masuk − uang keluar (penyusutan tidak termasuk, bukan uang keluar)
 function rincianKas(d){
- const masuk=(d.pendapatan||0)+(d.modal_masuk||0);
- const bagian=[['beban tunai',d.beban_tunai],['beli aset',d.beli_aset_tunai],['angsuran liabilitas',d.bayar_utang],['prive',d.prive]].filter(x=>x[1]);
+ const masuk=(d.pendapatan||0)+(d.modal_masuk||0)+(d.talangan_masuk||0);
+ const bagian=[['beban tunai',d.beban_tunai],['beli aset',d.beli_aset_tunai],['angsuran liabilitas',d.bayar_utang],['prive',d.prive],['kembali ke pemilik',d.talangan_kembali]].filter(x=>x[1]);
  const keluar=bagian.reduce((a,x)=>a+x[1],0);
  return 'awal '+rp(d.saldo_awal)+(masuk?' · masuk +'+rp(masuk):'')+(keluar?' · keluar −'+rp(keluar)+' ('+bagian.map(x=>x[0]+' '+rp(x[1])).join(', ')+')':'');
 }
@@ -1439,7 +1439,9 @@ async function muatRingkasanKu(){
  const ins=d.insentif_mitra, sisaIns=Math.max(0,ins.terhitung-ins.dibayar);
  const tb=d.tutup_buku, owner=saya.peran==='owner', bisaTutup=ku.periode<=kuPeriodeIni();
  let h=`<div class="kuPanel" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;${tb?'background:#f3faf5;border-color:#bfe6cb':''}"><div><b style="font-size:var(--fs-sm)">${tb?'🔒 Buku '+esc(namaPeriode(ku.periode))+' sudah ditutup':'Buku '+esc(namaPeriode(ku.periode))+' masih terbuka'}</b><div class="plSub">${tb?'oleh '+esc(tb.oleh)+' · '+esc(khWaktu(tb.pada))+(tb.catatan?' · '+esc(tb.catatan):'')+' — transaksi bertanggal bulan ini tidak bisa ditambah, diubah, atau dihapus.':'Setelah semua transaksi bulan ini diperiksa, owner menutup buku supaya laporannya tidak berubah lagi.'}</div></div>${owner?(tb?`<button class="btnS" onclick="bukaBuku()">Buka kembali</button>`:(bisaTutup?`<button class="btnS go" onclick="tutupBuku()">Tutup buku</button>`:'')):''}</div>`;
- if(d.kas_negatif) h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:var(--fs-sm)">⚠ Saldo kas akhir bulan negatif ('+rp(d.saldo_akhir)+')</b><div class="plSub">Uang tidak mungkin minus. Kemungkinan ada setoran modal atau penerimaan yang belum dicatat, atau pengeluaran tercatat ganda.</div></div>';
+ if(d.kas_negatif){ const T=d.kas_terendah||{}, kurang=Math.max(-(T.saldo||0),-d.saldo_akhir,0);
+  h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:var(--fs-sm)">⚠ Saldo kas sempat minus '+(T.tanggal&&T.saldo<0?rp(-T.saldo)+' pada '+esc(tglPanjang(T.tanggal)):rp(-d.saldo_akhir)+' di akhir bulan')+'</b>'
+   +'<div class="plSub">Uang tidak mungkin minus, berarti ada uang masuk yang belum dicatat. Bila saat itu memakai <b>uang pribadi</b> untuk membayar keperluan usaha, catat <b>Penerimaan Kas → "Dana talangan pemilik (pinjaman)"</b> minimal '+rp(kurang)+(T.tanggal?' bertanggal '+esc(tglPanjang(T.tanggal))+' atau sebelumnya':'')+'. Saat usaha mengembalikannya, catat <b>Pengeluaran Kas → "Pengembalian dana talangan pemilik"</b>. Kemungkinan lain: penerimaan yang belum dicatat atau pengeluaran tercatat ganda.</div></div>'; }
  h+='<div class="kuKpi">'
   +kotakKu('Pendapatan',rp(d.pendapatan),selisih(d.pendapatan,d.bulan_lalu.pendapatan,true))
   +kotakKu('Beban',rp(d.beban),[d.penyusutan?'termasuk penyusutan '+rp(d.penyusutan)+' (bukan uang keluar)':'',selisih(d.beban,d.bulan_lalu.beban,false)].filter(Boolean).join(' · '))
@@ -1451,6 +1453,7 @@ async function muatRingkasanKu(){
   +kotakKu('Komisi mitra',rp(ins.terhitung),(ins.terhitung?(sisaIns?'belum dibayar '+rp(sisaIns):'sudah dibayar'):'—')+(ins.tertunggak_total>sisaIns?' · total tunggakan '+rp(ins.tertunggak_total):''),sisaIns||ins.tertunggak_total?'#b45309':'')
   +kotakKu('Liabilitas belum dilunasi',rp(d.utang.sisa),d.utang.jumlah?(d.utang.lewat_tempo?d.utang.lewat_tempo+' lewat jatuh tempo':d.utang.jumlah+' tagihan pemasok'):'tidak ada liabilitas',d.utang.lewat_tempo?'#b42318':(d.utang.sisa?'#b45309':''))
   +kotakKu('Setoran modal / prive',rp(d.modal_masuk)+' / '+rp(d.prive),(d.bayar_utang?'pelunasan liabilitas '+rp(d.bayar_utang)+' · ':'')+'tidak dihitung laba')
+  +(d.talangan_sisa||d.talangan_masuk||d.talangan_kembali?kotakKu('Dana talangan pemilik',rp(d.talangan_sisa),'belum dikembalikan s/d bulan ini'+(d.talangan_masuk?' · masuk bulan ini '+rp(d.talangan_masuk):'')+(d.talangan_kembali?' · dikembalikan '+rp(d.talangan_kembali):''),d.talangan_sisa>0?'#b45309':''):'')
   +(d.beli_aset||d.penyusutan?kotakKu('Pembelian aset tetap',rp(d.beli_aset),'bukan beban · penyusutan bulan ini '+rp(d.penyusutan)):'')+'</div>';
  // tren 6 bulan
  h+='<div class="kuGrid"><div class="kuPanel"><h4>Perbandingan pendapatan dan beban, 6 bulan terakhir</h4><div class="kuLegend"><span><i style="background:#2a78d6"></i>Pendapatan</span><span><i style="background:#eb6834"></i>Beban</span></div><div class="kuChart" id="kuChart">'+chartTren(d.tren)+'<div class="kuTip" id="kuTip"></div></div>'
@@ -1533,9 +1536,9 @@ async function muatKeseluruhan(){
  if(d.peringatan&&d.peringatan.length) h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5">'+d.peringatan.map(p=>'<div style="color:#b42318;font-size:var(--fs-xs);font-weight:700;margin:2px 0">⚠ '+esc(p)+'</div>').join('')+'</div>';
  const N=d.neraca, baris=(k,v,tebal)=>`<tr${tebal?' style="font-weight:800"':''}><td>${k}</td><td class="${v<0?'turun':''}">${rp(v)}</td></tr>`;
  h+=`<div class="kuGrid" style="margin-bottom:12px"><div class="kuPanel"><h4>Posisi keuangan per akhir bulan berjalan ${N.seimbang?'<span class="chip ok">Seimbang</span>':'<span class="chip bad">Tidak seimbang</span>'}</h4><table class="kuTbl"><tbody>`
-  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">ASET</td></tr>'+baris('Kas & bank',N.aset.kas)+(N.aset.aset_tetap?baris('Aset tetap (harga perolehan)',N.aset.aset_tetap)+baris('Akumulasi penyusutan',N.aset.akumulasi_penyusutan):'')+(N.aset.bunga_dibayar_dimuka?baris('Bunga dibayar di muka',N.aset.bunga_dibayar_dimuka):'')+baris('Total aset',N.total_aset,true)
+  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">ASET</td></tr>'+baris('Kas & bank',N.aset.kas)+(N.aset.aset_tetap?baris('Aset tetap (harga perolehan)',N.aset.aset_tetap)+baris('Akumulasi penyusutan',N.aset.akumulasi_penyusutan):'')+(N.aset.bunga_dibayar_dimuka?baris('Bunga dibayar di muka',N.aset.bunga_dibayar_dimuka):'')+(N.aset.piutang_pemilik?baris('Piutang kepada pemilik',N.aset.piutang_pemilik):'')+baris('Total aset',N.total_aset,true)
   +'</tbody></table></div><div class="kuPanel"><h4>&nbsp;</h4><table class="kuTbl"><tbody>'
-  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">LIABILITAS</td></tr>'+baris('Liabilitas usaha (kredit/angsuran)',N.kewajiban.utang_usaha)+(N.bunga_belum_jatuh_tempo?'<tr><td colspan="2" style="text-align:left"><span class="plSub">di luar bunga angsuran yang belum jatuh tempo '+rp(N.bunga_belum_jatuh_tempo)+'</span></td></tr>':'')
+  +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">LIABILITAS</td></tr>'+baris('Liabilitas usaha (kredit/angsuran)',N.kewajiban.utang_usaha)+(N.kewajiban.utang_pemilik?baris('Utang kepada pemilik (dana talangan)',N.kewajiban.utang_pemilik):'')+(N.bunga_belum_jatuh_tempo?'<tr><td colspan="2" style="text-align:left"><span class="plSub">di luar bunga angsuran yang belum jatuh tempo '+rp(N.bunga_belum_jatuh_tempo)+'</span></td></tr>':'')
   +'<tr><td colspan="2" style="text-align:left;font-weight:800;color:#4b6355">EKUITAS</td></tr>'+baris('Modal disetor',N.ekuitas.modal_disetor)+baris('Prive',N.ekuitas.prive)+baris('Laba ditahan',N.ekuitas.laba_ditahan)
   +baris('Total kewajiban + ekuitas',N.total_pasiva,true)+`</tbody></table><div class="plSub" style="margin-top:6px">Pendapatan langganan diakui saat dibayar (basis kas), jadi piutang ${rp(N.piutang_belum_diakui)} belum masuk neraca.</div></div></div>`;
  h+='<div class="kuGrid"><div class="kuPanel"><h4>Perbandingan pendapatan dan beban per bulan</h4><div class="kuLegend"><span><i style="background:#2a78d6"></i>Pendapatan</span><span><i style="background:#eb6834"></i>Beban</span></div><div class="kuChart" id="kuChartAll">'+chartTren(d.bulanan,'Grafik pendapatan dan pengeluaran sejak awal')+'<div class="kuTip" id="kuTipAll"></div></div>';
@@ -1574,9 +1577,9 @@ async function muatLaporanKu(){
   +ttl('Kenaikan (penurunan) kas',A.kenaikan,'lapSub')+ttl('Kas awal periode',A.kas_awal)+ttl('KAS AKHIR PERIODE',A.kas_akhir,'lapTotal'+(A.kas_akhir<0?' turun':''))
   +'</tbody></table>'+(A.cocok?'':'<div class="plSub" style="color:#b42318;margin-top:6px">⚠ Arus kas tidak cocok dengan saldo kas, periksa transaksi yang janggal.</div>')+'</div></div>';
  h+=`<div class="kuPanel" style="margin-top:12px"><h4>3. Laporan posisi keuangan (neraca) per ${esc(tglPanjang(P.per))} ${P.seimbang?'<span class="chip ok">Seimbang</span>':'<span class="chip bad">Tidak seimbang</span>'}</h4><div class="kuGrid lapGrid"><table class="kuTbl lapTbl"><tbody>`
-  +grp('Aset')+ttl('Kas & setara kas',P.aset.kas)+ttl('Aset tetap (harga perolehan)',P.aset.aset_tetap)+ttl('Akumulasi penyusutan',P.aset.akumulasi_penyusutan)+(P.aset.bunga_dibayar_dimuka?ttl('Bunga dibayar di muka',P.aset.bunga_dibayar_dimuka):'')
+  +grp('Aset')+ttl('Kas & setara kas',P.aset.kas)+ttl('Aset tetap (harga perolehan)',P.aset.aset_tetap)+ttl('Akumulasi penyusutan',P.aset.akumulasi_penyusutan)+(P.aset.bunga_dibayar_dimuka?ttl('Bunga dibayar di muka',P.aset.bunga_dibayar_dimuka):'')+(P.aset.piutang_pemilik?ttl('Piutang kepada pemilik',P.aset.piutang_pemilik):'')
   +ttl('JUMLAH ASET',P.total_aset,'lapTotal')+'</tbody></table><table class="kuTbl lapTbl"><tbody>'
-  +grp('Liabilitas')+ttl('Liabilitas usaha (kredit/angsuran)',P.kewajiban.utang_usaha)
+  +grp('Liabilitas')+ttl('Liabilitas usaha (kredit/angsuran)',P.kewajiban.utang_usaha)+(P.kewajiban.utang_pemilik?ttl('Utang kepada pemilik (dana talangan)',P.kewajiban.utang_pemilik):'')
   +grp('Ekuitas')+ttl('Modal disetor',P.ekuitas.modal_disetor)+ttl('Prive',P.ekuitas.prive)+ttl('Saldo laba (laba ditahan)',P.ekuitas.laba_ditahan)
   +ttl('JUMLAH LIABILITAS + EKUITAS',P.total_pasiva,'lapTotal')+'</tbody></table></div></div>';
  const AT=d.aset_tetap;
@@ -1664,14 +1667,16 @@ function isiKategori(pilih){
  const opsi=k=>`<option value="${k.id}" ${k.id===pilih?'selected':''}>${esc(k.nama)}${k.pengaruh_laba?'':' (tidak dihitung laba)'}</option>`;
  const grup=(judul,arr)=>arr.length?`<optgroup label="${judul}">${arr.map(opsi).join('')}</optgroup>`:'';
  $('kuKat').innerHTML=ku.formJenis==='masuk'
-  ? grup('Pendapatan usaha',L.filter(k=>k.pengaruh_laba))+grup('Modal (bukan pendapatan)',L.filter(k=>!k.pengaruh_laba))
-  : grup('Beban usaha',L.filter(k=>k.pengaruh_laba&&!k.umur_bulan))+grup('Aset tetap (disusutkan, bukan beban)',L.filter(k=>k.umur_bulan))+grup('Prive (bukan beban)',L.filter(k=>!k.pengaruh_laba));
+  ? grup('Pendapatan usaha',L.filter(k=>k.pengaruh_laba))+grup('Modal & dana pemilik (bukan pendapatan)',L.filter(k=>!k.pengaruh_laba))
+  : grup('Beban usaha',L.filter(k=>k.pengaruh_laba&&!k.umur_bulan))+grup('Aset tetap (disusutkan, bukan beban)',L.filter(k=>k.umur_bulan))+grup('Prive & pengembalian dana pemilik (bukan beban)',L.filter(k=>!k.pengaruh_laba));
  petunjukKat();
 }
 function petunjukKat(){
  const el=$('kuKatInfo'); if(!el) return; const k=ku.kategori.find(x=>x.id===+$('kuKat').value);
  if(k&&k.umur_bulan){ const j=+(($('kuJumlah')||{}).value||'').replace(/\D/g,'');
   el.innerHTML=`Dicatat sebagai <b>aset tetap</b>, bukan beban. Disusutkan ${k.umur_bulan/12} tahun${j?' = '+rp(Math.floor(j/k.umur_bulan))+'/bulan':''}, mulai bulan pembelian.`; el.style.display=''; }
+ else if(k&&k.nama==='Dana talangan pemilik (pinjaman)'){ el.textContent='Uang pribadi pemilik yang dipinjamkan ke usaha. Menambah kas dan dicatat sebagai utang usaha kepada pemilik, bukan pendapatan.'; el.style.display=''; }
+ else if(k&&k.nama==='Pengembalian dana talangan pemilik'){ el.textContent='Usaha mengembalikan uang pribadi pemilik. Mengurangi kas dan utang kepada pemilik, bukan beban.'; el.style.display=''; }
  else if(k&&!k.pengaruh_laba){ el.textContent=k.jenis==='masuk'?'Setoran modal menambah kas, bukan pendapatan.':'Prive mengurangi kas, bukan beban usaha.'; el.style.display=''; }
  else { el.textContent=''; el.style.display='none'; }
 }
