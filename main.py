@@ -4833,6 +4833,20 @@ def keuangan_tambah(d: TransaksiIn, request: Request):
     try:
         kat = _cek_transaksi(conn, d)
         _wajib_buku_terbuka(conn, d.tanggal)
+        # Kunci tulis dulu, lalu tolak kiriman kembar (tombol Simpan tertekan dua kali): transaksi
+        # yang persis sama dari orang yang sama dalam 20 detik terakhir dianggap dobel.
+        conn.execute("BEGIN IMMEDIATE")
+        kembar = conn.execute(
+            "SELECT id, nomor FROM transaksi WHERE status='aktif' AND dicatat_oleh=? AND tanggal=? AND jenis=? "
+            "AND kategori_id=? AND jumlah=? AND COALESCE(keterangan,'')=? AND metode=? AND COALESCE(qty,-1)=? "
+            "AND dicatat_pada >= ? ORDER BY id DESC LIMIT 1",
+            (_oleh(request), d.tanggal, d.jenis, d.kategori_id, d.jumlah, (d.keterangan or "").strip()[:500], d.metode,
+             d.qty if d.qty is not None else -1,
+             (datetime.now() - timedelta(seconds=20)).strftime("%Y-%m-%d %H:%M:%S"))).fetchone()
+        if kembar:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail=f"Transaksi yang sama baru saja tercatat ({kembar['nomor']}). "
+                                "Bila memang ada dua transaksi kembar, tunggu 20 detik lalu simpan lagi.")
         cur = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
             "qty, satuan) VALUES (?,?,?,?,?,?,?,?,?,?)",
