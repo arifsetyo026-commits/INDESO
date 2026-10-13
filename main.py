@@ -7572,6 +7572,12 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
         nilai += [[f"{_PING_ONU}.Timeout", 2000, "xsd:unsignedInt"],
                   [f"{_PING_ONU}.DataBlockSize", 64, "xsd:unsignedInt"]]
     nilai.append([f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"])
+    # Pakai tipe data yang dilaporkan ONU sendiri (mis. ZTE melaporkan NumberOfRepetitions
+    # sebagai xsd:int): tipe yang tidak cocok dijawab sebagian ONU dengan 9003 Invalid arguments.
+    for v in nilai:
+        tipe = _param(doc, v[0]).get("_type")
+        if isinstance(tipe, str) and tipe.startswith("xsd:"):
+            v[2] = tipe
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
     return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=d.minimal)
