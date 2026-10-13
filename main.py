@@ -7616,8 +7616,13 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
         st = _status_tugas(doc["_id"], tugas)
         if st["status"] == "gagal":
             return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas}
+    tertunda = False
     if segarkan:
-        # Hasil belum masuk: minta ONU mengirim nilai IPPingDiagnostics (sekali, dari sisi browser).
+        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": doc["_id"], "name": "getParameterValues"})})
+        tertunda = r.ok and any(any(str(n).startswith(_PING_ONU) for n in (t.get("parameterNames") or [])) for t in r.json())
+    if segarkan and not tertunda:
+        # Hasil belum masuk: minta ONU mengirim nilai IPPingDiagnostics (diulang berkala dari browser;
+        # tidak ditumpuk bila permintaan sebelumnya masih menunggu ONU).
         _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
             f"{_PING_ONU}.{k}" for k in ("DiagnosticsState", "SuccessCount", "FailureCount",
                                          "AverageResponseTime", "MinimumResponseTime", "MaximumResponseTime")]}, tunggu=15)
