@@ -1437,3 +1437,53 @@ def test_tunggakan_dan_kwitansi(siap):
     x.follow_redirects = False
     assert x.get(f"/kwitansi/{t08['ani']['id']}").status_code == 303     # wajib login
     assert m.get(f"/api/tagihan/{t08['ani']['id']}/kwitansi").status_code == 403
+
+
+def test_pengingat_wa_massal(siap):
+    main, o, k, m = siap
+    o.post("/api/tagihan/buat?periode=2026-09")
+    # pengaturan teks pesan
+    r = o.put("/api/pengaturan", json={"nilai": {"NAMA_USAHA": "Indeso Net",
+                                                 "INFO_BAYAR": "Transfer BRI 1234 a.n. Arif\nKirim bukti ke nomor ini.",
+                                                 "TEMPLATE_PENGINGAT": "Halo {nama}, tagihan {usaha}:\n{rincian}\nTotal {total}\n{cara_bayar}"}})
+    assert r.json()["berubah"] == 3
+    assert o.put("/api/pengaturan", json={"nilai": {"INFO_BAYAR": "   "}}).status_code == 400
+    assert o.put("/api/pengaturan", json={"nilai": {"NAMA_USAHA": "x" * 61}}).status_code == 400
+    p = k.get("/api/pesan-wa").json()
+    assert p == {"usaha": "Indeso Net", "cara_bayar": "Transfer BRI 1234 a.n. Arif\nKirim bukti ke nomor ini.",
+                 "template": "Halo {nama}, tagihan {usaha}:\n{rincian}\nTotal {total}\n{cara_bayar}"}
+    assert m.get("/api/pesan-wa").status_code == 403
+    # tersimpan permanen (dimuat ulang saat restart)
+    main.CONFIG["NAMA_USAHA"] = "lain"
+    main._muat_pengaturan()
+    assert main.CONFIG["NAMA_USAHA"] == "Indeso Net"
+    # catatan pengingat muncul di tunggakan
+    d = o.get("/api/tagihan/tunggakan").json()
+    assert d["jeda_pengingat_hari"] == 3 and all(g["diingatkan"] is None for g in d["pelanggan"])
+    assert k.post("/api/tagihan/pengingat", json={"username": "ani", "total": 150000, "bulan": 1}).status_code == 200
+    assert k.post("/api/tagihan/pengingat", json={"username": "tidakada"}).status_code == 404
+    assert m.post("/api/tagihan/pengingat", json={"username": "ani"}).status_code == 403
+    per = {g["username"]: g for g in o.get("/api/tagihan/tunggakan").json()["pelanggan"]}
+    assert per["ani"]["diingatkan"] and per["dwi"]["diingatkan"] is None
+
+
+def test_abaikan_peringatan_kas_minus(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    assert k.post("/api/keuangan/transaksi", json={"tanggal": "2026-08-05", "jenis": "keluar",
+                                                     "kategori_id": kat["Beban bandwidth (upstream)"], "jumlah": 500_000}).status_code == 200
+    assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]       # untuk cek saat tutup buku
+    # buku masih terbuka: belum diperingatkan di ikhtisar kumulatif
+    assert not any("negatif" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    assert o.post("/api/keuangan/tutup-buku/2026-08", json={"catatan": ""}).status_code == 200
+    assert any("Agustus 2026" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    assert k.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2026-08"}).status_code == 403   # hanya owner
+    assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2999-01"}).status_code == 400
+    assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2026-08"}).status_code == 200
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-08").json()
+    assert not rk["kas_negatif"] and rk["kas_negatif_diabaikan"] and rk["saldo_akhir"] == -500_000   # angka tetap
+    assert not any("Agustus 2026" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    # bulan sesudahnya tetap diperingatkan
+    assert o.get("/api/keuangan/ringkasan?periode=2026-09").json()["kas_negatif"]
+    assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": ""}).status_code == 200
+    assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]
