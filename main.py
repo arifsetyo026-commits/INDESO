@@ -3890,6 +3890,42 @@ def _geser_periode(periode: str, n: int) -> str:
     return f"{total // 12}-{total % 12 + 1:02d}"
 
 
+_KUNCI_ABAIKAN_KAS = "KAS_MINUS_DIABAIKAN_SAMPAI"
+
+
+def _kas_minus_diabaikan(conn) -> str:
+    """Periode terakhir (YYYY-MM) yang peringatan kas minusnya diabaikan owner, mis. bulan-bulan
+    sebelum pencatatan rapi yang transaksinya sudah tidak bisa dilacak. '' = tidak ada."""
+    conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+    r = conn.execute("SELECT nilai FROM pengaturan WHERE kunci = ?", (_KUNCI_ABAIKAN_KAS,)).fetchone()
+    return r[0] if r else ""
+
+
+class AbaikanKasIn(BaseModel):
+    periode: str = ""      # kosong = tampilkan lagi semua peringatan
+
+
+@app.post("/api/keuangan/abaikan-kas-minus")
+def keuangan_abaikan_kas_minus(d: AbaikanKasIn, request: Request):
+    _wajib_owner(request, "Hanya owner yang bisa mengabaikan peringatan kas minus.")
+    if d.periode and (not _periode_valid(d.periode) or d.periode > datetime.now().strftime("%Y-%m")):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    conn = _billing_conn()
+    try:
+        _kas_minus_diabaikan(conn)
+        if d.periode:
+            conn.execute("INSERT OR REPLACE INTO pengaturan (kunci, nilai) VALUES (?,?)", (_KUNCI_ABAIKAN_KAS, d.periode))
+        else:
+            conn.execute("DELETE FROM pengaturan WHERE kunci = ?", (_KUNCI_ABAIKAN_KAS,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "pengaturan_ubah",
+                    f"Peringatan kas minus diabaikan s/d {_nama_periode(d.periode)}" if d.periode
+                    else "Peringatan kas minus ditampilkan lagi")
+    return {"ok": True, "sampai": d.periode}
+
+
 @app.get("/api/keuangan/ringkasan")
 def keuangan_ringkasan(periode: str, request: Request):
     _wajib_admin(request)
@@ -3936,12 +3972,17 @@ def keuangan_ringkasan(periode: str, request: Request):
     conn = _billing_conn()
     try:
         tb = _buku_tertutup(conn, periode)
+        abaikan = _kas_minus_diabaikan(conn)
+        conn.commit()
     finally:
         conn.close()
+    minus = saldo_akhir < 0 or kas_terendah["saldo"] < 0
     return {
         **ini,
         "tutup_buku": dict(tb) if tb else None,
-        "kas_negatif": saldo_akhir < 0 or kas_terendah["saldo"] < 0,
+        "kas_negatif": minus and not (abaikan and periode <= abaikan),
+        "kas_negatif_diabaikan": minus and bool(abaikan and periode <= abaikan),
+        "kas_minus_diabaikan_sampai": abaikan,
         "kas_terendah": kas_terendah, "talangan_sisa": talangan_sisa,
         "bulan_lalu": {k: lalu[k] for k in ("pendapatan", "beban", "laba")},
         "tren": tren,
@@ -4180,7 +4221,13 @@ def keuangan_keseluruhan(request: Request):
     peringatan = []
     if total_aset != total_pasiva:
         peringatan.append(f"Neraca tidak seimbang (selisih {_rp(total_aset - total_pasiva)}). Periksa transaksi bertanggal di masa depan atau data yang diubah langsung di database.")
-    minus = [b["periode"] for b in bulanan if b["saldo_akhir"] < 0]
+    conn = _billing_conn()
+    try:
+        abaikan = _kas_minus_diabaikan(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    minus = [b["periode"] for b in bulanan if b["saldo_akhir"] < 0 and not (abaikan and b["periode"] <= abaikan)]
     if minus:
         peringatan.append(f"Saldo kas tercatat negatif pada {', '.join(_nama_periode(p) for p in minus[:6])}"
                           f"{' dan bulan lain' if len(minus) > 6 else ''}. Uang tidak mungkin minus — kemungkinan ada "

@@ -1577,6 +1577,11 @@ function rincianKas(d){
 function kotakKu(label,nilai,bawah,warna,kelas){ return `<div class="blBox${kelas?' '+kelas:''}"><small>${label}</small><b style="${warna?'color:'+warna:''}">${nilai}</b><small>${bawah||''}</small></div>`; }
 // Kotak saldo kas: hijau bila plus, merah bila minus (mudah dikenali sekilas)
 function kelasKas(n){ return n<0?'kasMinus':(n>0?'kasPlus':''); }
+async function abaikanKasMinus(per){
+ if(per&&!confirm('Abaikan peringatan kas minus untuk '+namaPeriode(per)+' dan bulan-bulan sebelumnya?\n\nAngka di laporan tidak berubah; hanya peringatannya yang disembunyikan. Bulan sesudahnya tetap diperingatkan bila kas minus lagi.')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/abaikan-kas-minus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({periode:per})})); muatRingkasanKu(); }
+ catch(e){ alert('Gagal: '+e.message); }
+}
 async function muatRingkasanKu(){
  const el=$('kuRingkasan'); el.innerHTML='<div class="muted">Memuat…</div>';
  let d; try{ d=await jsonAtauError(await fetch('/api/keuangan/ringkasan?periode='+ku.periode)); ku.data=d; }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
@@ -1586,7 +1591,9 @@ async function muatRingkasanKu(){
  let h=`<div class="kuPanel" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;${tb?'background:#f3faf5;border-color:#bfe6cb':''}"><div><b style="font-size:var(--fs-sm)">${tb?'🔒 Buku '+esc(namaPeriode(ku.periode))+' sudah ditutup':'Buku '+esc(namaPeriode(ku.periode))+' masih terbuka'}</b><div class="plSub">${tb?'oleh '+esc(tb.oleh)+' · '+esc(khWaktu(tb.pada))+(tb.catatan?' · '+esc(tb.catatan):'')+' — transaksi bertanggal bulan ini tidak bisa ditambah, diubah, atau dihapus.':'Setelah semua transaksi bulan ini diperiksa, owner menutup buku supaya laporannya tidak berubah lagi.'}</div></div>${owner?(tb?`<button class="btnS" onclick="bukaBuku()">Buka kembali</button>`:(bisaTutup?`<button class="btnS go" onclick="tutupBuku()">Tutup buku</button>`:'')):''}</div>`;
  if(d.kas_negatif){ const T=d.kas_terendah||{}, kurang=Math.max(-(T.saldo||0),-d.saldo_akhir,0);
   h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:var(--fs-sm)">⚠ Saldo kas sempat minus '+(T.tanggal&&T.saldo<0?rp(-T.saldo)+' pada '+esc(tglPanjang(T.tanggal)):rp(-d.saldo_akhir)+' di akhir bulan')+'</b>'
-   +'<div class="plSub">Uang tidak mungkin minus, berarti ada uang masuk yang belum dicatat. Bila saat itu memakai <b>uang pribadi</b> untuk membayar keperluan usaha, catat <b>Penerimaan Kas → "Dana talangan pemilik (pinjaman)"</b> minimal '+rp(kurang)+(T.tanggal?' bertanggal '+esc(tglPanjang(T.tanggal))+' atau sebelumnya':'')+'. Saat usaha mengembalikannya, catat <b>Pengeluaran Kas → "Pengembalian dana talangan pemilik"</b>. Kemungkinan lain: penerimaan yang belum dicatat atau pengeluaran tercatat ganda.</div></div>'; }
+   +'<div class="plSub">Uang tidak mungkin minus, berarti ada uang masuk yang belum dicatat. Bila saat itu memakai <b>uang pribadi</b> untuk membayar keperluan usaha, catat <b>Penerimaan Kas → "Dana talangan pemilik (pinjaman)"</b> minimal '+rp(kurang)+(T.tanggal?' bertanggal '+esc(tglPanjang(T.tanggal))+' atau sebelumnya':'')+'. Saat usaha mengembalikannya, catat <b>Pengeluaran Kas → "Pengembalian dana talangan pemilik"</b>. Kemungkinan lain: penerimaan yang belum dicatat atau pengeluaran tercatat ganda.</div>'
+   +(owner&&ku.periode<kuPeriodeIni()?`<div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="abaikanKasMinus('${ku.periode}')">Abaikan peringatan s/d ${esc(namaPeriode(ku.periode))}</button></div>`:'')+'</div>'; }
+ else if(d.kas_negatif_diabaikan&&owner) h+=`<div class="plSub" style="margin:-4px 0 10px">Peringatan kas minus s/d ${esc(namaPeriode(d.kas_minus_diabaikan_sampai))} diabaikan (catatan bulan lama). <a href="#" onclick="abaikanKasMinus('');return false">Tampilkan lagi</a></div>`;
  h+='<div class="kuKpi">'
   +kotakKu('Pendapatan',rp(d.pendapatan),selisih(d.pendapatan,d.bulan_lalu.pendapatan,true))
   +kotakKu('Beban',rp(d.beban),[d.penyusutan?'termasuk penyusutan '+rp(d.penyusutan)+' (bukan uang keluar)':'',selisih(d.beban,d.bulan_lalu.beban,false)].filter(Boolean).join(' · '))

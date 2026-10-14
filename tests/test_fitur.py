@@ -1465,3 +1465,22 @@ def test_pengingat_wa_massal(siap):
     assert m.post("/api/tagihan/pengingat", json={"username": "ani"}).status_code == 403
     per = {g["username"]: g for g in o.get("/api/tagihan/tunggakan").json()["pelanggan"]}
     assert per["ani"]["diingatkan"] and per["dwi"]["diingatkan"] is None
+
+
+def test_abaikan_peringatan_kas_minus(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    assert k.post("/api/keuangan/transaksi", json={"tanggal": "2026-08-05", "jenis": "keluar",
+                                                     "kategori_id": kat["Beban bandwidth (upstream)"], "jumlah": 500_000}).status_code == 200
+    assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]
+    assert any("negatif" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    assert k.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2026-08"}).status_code == 403   # hanya owner
+    assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2999-01"}).status_code == 400
+    assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2026-08"}).status_code == 200
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-08").json()
+    assert not rk["kas_negatif"] and rk["kas_negatif_diabaikan"] and rk["saldo_akhir"] == -500_000   # angka tetap
+    assert not any("Agustus 2026" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    # bulan sesudahnya tetap diperingatkan
+    assert o.get("/api/keuangan/ringkasan?periode=2026-09").json()["kas_negatif"]
+    assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": ""}).status_code == 200
+    assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]
