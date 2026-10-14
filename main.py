@@ -159,7 +159,13 @@ CONFIG = {
     "BACKUP_KIRIM_TELEGRAM": True,      # kirim berkas backup ke Telegram (ke tujuan laporan owner bila diisi)
     "BACKUP_NOTA_TELEGRAM": True,       # backup mingguan ikut mengirim nota baru (ZIP)
     "BACKUP_NOTA_MAKS_MB": 45,          # batas per ZIP (batas Telegram 50 MB per berkas)
-    "NAMA_USAHA": _env("NAMA_USAHA", "Internet Desa"),   # dipakai di kwitansi
+    "NAMA_USAHA": _env("NAMA_USAHA", "Internet Desa"),   # dipakai di kwitansi & pesan WA
+    # Pesan WA ke pelanggan (bisa diubah di Pengaturan). Penanda {..} diisi otomatis.
+    "INFO_BAYAR": "Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.",
+    "TEMPLATE_PENGINGAT": ("Yth. Bapak/Ibu {nama},\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n"
+                           "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
+                           "Terima kasih."),
+    "PENGINGAT_JEDA_HARI": 3,           # pengingat massal melewati pelanggan yang baru diingatkan
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     # Database (kecil) dikirim ke Telegram TIAP HARI tanpa bunyi notifikasi, supaya bila VPS
     # rusak data yang hilang paling lama 1 hari. Nota (besar) tetap mingguan.
@@ -1340,6 +1346,9 @@ def init_billing_db() -> None:
                 UNIQUE (username, periode)
             )
         """)
+        conn.execute("CREATE TABLE IF NOT EXISTS pengingat (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, "
+                     "waktu TEXT NOT NULL, oleh TEXT, total INTEGER, bulan INTEGER)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pengingat_user ON pengingat(username, waktu)")
         kolom = [r[1] for r in conn.execute("PRAGMA table_info(pelanggan)").fetchall()]
         if "gratis" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN gratis INTEGER NOT NULL DEFAULT 0")
@@ -2667,6 +2676,15 @@ _PENGATURAN = {
                               "pilihan": ["ya", "tidak"], "owner": True},
     "LAPORAN_BULANAN_JAM": {"label": "Jam kirim laporan bulanan, tanggal 1 (0-23)", "tipe": "int", "min": 0, "max": 23,
                             "owner": True},
+    "NAMA_USAHA": {"label": "Nama usaha (tampil di pesan WA & kwitansi)", "tipe": "teksbebas", "maks": 60},
+    "INFO_BAYAR": {"label": "Cara bayar di pesan WA (nomor rekening, QRIS, nama admin)", "tipe": "teksbebas", "maks": 500,
+                   "baris": 3, "bantuan": "Contoh: Transfer BRI 1234-01-000123-50-6 a.n. Arif, atau QRIS di kios. "
+                                          "Kirim bukti ke nomor ini."},
+    "TEMPLATE_PENGINGAT": {"label": "Teks pengingat tagihan WA", "tipe": "teksbebas", "maks": 1500, "baris": 8,
+                           "bantuan": "Penanda yang diisi otomatis: {nama} {usaha} {rincian} (daftar bulan & jumlah) "
+                                      "{total} {cara_bayar} {username}. Huruf di antara *bintang* jadi tebal di WA."},
+    "PENGINGAT_JEDA_HARI": {"label": "Pengingat massal: lewati pelanggan yang sudah diingatkan dalam (hari)", "tipe": "int",
+                            "min": 0, "max": 30},
     "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID tujuan laporan keuangan: grup internal owner dan/atau chat pribadi (pisahkan koma)",
                                "tipe": "teks", "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
                                "bantuan": "Grup: tambahkan bot ke grup internal owner, lalu kirim /id di grup itu "
@@ -2685,6 +2703,13 @@ def _validasi_pengaturan(kunci: str, nilai):
             raise HTTPException(status_code=400, detail=f"{meta['label']} harus angka.")
         if not meta["min"] <= nilai <= meta["max"]:
             raise HTTPException(status_code=400, detail=f"{meta['label']} harus {meta['min']}–{meta['max']}.")
+        return nilai
+    if meta["tipe"] == "teksbebas":
+        nilai = str(nilai or "").replace("\r\n", "\n").strip()
+        if not nilai:
+            raise HTTPException(status_code=400, detail=f"{meta['label']} tidak boleh kosong.")
+        if len(nilai) > meta["maks"]:
+            raise HTTPException(status_code=400, detail=f"{meta['label']} maksimal {meta['maks']} huruf.")
         return nilai
     if meta["tipe"] == "teks":
         nilai = str(nilai or "").strip()
@@ -3236,6 +3261,7 @@ def list_tunggakan():
             "LEFT JOIN paket k ON k.id = p.paket_id LEFT JOIN isolir i ON i.username = t.username "
             "WHERE t.status != 'lunas' ORDER BY t.username, t.periode"
         ).fetchall()
+        diingatkan = dict(conn.execute("SELECT username, MAX(waktu) FROM pengingat GROUP BY username").fetchall())
     finally:
         conn.close()
     per = {}
@@ -3244,7 +3270,7 @@ def list_tunggakan():
         g = per.setdefault(r["username"], {
             "username": r["username"], "nama": r["nama"], "no_hp": r["no_hp"], "paket": r["paket"],
             "status_pelanggan": r["status_pelanggan"], "isolir": bool(r["isolir"]), "tagihan": [],
-            "total": 0, "hari_telat": telat,
+            "total": 0, "hari_telat": telat, "diingatkan": diingatkan.get(r["username"]),
         })
         g["tagihan"].append({"id": r["id"], "periode": r["periode"], "jumlah": r["jumlah"],
                              "jatuh_tempo": r["jatuh_tempo"], "hari_telat": telat})
@@ -3260,12 +3286,42 @@ def list_tunggakan():
         ringkasan[g["kelompok"]]["total"] += g["total"]
     return {
         "per": hari_ini.isoformat(),
+        "jeda_pengingat_hari": CONFIG["PENGINGAT_JEDA_HARI"],
         "jumlah_pelanggan": len(daftar),
         "total": sum(g["total"] for g in daftar),
         "total_telat": sum(t["jumlah"] for g in daftar for t in g["tagihan"] if t["hari_telat"] > 0),
         "kelompok": ringkasan,
         "pelanggan": daftar,
     }
+
+
+@app.get("/api/pesan-wa")
+def pengaturan_pesan_wa():
+    """Teks yang dipakai browser untuk menyusun pesan WA ke pelanggan."""
+    return {"usaha": CONFIG["NAMA_USAHA"], "cara_bayar": CONFIG["INFO_BAYAR"], "template": CONFIG["TEMPLATE_PENGINGAT"]}
+
+
+class PengingatIn(BaseModel):
+    username: str
+    total: int = 0
+    bulan: int = 0
+
+
+@app.post("/api/tagihan/pengingat")
+def catat_pengingat(d: PengingatIn, request: Request):
+    """Catat bahwa pelanggan sudah diingatkan lewat WA (pesan dikirim dari HP admin), supaya
+    pengingat massal tidak mengirim ulang ke orang yang sama dalam beberapa hari."""
+    conn = _billing_conn()
+    try:
+        if not conn.execute("SELECT 1 FROM pelanggan WHERE username = ?", (d.username,)).fetchone():
+            raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+        conn.execute("INSERT INTO pengingat (username, waktu, oleh, total, bulan) VALUES (?,?,?,?,?)",
+                     (d.username, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), _oleh(request),
+                      max(0, d.total), max(0, d.bulan)))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 def _data_kwitansi(tagihan_id: int) -> dict:

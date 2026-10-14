@@ -1437,3 +1437,31 @@ def test_tunggakan_dan_kwitansi(siap):
     x.follow_redirects = False
     assert x.get(f"/kwitansi/{t08['ani']['id']}").status_code == 303     # wajib login
     assert m.get(f"/api/tagihan/{t08['ani']['id']}/kwitansi").status_code == 403
+
+
+def test_pengingat_wa_massal(siap):
+    main, o, k, m = siap
+    o.post("/api/tagihan/buat?periode=2026-09")
+    # pengaturan teks pesan
+    r = o.put("/api/pengaturan", json={"nilai": {"NAMA_USAHA": "Indeso Net",
+                                                 "INFO_BAYAR": "Transfer BRI 1234 a.n. Arif\nKirim bukti ke nomor ini.",
+                                                 "TEMPLATE_PENGINGAT": "Halo {nama}, tagihan {usaha}:\n{rincian}\nTotal {total}\n{cara_bayar}"}})
+    assert r.json()["berubah"] == 3
+    assert o.put("/api/pengaturan", json={"nilai": {"INFO_BAYAR": "   "}}).status_code == 400
+    assert o.put("/api/pengaturan", json={"nilai": {"NAMA_USAHA": "x" * 61}}).status_code == 400
+    p = k.get("/api/pesan-wa").json()
+    assert p == {"usaha": "Indeso Net", "cara_bayar": "Transfer BRI 1234 a.n. Arif\nKirim bukti ke nomor ini.",
+                 "template": "Halo {nama}, tagihan {usaha}:\n{rincian}\nTotal {total}\n{cara_bayar}"}
+    assert m.get("/api/pesan-wa").status_code == 403
+    # tersimpan permanen (dimuat ulang saat restart)
+    main.CONFIG["NAMA_USAHA"] = "lain"
+    main._muat_pengaturan()
+    assert main.CONFIG["NAMA_USAHA"] == "Indeso Net"
+    # catatan pengingat muncul di tunggakan
+    d = o.get("/api/tagihan/tunggakan").json()
+    assert d["jeda_pengingat_hari"] == 3 and all(g["diingatkan"] is None for g in d["pelanggan"])
+    assert k.post("/api/tagihan/pengingat", json={"username": "ani", "total": 150000, "bulan": 1}).status_code == 200
+    assert k.post("/api/tagihan/pengingat", json={"username": "tidakada"}).status_code == 404
+    assert m.post("/api/tagihan/pengingat", json={"username": "ani"}).status_code == 403
+    per = {g["username"]: g for g in o.get("/api/tagihan/tunggakan").json()["pelanggan"]}
+    assert per["ani"]["diingatkan"] and per["dwi"]["diingatkan"] is None
