@@ -7,7 +7,7 @@
 #   sudo bash wajibkan-login-acs.sh status
 #
 # Username/password diambil dari /root/genieacs-cr-user.txt & /root/genieacs-cr-password.txt
-# (sama dengan yang diisi di OLT/ONU, mis. INDESO / INDESO26). Bisa ditimpa: ACS_USER=.. ACS_PASS=..
+# (sama dengan yang diisi di OLT/ONU). Bisa ditimpa: ACS_USER=.. ACS_PASS=..
 set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo "Jalankan dengan sudo."; exit 1; }
 NBI="http://127.0.0.1:7557"

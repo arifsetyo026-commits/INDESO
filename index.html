@@ -249,11 +249,15 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="plMsg" id="pkMsg"></div></div></div>
 </div></div></div>
 <div class="overlay" id="billingModal"><div class="modal"><div class="modalHead"><h3>Penagihan</h3><button class="close" onclick="closeModal('billingModal')">Tutup</button></div><div class="modalBody">
+<div class="blFilters blTabs"><button data-v="bulan" class="on" onclick="tampilBl('bulan')">Per bulan</button><button data-v="tunggakan" onclick="tampilBl('tunggakan')">Tunggakan</button></div>
+<div id="blTunggakan" style="display:none"></div>
+<div id="blBulan">
 <div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
 <div class="search"><input id="blSearch" placeholder="Cari nama atau username…" oninput="renderBilling()"></div>
 <div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
 <div class="plMsg" id="blMsg"></div><div id="blList"></div>
+</div>
 </div></div></div>
 <div class="overlay" id="kesehatanModal"><div class="modal"><div class="modalHead"><h3>Kesehatan Jaringan</h3><button class="close" onclick="closeModal('kesehatanModal')">Tutup</button></div><div class="modalBody">
 <div class="khSum"><div class="blBox khBtn" onclick="setFilterKesehatan('BERMASALAH')"><small>Bermasalah</small><b id="khBermasalah" style="color:#b42318">—</b></div><div class="blBox khBtn" onclick="setFilterKesehatan('PANTAU')"><small>Pantau</small><b id="khPantau" style="color:#b45309">—</b></div><div class="blBox khBtn" onclick="setFilterKesehatan('SEHAT')"><small>Sehat</small><b id="khSehat" style="color:#0b7a3b">—</b></div></div>
@@ -443,7 +447,7 @@ function scrollToSection(id){document.getElementById(id)?.scrollIntoView({behavi
 function plLengkap(p){return !!(p.alamat&&p.no_hp&&p.paket_id)}
   const BLN=['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 const BLN_PJ=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
-const bl={periode:'',rows:[],ring:null,filter:'semua'};
+const bl={periode:'',rows:[],ring:null,filter:'semua',view:'bulan',tg:null,tgFilter:'telat',tgBuka:null,kw:null};
 function rp(n){return 'Rp '+Number(n||0).toLocaleString('id-ID')}
 function tglPendek(s){if(!s)return '';const [y,m,d]=s.split('-');return (+d)+' '+BLN[+m-1]}
 function tglPanjang(s){return s?tglPendek(s)+' '+s.slice(0,4):''}
@@ -456,8 +460,93 @@ function periodeAwal(){
 }
 async function openBilling(){
  $('billingModal').classList.add('show');
- bl.filter='semua'; $('blSearch').value=''; bl.periode=periodeAwal();
+ bl.filter='semua'; $('blSearch').value=''; bl.periode=periodeAwal(); bl.kw=null;
+ tampilBl('bulan');
  await loadBilling();
+}
+function tampilBl(v){
+ bl.view=v;
+ document.querySelectorAll('.blTabs button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+ $('blBulan').style.display=v==='bulan'?'':'none'; $('blTunggakan').style.display=v==='tunggakan'?'':'none';
+ if(v==='tunggakan') muatTunggakan(); else if(bl.periode) loadBilling(true);
+}
+// ===== Tunggakan: semua tagihan belum lunas lintas bulan, per pelanggan =====
+const KEL_TG={belum_jatuh_tempo:['Belum jatuh tempo','#5f7669'],'1_30':['Telat 1–30 hari','#b45309'],'31_60':['Telat 31–60 hari','#c2410c'],'60_lebih':['Telat > 60 hari','#b42318']};
+async function muatTunggakan(diam){
+ const el=$('blTunggakan'); if(!diam) el.innerHTML='<div class="muted">Memuat…</div>';
+ try{ const r=await fetch('/api/tagihan/tunggakan',{cache:'no-store'}); if(!r.ok) throw new Error('HTTP '+r.status); bl.tg=await r.json(); renderTunggakan(); }
+ catch(e){ el.innerHTML='<div class="muted">Gagal memuat tunggakan: '+esc(e.message)+'</div>'; }
+}
+function setFilterTg(f){ bl.tgFilter=bl.tgFilter===f?'telat':f; renderTunggakan(); }
+function renderTunggakan(dariCari){
+ const d=bl.tg, el=$('blTunggakan'); if(!d) return;
+ const q=($('tgCari')?$('tgCari').value:'').trim().toLowerCase();
+ const kotak=Object.entries(KEL_TG).map(([k,[lbl,w]])=>{const g=d.kelompok[k];
+  return `<div class="blBox khBtn${bl.tgFilter===k?' on':''}" onclick="setFilterTg('${k}')" style="${bl.tgFilter===k?'border-color:'+w+';box-shadow:0 0 0 1px '+w:''}"><small>${lbl}</small><b style="color:${w}">${rp(g.total)}</b><small>${g.pelanggan} pelanggan</small></div>`}).join('');
+ let rows=d.pelanggan.filter(g=>bl.tgFilter==='semua'||(bl.tgFilter==='telat'?g.kelompok!=='belum_jatuh_tempo':g.kelompok===bl.tgFilter));
+ if(q) rows=rows.filter(g=>(g.nama||'').toLowerCase().includes(q)||g.username.toLowerCase().includes(q));
+ const hariIni=new Date().toLocaleDateString('sv-SE');
+ const isi=rows.map(g=>{
+  const [lbl,w]=KEL_TG[g.kelompok], buka=bl.tgBuka===g.username;
+  const umur=g.hari_telat>0?`<span class="chip" style="background:#fff4e5;color:${w}">telat ${g.hari_telat} hari</span>`:'<span class="chip off">belum jatuh tempo</span>';
+  const rinci=buka?'<div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:6px">'+g.tagihan.map(t=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0"><div><div class="plName">${esc(namaPeriode(t.periode))}</div><div class="plSub">jatuh tempo ${tglPendek(t.jatuh_tempo)}${t.hari_telat>0?' · telat '+t.hari_telat+' hari':''}</div></div><div class="blKanan"><div class="blAmt">${rp(t.jumlah)}</div>${bl.bayar===t.id?'':`<button class="btnS go" style="margin-top:4px" onclick="bl.bayar=${t.id};renderTunggakan()">Tandai lunas</button>`}</div></div>${bl.bayar===t.id?`<div class="kuBayarForm" style="margin:0 0 8px"><div><small>Tanggal uang diterima</small><input type="date" id="tgTgl" value="${hariIni}" max="${hariIni}"></div><div><small>Metode</small><select id="tgMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select></div><div><small>&nbsp;</small><button class="btnS go" onclick="lunasTunggakan(${t.id})">Simpan lunas</button></div></div>`:''}`).join('')+'</div>':'';
+  return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px;cursor:pointer" onclick="bl.tgBuka=bl.tgBuka===${jsq(g.username)}?null:${jsq(g.username)};bl.bayar=null;renderTunggakan()"><div><div class="plName">${esc(g.nama)}</div><div class="plSub">${esc(g.username)}${g.paket?' · '+esc(g.paket):''} · ${g.bulan} bulan</div><div class="plSub">${esc(g.tagihan.map(t=>namaPeriode(t.periode)).join(', '))}</div></div><div class="blKanan"><div class="blAmt" style="color:${w}">${rp(g.total)}</div><div class="blAksi">${g.isolir?'<span class="chip bad">ISOLIR</span>':''}${g.status_pelanggan==='berhenti'?'<span class="chip off">Berhenti</span>':''}${umur}</div></div></div>
+   <div class="blAksi" style="justify-content:flex-start"><button class="btnS" onclick="ingatkanTunggakanWA(${jsq(g.username)})">Ingatkan WA</button><button class="btnS" onclick="bl.tgBuka=bl.tgBuka===${jsq(g.username)}?null:${jsq(g.username)};bl.bayar=null;renderTunggakan()">${buka?'Tutup rincian':'Rincian & bayar'}</button></div>${rinci}</div>`;
+ }).join('');
+ const judulFilter=bl.tgFilter==='telat'?'Semua yang sudah lewat jatuh tempo':bl.tgFilter==='semua'?'Semua belum lunas':KEL_TG[bl.tgFilter][0];
+ el.innerHTML=`<div class="blSum" style="grid-template-columns:repeat(2,1fr)">${kotak}</div>
+  <div class="plSub" style="margin:-4px 0 8px">Total belum lunas <b>${rp(d.total)}</b> dari ${d.jumlah_pelanggan} pelanggan · sudah lewat jatuh tempo <b style="color:#b42318">${rp(d.total_telat)}</b>. Umur dihitung dari jatuh tempo tagihan tertua.</div>
+  <div class="search"><input id="tgCari" placeholder="Cari nama atau username…" value="${esc(q)}" oninput="renderTunggakan(true)"></div>
+  <div class="blFilters"><button class="${bl.tgFilter==='telat'?'on':''}" onclick="bl.tgFilter='telat';renderTunggakan()">Lewat jatuh tempo</button><button class="${bl.tgFilter==='semua'?'on':''}" onclick="bl.tgFilter='semua';renderTunggakan()">Semua belum lunas</button></div>
+  <div class="plMsg" id="tgMsg"></div>${bl.kw?kotakKwitansi():''}
+  <div class="plSub" style="margin:6px 0"><b>${esc(judulFilter)}</b> · ${rows.length} pelanggan</div>
+  ${isi||'<div class="muted" style="padding:10px 0">'+(d.jumlah_pelanggan?'Tidak ada yang cocok.':'Tidak ada tunggakan. Semua tagihan sudah lunas 🎉')+'</div>'}`;
+ const c=$('tgCari'); if(dariCari&&c){ c.focus(); c.setSelectionRange(c.value.length,c.value.length); }
+}
+async function lunasTunggakan(id){
+ const body={tanggal:$('tgTgl').value,metode:$('tgMetode').value};
+ if(!body.tanggal){ $('tgMsg').style.color='#b42318'; $('tgMsg').textContent='Isi tanggal uang diterima.'; return; }
+ try{
+  const r=await fetch('/api/tagihan/'+id+'/lunas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
+  bl.bayar=null; bl.kw=id; await muatTunggakan(true);
+ }catch(e){ $('tgMsg').style.color='#b42318'; $('tgMsg').textContent='Gagal: '+e.message; }
+}
+function ingatkanTunggakanWA(u){
+ const g=bl.tg&&bl.tg.pelanggan.find(x=>x.username===u); if(!g) return;
+ const n=nomorWA(g.no_hp);
+ if(!n){ alert('Nomor HP '+g.nama+' belum diisi. Lengkapi dulu di menu Pelanggan.'); return; }
+ const rinci=g.tagihan.map(t=>'- '+namaPeriode(t.periode)+': '+rp(t.jumlah)).join('\n');
+ const teks='Yth. Bapak/Ibu '+g.nama+',\n\nKami informasikan tagihan internet '+NAMA_USAHA+' yang belum terbayar:\n'+rinci+'\n*Total: '+rp(g.total)+'*\n\n'+INFO_BAYAR+'\nBila sudah membayar, mohon abaikan pesan ini.\n\nTerima kasih.';
+ window.open('https://wa.me/'+n+'?text='+encodeURIComponent(teks),'_blank');
+}
+// ===== Kwitansi =====
+const METODE_LBL={tunai:'Tunai',transfer:'Transfer bank',qris:'QRIS / e-wallet',lainnya:'Lainnya'};
+function kotakKwitansi(){
+ return `<div class="kuPanel" style="margin:8px 0;border-color:#bfe6cb;background:#f3faf5;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><div><b style="color:#0b7a3b">✓ Pembayaran tercatat.</b><div class="plSub">Kirim kwitansi ke pelanggan sebagai bukti bayar?</div></div><div class="blAksi" style="margin:0"><button class="btnS go" onclick="kirimKwitansiWA(${bl.kw})">Kirim kwitansi WA</button><a class="btnS" href="/kwitansi/${bl.kw}" target="_blank" rel="noopener" style="text-decoration:none">Cetak</a><button class="btnS" onclick="bl.kw=null;bl.view==='tunggakan'?renderTunggakan():renderBilling()">Nanti</button></div></div>`;
+}
+function teksKwitansi(k){
+ return '*KWITANSI PEMBAYARAN*\n'+NAMA_USAHA+'\nNo. '+k.nomor+'\n\n'
+  +'Telah diterima dari: '+k.nama+' ('+k.username+')\n'
+  +'Untuk: Internet '+k.nama_periode+(k.paket?' (paket '+k.paket+')':'')+'\n'
+  +'Jumlah: *'+rp(k.jumlah)+'*\n'
+  +'Tanggal bayar: '+tglPendek(k.tgl_bayar)+' · '+(METODE_LBL[k.metode_bayar]||k.metode_bayar||'-')+'\n'
+  +'Diterima oleh: '+(k.lunas_oleh||'-')+'\n\n'
+  +'Status: *LUNAS* ✅\n'
+  +(k.sisa_bulan?('Catatan: masih ada '+k.sisa_bulan+' bulan belum lunas, total '+rp(k.sisa_total)+'.\n'):'')
+  +'\nTerima kasih atas pembayarannya. Simpan pesan ini sebagai bukti bayar.';
+}
+async function kirimKwitansiWA(id){
+ // Jendela dibuka dulu saat tombol ditekan (sebelum menunggu server) supaya tidak diblokir browser HP.
+ const w=window.open('about:blank','_blank');
+ try{
+  const k=await jsonAtauError(await fetch('/api/tagihan/'+id+'/kwitansi',{cache:'no-store'}));
+  const n=nomorWA(k.no_hp);
+  if(!n){ if(w) w.close(); alert('Nomor HP '+k.nama+' belum diisi. Lengkapi dulu di menu Pelanggan, atau pakai tombol Cetak.'); return; }
+  const url='https://wa.me/'+n+'?text='+encodeURIComponent(teksKwitansi(k));
+  if(w) w.location.href=url; else location.href=url;
+  bl.kw=null; bl.view==='tunggakan'?renderTunggakan():renderBilling();
+ }catch(e){ if(w) w.close(); alert('Gagal menyiapkan kwitansi: '+e.message); }
 }
 async function ubahPeriode(n){ bl.periode=geserPeriode(bl.periode,n); await loadBilling(); }
 function setFilterBilling(f){ bl.filter=f; renderBilling(); }
@@ -494,6 +583,7 @@ async function ubahLunas(id,lunas){
   const r=await fetch('/api/tagihan/'+id+(lunas?'/lunas':'/batal'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   bl.bayar=null;
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
+  bl.kw=lunas?id:null;
   $('blMsg').textContent=''; await loadBilling(true);
  }catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
 }
@@ -769,7 +859,7 @@ function renderBilling(){
   const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
   const sub=lunas?('Dibayar '+tglPendek(t.tgl_bayar)+(t.metode_bayar?' · '+esc(t.metode_bayar):'')+(t.lunas_oleh?' · dicatat '+esc(t.lunas_oleh):'')):('Jatuh tempo '+tglPendek(t.jatuh_tempo));
-  const tLunas=lunas?`<button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="bl.bayar=bl.bayar===${t.id}?null:${t.id};renderBilling()">Tandai lunas</button>`;
+  const tLunas=lunas?`<button class="btnS" onclick="bl.kw=${t.id};renderBilling();$('blList').scrollIntoView({block:'start'})">Kwitansi</button><button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="bl.bayar=bl.bayar===${t.id}?null:${t.id};renderBilling()">Tandai lunas</button>`;
   const hariIni=new Date().toLocaleDateString('sv-SE');
   const fBayar=!lunas&&bl.bayar===t.id?`<div class="kuBayarForm" style="margin-top:8px"><div><small>Tanggal uang diterima</small><input type="date" id="blTgl" value="${hariIni}" max="${hariIni}"></div><div><small>Metode</small><select id="blMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select></div><div><small>&nbsp;</small><button class="btnS go" onclick="ubahLunas(${t.id},true)">Simpan lunas</button></div></div>`:'';
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolir(${t.id})">Buka isolir</button>`:(lunas?'':`<button class="btnS" onclick="isolirManual(${t.id})">Isolir</button>`);
@@ -784,7 +874,7 @@ function renderBilling(){
   return `<div class="blRow"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tIso}</div></div></div>`;
  }).join('');
  const kosong=!bl.rows.length?'<div class="muted" style="margin-bottom:8px">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>':'';
- $('blList').innerHTML=info+kosong+((htmlTagihan||htmlLain)?htmlTagihan+(htmlLain&&htmlTagihan?'<div class="plSub" style="margin:12px 0 4px"><b>Gratis / tanpa tagihan</b></div>':'')+htmlLain:(bl.rows.length?'<div class="muted">Tidak ada yang cocok.</div>':''));
+ $('blList').innerHTML=(bl.kw?kotakKwitansi():'')+info+kosong+((htmlTagihan||htmlLain)?htmlTagihan+(htmlLain&&htmlTagihan?'<div class="plSub" style="margin:12px 0 4px"><b>Gratis / tanpa tagihan</b></div>':'')+htmlLain:(bl.rows.length?'<div class="muted">Tidak ada yang cocok.</div>':''));
 }
 async function aksiIsolir(url,pesanOk){
  try{

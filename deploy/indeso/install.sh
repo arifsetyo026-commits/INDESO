@@ -58,6 +58,7 @@ WorkingDirectory=${DATA}
 EnvironmentFile=${ETC}/indeso.env
 Environment=INDESO_DATA_DIR=${DATA}
 Environment=PYTHONUNBUFFERED=1
+Environment=TZ=Asia/Jakarta
 # --proxy-headers: IP asli pengunjung dari nginx (pembatas login per IP tetap bekerja).
 ExecStart=${APP}/.venv/bin/uvicorn main:app --app-dir ${APP} --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
 Restart=always

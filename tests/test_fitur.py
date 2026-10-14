@@ -413,10 +413,10 @@ def test_laporan_bulanan_dan_backup(siap):
     zip_isi = []
     asli = main.kirim_dokumen_telegram
 
-    def tangkap(path, caption, chat_id=None):
+    def tangkap(path, caption, chat_id=None, **kw):
         if path.endswith(".zip"):
             zip_isi.append(zipfile.ZipFile(io.BytesIO(open(path, "rb").read())).namelist())
-        return asli(path, caption, chat_id)
+        return asli(path, caption, chat_id, **kw)
     main.kirim_dokumen_telegram = tangkap
     minggu = datetime(2026, 10, 11, 3)
     assert minggu.weekday() == main.CONFIG["BACKUP_HARI_KIRIM"]
@@ -1366,3 +1366,74 @@ def test_valuasi(siap):
     assert v["arpu"] == round(v["mrr"] / v["pelanggan_berbayar"])
     assert v["nilai_buku"] == v["kas"] + v["aset_tetap_buku"] - v["utang"]
     assert len(v["bulan_dihitung"]) >= 1 and v["ebitda_tahunan"] == v["rata_bulanan"]["ebitda"] * 12
+
+
+def test_keandalan_backup_harian_healthz_dan_bayar_ganda(siap):
+    main, o, k, m = siap
+    main.CONFIG["TELEGRAM_OWNER_CHAT_ID"] = "222222"
+    # database memakai WAL; salinan backup berupa satu berkas biasa
+    c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
+    assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    c.close()
+    main.proses_backup_harian(datetime(2026, 10, 11, 3))          # Minggu: berbunyi + nota
+    main._terkirim.clear()
+    main.proses_backup_harian(datetime(2026, 10, 12, 3))          # Senin: tetap dikirim, senyap
+    dok = [x["data"] for x in main._terkirim if "caption" in x["data"]]
+    assert dok and all(d.get("disable_notification") == "true" for d in dok)
+    b = sqlite3.connect(os.path.join(main._folder_backup(), "billing-2026-10-12.db"))
+    assert b.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    b.close()
+    main.CONFIG["BACKUP_KIRIM_HARIAN"] = False
+    main._terkirim.clear()
+    main.proses_backup_harian(datetime(2026, 10, 13, 3))
+    assert not [x for x in main._terkirim if "caption" in x["data"]]
+    # /healthz publik: sehat setelah putaran, 503 bila loop macet
+    x = klien(main)
+    main._tandai_putaran()
+    assert x.get("/healthz").json()["ok"] is True
+    main._putaran["terakhir"] -= 3600
+    assert x.get("/healthz").status_code == 503
+    main._tandai_putaran()
+    # tandai lunas dua kali: tanggal bayar pertama tidak tertimpa
+    o.post("/api/tagihan/buat?periode=2026-10")
+    tid = o.get("/api/tagihan?periode=2026-10").json()["tagihan"][0]["id"]
+    assert o.post(f"/api/tagihan/{tid}/lunas", json={"tanggal": "2026-10-05", "metode": "tunai"}).json() == {"ok": True}
+    r = o.post(f"/api/tagihan/{tid}/lunas", json={"tanggal": "2026-10-06", "metode": "qris"}).json()
+    assert r.get("sudah_lunas") is True
+    c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
+    assert c.execute("SELECT tgl_bayar, metode_bayar FROM tagihan WHERE id=?", (tid,)).fetchone() == ("2026-10-05", "tunai")
+    c.close()
+
+
+def test_tunggakan_dan_kwitansi(siap):
+    main, o, k, m = siap
+    for per in ("2026-08", "2026-09", "2026-10"):
+        assert o.post(f"/api/tagihan/buat?periode={per}").status_code == 200
+    t10 = {x["username"]: x for x in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]}
+    t08 = {x["username"]: x for x in o.get("/api/tagihan?periode=2026-08").json()["tagihan"]}
+    # ani bayar Agustus; budi bayar semuanya
+    o.post(f"/api/tagihan/{t08['ani']['id']}/lunas", json={"tanggal": "2026-08-03", "metode": "transfer"})
+    for per in ("2026-08", "2026-09", "2026-10"):
+        b = next(x for x in o.get(f"/api/tagihan?periode={per}").json()["tagihan"] if x["username"] == "budi")
+        o.post(f"/api/tagihan/{b['id']}/lunas", json={"tanggal": "2026-10-01", "metode": "tunai"})
+    d = k.get("/api/tagihan/tunggakan").json()
+    per = {g["username"]: g for g in d["pelanggan"]}
+    assert "budi" not in per and "server" not in per
+    assert per["ani"]["bulan"] == 2 and per["dwi"]["bulan"] == 3
+    assert per["dwi"]["total"] == sum(t["jumlah"] for t in per["dwi"]["tagihan"])
+    assert per["dwi"]["hari_telat"] >= per["ani"]["hari_telat"]          # umur dari jatuh tempo tertua
+    assert d["pelanggan"][0]["username"] == "dwi"                         # paling lama di atas
+    assert d["total"] == per["ani"]["total"] + per["dwi"]["total"]
+    assert sum(v["pelanggan"] for v in d["kelompok"].values()) == 2
+    assert m.get("/api/tagihan/tunggakan").status_code == 403             # mitra tidak boleh
+    # kwitansi: hanya untuk yang lunas
+    assert o.get(f"/api/tagihan/{t10['ani']['id']}/kwitansi").status_code == 400
+    kw = o.get(f"/api/tagihan/{t08['ani']['id']}/kwitansi").json()
+    assert kw["nomor"] == f"KW/202608/{t08['ani']['id']:05d}" and kw["metode_bayar"] == "transfer"
+    assert kw["sisa_bulan"] == 2 and kw["sisa_total"] == per["ani"]["total"]
+    h = o.get(f"/kwitansi/{t08['ani']['id']}")
+    assert h.status_code == 200 and "KWITANSI" in h.text and "Agustus 2026" in h.text and "LUNAS" in h.text
+    x = klien(main)
+    x.follow_redirects = False
+    assert x.get(f"/kwitansi/{t08['ani']['id']}").status_code == 303     # wajib login
+    assert m.get(f"/api/tagihan/{t08['ani']['id']}/kwitansi").status_code == 403
