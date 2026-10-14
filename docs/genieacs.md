@@ -104,6 +104,22 @@ Simpan. Dalam 1–5 menit ONU muncul di menu *Devices* GenieACS.
 INDESO mencocokkan ONU dengan pelanggan secara otomatis. Pertama lewat **nomor seri GPON**
 (sama dengan yang dibaca dari OLT); kalau tidak cocok, lewat **username PPPoE** yang tersimpan di ONU.
 
+### Dari INDESO lewat OLT C-Data (tanpa membuka web OLT)
+INDESO bisa mengirim ACS URL & login ke ONU lewat telnet OLT, sama dengan menu *TR-069 Service Configuration* di web OLT. Perintah yang dijalankan per ONU (di `interface gpon 0/0`):
+```
+ont tr069 <port> <onu> tr069-management enable
+ont tr069 <port> <onu> acs-url http://10.99.0.1:7547 acs-username <user> acs-password <sandi>
+ont tr069 <port> <onu> inform enable interval 300
+```
+Isi di `/etc/indeso/indeso.env` lalu restart INDESO:
+```
+OLT_TELNET_USER=<login OLT>
+OLT_TELNET_PASS=<sandi OLT>
+ACS_ONU_USER=<ACS username ONU>
+ACS_ONU_PASS=<ACS password ONU>
+```
+Pakai: **Pengaturan → Sistem → TR-069 ONU lewat OLT** (pilih banyak ONU sekaligus), atau tombol **Kirim pengaturan TR-069 dari OLT** di Diagnosa pelanggan yang ONU-nya belum terdaftar. Setelah itu INDESO menjalankan `save` supaya tetap ada saat OLT restart. ONU ZTE tetap perlu WAN PPPoE berjenis `INTERNET_TR069`.
+
 ## 6. Isi `.env` INDESO (di HP Termux)
 
 ```
