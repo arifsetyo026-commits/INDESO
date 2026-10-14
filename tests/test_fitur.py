@@ -413,10 +413,10 @@ def test_laporan_bulanan_dan_backup(siap):
     zip_isi = []
     asli = main.kirim_dokumen_telegram
 
-    def tangkap(path, caption, chat_id=None):
+    def tangkap(path, caption, chat_id=None, **kw):
         if path.endswith(".zip"):
             zip_isi.append(zipfile.ZipFile(io.BytesIO(open(path, "rb").read())).namelist())
-        return asli(path, caption, chat_id)
+        return asli(path, caption, chat_id, **kw)
     main.kirim_dokumen_telegram = tangkap
     minggu = datetime(2026, 10, 11, 3)
     assert minggu.weekday() == main.CONFIG["BACKUP_HARI_KIRIM"]
@@ -1366,3 +1366,40 @@ def test_valuasi(siap):
     assert v["arpu"] == round(v["mrr"] / v["pelanggan_berbayar"])
     assert v["nilai_buku"] == v["kas"] + v["aset_tetap_buku"] - v["utang"]
     assert len(v["bulan_dihitung"]) >= 1 and v["ebitda_tahunan"] == v["rata_bulanan"]["ebitda"] * 12
+
+
+def test_keandalan_backup_harian_healthz_dan_bayar_ganda(siap):
+    main, o, k, m = siap
+    main.CONFIG["TELEGRAM_OWNER_CHAT_ID"] = "222222"
+    # database memakai WAL; salinan backup berupa satu berkas biasa
+    c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
+    assert c.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    c.close()
+    main.proses_backup_harian(datetime(2026, 10, 11, 3))          # Minggu: berbunyi + nota
+    main._terkirim.clear()
+    main.proses_backup_harian(datetime(2026, 10, 12, 3))          # Senin: tetap dikirim, senyap
+    dok = [x["data"] for x in main._terkirim if "caption" in x["data"]]
+    assert dok and all(d.get("disable_notification") == "true" for d in dok)
+    b = sqlite3.connect(os.path.join(main._folder_backup(), "billing-2026-10-12.db"))
+    assert b.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    b.close()
+    main.CONFIG["BACKUP_KIRIM_HARIAN"] = False
+    main._terkirim.clear()
+    main.proses_backup_harian(datetime(2026, 10, 13, 3))
+    assert not [x for x in main._terkirim if "caption" in x["data"]]
+    # /healthz publik: sehat setelah putaran, 503 bila loop macet
+    x = klien(main)
+    main._tandai_putaran()
+    assert x.get("/healthz").json()["ok"] is True
+    main._putaran["terakhir"] -= 3600
+    assert x.get("/healthz").status_code == 503
+    main._tandai_putaran()
+    # tandai lunas dua kali: tanggal bayar pertama tidak tertimpa
+    o.post("/api/tagihan/buat?periode=2026-10")
+    tid = o.get("/api/tagihan?periode=2026-10").json()["tagihan"][0]["id"]
+    assert o.post(f"/api/tagihan/{tid}/lunas", json={"tanggal": "2026-10-05", "metode": "tunai"}).json() == {"ok": True}
+    r = o.post(f"/api/tagihan/{tid}/lunas", json={"tanggal": "2026-10-06", "metode": "qris"}).json()
+    assert r.get("sudah_lunas") is True
+    c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
+    assert c.execute("SELECT tgl_bayar, metode_bayar FROM tagihan WHERE id=?", (tid,)).fetchone() == ("2026-10-05", "tunai")
+    c.close()

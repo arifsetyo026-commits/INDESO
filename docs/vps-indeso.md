@@ -81,12 +81,24 @@ Mulai sekarang, **jangan nyalakan lagi INDESO di HP.**
 |---|---|
 | Lihat log langsung | `sudo journalctl -u indeso -f` |
 | Restart | `sudo systemctl restart indeso` |
-| Update INDESO (setelah PR di-merge) | `sudo git -C /opt/indeso pull && sudo systemctl restart indeso` |
+| Update INDESO (setelah PR di-merge) | `sudo bash /opt/indeso/deploy/indeso/update.sh` (otomatis kembali ke versi lama bila gagal) |
+| Cek kesehatan | `curl -s http://127.0.0.1:8000/healthz` |
 | Ubah pengaturan `.env` | `sudo nano /etc/indeso/indeso.env` lalu restart |
 | Lokasi data | `/var/lib/indeso` (billing.db, nota/, backup/) |
 | Lupa password dashboard | `sudo -u indeso python3 /opt/indeso/deploy/indeso/reset-password.py` lalu `sudo systemctl restart indeso` |
 
-Sertifikat HTTPS diperbarui otomatis oleh certbot. Backup harian dan mingguan ke Telegram tetap berjalan seperti biasa.
+Sertifikat HTTPS diperbarui otomatis oleh certbot.
+
+**Backup.** Setiap hari setelah jam 02.00, `billing.db` dibackup ke `/var/lib/indeso/backup` (14 hari terakhir) dan dikirim ke Telegram owner tanpa bunyi notifikasi. Hari Minggu, kirimannya berbunyi dan ikut mengirim ZIP nota. Untuk kembali ke pengiriman mingguan saja, isi `BACKUP_KIRIM_HARIAN=0` di `.env`.
+
+**Pemantau dari luar.** Daftarkan `https://<alamat-dashboard>/healthz` di layanan pemantau gratis (mis. UptimeRobot, cek tiap 5 menit, kirim notifikasi ke email/Telegram). Alamat ini membalas 503 bila loop pemantauan INDESO macet, dan tidak bisa dihubungi sama sekali bila VPS/INDESO mati. Server GenieACS yang tidak merespons ±15 menit dilaporkan otomatis ke Telegram.
+
+### Bila VPS hilang / rusak total
+1. Siapkan VPS Ubuntu baru, pasang ulang GenieACS (`deploy/genieacs/install.sh`) dan INDESO (`deploy/indeso/install.sh`).
+2. Unduh backup `billing-YYYY-MM-DD.db` terbaru dari chat Telegram owner, dan ZIP nota terakhir bila ada.
+3. Salin ke VPS (layanan dalam keadaan mati): `sudo systemctl stop indeso; sudo rm -f /var/lib/indeso/billing.db-wal /var/lib/indeso/billing.db-shm; sudo cp billing-*.db /var/lib/indeso/billing.db && sudo chown indeso:indeso /var/lib/indeso/billing.db`. Ekstrak ZIP nota ke `/var/lib/indeso/nota/`.
+4. Isi `/etc/indeso/indeso.env` (simpan salinan isinya di tempat aman, mis. pengelola sandi, karena berkas ini tidak ikut backup).
+5. `sudo systemctl enable --now indeso`, lalu ganti alamat ACS di OLT/ONU bila IP VPS berubah. ONU akan lapor ulang ke GenieACS dengan sendirinya.
 
 **Kembali ke HP (darurat):** jalankan `sudo systemctl stop indeso && sudo systemctl disable indeso` di VPS.
 Setelah itu, salin balik `/var/lib/indeso/billing.db` ke HP sebelum INDESO dinyalakan di sana. Kalau tidak disalin, HP memakai data versi lama.

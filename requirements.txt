@@ -1,6 +1,8 @@
-fastapi
-uvicorn
-requests
-routeros-api
-python-dotenv
-pydantic
+# Batas atas versi supaya pemasangan ulang tidak tiba-tiba menarik versi besar baru yang
+# bisa merusak INDESO. Naikkan batasnya dengan sengaja setelah dites.
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
+requests>=2.31,<3
+routeros-api>=0.17,<1.0
+python-dotenv>=1.0,<2
+pydantic>=2.5,<3
