@@ -1222,7 +1222,7 @@ async function oltTr069Pelanggan(btn){
  if(!confirm('Kirim pengaturan TR-069 ke ONU '+dg.user+' lewat OLT?')) return;
  btn.disabled=true; btn.textContent='Mengirim…';
  try{ const d=await jsonAtauError(await fetch('/api/olt/tr069/pelanggan/'+encodeURIComponent(dg.user),{method:'POST'}));
-  const h=d.hasil[0]; dgPesan(h.ok?'Pengaturan TR-069 terkirim lewat OLT. Tunggu ±5 menit lalu buka ulang Diagnosa. ONU ZTE: pastikan WAN PPPoE berjenis INTERNET_TR069.':'OLT menolak: '+h.pesan,h.ok);
+  const h=d.hasil[0]; dgPesan(h.ok?('Pengaturan TR-069 terkirim lewat OLT'+(d.tersimpan===false?' — PERHATIAN: konfigurasi OLT BELUM tersimpan (hilang bila OLT restart), simpan manual di web OLT.':' dan konfigurasi OLT sudah disimpan.')+' Tunggu ±5 menit lalu buka ulang Diagnosa. ONU ZTE: pastikan WAN PPPoE berjenis INTERNET_TR069.'):'OLT menolak: '+h.pesan,h.ok&&d.tersimpan!==false);
   btn.textContent=h.ok?'✓ Terkirim':'Kirim ulang'; btn.disabled=h.ok;
  }catch(e){ dgPesan('Gagal: '+e.message,false); btn.disabled=false; btn.textContent='Kirim ulang'; }
 }

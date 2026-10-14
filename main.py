@@ -8435,6 +8435,32 @@ class _TelnetOLT:
             pass
 
 
+_POLA_KONFIRMASI = r"(?i)(\(y/n\)|\[y/n\]|\(yes/no\)|\[yes/no\]|y/n\s*[:?]?)\s*:?\s*$"
+
+
+def _simpan_olt(t: "_TelnetOLT") -> bool:
+    """Simpan konfigurasi OLT secara permanen. Dicoba di mode config dulu, lalu di mode enable,
+    dengan beberapa nama perintah yang umum dipakai firmware C-Data. Pertanyaan (y/n) dijawab y."""
+    lama, t.timeout = t.timeout, 90.0          # menulis flash bisa butuh beberapa detik
+    try:
+        def coba(perintah: str) -> bool:
+            out = t.kirim(perintah, r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            if re.search(_POLA_KONFIRMASI, out):
+                out = t.kirim("y")
+            return _galat_cli(out) is None
+        utama = CONFIG["OLT_SIMPAN_PERINTAH"] or "save"
+        if coba(utama):
+            return True
+        t.kirim("end")
+        for perintah in dict.fromkeys([utama, "save", "write", "write memory", "copy running-config startup-config"]):
+            if coba(perintah):
+                return True
+        logger.error("OLT: konfigurasi TIDAK tersimpan permanen — tidak ada perintah simpan yang diterima.")
+        return False
+    finally:
+        t.timeout = lama
+
+
 def _galat_cli(keluaran: str) -> Optional[str]:
     for baris in keluaran.splitlines():
         b = baris.strip()
@@ -8492,8 +8518,9 @@ def olt_kirim_tr069(daftar: list) -> dict:
                               "pesan": galat or "Pengaturan TR-069 terkirim ke ONU."})
             t.kirim("exit")
         tersimpan = None
-        if CONFIG["OLT_SIMPAN_PERINTAH"] and any(h["ok"] for h in hasil):
-            tersimpan = _galat_cli(t.kirim(CONFIG["OLT_SIMPAN_PERINTAH"])) is None
+        if any(h["ok"] for h in hasil):
+            # Wajib: tanpa save, perubahan hilang saat OLT restart.
+            tersimpan = _simpan_olt(t)
         t.kirim("end")
     except (OSError, TimeoutError, ConnectionError) as e:
         raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
