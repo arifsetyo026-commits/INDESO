@@ -94,7 +94,7 @@ atau buka web ONU dari kantor. Nama menu bisa sedikit berbeda antar firmware.
 | ACS URL | `http://10.99.0.1:7547/` |
 | ACS Username / Password | kosongkan |
 | Periodic Inform | Aktif, interval `300` detik |
-| Connection Request Username / Password | samakan dengan ACS username/password (mis. `INDESO` / `INDESO26`); server memasangnya otomatis dari `/root/genieacs-cr-user.txt` & `/root/genieacs-cr-password.txt` |
+| Connection Request Username / Password | samakan dengan ACS username/password (lihat panduan teknisi internal); server memasangnya otomatis dari `/root/genieacs-cr-user.txt` & `/root/genieacs-cr-password.txt` |
 | WAN Connection / Interface | pilih koneksi **INTERNET (PPPoE)** |
 
 **Fiberhome (HG6243C, AN5506, dll.)**: *Management / Application → TR-069* (atau *Remote Management*). Isinya sama: aktifkan, ACS URL `http://10.99.0.1:7547/`, periodic inform 300 detik, WAN = koneksi internet/PPPoE.
@@ -138,7 +138,7 @@ dan tidak dicatat di INDESO. Setelah ganti password, ada tombol untuk mengirimka
 
 ## Keamanan & perawatan
 
-- **Wajibkan login ACS** setelah semua ONU diisi ACS Username/Password yang sama (mis. `INDESO` / `INDESO26`).
+- **Wajibkan login ACS** setelah semua ONU diisi ACS Username/Password yang sama (lihat panduan teknisi internal).
   Tanpa ini, pelanggan mana pun di jaringan PPPoE bisa mendaftarkan "ONU palsu" ke ACS:
   ```
   sudo bash ~/INDESO/deploy/genieacs/wajibkan-login-acs.sh aktifkan

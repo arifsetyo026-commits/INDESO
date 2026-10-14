@@ -231,7 +231,7 @@ curl -fsS -X PUT -H 'Content-Type: application/json' \
 # Kredensial connection request bersama untuk semua ONU (disimpan hanya di VPS & di preset).
 # Sebaiknya sama dengan ACS username/password yang diisi teknisi di OLT/ONU: sebagian ONU
 # (mis. ZTE yang diatur lewat OLT) memakai pasangan itu juga untuk connection request.
-# Ubah dengan: CR_USER=INDESO CR_PASS=INDESO26 sudo -E bash install.sh, atau edit kedua file.
+# Ubah dengan: CR_USER=<user> CR_PASS=<sandi> sudo -E bash install.sh, atau edit kedua file.
 [ -n "${CR_USER:-}" ] && { echo "$CR_USER" > /root/genieacs-cr-user.txt; chmod 600 /root/genieacs-cr-user.txt; }
 [ -n "${CR_PASS:-}" ] && { echo "$CR_PASS" > /root/genieacs-cr-password.txt; chmod 600 /root/genieacs-cr-password.txt; }
 [ -f /root/genieacs-cr-user.txt ] || { echo indeso > /root/genieacs-cr-user.txt; chmod 600 /root/genieacs-cr-user.txt; }
