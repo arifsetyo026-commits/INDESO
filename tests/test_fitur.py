@@ -1403,3 +1403,37 @@ def test_keandalan_backup_harian_healthz_dan_bayar_ganda(siap):
     c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
     assert c.execute("SELECT tgl_bayar, metode_bayar FROM tagihan WHERE id=?", (tid,)).fetchone() == ("2026-10-05", "tunai")
     c.close()
+
+
+def test_tunggakan_dan_kwitansi(siap):
+    main, o, k, m = siap
+    for per in ("2026-08", "2026-09", "2026-10"):
+        assert o.post(f"/api/tagihan/buat?periode={per}").status_code == 200
+    t10 = {x["username"]: x for x in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]}
+    t08 = {x["username"]: x for x in o.get("/api/tagihan?periode=2026-08").json()["tagihan"]}
+    # ani bayar Agustus; budi bayar semuanya
+    o.post(f"/api/tagihan/{t08['ani']['id']}/lunas", json={"tanggal": "2026-08-03", "metode": "transfer"})
+    for per in ("2026-08", "2026-09", "2026-10"):
+        b = next(x for x in o.get(f"/api/tagihan?periode={per}").json()["tagihan"] if x["username"] == "budi")
+        o.post(f"/api/tagihan/{b['id']}/lunas", json={"tanggal": "2026-10-01", "metode": "tunai"})
+    d = k.get("/api/tagihan/tunggakan").json()
+    per = {g["username"]: g for g in d["pelanggan"]}
+    assert "budi" not in per and "server" not in per
+    assert per["ani"]["bulan"] == 2 and per["dwi"]["bulan"] == 3
+    assert per["dwi"]["total"] == sum(t["jumlah"] for t in per["dwi"]["tagihan"])
+    assert per["dwi"]["hari_telat"] >= per["ani"]["hari_telat"]          # umur dari jatuh tempo tertua
+    assert d["pelanggan"][0]["username"] == "dwi"                         # paling lama di atas
+    assert d["total"] == per["ani"]["total"] + per["dwi"]["total"]
+    assert sum(v["pelanggan"] for v in d["kelompok"].values()) == 2
+    assert m.get("/api/tagihan/tunggakan").status_code == 403             # mitra tidak boleh
+    # kwitansi: hanya untuk yang lunas
+    assert o.get(f"/api/tagihan/{t10['ani']['id']}/kwitansi").status_code == 400
+    kw = o.get(f"/api/tagihan/{t08['ani']['id']}/kwitansi").json()
+    assert kw["nomor"] == f"KW/202608/{t08['ani']['id']:05d}" and kw["metode_bayar"] == "transfer"
+    assert kw["sisa_bulan"] == 2 and kw["sisa_total"] == per["ani"]["total"]
+    h = o.get(f"/kwitansi/{t08['ani']['id']}")
+    assert h.status_code == 200 and "KWITANSI" in h.text and "Agustus 2026" in h.text and "LUNAS" in h.text
+    x = klien(main)
+    x.follow_redirects = False
+    assert x.get(f"/kwitansi/{t08['ani']['id']}").status_code == 303     # wajib login
+    assert m.get(f"/api/tagihan/{t08['ani']['id']}/kwitansi").status_code == 403

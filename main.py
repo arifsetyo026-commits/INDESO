@@ -159,6 +159,7 @@ CONFIG = {
     "BACKUP_KIRIM_TELEGRAM": True,      # kirim berkas backup ke Telegram (ke tujuan laporan owner bila diisi)
     "BACKUP_NOTA_TELEGRAM": True,       # backup mingguan ikut mengirim nota baru (ZIP)
     "BACKUP_NOTA_MAKS_MB": 45,          # batas per ZIP (batas Telegram 50 MB per berkas)
+    "NAMA_USAHA": _env("NAMA_USAHA", "Internet Desa"),   # dipakai di kwitansi
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     # Database (kecil) dikirim ke Telegram TIAP HARI tanpa bunyi notifikasi, supaya bila VPS
     # rusak data yang hilang paling lama 1 hari. Nota (besar) tetap mingguan.
@@ -3212,6 +3213,141 @@ def list_tagihan(periode: str):
         }
     finally:
         conn.close()
+
+
+def _kelompok_umur(hari_telat: int) -> str:
+    if hari_telat <= 0:
+        return "belum_jatuh_tempo"
+    return "1_30" if hari_telat <= 30 else ("31_60" if hari_telat <= 60 else "60_lebih")
+
+
+@app.get("/api/tagihan/tunggakan")
+def list_tunggakan():
+    """Semua tagihan belum lunas dari semua bulan, dikelompokkan per pelanggan, dengan
+    umur piutang dihitung dari jatuh tempo TERTUA (0 / 1–30 / 31–60 / >60 hari)."""
+    _siapkan_tabel_isolir()
+    hari_ini = datetime.now().date()
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT t.id, t.username, t.periode, t.jumlah, t.jatuh_tempo, p.nama, p.no_hp, p.status AS status_pelanggan, "
+            "k.nama AS paket, (i.username IS NOT NULL) AS isolir "
+            "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
+            "LEFT JOIN paket k ON k.id = p.paket_id LEFT JOIN isolir i ON i.username = t.username "
+            "WHERE t.status != 'lunas' ORDER BY t.username, t.periode"
+        ).fetchall()
+    finally:
+        conn.close()
+    per = {}
+    for r in rows:
+        telat = (hari_ini - datetime.strptime(r["jatuh_tempo"], "%Y-%m-%d").date()).days
+        g = per.setdefault(r["username"], {
+            "username": r["username"], "nama": r["nama"], "no_hp": r["no_hp"], "paket": r["paket"],
+            "status_pelanggan": r["status_pelanggan"], "isolir": bool(r["isolir"]), "tagihan": [],
+            "total": 0, "hari_telat": telat,
+        })
+        g["tagihan"].append({"id": r["id"], "periode": r["periode"], "jumlah": r["jumlah"],
+                             "jatuh_tempo": r["jatuh_tempo"], "hari_telat": telat})
+        g["total"] += r["jumlah"]
+        g["hari_telat"] = max(g["hari_telat"], telat)
+    daftar = sorted(per.values(), key=lambda g: (-g["hari_telat"], -g["total"], (g["nama"] or "").lower()))
+    ringkasan = {k: {"pelanggan": 0, "total": 0} for k in ("belum_jatuh_tempo", "1_30", "31_60", "60_lebih")}
+    for g in daftar:
+        g["bulan"] = len(g["tagihan"])
+        g["bulan_telat"] = sum(1 for t in g["tagihan"] if t["hari_telat"] > 0)
+        g["kelompok"] = _kelompok_umur(g["hari_telat"])
+        ringkasan[g["kelompok"]]["pelanggan"] += 1
+        ringkasan[g["kelompok"]]["total"] += g["total"]
+    return {
+        "per": hari_ini.isoformat(),
+        "jumlah_pelanggan": len(daftar),
+        "total": sum(g["total"] for g in daftar),
+        "total_telat": sum(t["jumlah"] for g in daftar for t in g["tagihan"] if t["hari_telat"] > 0),
+        "kelompok": ringkasan,
+        "pelanggan": daftar,
+    }
+
+
+def _data_kwitansi(tagihan_id: int) -> dict:
+    conn = _billing_conn()
+    try:
+        r = conn.execute(
+            "SELECT t.id, t.username, t.periode, t.jumlah, t.status, t.tgl_bayar, t.metode_bayar, t.lunas_oleh, "
+            "t.lunas_pada, p.nama, p.no_hp, p.alamat, k.nama AS paket "
+            "FROM tagihan t JOIN pelanggan p ON p.username = t.username LEFT JOIN paket k ON k.id = p.paket_id "
+            "WHERE t.id = ?", (tagihan_id,)
+        ).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Tagihan tidak ditemukan.")
+        if r["status"] != "lunas":
+            raise HTTPException(status_code=400, detail="Kwitansi hanya untuk tagihan yang sudah lunas.")
+        sisa = conn.execute("SELECT COUNT(*), COALESCE(SUM(jumlah), 0) FROM tagihan WHERE username = ? AND status != 'lunas'",
+                            (r["username"],)).fetchone()
+    finally:
+        conn.close()
+    d = dict(r)
+    d["nomor"] = f"KW/{r['periode'].replace('-', '')}/{r['id']:05d}"
+    d["nama_periode"] = _nama_periode(r["periode"])
+    d["sisa_bulan"], d["sisa_total"] = sisa[0], sisa[1]
+    return d
+
+
+@app.get("/api/tagihan/{tagihan_id}/kwitansi")
+def kwitansi_tagihan(tagihan_id: int):
+    """Data kwitansi untuk dikirim ke pelanggan lewat WA (teks disusun di browser)."""
+    return _data_kwitansi(tagihan_id)
+
+
+_METODE_LABEL = {"tunai": "Tunai", "transfer": "Transfer bank", "qris": "QRIS / e-wallet", "lainnya": "Lainnya"}
+
+
+def _tgl_indo(tgl: Optional[str]) -> str:
+    if not tgl:
+        return "-"
+    y, m, d = tgl[:10].split("-")
+    return f"{int(d)} {_BLN_PANJANG[int(m) - 1]} {y}"
+
+
+@app.get("/kwitansi/{tagihan_id}")
+def kwitansi_cetak(tagihan_id: int):
+    """Halaman kwitansi siap cetak / simpan PDF (ukuran setengah A4 / layar HP)."""
+    d = _data_kwitansi(tagihan_id)
+    e = _esc
+    sisa = (f'<p class="sisa">Masih ada tagihan belum lunas: {d["sisa_bulan"]} bulan, {e(_rp(d["sisa_total"]))}.</p>'
+            if d["sisa_bulan"] else "")
+    html = f"""<!doctype html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Kwitansi {e(d["nomor"])}</title>
+<style>
+body{{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#eef3ef;margin:0;padding:16px;color:#16241c}}
+.kw{{max-width:560px;margin:0 auto;background:#fff;border:1px solid #d6e3da;border-radius:12px;padding:22px 24px}}
+.kop{{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0b7a3b;padding-bottom:10px;margin-bottom:14px}}
+.kop h1{{font-size:20px;margin:0;color:#0b7a3b}} .kop small{{color:#5f7669}} .no{{text-align:right;font-size:13px}}
+table{{width:100%;border-collapse:collapse;font-size:14px}} td{{padding:6px 0;vertical-align:top}} td:first-child{{color:#5f7669;width:40%}}
+.jml{{font-size:24px;font-weight:800;margin:14px 0 4px}} .cap{{display:inline-block;border:2px solid #0b7a3b;color:#0b7a3b;
+border-radius:8px;padding:4px 12px;font-weight:800;letter-spacing:1px;transform:rotate(-4deg);margin-top:8px}}
+.sisa{{color:#b45309;font-size:13px}} .kaki{{margin-top:18px;font-size:12px;color:#5f7669}}
+.aksi{{max-width:560px;margin:12px auto 0;display:flex;gap:8px}} .aksi button{{flex:1;padding:10px;border-radius:9px;border:1px solid #0b7a3b;
+background:#0b7a3b;color:#fff;font-weight:700;font-size:14px}} .aksi button.l{{background:#fff;color:#0b7a3b}}
+@media print{{body{{background:#fff;padding:0}} .kw{{border:none}} .aksi{{display:none}}}}
+</style></head><body>
+<div class="kw">
+ <div class="kop"><div><h1>KWITANSI</h1><small>{e(CONFIG.get("NAMA_USAHA") or "Internet Desa")}</small></div>
+ <div class="no">No. <b>{e(d["nomor"])}</b><br>{e(_tgl_indo(d["tgl_bayar"]))}</div></div>
+ <table>
+  <tr><td>Telah diterima dari</td><td><b>{e(d["nama"])}</b><br><small>ID pelanggan: {e(d["username"])}</small></td></tr>
+  <tr><td>Untuk pembayaran</td><td>Langganan internet {e(d["nama_periode"])}{(" · paket " + e(d["paket"])) if d["paket"] else ""}</td></tr>
+  <tr><td>Tanggal bayar</td><td>{e(_tgl_indo(d["tgl_bayar"]))}</td></tr>
+  <tr><td>Metode</td><td>{e(_METODE_LABEL.get(d["metode_bayar"] or "", d["metode_bayar"] or "-"))}</td></tr>
+  <tr><td>Diterima oleh</td><td>{e(d["lunas_oleh"] or "-")}</td></tr>
+ </table>
+ <div class="jml">{e(_rp(d["jumlah"]))}</div>
+ <div class="cap">LUNAS</div>
+ {sisa}
+ <div class="kaki">Kwitansi ini dibuat oleh sistem dan sah tanpa tanda tangan. Simpan sebagai bukti pembayaran.</div>
+</div>
+<div class="aksi"><button onclick="window.print()">Cetak / Simpan PDF</button><button class="l" onclick="window.close()">Tutup</button></div>
+</body></html>"""
+    return Response(html, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
 
 
 def _info_tagihan(conn, tagihan_id: int):
