@@ -3795,6 +3795,59 @@ def keuangan_laporan(periode: str, request: Request):
     }
 
 
+@app.get("/api/keuangan/valuasi")
+def keuangan_valuasi(request: Request):
+    """Bahan estimasi valuasi usaha (khusus owner). Angka pengali dipilih di layar; server hanya
+    menyediakan data: posisi keuangan, pendapatan berulang (MRR) dari pelanggan aktif, dan
+    EBITDA rata-rata bulan lengkap terakhir (maks. 3 bulan)."""
+    _wajib_owner(request, "Valuasi hanya bisa dilihat owner.")
+    hari = datetime.now()
+    periode_ini = hari.strftime("%Y-%m")
+    conn = _billing_conn()
+    try:
+        posisi = _posisi_keuangan(conn, (hari + timedelta(days=1)).strftime("%Y-%m-%d"))
+        pel = conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(k.harga),0) AS mrr FROM pelanggan p JOIN paket k ON k.id = p.paket_id "
+            "WHERE p.status='aktif' AND p.gratis=0").fetchone()
+        n_gratis = conn.execute("SELECT COUNT(*) FROM pelanggan WHERE status='aktif' AND gratis=1").fetchone()[0]
+        mulai = [r[0] for r in (
+            conn.execute("SELECT MIN(substr(tgl_bayar,1,7)) FROM tagihan WHERE status='lunas'").fetchone(),
+            conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM transaksi WHERE status='aktif'").fetchone(),
+            conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM utang WHERE status='aktif'").fetchone()) if r[0]]
+        awal_data = min(mulai) if mulai else periode_ini
+        # Bulan lengkap terakhir (bulan berjalan belum selesai); bila belum ada, pakai bulan berjalan.
+        bulan = []
+        p = _geser_periode(periode_ini, -1)
+        while p >= awal_data and len(bulan) < 3:
+            bulan.append(p)
+            p = _geser_periode(p, -1)
+        if not bulan:
+            bulan = [periode_ini]
+        rinci = []
+        for per in reversed(bulan):
+            r = _ringkas_periode(conn, per)
+            bunga = sum(k["total"] for k in r["per_kategori"] if k["nama"] == _KAT_BUNGA and k["jenis"] == "keluar")
+            rinci.append({"periode": per, "pendapatan": r["pendapatan"], "beban": r["beban"], "laba": r["laba"],
+                          "penyusutan": r["penyusutan"], "bunga": bunga,
+                          "ebitda": r["laba"] + r["penyusutan"] + bunga})
+    finally:
+        conn.close()
+    n = len(rinci)
+    rata = {k: round(sum(x[k] for x in rinci) / n) for k in ("pendapatan", "laba", "ebitda")}
+    utang = posisi["kewajiban"].get("utang_usaha", 0) + posisi["kewajiban"].get("utang_pemilik", 0)
+    return {
+        "per": hari.strftime("%Y-%m-%d"), "mulai_usaha": awal_data,
+        "umur_bulan": max(1, _bulan_ke(periode_ini + "-01") - _bulan_ke(awal_data + "-01") + 1),
+        "nilai_buku": posisi["total_aset"] - sum(posisi["kewajiban"].values()),
+        "kas": posisi["aset"]["kas"], "aset_tetap_buku": posisi["nilai_buku_aset"], "utang": utang,
+        "neraca_seimbang": posisi["seimbang"],
+        "pelanggan_berbayar": pel["n"], "pelanggan_gratis": n_gratis, "mrr": pel["mrr"],
+        "arpu": round(pel["mrr"] / pel["n"]) if pel["n"] else 0, "arr": pel["mrr"] * 12,
+        "bulan_dihitung": rinci, "rata_bulanan": rata,
+        "ebitda_tahunan": rata["ebitda"] * 12,
+    }
+
+
 @app.get("/api/keuangan/keseluruhan")
 def keuangan_keseluruhan(request: Request):
     """Gambaran keuangan sejak data pertama tercatat sampai bulan ini."""

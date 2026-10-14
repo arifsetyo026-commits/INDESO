@@ -1355,3 +1355,14 @@ def test_dana_talangan_pemilik(siap):
     assert p["seimbang"] and p["kewajiban"]["utang_pemilik"] == 200_000 and p["ekuitas"]["modal_disetor"] == 1_000_000
     assert lap["arus_kas"]["cocok"] and lap["arus_kas"]["bersih"]["pendanaan"] == -400_000
     assert o.get("/api/keuangan/keseluruhan").json()["neraca"]["seimbang"]
+
+
+def test_valuasi(siap):
+    """Bahan valuasi: MRR dari pelanggan aktif berbayar, nilai buku dari neraca, EBITDA bulan lengkap."""
+    main, o, k, m = siap
+    assert k.get("/api/keuangan/valuasi").status_code == 403          # admin tidak boleh
+    v = o.get("/api/keuangan/valuasi").json()
+    assert v["pelanggan_berbayar"] >= 1 and v["mrr"] > 0 and v["arr"] == v["mrr"] * 12
+    assert v["arpu"] == round(v["mrr"] / v["pelanggan_berbayar"])
+    assert v["nilai_buku"] == v["kas"] + v["aset_tetap_buku"] - v["utang"]
+    assert len(v["bulan_dihitung"]) >= 1 and v["ebitda_tahunan"] == v["rata_bulanan"]["ebitda"] * 12

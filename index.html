@@ -266,11 +266,12 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="keuanganModal"><div class="modal kuModal"><div class="modalHead"><h3>Keuangan</h3><button class="close" onclick="closeModal('keuanganModal')">Tutup</button></div><div class="modalBody">
 <div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor Buku Kas (CSV)</a><button class="btnS" id="kuLapBtn" style="display:none" onclick="pratinjauLaporan()">Kirim Laporan (Telegram)</button></div>
 <div id="kuLap" class="kuPanel" style="display:none;margin-bottom:10px"><h4>Pratinjau laporan Telegram <span class="plSub" id="kuLapInfo"></span></h4><div id="kuLapTeks" style="white-space:pre-wrap;font-size:var(--fs-xs);line-height:1.55;max-height:340px;overflow:auto;background:#f7faf8;border-radius:9px;padding:10px"></div><div class="plBtns"><button class="plSave" onclick="kirimLaporan()">Kirim ke Telegram owner</button><button class="plCancel" onclick="$('kuLap').style.display='none'">Tutup</button></div></div>
-<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ikhtisar Bulanan</button><button data-t="laporan" onclick="tabKu('laporan')">Laporan Keuangan</button><button data-t="semua" onclick="tabKu('semua')">Ikhtisar Kumulatif</button><button data-t="transaksi" onclick="tabKu('transaksi')">Riwayat Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Liabilitas <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Komisi Mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Pencatatan Transaksi</button></div>
+<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ikhtisar Bulanan</button><button data-t="laporan" onclick="tabKu('laporan')">Laporan Keuangan</button><button data-t="valuasi" id="kuTabValuasi" onclick="tabKu('valuasi')" style="display:none">Valuasi</button><button data-t="semua" onclick="tabKu('semua')">Ikhtisar Kumulatif</button><button data-t="transaksi" onclick="tabKu('transaksi')">Riwayat Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Liabilitas <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Komisi Mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Pencatatan Transaksi</button></div>
 <div class="plMsg" id="kuMsg"></div>
 <div id="kuRingkasan"></div>
 <div id="kuSemua" style="display:none"></div>
 <div id="kuLaporan" style="display:none"></div>
+<div id="kuValuasi" style="display:none"></div>
 <input type="file" id="notaLangsung" accept="image/*,application/pdf" multiple style="display:none" onchange="unggahLangsung(this)">
 <div id="kuTransaksi" style="display:none">
  <div class="kuFilter">
@@ -1419,8 +1420,8 @@ function tabKu(t){
  ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuKelolaLink').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
- $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuLaporan').style.display=t==='laporan'?'block':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
- if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='laporan') muatLaporanKu(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit){ resetFormKu(); pulihkanDraftKu(); }
+ $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuLaporan').style.display=t==='laporan'?'block':'none'; $('kuValuasi').style.display=t==='valuasi'?'block':'none'; $('kuTabValuasi').style.display=saya.peran==='owner'?'':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
+ if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='laporan') muatLaporanKu(); else if(t==='valuasi') muatValuasi(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit){ resetFormKu(); pulihkanDraftKu(); }
 }
 // Rekonsiliasi kas bulan ini: awal + uang masuk − uang keluar (penyusutan tidak termasuk, bukan uang keluar)
 function rincianKas(d){
@@ -1587,7 +1588,7 @@ async function muatLaporanKu(){
   +AT.daftar.map(a=>`<tr><td>${esc(a.keterangan||a.kategori)}<div class="plSub">${esc(tglPanjang(a.tanggal))} · umur ${a.umur_bulan/12} th${a.sumber==='utang'?' · kredit':''} · susut ${rp(a.susut_per_bulan)}/bln · akumulasi ${rp(a.akumulasi)}</div></td><td>${rp(a.harga)}</td><td><b>${rp(a.nilai_buku)}</b></td></tr>`).join('')
   +`</tbody><tfoot><tr><th style="text-align:left;white-space:normal">Total <span class="plSub">akumulasi ${rp(AT.akumulasi)}</span></th><th>${rp(AT.harga_perolehan)}</th><th>${rp(AT.nilai_buku)}</th></tr></tfoot></table></div>`
   :'<div class="muted">Belum ada aset tetap. Pembelian OLT, router, ONU, kabel fiber, dan alat kerja dicatat dengan kategori "Aset: …" supaya tidak langsung menjadi beban.</div>')+'</div>';
- h+=`<div class="plSub lapCatatan" style="margin-top:10px"><b>Catatan kebijakan akuntansi.</b> Disusun mengikuti SAK EMKM secara sederhana. (1) Pendapatan langganan diakui saat dibayar (basis kas); piutang pelanggan ${rp(P.piutang_belum_diakui)} belum diakui. (2) Pembelian kredit diakui saat barang diterima; bunga angsuran dibebankan sesuai jatuh tempo. (3) Aset tetap disusutkan garis lurus mulai bulan perolehan: perangkat jaringan & peralatan 4 tahun, kabel & instalasi 8 tahun. (4) Setoran modal dan prive tidak memengaruhi laba.</div>`;
+ h+=`<div class="plSub" style="margin-top:10px"><b>Catatan kebijakan akuntansi.</b> Disusun mengikuti SAK EMKM secara sederhana. (1) Pendapatan langganan diakui saat dibayar (basis kas); piutang pelanggan ${rp(P.piutang_belum_diakui)} belum diakui. (2) Pembelian kredit diakui saat barang diterima; bunga angsuran dibebankan sesuai jatuh tempo. (3) Aset tetap disusutkan garis lurus mulai bulan perolehan: perangkat jaringan & peralatan 4 tahun, kabel & instalasi 8 tahun. (4) Setoran modal dan prive tidak memengaruhi laba.</div>`;
  el.innerHTML=h;
 }
 function panelKosongkan(){
@@ -1605,6 +1606,45 @@ async function kosongkanKeuangan(btn){
  try{ const d=await jsonAtauError(await fetch('/api/keuangan/kosongkan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('ksPass').value,konfirmasi:$('ksKonfirmasi').value,utang:$('ksUtang').checked,tutup_buku:$('ksTutup').checked})}));
   kuPesan(`Selesai: ${d.dihapus.transaksi} transaksi, ${d.dihapus.utang} liabilitas dihapus. Cadangan: ${d.cadangan}`,true); ku.trx=null; muatKeseluruhan();
  }catch(e){ kuPesan(e.message); btn.disabled=false; }
+}
+// ===== Valuasi (estimasi, khusus owner) =====
+const VAL_BAWAAN={arr:[1,1.5,2.5],ebitda:[3,4,5]};
+function pengaliVal(){ try{ const v=JSON.parse(localStorage.getItem('indesoPengali')||'null'); if(v&&v.arr&&v.ebitda) return v; }catch(e){} return JSON.parse(JSON.stringify(VAL_BAWAAN)); }
+async function muatValuasi(){
+ const el=$('kuValuasi'); el.innerHTML='<div class="muted">Menghitung…</div>';
+ try{ ku.val=await jsonAtauError(await fetch('/api/keuangan/valuasi',{cache:'no-store'})); }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
+ gambarValuasi();
+}
+function ubahPengali(jenis,i,v){ const P=pengaliVal(); const n=parseFloat(String(v).replace(',','.')); if(!(n>=0)) return; P[jenis][i]=n;
+ try{ localStorage.setItem('indesoPengali',JSON.stringify(P)); }catch(e){} gambarValuasi(); }
+function gambarValuasi(){
+ const d=ku.val, P=pengaliVal(), el=$('kuValuasi'); if(!d) return;
+ const ekuitas=ev=>ev+d.kas-d.utang;         // nilai usaha (EV) -> nilai bagi pemilik
+ const arr=P.arr.map(k=>ekuitas(d.arr*k)), ebitdaOk=d.ebitda_tahunan>0, ebt=P.ebitda.map(k=>ekuitas(d.ebitda_tahunan*k));
+ const valid=[arr].concat(ebitdaOk?[ebt]:[]);
+ const rendah=Math.max(d.nilai_buku,Math.min(...valid.map(x=>x[0]))), tinggi=Math.max(...valid.map(x=>x[2]),d.nilai_buku);
+ const inp=(j,i)=>`<input inputmode="decimal" value="${String(P[j][i]).replace('.',',')}" onchange="ubahPengali('${j}',${i},this.value)" style="width:52px;border:1px solid var(--line);border-radius:7px;padding:3px 5px;text-align:right"> ×`;
+ let h=`<div class="kuPanel" style="margin-bottom:10px;border-color:#bfe6cb;background:#f3faf5"><h4>Estimasi nilai usaha (indikatif)</h4>
+  <div style="font-size:var(--fs-2xl);font-weight:800;color:${tinggi<0?'#b42318':'#067d40'};line-height:1.2">${rendah===tinggi?rp(rendah):rp(rendah)+' – '+rp(tinggi)}</div>
+  <div class="plSub">Per ${esc(tglPanjang(d.per))} · usaha berjalan ${d.umur_bulan} bulan. Batas bawah tidak di bawah nilai buku; batas atas dari metode yang paling tinggi. Ini perkiraan untuk bahan negosiasi/perencanaan, <b>bukan penilaian resmi</b> (appraisal).</div></div>`;
+ h+='<div class="kuKpi">'+kotakKu('Pelanggan berbayar',String(d.pelanggan_berbayar),d.pelanggan_gratis?d.pelanggan_gratis+' gratis tidak dihitung':'')
+  +kotakKu('Pendapatan berulang / bulan (MRR)',rp(d.mrr),'ARPU '+rp(d.arpu)+' per pelanggan')
+  +kotakKu('Setahun (ARR)',rp(d.arr),'MRR × 12')
+  +kotakKu('Nilai buku (ekuitas)',rp(d.nilai_buku),'aset − liabilitas',d.nilai_buku<0?'#b42318':'')+'</div>';
+ const sel=x=>`<div style="text-align:right;font-weight:700">${typeof x==='number'?`<span class="${x<0?'turun':''}">${rp(x)}</span>`:x}</div>`;
+ const metode=(nama,ket,v,pg)=>`<div style="border-top:1px solid #eef3ef;padding:10px 0"><div style="font-weight:800">${nama}</div><div class="plSub">${ket}</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:6px;font-size:var(--fs-xs)">${['Rendah','Tengah','Tinggi'].map(t=>`<div class="muted" style="text-align:right">${t}</div>`).join('')}${pg?pg.map(x=>`<div style="text-align:right">${x}</div>`).join(''):''}${v.map(sel).join('')}</div></div>`;
+ h+='<div class="kuPanel"><h4>Perhitungan per metode</h4><div class="plSub">Nilai bagi pemilik = nilai usaha + kas − liabilitas. Kotak pengali bisa diubah.</div>'
+  +metode('1. Nilai buku','kas + aset tetap bersih − liabilitas',[d.nilai_buku,d.nilai_buku,d.nilai_buku])
+  +metode('2. Kelipatan pendapatan berulang','ARR '+rp(d.arr)+' × pengali · lazim untuk ISP & bisnis langganan',arr,[inp('arr',0),inp('arr',1),inp('arr',2)])
+  +metode('3. Kelipatan EBITDA','EBITDA disetahunkan '+rp(d.ebitda_tahunan)+' (laba + penyusutan + bunga) × pengali',ebitdaOk?ebt:['<span class="muted">EBITDA minus</span>','—','—'],[inp('ebitda',0),inp('ebitda',1),inp('ebitda',2)])
+  +(ebitdaOk?'':'<div class="plSub">Metode 3 belum bisa dipakai karena usaha belum menghasilkan laba operasional. Wajar untuk usaha baru; metode ini terisi otomatis begitu EBITDA positif.</div>')
+  +`<div class="plSub" style="margin-top:6px">Kas ${rp(d.kas)} · liabilitas (utang usaha + utang kepada pemilik) ${rp(d.utang)}${d.neraca_seimbang?'':' · <b style="color:#b42318">neraca belum seimbang, rapikan catatan dulu</b>'}. Pengali tersimpan di perangkat ini.</div></div>`;
+ h+='<div class="kuPanel" style="margin-top:12px"><h4>Kinerja yang dipakai <span class="plSub">('+d.bulan_dihitung.length+' bulan lengkap terakhir)</span></h4><div style="overflow-x:auto"><table class="kuTbl"><thead><tr><th>Bulan</th><th>Pendapatan</th><th>Laba</th><th>EBITDA</th></tr></thead><tbody>'
+  +d.bulan_dihitung.map(b=>`<tr><td>${esc(namaPeriode(b.periode))}</td><td>${rp(b.pendapatan)}</td><td class="${b.laba<0?'turun':''}">${rp(b.laba)}</td><td class="${b.ebitda<0?'turun':''}">${rp(b.ebitda)}</td></tr>`).join('')
+  +`</tbody><tfoot><tr><th>Rata-rata/bulan</th><th>${rp(d.rata_bulanan.pendapatan)}</th><th>${rp(d.rata_bulanan.laba)}</th><th>${rp(d.rata_bulanan.ebitda)}</th></tr></tfoot></table></div></div>`;
+ h+=`<div class="plSub" style="margin-top:10px"><b>Cara membaca.</b> Pengali bawaan (pendapatan berulang 1–2,5×, EBITDA 3–5×) adalah kisaran umum untuk usaha jasa kecil, bukan patokan pasti. Nilai cenderung <b>naik</b> bila pelanggan bertambah stabil, tingkat penagihan tinggi, pelanggan jarang berhenti, jaringan & perangkat terdokumentasi, dan catatan keuangan rapi beberapa bulan berturut-turut. Nilai cenderung <b>turun</b> bila usaha bergantung pada satu orang, banyak tunggakan, atau perangkat milik pihak lain. Untuk jual-beli atau investor, minta penilai independen.</div>`;
+ el.innerHTML=h;
 }
 function setKuJenis(j){ ku.jenis=j; muatTransaksi(); }
 function setKuRentang(r){ ku.rentang=r; muatTransaksi(); }
