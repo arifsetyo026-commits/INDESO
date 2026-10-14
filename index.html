@@ -1589,7 +1589,8 @@ async function muatRingkasanKu(){
  const ins=d.insentif_mitra, sisaIns=Math.max(0,ins.terhitung-ins.dibayar);
  const tb=d.tutup_buku, owner=saya.peran==='owner', bisaTutup=ku.periode<=kuPeriodeIni();
  let h=`<div class="kuPanel" style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;${tb?'background:#f3faf5;border-color:#bfe6cb':''}"><div><b style="font-size:var(--fs-sm)">${tb?'🔒 Buku '+esc(namaPeriode(ku.periode))+' sudah ditutup':'Buku '+esc(namaPeriode(ku.periode))+' masih terbuka'}</b><div class="plSub">${tb?'oleh '+esc(tb.oleh)+' · '+esc(khWaktu(tb.pada))+(tb.catatan?' · '+esc(tb.catatan):'')+' — transaksi bertanggal bulan ini tidak bisa ditambah, diubah, atau dihapus.':'Setelah semua transaksi bulan ini diperiksa, owner menutup buku supaya laporannya tidak berubah lagi.'}</div></div>${owner?(tb?`<button class="btnS" onclick="bukaBuku()">Buka kembali</button>`:(bisaTutup?`<button class="btnS go" onclick="tutupBuku()">Tutup buku</button>`:'')):''}</div>`;
- if(d.kas_negatif){ const T=d.kas_terendah||{}, kurang=Math.max(-(T.saldo||0),-d.saldo_akhir,0);
+ // Selama buku terbuka tidak ditampilkan (sering hanya pemasukan yang belum dicatat); diperiksa saat tutup buku.
+ if(d.kas_negatif&&tb){ const T=d.kas_terendah||{}, kurang=Math.max(-(T.saldo||0),-d.saldo_akhir,0);
   h+='<div class="kuPanel" style="margin-bottom:10px;border-color:#f3b4ab;background:#fff6f5"><b style="color:#b42318;font-size:var(--fs-sm)">⚠ Saldo kas sempat minus '+(T.tanggal&&T.saldo<0?rp(-T.saldo)+' pada '+esc(tglPanjang(T.tanggal)):rp(-d.saldo_akhir)+' di akhir bulan')+'</b>'
    +'<div class="plSub">Uang tidak mungkin minus, berarti ada uang masuk yang belum dicatat. Bila saat itu memakai <b>uang pribadi</b> untuk membayar keperluan usaha, catat <b>Penerimaan Kas → "Dana talangan pemilik (pinjaman)"</b> minimal '+rp(kurang)+(T.tanggal?' bertanggal '+esc(tglPanjang(T.tanggal))+' atau sebelumnya':'')+'. Saat usaha mengembalikannya, catat <b>Pengeluaran Kas → "Pengembalian dana talangan pemilik"</b>. Kemungkinan lain: penerimaan yang belum dicatat atau pengeluaran tercatat ganda.</div>'
    +(owner&&ku.periode<kuPeriodeIni()?`<div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="abaikanKasMinus('${ku.periode}')">Abaikan peringatan s/d ${esc(namaPeriode(ku.periode))}</button></div>`:'')+'</div>'; }
@@ -1631,7 +1632,9 @@ async function muatRingkasanKu(){
 }
 async function tutupBuku(){
  const d=ku.data, tn=d.tanpa_nota;
- const cek=[ (tn&&tn.jumlah?'• '+tn.jumlah+' pengeluaran besar belum ada nota':'• Nota lengkap'), (d.kas_negatif?'• SALDO KAS NEGATIF — periksa dulu':'• Saldo kas akhir '+rp(d.saldo_akhir)), '• Laba '+rp(d.laba) ].join('\n');
+ const T=d.kas_terendah||{}, kurang=Math.max(-(T.saldo||0),-d.saldo_akhir,0);
+ const cekKas=d.kas_negatif?'• ⚠ SALDO KAS SEMPAT MINUS '+rp(kurang)+(T.tanggal&&T.saldo<0?' pada '+tglPanjang(T.tanggal):'')+'.\n   Bila memakai uang pribadi, batalkan dulu lalu catat Penerimaan Kas → "Dana talangan pemilik (pinjaman)" minimal '+rp(kurang)+'.':'• Saldo kas akhir '+rp(d.saldo_akhir);
+ const cek=[ (tn&&tn.jumlah?'• '+tn.jumlah+' pengeluaran besar belum ada nota':'• Nota lengkap'), cekKas, '• Laba '+rp(d.laba) ].join('\n');
  const catatan=prompt('Tutup buku '+namaPeriode(ku.periode)+'?\n\n'+cek+'\n\nSetelah ditutup, transaksi bertanggal bulan ini tidak bisa ditambah/diubah/dihapus sampai owner membukanya kembali.\nCatatan (opsional):','');
  if(catatan==null) return;
  try{ await jsonAtauError(await fetch('/api/keuangan/tutup-buku/'+ku.periode,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({catatan})})); kuPesan('Buku '+namaPeriode(ku.periode)+' ditutup.',true); muatRingkasanKu(); }

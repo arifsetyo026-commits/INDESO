@@ -4225,9 +4225,16 @@ def keuangan_keseluruhan(request: Request):
     try:
         abaikan = _kas_minus_diabaikan(conn)
         conn.commit()
+        try:
+            tertutup = {r[0] for r in conn.execute("SELECT periode FROM tutup_buku").fetchall()}
+        except sqlite3.OperationalError:
+            tertutup = set()
     finally:
         conn.close()
-    minus = [b["periode"] for b in bulanan if b["saldo_akhir"] < 0 and not (abaikan and b["periode"] <= abaikan)]
+    # Selama buku masih terbuka, kas minus sering hanya karena pemasukan belum dicatat; peringatan
+    # baru ditampilkan untuk bulan yang bukunya sudah ditutup (saat tutup buku sudah diingatkan).
+    minus = [b["periode"] for b in bulanan if b["saldo_akhir"] < 0 and b["periode"] in tertutup
+             and not (abaikan and b["periode"] <= abaikan)]
     if minus:
         peringatan.append(f"Saldo kas tercatat negatif pada {', '.join(_nama_periode(p) for p in minus[:6])}"
                           f"{' dan bulan lain' if len(minus) > 6 else ''}. Uang tidak mungkin minus — kemungkinan ada "

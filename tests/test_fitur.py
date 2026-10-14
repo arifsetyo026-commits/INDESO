@@ -1472,8 +1472,11 @@ def test_abaikan_peringatan_kas_minus(siap):
     kat = _kat(o)
     assert k.post("/api/keuangan/transaksi", json={"tanggal": "2026-08-05", "jenis": "keluar",
                                                      "kategori_id": kat["Beban bandwidth (upstream)"], "jumlah": 500_000}).status_code == 200
-    assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]
-    assert any("negatif" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]       # untuk cek saat tutup buku
+    # buku masih terbuka: belum diperingatkan di ikhtisar kumulatif
+    assert not any("negatif" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
+    assert o.post("/api/keuangan/tutup-buku/2026-08", json={"catatan": ""}).status_code == 200
+    assert any("Agustus 2026" in p for p in o.get("/api/keuangan/keseluruhan").json()["peringatan"])
     assert k.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2026-08"}).status_code == 403   # hanya owner
     assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2999-01"}).status_code == 400
     assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": "2026-08"}).status_code == 200
