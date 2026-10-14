@@ -3251,6 +3251,10 @@ _KAT_BAYAR_UTANG = "Pelunasan liabilitas"
 _KAT_INSENTIF = "Beban komisi mitra"  # dibayar lewat tab Komisi Mitra, terikat ke periode
 _KAT_BUNGA = "Beban bunga & biaya angsuran"  # selisih total cicilan dengan harga barang
 _KAT_PENYUSUTAN = "Beban penyusutan aset tetap"
+# Dana talangan pemilik: uang pribadi pemilik yang dipinjamkan ke usaha dan nanti dikembalikan.
+# Bukan pendapatan dan bukan modal — dicatat sebagai utang usaha kepada pemilik.
+_KAT_TALANGAN_MASUK = "Dana talangan pemilik (pinjaman)"
+_KAT_TALANGAN_KEMBALI = "Pengembalian dana talangan pemilik"
 # Aset tetap (SAK EMKM): dicatat sebagai aset, lalu dibebankan bertahap lewat penyusutan
 # garis lurus. Umur manfaat mengikuti kelompok harta pajak (PMK 72/2023): kelompok 1 = 4 tahun,
 # kelompok 2 = 8 tahun.
@@ -3394,6 +3398,8 @@ def init_keuangan_db() -> None:
         """)
         conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 1)",
                      (_KAT_BUNGA,))
+        conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'masuk', 0)", (_KAT_TALANGAN_MASUK,))
+        conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 0)", (_KAT_TALANGAN_KEMBALI,))
         # Aset tetap: umur_bulan terisi = pembelian dicatat sebagai aset, disusutkan per bulan.
         if "umur_bulan" not in [r[1] for r in conn.execute("PRAGMA table_info(kategori_kas)")]:
             conn.execute("ALTER TABLE kategori_kas ADD COLUMN umur_bulan INTEGER")
@@ -3541,8 +3547,11 @@ def _ringkas_antara(conn, awal: str, akhir: str, periode: Optional[str] = None) 
     masuk_ops = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and r["pengaruh_laba"])
     keluar_tunai = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["pengaruh_laba"] and not aset(r))
     beli_aset_tunai = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and aset(r))
-    masuk_lain = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and not r["pengaruh_laba"])
-    prive = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and not r["pengaruh_laba"] and not r["khusus"] and not aset(r))
+    talangan_masuk = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and r["nama"] == _KAT_TALANGAN_MASUK)
+    talangan_kembali = sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and r["nama"] == _KAT_TALANGAN_KEMBALI)
+    masuk_lain = sum(r["total"] for r in per_kat if r["jenis"] == "masuk" and not r["pengaruh_laba"]) - talangan_masuk
+    prive = (sum(r["total"] for r in per_kat if r["jenis"] == "keluar" and not r["pengaruh_laba"] and not r["khusus"] and not aset(r))
+             - talangan_kembali)
     bayar_utang = sum(r["total"] for r in per_kat if r["khusus"])
     beban_kredit = sum(r["total"] for r in kredit.values() if not aset(r))
     beli_aset_kredit = sum(r["total"] for r in kredit.values() if aset(r))
@@ -3575,7 +3584,9 @@ def _ringkas_antara(conn, awal: str, akhir: str, periode: Optional[str] = None) 
         "beli_aset": beli_aset_tunai + beli_aset_kredit, "beli_aset_tunai": beli_aset_tunai,
         "beli_aset_kredit": beli_aset_kredit,
         "modal_masuk": masuk_lain, "prive": prive, "bayar_utang": bayar_utang,
-        "arus_kas": pendapatan + masuk_lain - keluar_tunai - beli_aset_tunai - prive - bayar_utang,
+        "talangan_masuk": talangan_masuk, "talangan_kembali": talangan_kembali,
+        "arus_kas": (pendapatan + masuk_lain + talangan_masuk - keluar_tunai - beli_aset_tunai - prive - bayar_utang
+                     - talangan_kembali),
         "per_kategori": sorted(gabung.values(), key=lambda g: -g["total"]),
     }
 
@@ -3588,6 +3599,24 @@ def _saldo_kas_sampai(conn, tanggal_eksklusif: str) -> int:
     keluar = conn.execute("SELECT COALESCE(SUM(jumlah),0) FROM transaksi WHERE status='aktif' AND jenis='keluar' AND tanggal < ?",
                           (tanggal_eksklusif,)).fetchone()[0]
     return lunas + masuk - keluar
+
+
+def _kas_terendah(conn, awal: str, akhir: str, saldo_awal: int) -> dict:
+    """Saldo kas terendah di akhir hari selama [awal, akhir): menunjukkan kapan kas sempat minus
+    (biasanya karena ada uang pribadi pemilik yang terpakai tapi belum dicatat)."""
+    harian: dict = {}
+    for tgl, n in conn.execute("SELECT substr(tgl_bayar,1,10), SUM(jumlah) FROM tagihan WHERE status='lunas' "
+                               "AND tgl_bayar >= ? AND tgl_bayar < ? GROUP BY 1", (awal, akhir)):
+        harian[tgl] = harian.get(tgl, 0) + n
+    for tgl, n in conn.execute("SELECT tanggal, SUM(CASE WHEN jenis='masuk' THEN jumlah ELSE -jumlah END) FROM transaksi "
+                               "WHERE status='aktif' AND tanggal >= ? AND tanggal < ? GROUP BY 1", (awal, akhir)):
+        harian[tgl] = harian.get(tgl, 0) + n
+    saldo, terendah = saldo_awal, {"tanggal": None, "saldo": saldo_awal}
+    for tgl in sorted(harian):
+        saldo += harian[tgl]
+        if saldo < terendah["saldo"]:
+            terendah = {"tanggal": tgl, "saldo": saldo}
+    return terendah
 
 
 def _geser_periode(periode: str, n: int) -> str:
@@ -3613,6 +3642,9 @@ def keuangan_ringkasan(periode: str, request: Request):
             tren.append({k: r[k] for k in ("periode", "pendapatan", "beban", "laba")})
         saldo_awal = _saldo_kas_sampai(conn, awal)
         saldo_akhir = _saldo_kas_sampai(conn, akhir)
+        kas_terendah = _kas_terendah(conn, awal, akhir, saldo_awal)
+        kum = _ringkas_antara(conn, "0000-01-01", akhir)
+        talangan_sisa = kum["talangan_masuk"] - kum["talangan_kembali"]
         piutang_periode = conn.execute(
             "SELECT COALESCE(SUM(jumlah),0), COUNT(*) FROM tagihan WHERE periode = ? AND status='belum'", (periode,)
         ).fetchone()
@@ -3644,7 +3676,8 @@ def keuangan_ringkasan(periode: str, request: Request):
     return {
         **ini,
         "tutup_buku": dict(tb) if tb else None,
-        "kas_negatif": saldo_akhir < 0,
+        "kas_negatif": saldo_akhir < 0 or kas_terendah["saldo"] < 0,
+        "kas_terendah": kas_terendah, "talangan_sisa": talangan_sisa,
         "bulan_lalu": {k: lalu[k] for k in ("pendapatan", "beban", "laba")},
         "tren": tren,
         "saldo_awal": saldo_awal, "saldo_akhir": saldo_akhir,
@@ -3686,7 +3719,10 @@ def _posisi_keuangan(conn, akhir: str) -> dict:
     utang = _sisa_utang_per(conn, akhir)
     aset = {"kas": kas, "aset_tetap": at["harga_perolehan"], "akumulasi_penyusutan": -at["akumulasi"],
             "bunga_dibayar_dimuka": max(0, -utang)}
-    kewajiban = {"utang_usaha": max(0, utang)}
+    talangan = kum["talangan_masuk"] - kum["talangan_kembali"]
+    kewajiban = {"utang_usaha": max(0, utang), "utang_pemilik": max(0, talangan)}
+    if talangan < 0:                       # dikembalikan melebihi talangan: kelebihannya piutang kepada pemilik
+        aset["piutang_pemilik"] = -talangan
     ekuitas = {"modal_disetor": kum["modal_masuk"], "prive": -kum["prive"], "laba_ditahan": kum["laba"]}
     total_aset, total_pasiva = sum(aset.values()), sum(kewajiban.values()) + sum(ekuitas.values())
     piutang = conn.execute("SELECT COALESCE(SUM(t.jumlah),0) FROM tagihan t JOIN pelanggan p ON p.username=t.username "
@@ -3738,6 +3774,9 @@ def keuangan_laporan(periode: str, request: Request):
                  {"nama": "Pembayaran liabilitas pembelian aset", "jumlah": -bayar_aset}]
     pendanaan = [{"nama": "Setoran modal pemilik", "jumlah": r["modal_masuk"]},
                  {"nama": "Pengambilan pribadi pemilik (prive)", "jumlah": -r["prive"]}]
+    if r["talangan_masuk"] or r["talangan_kembali"]:
+        pendanaan += [{"nama": "Dana talangan dari pemilik", "jumlah": r["talangan_masuk"]},
+                      {"nama": "Pengembalian dana talangan pemilik", "jumlah": -r["talangan_kembali"]}]
     bersih = {k: sum(x["jumlah"] for x in L) for k, L in (("operasi", operasi), ("investasi", investasi), ("pendanaan", pendanaan))}
     return {
         "periode": periode, "nama": nama, "awal": awal,
@@ -3753,6 +3792,59 @@ def keuangan_laporan(periode: str, request: Request):
         "posisi": posisi,
         "aset_tetap": aset_tetap,
         "pembelian_aset": r["beli_aset"],
+    }
+
+
+@app.get("/api/keuangan/valuasi")
+def keuangan_valuasi(request: Request):
+    """Bahan estimasi valuasi usaha (khusus owner). Angka pengali dipilih di layar; server hanya
+    menyediakan data: posisi keuangan, pendapatan berulang (MRR) dari pelanggan aktif, dan
+    EBITDA rata-rata bulan lengkap terakhir (maks. 3 bulan)."""
+    _wajib_owner(request, "Valuasi hanya bisa dilihat owner.")
+    hari = datetime.now()
+    periode_ini = hari.strftime("%Y-%m")
+    conn = _billing_conn()
+    try:
+        posisi = _posisi_keuangan(conn, (hari + timedelta(days=1)).strftime("%Y-%m-%d"))
+        pel = conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(k.harga),0) AS mrr FROM pelanggan p JOIN paket k ON k.id = p.paket_id "
+            "WHERE p.status='aktif' AND p.gratis=0").fetchone()
+        n_gratis = conn.execute("SELECT COUNT(*) FROM pelanggan WHERE status='aktif' AND gratis=1").fetchone()[0]
+        mulai = [r[0] for r in (
+            conn.execute("SELECT MIN(substr(tgl_bayar,1,7)) FROM tagihan WHERE status='lunas'").fetchone(),
+            conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM transaksi WHERE status='aktif'").fetchone(),
+            conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM utang WHERE status='aktif'").fetchone()) if r[0]]
+        awal_data = min(mulai) if mulai else periode_ini
+        # Bulan lengkap terakhir (bulan berjalan belum selesai); bila belum ada, pakai bulan berjalan.
+        bulan = []
+        p = _geser_periode(periode_ini, -1)
+        while p >= awal_data and len(bulan) < 3:
+            bulan.append(p)
+            p = _geser_periode(p, -1)
+        if not bulan:
+            bulan = [periode_ini]
+        rinci = []
+        for per in reversed(bulan):
+            r = _ringkas_periode(conn, per)
+            bunga = sum(k["total"] for k in r["per_kategori"] if k["nama"] == _KAT_BUNGA and k["jenis"] == "keluar")
+            rinci.append({"periode": per, "pendapatan": r["pendapatan"], "beban": r["beban"], "laba": r["laba"],
+                          "penyusutan": r["penyusutan"], "bunga": bunga,
+                          "ebitda": r["laba"] + r["penyusutan"] + bunga})
+    finally:
+        conn.close()
+    n = len(rinci)
+    rata = {k: round(sum(x[k] for x in rinci) / n) for k in ("pendapatan", "laba", "ebitda")}
+    utang = posisi["kewajiban"].get("utang_usaha", 0) + posisi["kewajiban"].get("utang_pemilik", 0)
+    return {
+        "per": hari.strftime("%Y-%m-%d"), "mulai_usaha": awal_data,
+        "umur_bulan": max(1, _bulan_ke(periode_ini + "-01") - _bulan_ke(awal_data + "-01") + 1),
+        "nilai_buku": posisi["total_aset"] - sum(posisi["kewajiban"].values()),
+        "kas": posisi["aset"]["kas"], "aset_tetap_buku": posisi["nilai_buku_aset"], "utang": utang,
+        "neraca_seimbang": posisi["seimbang"],
+        "pelanggan_berbayar": pel["n"], "pelanggan_gratis": n_gratis, "mrr": pel["mrr"],
+        "arpu": round(pel["mrr"] / pel["n"]) if pel["n"] else 0, "arr": pel["mrr"] * 12,
+        "bulan_dihitung": rinci, "rata_bulanan": rata,
+        "ebitda_tahunan": rata["ebitda"] * 12,
     }
 
 
@@ -3870,7 +3962,7 @@ class KategoriIn(BaseModel):
 
 def _nama_kategori_bawaan() -> set:
     return ({n for n, _j, _l in _KATEGORI_AWAL} | {n for n, _u in _KAT_ASET_AWAL}
-            | {_KAT_BAYAR_UTANG, _KAT_INSENTIF, _KAT_BUNGA})
+            | {_KAT_BAYAR_UTANG, _KAT_INSENTIF, _KAT_BUNGA, _KAT_TALANGAN_MASUK, _KAT_TALANGAN_KEMBALI})
 
 
 @app.post("/api/keuangan/kategori")
@@ -4965,11 +5057,19 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
 
 
 @app.get("/api/keuangan/transaksi")
-def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: Optional[int] = None,
-                  cari: str = "", batal: bool = False, urut: str = "tanggal"):
+def keuangan_list(request: Request, periode: str = "semua", jenis: str = "", kategori_id: Optional[int] = None,
+                  cari: str = "", batal: bool = False, urut: str = "tanggal", dari: str = "", sampai: str = "",
+                  metode: str = ""):
+    """Riwayat transaksi. dari/sampai (YYYY-MM-DD, inklusif) mempersempit periode; metode = tunai/
+    transfer/qris/lainnya/kredit/langganan; urut = tanggal (terbaru dulu) | lama | dicatat."""
     _wajib_admin(request)
     if periode != "semua" and not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM atau 'semua'.")
+    for t in (dari, sampai):
+        if t and not _tanggal_valid(t):
+            raise HTTPException(status_code=400, detail="Format tanggal harus YYYY-MM-DD.")
+    if dari and sampai and dari > sampai:
+        dari, sampai = sampai, dari
     awal, akhir = _batas_periode(periode)
     conn = _billing_conn()
     try:
@@ -4985,14 +5085,14 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
         q = f"%{cari.strip()}%"
         if jenis in ("", "masuk", "langganan") and not kategori_id and not batal:
             for r in conn.execute(
-                    "SELECT t.id, t.tgl_bayar, t.periode, t.jumlah, t.username, p.nama FROM tagihan t "
+                    "SELECT t.id, t.tgl_bayar, t.periode, t.jumlah, t.username, t.metode_bayar, p.nama FROM tagihan t "
                     "LEFT JOIN pelanggan p ON p.username = t.username "
                     "WHERE t.status='lunas' AND t.tgl_bayar >= ? AND t.tgl_bayar < ? "
                     "AND (? = '%%' OR t.username LIKE ? OR p.nama LIKE ? OR 'pembayaran langganan' LIKE ?)",
                     (awal, akhir, q, q, q, q.lower())):
                 daftar.append({"id": r["id"], "sumber": "langganan", "tanggal": r["tgl_bayar"][:10], "jenis": "masuk",
                                "kategori": "Pembayaran langganan", "pengaruh_laba": 1, "jumlah": r["jumlah"],
-                               "metode": "langganan", "status": "aktif", "username": r["username"],
+                               "metode": r["metode_bayar"] or "tunai", "status": "aktif", "username": r["username"],
                                "keterangan": f"{r['nama'] or r['username']} ({r['username']}) · tagihan {_nama_periode(r['periode'])}",
                                "dicatat_oleh": "Billing", "dicatat_pada": r["tgl_bayar"], "nota": []})
         if jenis in ("", "keluar", "kredit") and not batal:
@@ -5019,11 +5119,17 @@ def keuangan_list(periode: str, request: Request, jenis: str = "", kategori_id: 
                                "dicatat_pada": r["dicatat_pada"], "nota": nota_u.get(r["id"], [])})
     finally:
         conn.close()
+    if dari:
+        daftar = [t for t in daftar if t["tanggal"] >= dari]
+    if sampai:
+        daftar = [t for t in daftar if t["tanggal"] <= sampai]
+    if metode:
+        daftar = [t for t in daftar if (t.get("metode") or "") == metode]
     if urut == "dicatat":
         # Urut menurut waktu dicatat: yang baru diinput (berapa pun tanggal transaksinya) di atas.
         daftar.sort(key=lambda t: (t.get("dicatat_pada") or "", t["id"]), reverse=True)
     else:
-        daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=True)
+        daftar.sort(key=lambda t: (t["tanggal"], t.get("dicatat_pada") or ""), reverse=(urut != "lama"))
     aktif = [t for t in daftar if t["status"] == "aktif"]
     tunai = [t for t in aktif if t["sumber"] != "kredit"]
     return {

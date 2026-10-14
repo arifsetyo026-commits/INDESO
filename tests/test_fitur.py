@@ -1304,3 +1304,65 @@ def test_transaksi_kembar_ditolak(siap):
     assert o.post("/api/keuangan/transaksi", json=body).status_code == 200                        # beda pencatat: boleh
     n = len([t for t in o.get("/api/keuangan/transaksi?periode=2026-10").json()["transaksi"] if t["sumber"] == "manual"])
     assert n == 3
+
+
+def test_riwayat_transaksi_filter(siap):
+    """Riwayat transaksi: rentang tanggal, metode, kategori, dan urutan terlama/terbaru."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    for tgl, jml, met in [("2026-08-02", 10_000, "tunai"), ("2026-09-15", 20_000, "transfer"), ("2026-10-01", 30_000, "tunai"),
+                          ("2026-10-09", 40_000, "qris")]:
+        assert k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": "keluar", "kategori_id": kat["Beban listrik"],
+                                                       "jumlah": jml, "metode": met}).status_code == 200
+    k.post("/api/keuangan/transaksi", json={"tanggal": "2026-09-20", "jenis": "keluar", "kategori_id": kat["Beban gaji & upah"],
+                                            "jumlah": 99_000})
+    jml = lambda **q: [t["jumlah"] for t in o.get("/api/keuangan/transaksi", params=q).json()["transaksi"] if t["sumber"] == "manual"]
+    assert jml() == [40_000, 30_000, 99_000, 20_000, 10_000]                       # bawaan: semua waktu, terbaru dulu
+    assert jml(urut="lama") == [10_000, 20_000, 99_000, 30_000, 40_000]
+    assert jml(dari="2026-09-01", sampai="2026-10-01") == [30_000, 99_000, 20_000]
+    assert jml(sampai="2026-09-30", dari="2026-09-16") == [99_000]
+    assert jml(metode="tunai") == [30_000, 99_000, 10_000]          # 99.000: metode bawaan tunai
+    assert jml(kategori_id=kat["Beban listrik"], metode="qris") == [40_000]
+    r = o.get("/api/keuangan/transaksi", params={"dari": "2026-10-01"}).json()
+    assert r["ringkasan"]["keluar"] == 70_000
+    assert o.get("/api/keuangan/transaksi", params={"dari": "2026-13-01"}).status_code == 400
+
+
+def test_dana_talangan_pemilik(siap):
+    """Uang pribadi pemilik yang dipinjamkan ke usaha: kas & neraca benar, bukan modal/pendapatan;
+    saldo kas terendah harian menunjukkan kapan kas sempat minus."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    t = lambda tgl, j, n, x: k.post("/api/keuangan/transaksi", json={"tanggal": tgl, "jenis": j, "kategori_id": kat[n], "jumlah": x})
+    assert t("2026-08-01", "masuk", "Setoran modal", 1_000_000).status_code == 200
+    assert t("2026-08-05", "keluar", "Beban bandwidth (upstream)", 1_500_000).status_code == 200    # kas sempat -500 rb
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-08").json()
+    assert rk["kas_negatif"] and rk["kas_terendah"] == {"tanggal": "2026-08-05", "saldo": -500_000}
+    # catat talangan pemilik di tanggal yang sama -> kas tidak lagi minus
+    assert t("2026-08-05", "masuk", "Dana talangan pemilik (pinjaman)", 600_000).status_code == 200
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-08").json()
+    assert not rk["kas_negatif"] and rk["saldo_akhir"] == 100_000
+    assert rk["talangan_masuk"] == 600_000 and rk["modal_masuk"] == 1_000_000 and rk["pendapatan"] == 0
+    assert rk["talangan_sisa"] == 600_000
+    # dikembalikan sebagian bulan berikutnya
+    assert t("2026-09-02", "masuk", "Pendapatan jasa pemasangan", 900_000).status_code == 200
+    assert t("2026-09-03", "keluar", "Pengembalian dana talangan pemilik", 400_000).status_code == 200
+    rk = o.get("/api/keuangan/ringkasan?periode=2026-09").json()
+    assert rk["prive"] == 0 and rk["talangan_kembali"] == 400_000 and rk["talangan_sisa"] == 200_000
+    assert rk["laba"] == 900_000 and rk["saldo_akhir"] == 100_000 + 900_000 - 400_000
+    lap = o.get("/api/keuangan/laporan?periode=2026-09").json()
+    p = lap["posisi"]
+    assert p["seimbang"] and p["kewajiban"]["utang_pemilik"] == 200_000 and p["ekuitas"]["modal_disetor"] == 1_000_000
+    assert lap["arus_kas"]["cocok"] and lap["arus_kas"]["bersih"]["pendanaan"] == -400_000
+    assert o.get("/api/keuangan/keseluruhan").json()["neraca"]["seimbang"]
+
+
+def test_valuasi(siap):
+    """Bahan valuasi: MRR dari pelanggan aktif berbayar, nilai buku dari neraca, EBITDA bulan lengkap."""
+    main, o, k, m = siap
+    assert k.get("/api/keuangan/valuasi").status_code == 403          # admin tidak boleh
+    v = o.get("/api/keuangan/valuasi").json()
+    assert v["pelanggan_berbayar"] >= 1 and v["mrr"] > 0 and v["arr"] == v["mrr"] * 12
+    assert v["arpu"] == round(v["mrr"] / v["pelanggan_berbayar"])
+    assert v["nilai_buku"] == v["kas"] + v["aset_tetap_buku"] - v["utang"]
+    assert len(v["bulan_dihitung"]) >= 1 and v["ebitda_tahunan"] == v["rata_bulanan"]["ebitda"] * 12
