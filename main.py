@@ -228,7 +228,8 @@ class _SamarkanRahasia(logging.Filter):
 
 
 def _samarkan(teks: str) -> str:
-    for rahasia in (CONFIG.get("TELEGRAM_BOT_TOKEN"), CONFIG.get("MIKROTIK_PASSWORD"), CONFIG.get("GENIEACS_PASS")):
+    for rahasia in (CONFIG.get("TELEGRAM_BOT_TOKEN"), CONFIG.get("MIKROTIK_PASSWORD"), CONFIG.get("GENIEACS_PASS"),
+                    CONFIG.get("OLT_TELNET_PASS"), CONFIG.get("ACS_ONU_PASS")):
         if rahasia:
             teks = teks.replace(f"bot{rahasia}", "bot***")
             if len(rahasia) >= 6:
@@ -8335,6 +8336,263 @@ def diagnosa_ping(username: str, request: Request):
     if not u:
         raise HTTPException(status_code=400, detail="Pelanggan sedang tidak online, tidak bisa di-ping.")
     return _mikrotik_ping(u.ip_address)
+
+
+# ============================================================
+# 13. KIRIM PENGATURAN TR-069 KE ONU LEWAT OLT (telnet, C-Data FD16xx)
+# ============================================================
+# OLT meneruskan ACS URL/login ke ONU lewat OMCI, sama seperti menu "TR-069 Service
+# Configuration" di web OLT. Perintah CLI-nya (dibaca dari show current-config):
+#   interface gpon 0/0
+#    ont tr069 <port> <onu> tr069-management enable
+#    ont tr069 <port> <onu> acs-url <url>  acs-username <user> acs-password <sandi>
+#    ont tr069 <port> <onu> inform enable interval 300
+# ONU ZTE juga perlu jenis layanan WAN PPPoE berisi TR069 (diatur di web ONU).
+
+CONFIG.update({
+    "OLT_TELNET_PORT": int(_env("OLT_TELNET_PORT", "23")),
+    "OLT_TELNET_USER": _env("OLT_TELNET_USER", ""),
+    "OLT_TELNET_PASS": _env("OLT_TELNET_PASS", ""),
+    "OLT_SIMPAN_PERINTAH": _env("OLT_SIMPAN_PERINTAH", "save"),   # simpan permanen setelah berubah
+    "ACS_ONU_URL": _env("ACS_ONU_URL", "http://10.99.0.1:7547"),
+    "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
+    "ACS_ONU_PASS": _env("ACS_ONU_PASS", ""),
+    "ACS_ONU_INTERVAL": int(_env("ACS_ONU_INTERVAL", "300")),
+})
+
+_POLA_AMAN = re.compile(r"^[A-Za-z0-9._:/@+=~-]{1,128}$")   # tanpa spasi/baris baru: tidak bisa menyisipkan perintah
+
+
+def _olt_telnet_aktif() -> bool:
+    return bool(CONFIG["OLT_TELNET_USER"] and CONFIG["OLT_TELNET_PASS"] and CONFIG["ACS_ONU_USER"] and CONFIG["ACS_ONU_PASS"])
+
+
+class _TelnetOLT:
+    """Klien telnet kecil (telnetlib sudah dihapus di Python 3.13). Menolak semua opsi telnet
+    kecuali echo/suppress-go-ahead, cukup untuk CLI OLT."""
+    IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
+
+    def __init__(self, host: str, port: int, timeout: float = 10.0):
+        import socket
+        self.timeout = timeout
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.buf = b""
+
+    def _terima(self) -> None:
+        data = self.sock.recv(4096)
+        if not data:
+            raise ConnectionError("koneksi ditutup OLT")
+        out, i = bytearray(), 0
+        while i < len(data):
+            b = data[i]
+            if b == self.IAC and i + 1 < len(data):
+                cmd = data[i + 1]
+                if cmd in (self.DO, self.DONT, self.WILL, self.WONT) and i + 2 < len(data):
+                    opt = data[i + 2]
+                    if cmd == self.DO:
+                        self.sock.sendall(bytes([self.IAC, self.WONT, opt]))
+                    elif cmd == self.WILL:
+                        self.sock.sendall(bytes([self.IAC, self.DO if opt in (1, 3) else self.DONT, opt]))
+                    i += 3
+                    continue
+                if cmd == self.SB:
+                    akhir = data.find(bytes([self.IAC, self.SE]), i)
+                    i = len(data) if akhir < 0 else akhir + 2
+                    continue
+                if cmd == self.IAC:
+                    out.append(255)
+                i += 2
+                continue
+            out.append(b)
+            i += 1
+        self.buf += bytes(out)
+
+    def tunggu(self, pola: str) -> str:
+        """Baca sampai regex `pola` cocok di akhir keluaran; '--More--' dilewati otomatis."""
+        batas = time.monotonic() + self.timeout
+        rx = re.compile(pola)
+        while True:
+            teks = self.buf.decode("utf-8", "replace")
+            if "--More" in teks[-60:]:
+                self.buf = self.buf.replace(b"--More", b"")
+                self.sock.sendall(b" ")
+            elif rx.search(teks):
+                self.buf = b""
+                return teks
+            if time.monotonic() > batas:
+                raise TimeoutError(f"OLT tidak membalas (menunggu {pola!r}). Keluaran terakhir: {teks[-160:]!r}")
+            self.sock.settimeout(max(0.1, batas - time.monotonic()))
+            self._terima()
+
+    def kirim(self, baris: str, pola: str = r"[>#]\s*$") -> str:
+        self.sock.sendall(baris.encode() + b"\r\n")
+        return self.tunggu(pola)
+
+    def tutup(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+_POLA_KONFIRMASI = r"(?i)(\(y/n\)|\[y/n\]|\(yes/no\)|\[yes/no\]|y/n\s*[:?]?)\s*:?\s*$"
+
+
+def _simpan_olt(t: "_TelnetOLT") -> bool:
+    """Simpan konfigurasi OLT secara permanen. Dicoba di mode config dulu, lalu di mode enable,
+    dengan beberapa nama perintah yang umum dipakai firmware C-Data. Pertanyaan (y/n) dijawab y."""
+    lama, t.timeout = t.timeout, 90.0          # menulis flash bisa butuh beberapa detik
+    try:
+        def coba(perintah: str) -> bool:
+            out = t.kirim(perintah, r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            if re.search(_POLA_KONFIRMASI, out):
+                out = t.kirim("y")
+            return _galat_cli(out) is None
+        utama = CONFIG["OLT_SIMPAN_PERINTAH"] or "save"
+        if coba(utama):
+            return True
+        t.kirim("end")
+        for perintah in dict.fromkeys([utama, "save", "write", "write memory", "copy running-config startup-config"]):
+            if coba(perintah):
+                return True
+        logger.error("OLT: konfigurasi TIDAK tersimpan permanen — tidak ada perintah simpan yang diterima.")
+        return False
+    finally:
+        t.timeout = lama
+
+
+def _galat_cli(keluaran: str) -> Optional[str]:
+    for baris in keluaran.splitlines():
+        b = baris.strip()
+        if b.startswith("%") or re.match(r"(?i)^(error|failure|failed)\b", b):
+            return b
+    return None
+
+
+def olt_kirim_tr069(daftar: list) -> dict:
+    """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU."""
+    if not _olt_telnet_aktif():
+        raise HTTPException(status_code=503, detail="Login telnet OLT / login ACS ONU belum diisi di .env "
+                                                    "(OLT_TELNET_USER, OLT_TELNET_PASS, ACS_ONU_USER, ACS_ONU_PASS).")
+    url, user, sandi = CONFIG["ACS_ONU_URL"], CONFIG["ACS_ONU_USER"], CONFIG["ACS_ONU_PASS"]
+    if not all(_POLA_AMAN.match(x) for x in (url, user, sandi)):
+        raise HTTPException(status_code=500, detail="ACS_ONU_URL/USER/PASS di .env berisi spasi atau karakter yang tidak didukung.")
+    interval = max(60, min(int(CONFIG["ACS_ONU_INTERVAL"]), 86400))
+    per_if: dict = {}
+    for pon, onu_id in daftar:
+        m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
+        if not m or not 1 <= int(onu_id) <= 256:
+            raise HTTPException(status_code=400, detail=f"Alamat ONU tidak valid: {pon} {onu_id}")
+        per_if.setdefault(m.group(1), []).append((int(m.group(2)), int(onu_id), pon))
+    hasil = []
+    try:
+        t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
+    except OSError as e:
+        raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
+    try:
+        t.tunggu(r"(?i)(user ?name|login)\s*:\s*$")
+        t.kirim(CONFIG["OLT_TELNET_USER"], r"(?i)password\s*:\s*$")
+        masuk = t.kirim(CONFIG["OLT_TELNET_PASS"], r"(?i)([>#]\s*$|user ?name\s*:\s*$|fail|incorrect|invalid)")
+        if not re.search(r"[>#]\s*$", masuk):
+            raise HTTPException(status_code=502, detail="Login telnet OLT ditolak. Periksa OLT_TELNET_USER/OLT_TELNET_PASS.")
+        if masuk.rstrip().endswith(">"):
+            out = t.kirim("enable", r"(?i)(#\s*$|password\s*:\s*$)")
+            if not out.rstrip().endswith("#"):
+                t.kirim(CONFIG["OLT_TELNET_PASS"], r"#\s*$")
+        t.kirim("config")
+        for antarmuka, onus in per_if.items():
+            out = t.kirim(f"interface gpon {antarmuka}")
+            if _galat_cli(out):
+                for port, onu_id, pon in onus:
+                    hasil.append({"pon": pon, "onu_id": onu_id, "ok": False, "pesan": _galat_cli(out)})
+                continue
+            for port, onu_id, pon in onus:
+                galat = None
+                for perintah in (f"ont tr069 {port} {onu_id} tr069-management enable",
+                                 f"ont tr069 {port} {onu_id} acs-url {url} acs-username {user} acs-password {sandi}",
+                                 f"ont tr069 {port} {onu_id} inform enable interval {interval}"):
+                    galat = _galat_cli(t.kirim(perintah))
+                    if galat:
+                        break
+                hasil.append({"pon": pon, "onu_id": onu_id, "ok": galat is None,
+                              "pesan": galat or "Pengaturan TR-069 terkirim ke ONU."})
+            t.kirim("exit")
+        tersimpan = None
+        if any(h["ok"] for h in hasil):
+            # Wajib: tanpa save, perubahan hilang saat OLT restart.
+            tersimpan = _simpan_olt(t)
+        t.kirim("end")
+    except (OSError, TimeoutError, ConnectionError) as e:
+        raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
+    finally:
+        t.tutup()
+    return {"hasil": hasil, "tersimpan": tersimpan}
+
+
+def _sn_terdaftar_acs() -> Optional[set]:
+    if not _acs_aktif():
+        return None
+    try:
+        r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_deviceId._SerialNumber"}, timeout=10)
+    except HTTPException:
+        return None
+    if not r.ok:
+        return None
+    return {str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper() for d in r.json()}
+
+
+@app.get("/api/olt/tr069")
+def olt_tr069_daftar(request: Request):
+    """ONU yang terbaca dari OLT beserta status terdaftar di ACS, untuk dipilih."""
+    _wajib_admin(request)
+    terdaftar = _sn_terdaftar_acs()
+    nama = {}
+    conn = _billing_conn()
+    try:
+        nama = dict(conn.execute("SELECT username, nama FROM pelanggan").fetchall())
+    finally:
+        conn.close()
+    onu = []
+    for o in (_latest_data.onu_list if _latest_data else []):
+        sn = (o.serial_number or "").upper()
+        onu.append({"pon": o.pon, "onu_id": o.onu_id, "sn": o.serial_number, "vendor": o.vendor, "model": o.model,
+                    "online": o.online, "pppoe_username": o.pppoe_username, "nama": nama.get(o.pppoe_username),
+                    "terdaftar_acs": (sn in terdaftar) if (terdaftar is not None and sn) else None})
+    onu.sort(key=lambda x: (x["terdaftar_acs"] is True, x["pon"], x["onu_id"]))
+    return {"aktif": _olt_telnet_aktif(), "acs_url": CONFIG["ACS_ONU_URL"], "onu": onu}
+
+
+class Tr069OnuIn(BaseModel):
+    onu: list
+
+
+@app.post("/api/olt/tr069")
+def olt_tr069_kirim(d: Tr069OnuIn, request: Request):
+    _wajib_admin(request)
+    if not d.onu or len(d.onu) > 128:
+        raise HTTPException(status_code=400, detail="Pilih 1–128 ONU.")
+    try:
+        daftar = [(str(x["pon"]), int(x["onu_id"])) for x in d.onu]
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Format ONU tidak valid.")
+    hasil = olt_kirim_tr069(daftar)
+    ok = sum(1 for h in hasil["hasil"] if h["ok"])
+    catat_aktivitas(_oleh(request), "olt_tr069",
+                    f"Kirim TR-069 lewat OLT ke {len(daftar)} ONU: {ok} berhasil"
+                    + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
+    return hasil
+
+
+@app.post("/api/olt/tr069/pelanggan/{username}")
+def olt_tr069_pelanggan(username: str, request: Request):
+    _wajib_admin(request)
+    onu = next((o for o in (_latest_data.onu_list if _latest_data else []) if o.pppoe_username == username), None)
+    if not onu:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terbaca dari OLT (offline atau MAC belum cocok).")
+    hasil = olt_kirim_tr069([(onu.pon, onu.onu_id)])
+    catat_aktivitas(_oleh(request), "olt_tr069", f"Kirim TR-069 lewat OLT ke ONU {username} ({onu.pon} onu {onu.onu_id}): "
+                    + ("berhasil" if hasil["hasil"][0]["ok"] else hasil["hasil"][0]["pesan"]))
+    return hasil
 
 
 if __name__ == "__main__":

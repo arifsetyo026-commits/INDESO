@@ -1487,3 +1487,88 @@ def test_abaikan_peringatan_kas_minus(siap):
     assert o.get("/api/keuangan/ringkasan?periode=2026-09").json()["kas_negatif"]
     assert o.post("/api/keuangan/abaikan-kas-minus", json={"periode": ""}).status_code == 200
     assert o.get("/api/keuangan/ringkasan?periode=2026-08").json()["kas_negatif"]
+
+
+class FakeOLTTelnet:
+    """Server telnet tiruan mirip CLI C-Data FD1602S-B1: catat perintah yang diterima."""
+    def __init__(self, tolak_onu=None, save_di_enable=False):
+        import socket, threading
+        self.perintah, self.tolak_onu, self.save_di_enable = [], tolak_onu, save_di_enable
+        self.srv = socket.socket(); self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", 0)); self.srv.listen(1); self.port = self.srv.getsockname()[1]
+        threading.Thread(target=self._layani, daemon=True).start()
+
+    def _layani(self):
+        c, _ = self.srv.accept()
+        f = c.makefile("rb")
+        kirim = lambda t: c.sendall(t.encode())
+        c.sendall(bytes([255, 251, 1, 255, 251, 3]) + b"User Access Verification\r\n\r\nUser name:")
+        def baris():
+            b = f.readline()
+            if not b:
+                raise SystemExit
+            while b and b[:1] == b"\xff":
+                b = b[3:]
+            return b.decode(errors="replace").strip()
+        baris(); kirim("Password:")
+        if baris() != "rahasiaOLT":
+            kirim("\r\n% Authentication failed.\r\nUser name:"); c.close(); return
+        prompt = "FD1602S-B1>"
+        kirim("\r\n" + prompt)
+        while True:
+            b = baris()
+            if not b and f.closed:
+                return
+            self.perintah.append(b)
+            out = ""
+            if b == "enable": prompt = "FD1602S-B1#"
+            elif b == "config": prompt = "FD1602S-B1(config)#"
+            elif b.startswith("interface gpon"): prompt = "FD1602S-B1(config-interface-gpon-0/0)#"
+            elif b == "exit": prompt = "FD1602S-B1(config)#"
+            elif b == "end": prompt = "FD1602S-B1#"
+            elif b == "save" and self.save_di_enable and prompt != "FD1602S-B1#": out = "% Unknown command.\r\n"
+            elif b == "save":
+                kirim("\r\nAre you sure to save the configuration? (y/n):")
+                self.perintah.append(baris()); out = "Saving current configuration...\r\n--More ( Press 'Q' to quit )--"
+            elif self.tolak_onu and b.startswith(f"ont tr069 {self.tolak_onu}"): out = "% ONT does not exist.\r\n"
+            if "--More" in out:
+                kirim("\r\n" + out); f.read(1); out = "OK\r\n"
+            try:
+                kirim("\r\n" + out + prompt)
+            except OSError:
+                return
+
+
+def test_olt_kirim_tr069(siap):
+    main, o, k, m = siap
+    assert o.get("/api/olt/tr069").json()["aktif"] is False
+    assert o.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 3}]}).status_code == 503
+    olt = FakeOLTTelnet(tolak_onu="1 5")
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26")
+    r = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 3}, {"pon": "0/0/1", "onu_id": 5},
+                                               {"pon": "0/0/2", "onu_id": 1}]})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert [h["ok"] for h in d["hasil"]] == [True, False, True] and "does not exist" in d["hasil"][1]["pesan"]
+    assert d["tersimpan"] is True
+    p = olt.perintah
+    assert p[:3] == ["enable", "config", "interface gpon 0/0"]
+    assert "ont tr069 1 3 tr069-management enable" in p
+    assert "ont tr069 1 3 acs-url http://10.99.0.1:7547 acs-username INDESO acs-password Sandi26" in p
+    assert "ont tr069 2 1 inform enable interval 300" in p
+    assert not any(x.startswith("ont tr069 1 5 acs-url") for x in p)      # berhenti setelah ditolak
+    assert p[-3:] == ["save", "y", "end"]                                 # selalu disimpan, konfirmasi dijawab
+    # firmware yang menerima save hanya di mode enable: dicoba ulang setelah end
+    olt3 = FakeOLTTelnet(save_di_enable=True)
+    main.CONFIG.update(OLT_TELNET_PORT=olt3.port)
+    d = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 3}]}).json()
+    assert d["tersimpan"] is True and olt3.perintah[-5:] == ["save", "end", "save", "y", "end"]
+    # alamat aneh ditolak sebelum telnet (tidak bisa menyisipkan perintah)
+    assert k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1\nreboot", "onu_id": 3}]}).status_code == 400
+    assert m.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 3}]}).status_code == 403
+    # sandi telnet salah
+    olt2 = FakeOLTTelnet()
+    main.CONFIG.update(OLT_TELNET_PORT=olt2.port, OLT_TELNET_PASS="salah")
+    r = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 3}]})
+    assert r.status_code == 502 and "ditolak" in r.json()["detail"]
