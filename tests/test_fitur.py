@@ -47,6 +47,11 @@ class FakeRes:
             rows = [r for r in rows if r.get("name") == kw["name"]]
         return rows
 
+    def add(self, **kw):
+        if self.path == "/ppp/secret":
+            self.mt.secret[kw["name"]] = dict({k: v for k, v in kw.items() if k != "name"}, id=f"*{len(self.mt.secret) + 10}",
+                                              disabled="no")
+
     def set(self, id, **kw):
         for v in self.mt.secret.values():
             if v["id"] == id:
@@ -1648,3 +1653,49 @@ def test_ekspor_csv_pelanggan_tagihan_tunggakan(siap):
     assert g[0].startswith("Username;Nama") and any(";2026-09, 2026-10;" in b for b in g)
     for url in ("/api/ekspor/pelanggan", "/api/ekspor/tagihan?periode=2026-10", "/api/ekspor/tunggakan"):
         assert m.get(url).status_code == 403
+
+
+
+def test_prorata_diskon_dan_pasang_baru(siap):
+    main, o, k, m = siap
+    h = main._hitung_tagihan
+    assert h(150000, 0, None, "2026-10") == (150000, "2026-10-05", None)
+    assert h(150000, 0, "2026-10-01", "2026-10")[0] == 150000                      # pasang tgl 1 = penuh
+    j, jt, cat = h(150000, 0, "2026-10-20", "2026-10")                              # 12 dari 31 hari
+    assert j == 58000 and jt == "2026-10-27" and "prorata 12/31" in cat
+    assert h(150000, 10000, "2026-10-20", "2026-11") == (140000, "2026-11-05", "diskon Rp 10.000")
+    assert h(150000, 0, "2026-11-03", "2026-10") is None                            # belum berlangganan
+    assert h(150000, 150000, None, "2026-10") is None                               # diskon penuh
+    # diskon & tanggal pasang lewat ubah pelanggan
+    assert o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "diskon": 25000, "tgl_pasang": "2026-08-15",
+                                                   "atur_secret": False}).status_code == 200
+    o.post("/api/tagihan/buat?periode=2026-10")
+    tb = next(t for t in o.get("/api/tagihan?periode=2026-10").json()["tagihan"] if t["username"] == "budi")
+    assert tb["jumlah"] == 125000 and tb["catatan"] == "diskon Rp 25.000"
+    assert o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "diskon": -5, "atur_secret": False}).status_code == 400
+    # pasang baru lengkap: akun PPPoE, tagihan prorata, biaya pasang ke keuangan
+    hari = datetime.now()
+    tgl = hari.strftime("%Y-%m-%d")
+    r = k.post("/api/pasang-baru", json={"username": "eko", "nama": "Eko Baru", "no_hp": "0812", "paket_id": 2,
+                                         "tgl_pasang": tgl, "buat_secret": True, "password_pppoe": "rahasia9",
+                                         "biaya_pasang": 250000, "metode_bayar": "tunai"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["profil"] == "paket-20mbps" and main._mt.secret["eko"]["password"] == "rahasia9"
+    assert main._mt.secret["eko"]["service"] == "pppoe"
+    if hari.day > 1:
+        assert d["tagihan"] and "prorata" in d["tagihan"]["catatan"] and d["tagihan"]["jumlah"] < 200000
+    trx = o.get("/api/keuangan/transaksi?periode=" + tgl[:7]).json()["transaksi"]
+    assert any(t["jumlah"] == 250000 and "Pasang baru Eko Baru" in (t["keterangan"] or "") for t in trx)
+    # ditolak: username sudah ada, secret sudah ada di MikroTik, tanggal masa depan, mitra
+    assert k.post("/api/pasang-baru", json={"username": "eko", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 409
+    assert k.post("/api/pasang-baru", json={"username": "ani2", "nama": "X", "paket_id": 1, "tgl_pasang": tgl,
+                                            "buat_secret": True, "password_pppoe": "a b"}).status_code == 400
+    besok = (hari + timedelta(days=1)).strftime("%Y-%m-%d")
+    assert k.post("/api/pasang-baru", json={"username": "fani", "nama": "X", "paket_id": 1, "tgl_pasang": besok}).status_code == 400
+    assert k.post("/api/pasang-baru", json={"username": "a b", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 400
+    assert m.post("/api/pasang-baru", json={"username": "gani", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 403
+    main._mt.secret["hadi"] = {"id": "*99", "profile": "default", "disabled": "no"}
+    assert k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": tgl,
+                                            "buat_secret": True, "password_pppoe": "rahasia9"}).status_code == 409
+    assert k.get("/api/mikrotik/profil").json()["profil"][1] == {"nama": "paket-10mbps", "mbps": 10.0}
