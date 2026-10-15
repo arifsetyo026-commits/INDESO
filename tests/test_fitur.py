@@ -1625,3 +1625,26 @@ def test_skrip_push_tr069_semua_onu(tmp_path):
     olt.perintah.clear()
     r = subprocess.run([sys.executable, skrip, "--kirim", "--onu", "2/1"], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
     assert "1 akan dikirim" in r.stdout and any(x.startswith("ont tr069 2 1 acs-url") for x in olt.perintah)
+
+
+def test_ekspor_csv_pelanggan_tagihan_tunggakan(siap):
+    main, o, k, m = siap
+    o.post("/api/tagihan/buat?periode=2026-09")
+    o.post("/api/tagihan/buat?periode=2026-10")
+    o.put("/api/data-pelanggan/ani", json={"nama": "=HYPERLINK(\"x\")", "paket_id": 1, "status": "aktif", "atur_secret": False})
+    r = k.get("/api/ekspor/pelanggan")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    teks = r.content.decode("utf-8-sig")
+    baris = teks.splitlines()
+    assert baris[0].startswith("Username;Nama;Alamat;No. HP;Paket")
+    import csv as _csv
+    ani = next(x for x in _csv.reader(baris, delimiter=";") if x[0] == "ani")
+    assert ani[1] == "'=HYPERLINK(\"x\")"                                 # formula dinetralkan
+    assert any(b.startswith("budi;") and b.endswith(";2;300000") for b in baris)
+    t = k.get("/api/ekspor/tagihan?periode=2026-10").content.decode("utf-8-sig").splitlines()
+    assert t[0].startswith("Username;Nama;No. HP;Periode;Jumlah") and len(t) == 4
+    assert k.get("/api/ekspor/tagihan?periode=salah").status_code == 400
+    g = k.get("/api/ekspor/tunggakan").content.decode("utf-8-sig").splitlines()
+    assert g[0].startswith("Username;Nama") and any(";2026-09, 2026-10;" in b for b in g)
+    for url in ("/api/ekspor/pelanggan", "/api/ekspor/tagihan?periode=2026-10", "/api/ekspor/tunggakan"):
+        assert m.get(url).status_code == 403

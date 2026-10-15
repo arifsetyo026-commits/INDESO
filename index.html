@@ -220,7 +220,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
-<div class="blNav"><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div>
+<div class="blNav"><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"></div>
 <div class="blFilters plFilters"><button data-f="aktif" class="on" onclick="setFilterPelanggan('aktif')">Aktif</button><button data-f="belum" onclick="setFilterPelanggan('belum')">Belum lengkap</button><button data-f="berhenti" onclick="setFilterPelanggan('berhenti')">Berhenti</button><button data-f="semua" onclick="setFilterPelanggan('semua')">Semua</button></div>
 <div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
@@ -252,7 +252,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="blFilters blTabs"><button data-v="bulan" class="on" onclick="tampilBl('bulan')">Per bulan</button><button data-v="tunggakan" onclick="tampilBl('tunggakan')">Tunggakan</button></div>
 <div id="blTunggakan" style="display:none"></div>
 <div id="blBulan">
-<div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button></div>
+<div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button><a class="btnS" id="blEkspor" href="#" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
 <div class="search"><input id="blSearch" placeholder="Cari nama atau username…" oninput="renderBilling()"></div>
 <div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
@@ -543,7 +543,7 @@ function renderTunggakan(dariCari){
  el.innerHTML=`<div class="blSum" style="grid-template-columns:repeat(2,1fr)">${kotak}</div>
   <div class="plSub" style="margin:-4px 0 8px">Total belum lunas <b>${rp(d.total)}</b> dari ${d.jumlah_pelanggan} pelanggan · sudah lewat jatuh tempo <b style="color:#b42318">${rp(d.total_telat)}</b>. Umur dihitung dari jatuh tempo tagihan tertua.</div>
   <div class="search"><input id="tgCari" placeholder="Cari nama atau username…" value="${esc(q)}" oninput="renderTunggakan(true)"></div>
-  <div class="blFilters"><button class="${bl.tgFilter==='telat'?'on':''}" onclick="bl.tgFilter='telat';renderTunggakan()">Lewat jatuh tempo</button><button class="${bl.tgFilter==='semua'?'on':''}" onclick="bl.tgFilter='semua';renderTunggakan()">Semua belum lunas</button></div>
+  <div class="blFilters"><button class="${bl.tgFilter==='telat'?'on':''}" onclick="bl.tgFilter='telat';renderTunggakan()">Lewat jatuh tempo</button><button class="${bl.tgFilter==='semua'?'on':''}" onclick="bl.tgFilter='semua';renderTunggakan()">Semua belum lunas</button><a class="btnS" href="/api/ekspor/tunggakan" download style="text-decoration:none;margin-left:auto">Ekspor CSV</a></div>
   ${bl.antri?'':(()=>{const c=calonAntri(); return c.baru.length?`<button class="btnS go" style="width:100%;margin:2px 0 6px;padding:10px" onclick="mulaiAntri()">📨 Ingatkan massal lewat WA (${c.baru.length} pelanggan)</button>`:'';})()}
   <div class="plMsg" id="tgMsg"></div>${bl.antri?panelAntri():''}${bl.kw?kotakKwitansi():''}
   <div class="plSub" style="margin:6px 0"><b>${esc(judulFilter)}</b> · ${rows.length} pelanggan</div>
@@ -875,7 +875,7 @@ const _bukaKesehatanAsli=bukaKesehatan;
 bukaKesehatan=function(i){ _bukaKesehatanAsli(i); if(kh.buka===i) muatRiwayatPutus(i); };
   // ===== Isolir di menu Billing dan Pelanggan (menggantikan fungsi lama bernama sama) =====
 async function loadBilling(diam){
- $('blPeriode').textContent=namaPeriode(bl.periode);
+ $('blPeriode').textContent=namaPeriode(bl.periode); $('blEkspor').href='/api/ekspor/tagihan?periode='+bl.periode;
  if(!diam){ $('blMsg').textContent=''; $('blList').innerHTML='<div class="muted">Memuat…</div>'; }
  try{
   const [r,ri]=await Promise.all([fetch('/api/tagihan?periode='+bl.periode),fetch('/api/isolir')]);
@@ -1091,7 +1091,7 @@ async function hapusPaket(i){
  }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
 }
 // ===== Log aktivitas (di menu Pengaturan) =====
-const AKSI_LABEL={olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+const AKSI_LABEL={ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
 
 // ===== Pengaturan: akun saya, pengguna, sistem, log =====
 AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';

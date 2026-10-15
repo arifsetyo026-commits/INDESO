@@ -28,6 +28,8 @@ mapping manual.
 """
 
 import asyncio
+import csv
+import io
 import hashlib
 import json
 import logging
@@ -5521,6 +5523,90 @@ def keuangan_ekspor(periode: str, request: Request):
     catat_aktivitas(_oleh(request), "kas_ekspor", f"periode {periode}")
     return Response(isi, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="keuangan-{periode}.csv"'})
+
+
+# --- Ekspor CSV pelanggan, tagihan, tunggakan (dibuka di Excel / Google Sheets) ---
+def _csv_respon(nama_file: str, header: list, baris: list) -> Response:
+    def aman(v):
+        # Cegah formula injection saat dibuka di Excel (=, +, -, @ di awal sel); angka dibiarkan apa adanya
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return v
+        v = "" if v is None else str(v)
+        return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(header)
+    for b in baris:
+        w.writerow([aman(x) for x in b])
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{nama_file}"'})
+
+
+@app.get("/api/ekspor/pelanggan")
+def ekspor_pelanggan(request: Request):
+    _wajib_admin(request)
+    _siapkan_tabel_isolir()
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT p.username, p.nama, p.alamat, p.no_hp, k.nama AS paket, k.harga, p.status, p.gratis, p.berhenti_sejak, "
+            "(i.username IS NOT NULL) AS isolir, "
+            "(SELECT COUNT(*) FROM tagihan t WHERE t.username = p.username AND t.status != 'lunas') AS bulan_tunggak, "
+            "(SELECT COALESCE(SUM(jumlah),0) FROM tagihan t WHERE t.username = p.username AND t.status != 'lunas') AS total_tunggak "
+            "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id LEFT JOIN isolir i ON i.username = p.username "
+            "ORDER BY p.nama COLLATE NOCASE").fetchall()
+    finally:
+        conn.close()
+    onu = {o.pppoe_username: o for o in (_latest_data.onu_list if _latest_data else []) if o.pppoe_username}
+    online = {u.username for u in (_latest_data.pppoe_users if _latest_data else [])}
+    baris = []
+    for r in rows:
+        o = onu.get(r["username"])
+        baris.append([r["username"], r["nama"], r["alamat"], r["no_hp"], r["paket"], r["harga"], r["status"],
+                      "ya" if r["gratis"] else "tidak", r["berhenti_sejak"], "ya" if r["isolir"] else "tidak",
+                      "online" if r["username"] in online else "offline",
+                      f"{o.pon} onu {o.onu_id}" if o else "", (o.serial_number if o else "") or "", (o.model or "").strip('"') if o else "",
+                      o.onu_rx_dbm if o else "", r["bulan_tunggak"], r["total_tunggak"]])
+    catat_aktivitas(_oleh(request), "ekspor", f"data pelanggan ({len(baris)} baris)")
+    return _csv_respon(f"pelanggan-{datetime.now().strftime('%Y-%m-%d')}.csv",
+                       ["Username", "Nama", "Alamat", "No. HP", "Paket", "Harga paket", "Status", "Gratis", "Berhenti sejak",
+                        "Isolir", "PPPoE", "ONU (PON)", "SN ONU", "Model ONU", "Redaman ONU (dBm)",
+                        "Bulan belum lunas", "Total belum lunas"], baris)
+
+
+@app.get("/api/ekspor/tagihan")
+def ekspor_tagihan(periode: str, request: Request):
+    _wajib_admin(request)
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    conn = _billing_conn()
+    try:
+        rows = conn.execute(
+            "SELECT t.username, p.nama, p.no_hp, t.periode, t.jumlah, t.jatuh_tempo, t.status, t.tgl_bayar, t.metode_bayar, "
+            "t.lunas_oleh FROM tagihan t JOIN pelanggan p ON p.username = t.username WHERE t.periode = ? "
+            "ORDER BY t.status DESC, p.nama COLLATE NOCASE", (periode,)).fetchall()
+    finally:
+        conn.close()
+    baris = [[r["username"], r["nama"], r["no_hp"], r["periode"], r["jumlah"], r["jatuh_tempo"],
+              "lunas" if r["status"] == "lunas" else "belum", r["tgl_bayar"], r["metode_bayar"], r["lunas_oleh"]] for r in rows]
+    catat_aktivitas(_oleh(request), "ekspor", f"tagihan {periode} ({len(baris)} baris)")
+    return _csv_respon(f"tagihan-{periode}.csv", ["Username", "Nama", "No. HP", "Periode", "Jumlah", "Jatuh tempo", "Status",
+                                                  "Tanggal bayar", "Metode", "Dicatat oleh"], baris)
+
+
+@app.get("/api/ekspor/tunggakan")
+def ekspor_tunggakan(request: Request):
+    _wajib_admin(request)
+    d = list_tunggakan()
+    label = {"belum_jatuh_tempo": "Belum jatuh tempo", "1_30": "Telat 1-30 hari", "31_60": "Telat 31-60 hari",
+             "60_lebih": "Telat > 60 hari"}
+    baris = [[g["username"], g["nama"], g["no_hp"], g["paket"], g["bulan"], ", ".join(t["periode"] for t in g["tagihan"]),
+              g["total"], max(g["hari_telat"], 0), label[g["kelompok"]], "ya" if g["isolir"] else "tidak",
+              (g["diingatkan"] or "")[:10]] for g in d["pelanggan"]]
+    catat_aktivitas(_oleh(request), "ekspor", f"tunggakan ({len(baris)} pelanggan)")
+    return _csv_respon(f"tunggakan-{d['per']}.csv", ["Username", "Nama", "No. HP", "Paket", "Jumlah bulan", "Bulan",
+                                                     "Total", "Hari telat (tertua)", "Kelompok umur", "Isolir",
+                                                     "Terakhir diingatkan"], baris)
 
 
 # ============================================================
