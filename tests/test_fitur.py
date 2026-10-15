@@ -1499,7 +1499,16 @@ class FakeOLTTelnet:
         threading.Thread(target=self._layani, daemon=True).start()
 
     def _layani(self):
-        c, _ = self.srv.accept()
+        while True:
+            c, _ = self.srv.accept()
+            try:
+                self._sesi(c)
+            except SystemExit:
+                pass
+            finally:
+                c.close()
+
+    def _sesi(self, c):
         f = c.makefile("rb")
         kirim = lambda t: c.sendall(t.encode())
         c.sendall(bytes([255, 251, 1, 255, 251, 3]) + b"User Access Verification\r\n\r\nUser name:")
@@ -1531,6 +1540,20 @@ class FakeOLTTelnet:
                 kirim("\r\nAre you sure to save the configuration? (y/n):")
                 self.perintah.append(baris()); out = "Saving current configuration...\r\n--More ( Press 'Q' to quit )--"
             elif self.tolak_onu and b.startswith(f"ont tr069 {self.tolak_onu}"): out = "% ONT does not exist.\r\n"
+            elif b == "show current-config":
+                out = ("Current configuration:\r\n!\r\nont-line-profile gpon profile-id 0 profile-name line-profile_0\r\n #tcont 0 dba-profile-id 0\r\n"
+                       "  commit\r\n exit\r\n!\r\n--More ( Press 'Q' to quit )--")
+                kirim("\r\n" + out); f.read(1)
+                out = ("#dot1p-mapping-table table-id 0\r\ninterface gpon 0/0\r\n"
+                       ' ont add 1 1 sn-auth "ZTEGD33C6275" ont-lineprofile-id 0 ont-srvprofile-id 0\r\n'
+                       "  ont tr069 1 1 tr069-management enable\r\n"
+                       "  ont tr069 1 1 acs-url http://10.99.0.1:7547  acs-username X acs-password Y\r\n"
+                       ' ont add 1 2 sn-auth "ZTEGD5D276C6" mult-srv-profile profile-id 0\r\n'
+                       ' ont add 2 1 sn-auth "FHTT9D2674A0" mult-srv-profile profile-id 0\r\n'
+                       ' ont add 2 2 sn-auth "ZTEGD08EDDF5" mult-srv-profile profile-id 0\r\n'
+                       "exit\r\n!\r\ninterface vlanif 1\r\n ip address 192.168.2.100 24\r\nexit\r\nend\r\n")
+            elif b.startswith("show ont info"):
+                out = "  Run state            : Online\r\n  Config state         : success\r\n"
             if "--More" in out:
                 kirim("\r\n" + out); f.read(1); out = "OK\r\n"
             try:
@@ -1572,3 +1595,33 @@ def test_olt_kirim_tr069(siap):
     main.CONFIG.update(OLT_TELNET_PORT=olt2.port, OLT_TELNET_PASS="salah")
     r = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 3}]})
     assert r.status_code == 502 and "ditolak" in r.json()["detail"]
+
+
+
+def test_skrip_push_tr069_semua_onu(tmp_path):
+    """deploy/indeso/push-tr069.py: baca ONU dari show current-config, lewati yang sudah ada / bukan ZTE,
+    kirim, save, lalu cek Config state. Tanpa --kirim tidak mengubah apa pun."""
+    import subprocess
+    skrip = os.path.join(ROOT, "deploy", "indeso", "push-tr069.py")
+    env = dict(os.environ, MIKROTIK_PASSWORD="x", TELEGRAM_BOT_TOKEN="x", TELEGRAM_CHAT_ID="1", OLT_HOST="127.0.0.1",
+               OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT", ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26",
+               GENIEACS_URL="")
+    olt = FakeOLTTelnet()
+    env["OLT_TELNET_PORT"] = str(olt.port)
+    r = subprocess.run([sys.executable, skrip], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    assert "4 ONU di OLT · 2 akan dikirim" in r.stdout and "dilewati (sudah ada)" in r.stdout and "bukan ZTE" in r.stdout
+    assert not any(p.startswith("ont tr069") for p in olt.perintah)          # tanpa --kirim: hanya membaca
+    olt.perintah.clear()
+    r = subprocess.run([sys.executable, skrip, "--kirim"], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    p = olt.perintah
+    assert "ont tr069 1 2 acs-url http://10.99.0.1:7547 acs-username INDESO acs-password Sandi26" in p
+    assert "ont tr069 2 2 inform enable interval 300" in p
+    assert not any(x.startswith("ont tr069 1 1 ") or x.startswith("ont tr069 2 1 ") for x in p)   # sudah ada / Fiberhome
+    assert "save" in p and "show ont info 1 2" in p and "show ont info 2 2" in p
+    assert "2 dari 2 berhasil" in r.stdout and "TERSIMPAN" in r.stdout and "config success" in r.stdout
+    # hanya satu ONU tertentu
+    olt.perintah.clear()
+    r = subprocess.run([sys.executable, skrip, "--kirim", "--onu", "2/1"], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert "1 akan dikirim" in r.stdout and any(x.startswith("ont tr069 2 1 acs-url") for x in olt.perintah)
