@@ -8367,6 +8367,11 @@ def _olt_telnet_aktif() -> bool:
     return bool(CONFIG["OLT_TELNET_USER"] and CONFIG["OLT_TELNET_PASS"] and CONFIG["ACS_ONU_USER"] and CONFIG["ACS_ONU_PASS"])
 
 
+# Prompt CLI utuh di awal baris, mis. "FD1602S-B1#" atau "FD1602S-B1(config-gpon-0/0)#". Lebih ketat
+# dari sekadar "#" di akhir: isi show current-config punya baris diawali "#" yang bisa terpotong.
+_POLA_PROMPT = r"(?:^|\n)[^\s#>]+(?:\([^)]*\))?[>#] ?$"
+
+
 class _TelnetOLT:
     """Klien telnet kecil (telnetlib sudah dihapus di Python 3.13). Menolak semua opsi telnet
     kecuali echo/suppress-go-ahead, cukup untuk CLI OLT."""
@@ -8424,7 +8429,7 @@ class _TelnetOLT:
             self.sock.settimeout(max(0.1, batas - time.monotonic()))
             self._terima()
 
-    def kirim(self, baris: str, pola: str = r"[>#]\s*$") -> str:
+    def kirim(self, baris: str, pola: str = _POLA_PROMPT) -> str:
         self.sock.sendall(baris.encode() + b"\r\n")
         return self.tunggu(pola)
 
