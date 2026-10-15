@@ -8377,11 +8377,12 @@ class _TelnetOLT:
     kecuali echo/suppress-go-ahead, cukup untuk CLI OLT."""
     IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
 
-    def __init__(self, host: str, port: int, timeout: float = 10.0):
+    def __init__(self, host: str, port: int, timeout: float = 45.0):   # OLT bisa lambat saat menunggu jawaban ONU
         import socket
         self.timeout = timeout
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.buf = b""
+        self.terakhir = "(login)"
 
     def _terima(self) -> None:
         data = self.sock.recv(4096)
@@ -8425,11 +8426,16 @@ class _TelnetOLT:
                 self.buf = b""
                 return teks
             if time.monotonic() > batas:
-                raise TimeoutError(f"OLT tidak membalas (menunggu {pola!r}). Keluaran terakhir: {teks[-160:]!r}")
+                raise TimeoutError(f"OLT tidak membalas {int(self.timeout)} detik setelah perintah "
+                                   f"'{_samarkan(self.terakhir)}'. Tulisan terakhir dari OLT: {_samarkan(teks[-200:])!r}")
             self.sock.settimeout(max(0.1, batas - time.monotonic()))
-            self._terima()
+            try:
+                self._terima()
+            except TimeoutError:
+                batas = 0      # putaran berikutnya melapor dengan konteks lengkap
 
     def kirim(self, baris: str, pola: str = _POLA_PROMPT) -> str:
+        self.terakhir = baris
         self.sock.sendall(baris.encode() + b"\r\n")
         return self.tunggu(pola)
 
@@ -8440,7 +8446,7 @@ class _TelnetOLT:
             pass
 
 
-_POLA_KONFIRMASI = r"(?i)(\(y/n\)|\[y/n\]|\(yes/no\)|\[yes/no\]|y/n\s*[:?]?)\s*:?\s*$"
+_POLA_KONFIRMASI = r"(?i)(y/n|yes/no)[^\n]*$"   # pertanyaan konfirmasi di baris terakhir, mis. "(y/n) [n]:"
 
 
 def _simpan_olt(t: "_TelnetOLT") -> bool:
