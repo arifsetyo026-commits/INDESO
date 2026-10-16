@@ -220,16 +220,35 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
-<div class="blNav"><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button></div>
+<div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"></div>
 <div class="blFilters plFilters"><button data-f="aktif" class="on" onclick="setFilterPelanggan('aktif')">Aktif</button><button data-f="belum" onclick="setFilterPelanggan('belum')">Belum lengkap</button><button data-f="berhenti" onclick="setFilterPelanggan('berhenti')">Berhenti</button><button data-f="semua" onclick="setFilterPelanggan('semua')">Semua</button></div>
 <div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
+<div id="plBaruView" style="display:none"><div class="plForm">
+<label>Username PPPoE</label><input id="pbUser" autocapitalize="off" autocomplete="off" placeholder="mis. budi.rt03">
+<label>Nama lengkap</label><input id="pbNama">
+<label>Alamat</label><textarea id="pbAlamat"></textarea>
+<label>Nomor HP / WhatsApp</label><input id="pbHp" type="tel" inputmode="tel">
+<label>Paket</label><select id="pbPaket" onchange="pratinjauPasang();pilihProfilPasang()"></select>
+<label>Tanggal pasang</label><input id="pbTgl" type="date" onchange="pratinjauPasang()">
+<label>Diskon tetap per bulan (Rp)</label><input id="pbDiskon" type="number" min="0" step="1000" value="0" inputmode="numeric" oninput="pratinjauPasang()">
+<label class="plCek"><input type="checkbox" id="pbTagih" checked onchange="pratinjauPasang()"> Langsung buat tagihan bulan pertama (prorata)</label>
+<div class="kuPanel" id="pbPratinjau" style="margin:4px 0 10px;background:#f7faf8"></div>
+<label class="plCek"><input type="checkbox" id="pbSecret" onchange="$('pbSecretBox').style.display=this.checked?'block':'none';if(this.checked)muatProfilPasang()"> Buat akun PPPoE di MikroTik sekalian</label>
+<div id="pbSecretBox" style="display:none"><label>Password PPPoE</label><input id="pbSandi" autocomplete="new-password">
+<label>Profil PPPoE MikroTik</label><select id="pbProfil"><option value="">— dicocokkan otomatis dari kecepatan paket —</option></select></div>
+<label>Biaya pasang yang diterima (Rp) <span class="plSub">(dicatat otomatis di Keuangan; 0 = tidak ada)</span></label><input id="pbBiaya" type="number" min="0" step="1000" value="0" inputmode="numeric">
+<label>Metode bayar biaya pasang</label><select id="pbMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
+<div class="plBtns"><button class="plSave" id="pbSimpan" onclick="simpanPasangBaru()">Simpan pelanggan baru</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
+<div class="plMsg" id="pbMsg"></div></div></div>
 <div id="plFormView" style="display:none"><div class="plForm">
 <label>Username PPPoE</label><input id="plUser" disabled>
 <label>Nama lengkap</label><input id="plNama">
 <label>Alamat</label><textarea id="plAlamat"></textarea>
 <label>Nomor HP / WhatsApp</label><input id="plHp" type="tel" inputmode="tel">
 <label>Paket</label><select id="plPaket"></select>
+<label>Tanggal mulai berlangganan <span class="plSub">(untuk tagihan prorata bulan pertama)</span></label><input id="plTglPasang" type="date">
+<label>Diskon tetap per bulan (Rp) <span class="plSub">(0 = tanpa diskon)</span></label><input id="plDiskon" type="number" min="0" step="1000" inputmode="numeric">
 <label>Status langganan</label><select id="plStatus" onchange="aturCentangSecret()"><option value="aktif">Aktif</option><option value="berhenti">Berhenti (tidak ditagih, tidak dipantau)</option></select>
 <label class="plCek" id="plSecretWrap" style="display:none"><input type="checkbox" id="plSecret" checked> <span id="plSecretTeks">Nonaktifkan juga secret PPPoE di MikroTik</span></label>
 <div class="plSub" id="plSecretInfo"></div>
@@ -252,7 +271,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="blFilters blTabs"><button data-v="bulan" class="on" onclick="tampilBl('bulan')">Per bulan</button><button data-v="tunggakan" onclick="tampilBl('tunggakan')">Tunggakan</button></div>
 <div id="blTunggakan" style="display:none"></div>
 <div id="blBulan">
-<div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button></div>
+<div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button><a class="btnS" id="blEkspor" href="#" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
 <div class="search"><input id="blSearch" placeholder="Cari nama atau username…" oninput="renderBilling()"></div>
 <div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
@@ -543,7 +562,7 @@ function renderTunggakan(dariCari){
  el.innerHTML=`<div class="blSum" style="grid-template-columns:repeat(2,1fr)">${kotak}</div>
   <div class="plSub" style="margin:-4px 0 8px">Total belum lunas <b>${rp(d.total)}</b> dari ${d.jumlah_pelanggan} pelanggan · sudah lewat jatuh tempo <b style="color:#b42318">${rp(d.total_telat)}</b>. Umur dihitung dari jatuh tempo tagihan tertua.</div>
   <div class="search"><input id="tgCari" placeholder="Cari nama atau username…" value="${esc(q)}" oninput="renderTunggakan(true)"></div>
-  <div class="blFilters"><button class="${bl.tgFilter==='telat'?'on':''}" onclick="bl.tgFilter='telat';renderTunggakan()">Lewat jatuh tempo</button><button class="${bl.tgFilter==='semua'?'on':''}" onclick="bl.tgFilter='semua';renderTunggakan()">Semua belum lunas</button></div>
+  <div class="blFilters"><button class="${bl.tgFilter==='telat'?'on':''}" onclick="bl.tgFilter='telat';renderTunggakan()">Lewat jatuh tempo</button><button class="${bl.tgFilter==='semua'?'on':''}" onclick="bl.tgFilter='semua';renderTunggakan()">Semua belum lunas</button><a class="btnS" href="/api/ekspor/tunggakan" download style="text-decoration:none;margin-left:auto">Ekspor CSV</a></div>
   ${bl.antri?'':(()=>{const c=calonAntri(); return c.baru.length?`<button class="btnS go" style="width:100%;margin:2px 0 6px;padding:10px" onclick="mulaiAntri()">📨 Ingatkan massal lewat WA (${c.baru.length} pelanggan)</button>`:'';})()}
   <div class="plMsg" id="tgMsg"></div>${bl.antri?panelAntri():''}${bl.kw?kotakKwitansi():''}
   <div class="plSub" style="margin:6px 0"><b>${esc(judulFilter)}</b> · ${rows.length} pelanggan</div>
@@ -875,7 +894,7 @@ const _bukaKesehatanAsli=bukaKesehatan;
 bukaKesehatan=function(i){ _bukaKesehatanAsli(i); if(kh.buka===i) muatRiwayatPutus(i); };
   // ===== Isolir di menu Billing dan Pelanggan (menggantikan fungsi lama bernama sama) =====
 async function loadBilling(diam){
- $('blPeriode').textContent=namaPeriode(bl.periode);
+ $('blPeriode').textContent=namaPeriode(bl.periode); $('blEkspor').href='/api/ekspor/tagihan?periode='+bl.periode;
  if(!diam){ $('blMsg').textContent=''; $('blList').innerHTML='<div class="muted">Memuat…</div>'; }
  try{
   const [r,ri]=await Promise.all([fetch('/api/tagihan?periode='+bl.periode),fetch('/api/isolir')]);
@@ -914,7 +933,7 @@ function renderBilling(){
   const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari, terisolir=iso.has(t.username);
   const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
-  const sub=lunas?('Dibayar '+tglPendek(t.tgl_bayar)+(t.metode_bayar?' · '+esc(t.metode_bayar):'')+(t.lunas_oleh?' · dicatat '+esc(t.lunas_oleh):'')):('Jatuh tempo '+tglPendek(t.jatuh_tempo));
+  const sub=(lunas?('Dibayar '+tglPendek(t.tgl_bayar)+(t.metode_bayar?' · '+esc(t.metode_bayar):'')+(t.lunas_oleh?' · dicatat '+esc(t.lunas_oleh):'')):('Jatuh tempo '+tglPendek(t.jatuh_tempo)))+(t.catatan?' · <span style="color:#1d5fa8">'+esc(t.catatan)+'</span>':'');
   const tLunas=lunas?`<button class="btnS" onclick="bl.kw=${t.id};renderBilling();$('blList').scrollIntoView({block:'start'})">Kwitansi</button><button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="bl.bayar=bl.bayar===${t.id}?null:${t.id};renderBilling()">Tandai lunas</button>`;
   const hariIni=new Date().toLocaleDateString('sv-SE');
   const fBayar=!lunas&&bl.bayar===t.id?`<div class="kuBayarForm" style="margin-top:8px"><div><small>Tanggal uang diterima</small><input type="date" id="blTgl" value="${hariIni}" max="${hariIni}"></div><div><small>Metode</small><select id="blMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select></div><div><small>&nbsp;</small><button class="btnS go" onclick="ubahLunas(${t.id},true)">Simpan lunas</button></div></div>`:'';
@@ -996,6 +1015,7 @@ function renderPelanggan(){
 function tampilkanView(v){
  $('plListView').style.display=v==='list'?'block':'none';
  $('plFormView').style.display=v==='form'?'block':'none';
+ $('plBaruView').style.display=v==='baru'?'block':'none';
  $('plPaketView').style.display=v==='paket'?'block':'none';
 }
 function editPelanggan(i){
@@ -1003,6 +1023,7 @@ function editPelanggan(i){
  $('plTitle').textContent='Ubah Data Pelanggan';
  $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0; $('plInsGratis').checked=!!p.insentif_gratis; aturCentangGratis();
  $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
+ $('plTglPasang').value=p.tgl_pasang||''; $('plDiskon').value=p.diskon||0;
  $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value; $('plSecret').checked=true; aturCentangSecret();
  $('plSecretInfo').innerHTML=p.secret_target?'<span style="color:#b45309">⏳ Menunggu sinkron MikroTik: secret akan '+(p.secret_target==='nonaktif'?'dinonaktifkan':'diaktifkan')+' begitu MikroTik terjangkau.</span>':(p.secret_nonaktif?'Secret PPPoE pelanggan ini sedang nonaktif di MikroTik.':'');
  $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
@@ -1014,7 +1035,7 @@ function backPelanggan(){
  tampilkanView('list');
 }
 async function savePelanggan(){
- const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,atur_secret:$('plSecret').checked,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked};
+ const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,atur_secret:$('plSecret').checked,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked,tgl_pasang:$('plTglPasang').value||'',diskon:Number($('plDiskon').value||0)};
  if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
  if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\n'+(body.atur_secret?'Secret PPPoE di MikroTik DINONAKTIFKAN dan sesinya diputus (tidak dihapus, bisa diaktifkan lagi).':'Secret PPPoE di MikroTik TIDAK diubah.'))) return;
  if(body.status==='aktif'&&pl.statusAwal==='berhenti'&&body.atur_secret&&!confirm('Aktifkan kembali '+body.nama+'? Secret PPPoE di MikroTik akan diaktifkan lagi.')) return;
@@ -1046,6 +1067,59 @@ function aturCentangSecret(){
  const berubah=$('plStatus').value!==pl.statusAwal;
  $('plSecretWrap').style.display=berubah?'flex':'none';
  $('plSecretTeks').textContent=$('plStatus').value==='berhenti'?'Nonaktifkan juga secret PPPoE di MikroTik (sesi diputus, secret tidak dihapus)':'Aktifkan kembali secret PPPoE di MikroTik';
+}
+// ===== Pasang baru =====
+function hitungProrata(harga,diskon,tgl){
+ // sama dengan server: (harga − diskon) × sisa hari ÷ hari sebulan, dibulatkan ke Rp1.000
+ const [y,m,d]=tgl.split('-').map(Number), hb=new Date(y,m,0).getDate(), dasar=Math.max(0,harga-diskon);
+ if(d<=1) return {jumlah:dasar,hari:hb,hb};
+ const hari=hb-d+1; return {jumlah:Math.floor(dasar*hari/hb/1000+0.5)*1000,hari,hb};
+}
+function bukaPasangBaru(){
+ $('plTitle').textContent='Pasang Baru';
+ ['pbUser','pbNama','pbAlamat','pbHp','pbSandi'].forEach(i=>$(i).value='');
+ $('pbDiskon').value=0; $('pbBiaya').value=0; $('pbTagih').checked=true; $('pbSecret').checked=false; $('pbSecretBox').style.display='none';
+ const hari=new Date().toLocaleDateString('sv-SE'); $('pbTgl').value=hari; $('pbTgl').max=hari;
+ $('pbPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}">${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
+ $('pbMsg').textContent=''; pratinjauPasang(); tampilkanView('baru'); $('pbUser').focus();
+}
+function pratinjauPasang(){
+ const k=pl.paket.find(x=>x.id===Number($('pbPaket').value)), tgl=$('pbTgl').value, dis=Number($('pbDiskon').value||0), el=$('pbPratinjau');
+ if(!k||!tgl){ el.innerHTML='<span class="plSub">Pilih paket dan tanggal pasang untuk melihat tagihan pertama.</span>'; return; }
+ const p=hitungProrata(k.harga,dis,tgl), bln=namaPeriode(tgl.slice(0,7));
+ el.innerHTML=$('pbTagih').checked
+  ?`<b>Tagihan ${esc(bln)}: ${rp(p.jumlah)}</b><div class="plSub">${p.hari<p.hb?`prorata ${p.hari} dari ${p.hb} hari (${rp(Math.max(0,k.harga-dis))} × ${p.hari}/${p.hb})`:'bulan penuh'}${dis?' · sudah dipotong diskon '+rp(dis):''}. Bulan berikutnya ${rp(Math.max(0,k.harga-dis))}.</div>`
+  :`<span class="plSub">Tagihan ${esc(bln)} tidak dibuat sekarang. Mulai bulan berikutnya ${rp(Math.max(0,k.harga-dis))}/bulan.</span>`;
+}
+async function muatProfilPasang(){
+ if(pl.profil) return pilihProfilPasang();
+ try{ pl.profil=(await jsonAtauError(await fetch('/api/mikrotik/profil'))).profil; }catch(e){ $('pbMsg').style.color='#b45309'; $('pbMsg').textContent='Daftar profil MikroTik gagal dimuat: '+e.message; return; }
+ $('pbProfil').innerHTML='<option value="">— dicocokkan otomatis dari kecepatan paket —</option>'+pl.profil.map(x=>`<option value="${esc(x.nama)}">${esc(x.nama)}</option>`).join('');
+ pilihProfilPasang();
+}
+function pilihProfilPasang(){
+ const k=pl.paket.find(x=>x.id===Number($('pbPaket').value)); if(!k||!pl.profil) return;
+ const cocok=pl.profil.find(x=>x.mbps===k.kecepatan_mbps); if(cocok) $('pbProfil').value=cocok.nama;
+}
+async function simpanPasangBaru(){
+ const body={username:$('pbUser').value.trim(),nama:$('pbNama').value.trim(),alamat:$('pbAlamat').value.trim()||null,no_hp:$('pbHp').value.trim()||null,
+  paket_id:Number($('pbPaket').value||0),tgl_pasang:$('pbTgl').value,diskon:Number($('pbDiskon').value||0),tagih_bulan_ini:$('pbTagih').checked,
+  buat_secret:$('pbSecret').checked,password_pppoe:$('pbSandi').value,profil:$('pbProfil').value||null,biaya_pasang:Number($('pbBiaya').value||0),metode_bayar:$('pbMetode').value};
+ const msg=$('pbMsg'); msg.style.color='#b42318';
+ if(!body.username||!body.nama||!body.paket_id||!body.tgl_pasang){ msg.textContent='Isi username, nama, paket, dan tanggal pasang.'; return; }
+ if(body.buat_secret&&body.password_pppoe.length<4){ msg.textContent='Isi password PPPoE (minimal 4 karakter).'; return; }
+ const b=$('pbSimpan'); b.disabled=true; b.textContent='Menyimpan…';
+ try{
+  const d=await jsonAtauError(await fetch('/api/pasang-baru',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  await loadPelanggan(); backPelanggan();
+  const t=[ 'Pelanggan '+body.nama+' ('+d.username+') tersimpan' ];
+  if(d.profil) t.push('akun PPPoE dibuat di MikroTik (profil '+d.profil+')');
+  if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
+  if(d.transaksi&&d.transaksi.nomor) t.push('biaya pasang tercatat di Keuangan ('+d.transaksi.nomor+')');
+  if(d.transaksi&&d.transaksi.galat) t.push('⚠️ biaya pasang belum tercatat: '+d.transaksi.galat);
+  $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
+ }catch(e){ msg.textContent='Gagal: '+e.message; }
+ finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
 }
 // ===== Paket =====
 async function bukaPaket(){
@@ -1091,7 +1165,7 @@ async function hapusPaket(i){
  }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
 }
 // ===== Log aktivitas (di menu Pengaturan) =====
-const AKSI_LABEL={olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+const AKSI_LABEL={pasang_baru:'Pasang baru',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
 
 // ===== Pengaturan: akun saya, pengguna, sistem, log =====
 AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';
@@ -1383,7 +1457,7 @@ function htmlAcs(a){
  h+=wifiAktif.map(kartuWifi).join('')||'<div class="muted">Tidak ada WiFi yang aktif di ONU ini.</div>';
  if(p.perangkat_wifi&&wifiAktif.every(w=>w.klien==null)) h+=`<div class="plSub" style="margin:-2px 0 8px">${p.perangkat_wifi} perangkat tersambung lewat WiFi (ONU tidak melaporkan jumlah per jaringan).</div>`;
  if(wifiMati.length) h+=`<details style="margin-bottom:8px"><summary class="plSub" style="cursor:pointer;font-weight:800">${wifiMati.length} WiFi nonaktif (slot bawaan ONU)</summary>${wifiMati.map(kartuWifi).join('')}</details>`;
- if(p.perangkat.length) h+=`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer;font-weight:800">Daftar perangkat di rumah pelanggan (${p.perangkat.length})</summary>`+p.perangkat.map(x=>`<div class="blRow"><div><div class="plName" style="font-size:var(--fs-xs)">${esc(x.nama)}</div><div class="plSub">${esc(x.ip||'')} · ${esc(x.mac||'')}${x.antarmuka?' · '+esc(x.antarmuka):''}</div></div>${x.aktif?'<span class="chip ok">aktif</span>':'<span class="chip off">tidak aktif</span>'}</div>`).join('')+'</details>';
+ if(p.perangkat.length) h+=`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer;font-weight:800">Daftar perangkat di rumah pelanggan (${p.perangkat.length})</summary>`+p.perangkat.map(x=>`<div class="blRow"><div><div class="plName" style="font-size:var(--fs-xs)">${esc(x.nama)}</div><div class="plSub">${esc(x.ip||'')} · ${esc(x.mac||'')}${x.wifi?' · WiFi '+esc(x.wifi):(x.antarmuka?' · '+esc(x.antarmuka):'')}${x.catatan?'<br>'+esc(x.catatan):''}</div></div>${x.aktif?'<span class="chip ok">tersambung</span>':'<span class="chip off">tidak tersambung</span>'}</div>`).join('')+'</details>';
  return h;
 }
 // Pantau perintah yang antre di GenieACS sampai ONU menjalankannya (atau menolaknya),
@@ -2255,14 +2329,31 @@ async function muatInsentif(){
    const berjalan=b.periode===hariIni;
    const riw=b.pembayaran.length?'<div class="kuRiwBayar">'+b.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)} · ${esc(p.dicatat_oleh)}${p.status!=='aktif'?' · dibatalkan: '+esc(p.batal_alasan||''):''}${p.status==='aktif'&&bolehBatalBayar(p)?` <a href="#" onclick="batalBayarInsentif(${p.id});return false">batalkan</a>`:''}${htmlNota(p.nota,p.status==='aktif'&&bolehBatalBayar(p)?`tambahNota('transaksi',${p.id})`:null,false)}</div>`).join('')+'</div>':'';
    const form=ku.inBayar===b.periode?`<div class="kuBayarForm" style="grid-template-columns:repeat(4,minmax(0,1fr)) auto"><div><small>Tanggal bayar</small><input type="date" id="ibTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>Jumlah (sisa ${rp(b.sisa)})</small><input id="ibJml" inputmode="numeric" value="${Number(b.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="ibMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><small>Penerima (opsional)</small><input id="ibPenerima" placeholder="nama mitra"></div><div><button class="btnS go" onclick="simpanBayarInsentif('${b.periode}')">Simpan</button></div></div><div class="plSub" style="margin-top:4px">Bukti transfer bisa dilampirkan setelah disimpan (tombol + Nota).</div>`:'';
-   const tombol=b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Lunasi</button>`:'';
-   return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(namaPeriode(b.periode))}${berjalan?' <span class="plSub">(bulan berjalan, masih bisa bertambah)</span>':''}</div><div class="plSub">${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}${b.lebih?' · <b style="color:#1669aa">lebih bayar '+rp(b.lebih)+'</b>':''}</div></div><div class="blKanan"><div class="blAmt">${rp(b.terhitung)}</div><div class="plSub">dibayar ${rp(b.dibayar)}${b.sisa?' · sisa <b style="color:#b45309">'+rp(b.sisa)+'</b>':''}</div><div class="blAksi">${IN_CHIP[b.status]||''}${tombol}</div></div></div>${riw}${form}</div>`;
+   const tombol=(b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Lunasi</button>`:'')
+    +(ku.ins.peran==='owner'?(b.terkunci?`<button class="btnS" onclick="bukaKunciKomisi('${b.periode}')">Buka kunci</button>`:`<button class="btnS" onclick="kunciKomisi('${b.periode}',${b.terhitung})">Kunci</button>`):'');
+   const kunci=b.terkunci?`<div class="plSub" style="color:#0b7a3b">🔒 Final${b.terkunci.sumber==='tutup_buku'?' (tutup buku)':' (dikunci manual)'} · ${esc(b.terkunci.oleh||'')} ${esc(tglPendek(b.terkunci.pada))}${b.terkunci.catatan?' · '+esc(b.terkunci.catatan):''}</div>`:'';
+   const rumus=b.terkunci&&b.terhitung!==b.jumlah_pelanggan*b.per_pelanggan?'angka disepakati':`${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}`;
+   return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">Hasil kerja ${esc(namaPeriode(b.periode))}${!b.terkunci?' <span class="plSub">(belum final, terkunci saat tutup buku)</span>':''}</div><div class="plSub">dibayar awal ${esc(namaPeriode(geserPeriode(b.periode,1)))} · ${rumus}${b.lebih?' · <b style="color:#1669aa">lebih bayar '+rp(b.lebih)+'</b>':''}</div></div><div class="blKanan"><div class="blAmt">${rp(b.terhitung)}</div><div class="plSub">dibayar ${rp(b.dibayar)}${b.sisa?' · sisa <b style="color:#b45309">'+rp(b.sisa)+'</b>':''}</div><div class="blAksi">${IN_CHIP[b.status]||''}${tombol}</div></div></div>${kunci}${riw}${form}</div>`;
   }).join(''):'<div class="muted">Belum ada data tagihan.</div>';
  }catch(e){ $('inList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 function bolehBatalBayar(p){
  if(!ku.ins) return false; if(ku.ins.peran==='owner') return true;
  return p.dicatat_oleh===ku.ins.saya&&(Date.now()-new Date(p.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
+}
+async function kunciKomisi(periode,terhitung){
+ const v=prompt('Kunci komisi hasil kerja '+namaPeriode(periode)+' (dibayar awal '+namaPeriode(geserPeriode(periode,1))+').\nTerhitung sekarang '+rp(terhitung)+'. Isi jumlah yang disepakati (kosongkan = pakai angka terhitung):',String(terhitung));
+ if(v==null) return;
+ const total=v.trim()===''?null:Number(v.replace(/\D/g,''));
+ if(total!==null&&!(total>=0)){ kuPesan('Jumlah tidak valid.'); return; }
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({total,catatan:total!==null&&total!==terhitung?'disepakati '+rp(total):null})}));
+  await muatInsentif(); kuPesan('Komisi '+namaPeriode(periode)+' dikunci '+rp(d.total)+'.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function bukaKunciKomisi(periode){
+ if(!confirm('Buka kunci komisi '+namaPeriode(periode)+'? Angkanya akan dihitung ulang dari data tagihan.')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'DELETE'})); await muatInsentif(); kuPesan('Kunci komisi '+namaPeriode(periode)+' dibuka.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
 }
 function bukaBayarInsentif(p){ ku.inBayar=ku.inBayar===p?null:p; muatInsentif(); }
 async function simpanBayarInsentif(periode){
@@ -2278,7 +2369,7 @@ async function batalBayarInsentif(id){
  try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
+AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.komisi_kunci='Kunci komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
 pulihkanModal();
 </script>
