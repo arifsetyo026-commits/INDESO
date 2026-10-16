@@ -1766,3 +1766,23 @@ def test_kunci_komisi_mitra(siap):
     assert ins["total"] == 20000 and ins["final"]
     assert o.post("/api/keuangan/tutup-buku/2026-09/buka", json={"alasan": "koreksi"}).status_code == 200
     assert m.get("/api/mitra/pelanggan?periode=2026-09").json()["insentif"]["total"] == 30000
+
+
+def test_komisi_bulan_sebelum_penagihan(siap):
+    """Data nyata: Penagihan baru dipakai (hanya ada tagihan bulan depan), transaksi keuangan sudah sejak
+    September. Daftar komisi tetap menampilkan September s/d bulan tagihan; tutup buku bulan tanpa
+    tagihan tidak mengunci di Rp0; owner kunci manual Rp260.000."""
+    main, o, k, m = siap
+    kat = _kat(o)
+    assert k.post("/api/keuangan/transaksi", json={"tanggal": "2026-09-03", "jenis": "masuk", "kategori_id": kat["Setoran modal"],
+                                                     "jumlah": 1_000_000}).status_code == 200
+    o.post("/api/tagihan/buat?periode=2026-11")
+    rk = {b["periode"]: b for b in o.get("/api/keuangan/insentif?sampai=2026-10").json()["rekap"]}
+    assert {"2026-09", "2026-10", "2026-11"} <= set(rk)
+    assert rk["2026-09"]["ada_tagihan"] is False and rk["2026-11"]["ada_tagihan"] is True
+    assert o.post("/api/keuangan/tutup-buku/2026-09", json={"catatan": ""}).status_code == 200
+    rk = {b["periode"]: b for b in o.get("/api/keuangan/insentif?sampai=2026-10").json()["rekap"]}
+    assert rk["2026-09"]["terkunci"] is None                       # tidak terkunci otomatis di Rp0
+    assert o.post("/api/keuangan/insentif/2026-09/kunci", json={"total": 260000}).status_code == 200
+    rk = {b["periode"]: b for b in o.get("/api/keuangan/insentif?sampai=2026-10").json()["rekap"]}
+    assert rk["2026-09"]["terhitung"] == 260000 and rk["2026-09"]["sisa"] == 260000
