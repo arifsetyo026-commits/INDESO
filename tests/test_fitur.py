@@ -1699,3 +1699,33 @@ def test_prorata_diskon_dan_pasang_baru(siap):
     assert k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": tgl,
                                             "buat_secret": True, "password_pppoe": "rahasia9"}).status_code == 409
     assert k.get("/api/mikrotik/profil").json()["profil"][1] == {"nama": "paket-10mbps", "mbps": 10.0}
+
+
+def test_perangkat_wifi_dicocokkan_dengan_mac_tersambung(app):
+    """Fiberhome: tabel host (DHCP) masih 'aktif' untuk HP yang sudah pergi; yang dihitung tersambung
+    hanya MAC yang ada di daftar AssociatedDevice WiFi."""
+    main = app
+    v = lambda x: {"_value": x}
+    igd = {"LANDevice": {"1": {
+        "WLANConfiguration": {
+            "1": {"SSID": v("Awas ada JULE"), "Enable": v(True), "TotalAssociations": v("0"), "AssociatedDevice": {}},
+            "5": {"SSID": v("KANJENG MAMI"), "Enable": v(True), "TotalAssociations": v("1"),
+                  "AssociatedDevice": {"1": {"AssociatedDeviceMACAddress": v("2e:77:f7:b0:08:08")}}}},
+        "Hosts": {"Host": {
+            "1": {"HostName": v("realme-C11"), "IPAddress": v("192.168.1.2"), "MACAddress": v("9A:0F:D3:C1:45:29"),
+                  "Active": v(True), "InterfaceType": v("802.11")},
+            "2": {"HostName": v("OPPO-A57"), "IPAddress": v("192.168.1.9"), "MACAddress": v("2E:77:F7:B0:08:08"),
+                  "Active": v(True), "InterfaceType": v("802.11")},
+            "3": {"HostName": v("PC"), "IPAddress": v("192.168.1.5"), "MACAddress": v("AA:AA:AA:AA:AA:AA"),
+                  "Active": v(True), "InterfaceType": v("Ethernet")}}}}}}
+    r = main._ringkas_perangkat({"_id": "x", "_deviceId": {}, "InternetGatewayDevice": igd})
+    per = {h["nama"]: h for h in r["perangkat"]}
+    assert per["OPPO-A57"]["aktif"] and per["OPPO-A57"]["wifi"] == "KANJENG MAMI"
+    assert not per["realme-C11"]["aktif"] and "tidak sedang tersambung" in per["realme-C11"]["catatan"]
+    assert per["PC"]["aktif"]                                  # kabel tidak terpengaruh
+    assert r["perangkat_aktif"] == 2 and r["perangkat_wifi"] == 1
+    # ONU yang tidak memberi daftar MAC WiFi: tetap memakai status dari tabel host
+    for w in igd["LANDevice"]["1"]["WLANConfiguration"].values():
+        w["AssociatedDevice"] = {}
+    r = main._ringkas_perangkat({"_id": "x", "_deviceId": {}, "InternetGatewayDevice": igd})
+    assert r["perangkat_aktif"] == 3

@@ -8196,6 +8196,7 @@ def _band_wifi(doc: dict, b: str, ssid: str) -> str:
 def _ringkas_perangkat(doc: dict) -> dict:
     di = doc.get("_deviceId", {})
     wlan = []
+    mac_wifi = {}      # MAC perangkat yang sedang tersambung ke pemancar WiFi -> nama WiFi
     for i in _anak(doc, f"{_IGD}.LANDevice.1.WLANConfiguration"):
         b = f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"
         ssid = _nilai(doc, f"{b}.SSID")
@@ -8205,6 +8206,10 @@ def _ringkas_perangkat(doc: dict) -> dict:
         # Sebagian ONU (mis. Fiberhome) tidak mengisi TotalAssociations; pakai yang terbesar.
         total = _nilai(doc, f"{b}.TotalAssociations")
         klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
+        for j in _anak(doc, f"{b}.AssociatedDevice"):
+            mac = str(_nilai(doc, f"{b}.AssociatedDevice.{j}.AssociatedDeviceMACAddress") or "").upper()
+            if mac:
+                mac_wifi[mac] = ssid
         wlan.append({"index": int(i), "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
                      "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
                      "band": _band_wifi(doc, b, ssid), "klien": klien, "bisa_ganti_password": kunci is not None})
@@ -8215,6 +8220,16 @@ def _ringkas_perangkat(doc: dict) -> dict:
         host.append({"nama": _nilai(doc, f"{b}.HostName") or "-", "ip": _nilai(doc, f"{b}.IPAddress"),
                      "mac": _nilai(doc, f"{b}.MACAddress"), "aktif": aktif in (True, "true", "1", 1),
                      "antarmuka": _nilai(doc, f"{b}.InterfaceType")})
+    # Tabel host (DHCP) sering tetap "aktif" sampai sewa IP habis walau HP sudah pergi. Bila ONU memberi
+    # daftar perangkat yang benar-benar tersambung ke WiFi, itu yang dipakai untuk perangkat WiFi.
+    for h in host:
+        mac = str(h["mac"] or "").upper()
+        if mac in mac_wifi:
+            h["wifi"] = mac_wifi[mac]
+            h["aktif"] = True
+        elif mac_wifi and "802.11" in str(h["antarmuka"] or "") and h["aktif"]:
+            h["aktif"] = False
+            h["catatan"] = "tercatat di ONU, tidak sedang tersambung ke WiFi"
     host_wifi = sum(1 for h in host if h["aktif"] and "802.11" in str(h["antarmuka"] or ""))
     if host_wifi and not any(w["klien"] for w in wlan):
         for w in wlan:
