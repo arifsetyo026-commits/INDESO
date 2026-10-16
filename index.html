@@ -2329,14 +2329,31 @@ async function muatInsentif(){
    const berjalan=b.periode===hariIni;
    const riw=b.pembayaran.length?'<div class="kuRiwBayar">'+b.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)} · ${esc(p.dicatat_oleh)}${p.status!=='aktif'?' · dibatalkan: '+esc(p.batal_alasan||''):''}${p.status==='aktif'&&bolehBatalBayar(p)?` <a href="#" onclick="batalBayarInsentif(${p.id});return false">batalkan</a>`:''}${htmlNota(p.nota,p.status==='aktif'&&bolehBatalBayar(p)?`tambahNota('transaksi',${p.id})`:null,false)}</div>`).join('')+'</div>':'';
    const form=ku.inBayar===b.periode?`<div class="kuBayarForm" style="grid-template-columns:repeat(4,minmax(0,1fr)) auto"><div><small>Tanggal bayar</small><input type="date" id="ibTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>Jumlah (sisa ${rp(b.sisa)})</small><input id="ibJml" inputmode="numeric" value="${Number(b.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="ibMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><small>Penerima (opsional)</small><input id="ibPenerima" placeholder="nama mitra"></div><div><button class="btnS go" onclick="simpanBayarInsentif('${b.periode}')">Simpan</button></div></div><div class="plSub" style="margin-top:4px">Bukti transfer bisa dilampirkan setelah disimpan (tombol + Nota).</div>`:'';
-   const tombol=b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Lunasi</button>`:'';
-   return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(namaPeriode(b.periode))}${berjalan?' <span class="plSub">(bulan berjalan, masih bisa bertambah)</span>':''}</div><div class="plSub">${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}${b.lebih?' · <b style="color:#1669aa">lebih bayar '+rp(b.lebih)+'</b>':''}</div></div><div class="blKanan"><div class="blAmt">${rp(b.terhitung)}</div><div class="plSub">dibayar ${rp(b.dibayar)}${b.sisa?' · sisa <b style="color:#b45309">'+rp(b.sisa)+'</b>':''}</div><div class="blAksi">${IN_CHIP[b.status]||''}${tombol}</div></div></div>${riw}${form}</div>`;
+   const tombol=(b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Lunasi</button>`:'')
+    +(ku.ins.peran==='owner'?(b.terkunci?`<button class="btnS" onclick="bukaKunciKomisi('${b.periode}')">Buka kunci</button>`:`<button class="btnS" onclick="kunciKomisi('${b.periode}',${b.terhitung})">Kunci</button>`):'');
+   const kunci=b.terkunci?`<div class="plSub" style="color:#0b7a3b">🔒 Final${b.terkunci.sumber==='tutup_buku'?' (tutup buku)':' (dikunci manual)'} · ${esc(b.terkunci.oleh||'')} ${esc(tglPendek(b.terkunci.pada))}${b.terkunci.catatan?' · '+esc(b.terkunci.catatan):''}</div>`:'';
+   const rumus=b.terkunci&&b.terhitung!==b.jumlah_pelanggan*b.per_pelanggan?'angka disepakati':`${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}`;
+   return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">Hasil kerja ${esc(namaPeriode(b.periode))}${!b.terkunci?' <span class="plSub">(belum final, terkunci saat tutup buku)</span>':''}</div><div class="plSub">dibayar awal ${esc(namaPeriode(geserPeriode(b.periode,1)))} · ${rumus}${b.lebih?' · <b style="color:#1669aa">lebih bayar '+rp(b.lebih)+'</b>':''}</div></div><div class="blKanan"><div class="blAmt">${rp(b.terhitung)}</div><div class="plSub">dibayar ${rp(b.dibayar)}${b.sisa?' · sisa <b style="color:#b45309">'+rp(b.sisa)+'</b>':''}</div><div class="blAksi">${IN_CHIP[b.status]||''}${tombol}</div></div></div>${kunci}${riw}${form}</div>`;
   }).join(''):'<div class="muted">Belum ada data tagihan.</div>';
  }catch(e){ $('inList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 function bolehBatalBayar(p){
  if(!ku.ins) return false; if(ku.ins.peran==='owner') return true;
  return p.dicatat_oleh===ku.ins.saya&&(Date.now()-new Date(p.dicatat_pada.replace(' ','T')).getTime())<24*3600e3;
+}
+async function kunciKomisi(periode,terhitung){
+ const v=prompt('Kunci komisi hasil kerja '+namaPeriode(periode)+' (dibayar awal '+namaPeriode(geserPeriode(periode,1))+').\nTerhitung sekarang '+rp(terhitung)+'. Isi jumlah yang disepakati (kosongkan = pakai angka terhitung):',String(terhitung));
+ if(v==null) return;
+ const total=v.trim()===''?null:Number(v.replace(/\D/g,''));
+ if(total!==null&&!(total>=0)){ kuPesan('Jumlah tidak valid.'); return; }
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({total,catatan:total!==null&&total!==terhitung?'disepakati '+rp(total):null})}));
+  await muatInsentif(); kuPesan('Komisi '+namaPeriode(periode)+' dikunci '+rp(d.total)+'.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function bukaKunciKomisi(periode){
+ if(!confirm('Buka kunci komisi '+namaPeriode(periode)+'? Angkanya akan dihitung ulang dari data tagihan.')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'DELETE'})); await muatInsentif(); kuPesan('Kunci komisi '+namaPeriode(periode)+' dibuka.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
 }
 function bukaBayarInsentif(p){ ku.inBayar=ku.inBayar===p?null:p; muatInsentif(); }
 async function simpanBayarInsentif(periode){
@@ -2352,7 +2369,7 @@ async function batalBayarInsentif(id){
  try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
+AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.komisi_kunci='Kunci komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
 pulihkanModal();
 </script>

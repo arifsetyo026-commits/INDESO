@@ -4908,6 +4908,10 @@ def tutup_buku(periode: str, d: TutupBukuIn, request: Request):
         if _buku_tertutup(conn, periode):
             raise HTTPException(status_code=400, detail="Buku bulan ini sudah ditutup.")
         r = _ringkas_periode(conn, periode)
+        # Komisi mitra bulan ini ikut final (hasil kerja bulan ini, dibayar awal bulan depan)
+        _siapkan_kunci_komisi(conn)
+        if not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ?", (periode,)).fetchone():
+            _kunci_komisi(conn, periode, "tutup_buku", _oleh(request))
         conn.execute("INSERT INTO tutup_buku (periode, oleh, pada, catatan) VALUES (?,?,?,?)",
                      (periode, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                       (d.catatan or "").strip()[:300] or None))
@@ -4932,6 +4936,8 @@ def buka_buku(periode: str, d: BatalIn, request: Request):
         if not _buku_tertutup(conn, periode):
             raise HTTPException(status_code=404, detail="Buku bulan ini belum ditutup.")
         conn.execute("DELETE FROM tutup_buku WHERE periode = ?", (periode,))
+        _siapkan_kunci_komisi(conn)
+        conn.execute("DELETE FROM komisi_kunci WHERE periode = ? AND sumber = 'tutup_buku'", (periode,))
         conn.commit()
     finally:
         conn.close()
@@ -5285,7 +5291,7 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
         hasil.append({"periode": p, "jumlah_pelanggan": ins["jumlah"], "jumlah_lunas": ins["jumlah_lunas"],
                       "jumlah_gratis": ins["jumlah_gratis"], "per_pelanggan": ins["per_pelanggan"],
                       "terhitung": ins["total"], "dibayar": dibayar, "sisa": max(0, sisa),
-                      "lebih": max(0, -sisa),
+                      "lebih": max(0, -sisa), "terkunci": ins.get("terkunci"),
                       "status": "lunas" if ins["total"] and sisa <= 0 else ("sebagian" if dibayar else
                                                                             ("belum" if ins["total"] else "nihil"))})
         p = _geser_periode(p, 1)
@@ -5311,6 +5317,47 @@ def _pembayaran_insentif(conn, periode_list: list[str]) -> dict[str, list[dict]]
     ):
         hasil.setdefault(r["periode"], []).append(dict(r))
     return hasil
+
+
+class KunciKomisiIn(BaseModel):
+    total: Optional[int] = None        # kosong = pakai angka terhitung sekarang
+    catatan: Optional[str] = None
+
+
+@app.post("/api/keuangan/insentif/{periode}/kunci")
+def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
+    _wajib_owner(request, "Hanya owner yang bisa mengunci komisi mitra.")
+    if not _periode_valid(periode) or periode > datetime.now().strftime("%Y-%m"):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    if d.total is not None and not 0 <= d.total <= 100_000_000:
+        raise HTTPException(status_code=400, detail="Jumlah komisi tidak valid.")
+    conn = _billing_conn()
+    try:
+        _siapkan_kunci_komisi(conn)
+        ins = _kunci_komisi(conn, periode, "manual", _oleh(request), d.total, (d.catatan or "").strip()[:200] or None)
+        conn.commit()
+    finally:
+        conn.close()
+    total = ins["total"] if d.total is None else d.total
+    catat_aktivitas(_oleh(request), "komisi_kunci", f"Komisi {_nama_periode(periode)} dikunci {_rp(total)}"
+                    + (f" (terhitung {_rp(ins['total'])})" if total != ins["total"] else "")
+                    + (f" · {d.catatan.strip()[:100]}" if d.catatan and d.catatan.strip() else ""))
+    return {"ok": True, "total": total, "terhitung": ins["total"]}
+
+
+@app.delete("/api/keuangan/insentif/{periode}/kunci")
+def keuangan_buka_kunci_komisi(periode: str, request: Request):
+    _wajib_owner(request, "Hanya owner yang bisa membuka kunci komisi mitra.")
+    conn = _billing_conn()
+    try:
+        _siapkan_kunci_komisi(conn)
+        n = conn.execute("DELETE FROM komisi_kunci WHERE periode = ?", (periode,)).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if n:
+        catat_aktivitas(_oleh(request), "komisi_kunci", f"Kunci komisi {_nama_periode(periode)} dibuka")
+    return {"ok": True}
 
 
 @app.get("/api/keuangan/insentif")
@@ -6037,7 +6084,37 @@ def kirim_laporan_sekarang(periode: str, request: Request):
 # 6e. HALAMAN MITRA — hanya pelanggan tampil_mitra=1, kontak saja yang bisa diubah
 # ============================================================
 
+def _siapkan_kunci_komisi(conn) -> None:
+    conn.execute("CREATE TABLE IF NOT EXISTS komisi_kunci (periode TEXT PRIMARY KEY, jumlah INTEGER, jumlah_lunas INTEGER, "
+                 "jumlah_gratis INTEGER, per_pelanggan INTEGER, total INTEGER NOT NULL, pelanggan TEXT, sumber TEXT NOT NULL, "
+                 "oleh TEXT, pada TEXT, catatan TEXT)")
+
+
 def _hitung_insentif(conn, periode: str) -> dict:
+    """Komisi mitra = hasil kerja bulan `periode` (dibayar awal bulan berikutnya). Bila sudah dikunci
+    (otomatis saat tutup buku bulan itu, atau manual oleh owner), angka kuncian yang dipakai, sehingga
+    pembayaran susulan atau perubahan tarif tidak mengubah komisi yang sudah final."""
+    _siapkan_kunci_komisi(conn)
+    k = conn.execute("SELECT * FROM komisi_kunci WHERE periode = ?", (periode,)).fetchone()
+    if k:
+        return {"periode": periode, "per_pelanggan": k["per_pelanggan"], "jumlah_lunas": k["jumlah_lunas"],
+                "jumlah_gratis": k["jumlah_gratis"], "jumlah": k["jumlah"], "total": k["total"],
+                "pelanggan": json.loads(k["pelanggan"] or "[]"),
+                "terkunci": {"sumber": k["sumber"], "oleh": k["oleh"], "pada": k["pada"], "catatan": k["catatan"]}}
+    return {**_hitung_insentif_berjalan(conn, periode), "terkunci": None}
+
+
+def _kunci_komisi(conn, periode: str, sumber: str, oleh: str, total: Optional[int] = None, catatan: Optional[str] = None) -> dict:
+    ins = _hitung_insentif_berjalan(conn, periode)
+    conn.execute("INSERT OR REPLACE INTO komisi_kunci (periode, jumlah, jumlah_lunas, jumlah_gratis, per_pelanggan, total, "
+                 "pelanggan, sumber, oleh, pada, catatan) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                 (periode, ins["jumlah"], ins["jumlah_lunas"], ins["jumlah_gratis"], ins["per_pelanggan"],
+                  ins["total"] if total is None else total, json.dumps(ins["pelanggan"]), sumber, oleh,
+                  datetime.now().strftime("%Y-%m-%d %H:%M:%S"), catatan))
+    return ins
+
+
+def _hitung_insentif_berjalan(conn, periode: str) -> dict:
     """Insentif mitra = (pelanggan dengan tagihan periode itu LUNAS + pelanggan
     gratis yang ditandai insentif_gratis dan masih aktif di periode itu) x tarif.
     Hanya pelanggan yang ditampilkan ke mitra. Menunggak/berhenti tanpa
@@ -6108,6 +6185,11 @@ def mitra_list_pelanggan(periode: str, request: Request):
         daftar.append(p)
     insentif["jumlah_lunas"] += insentif.get("jumlah_gratis") or 0
     insentif["jumlah_gratis"] = 0
+    insentif.pop("pelanggan", None)        # daftar internal (berisi tanda gratis) tidak dikirim ke mitra
+    t = insentif.get("terkunci")
+    insentif["final"] = bool(t)
+    insentif["terkunci"] = {"pada": t["pada"]} if t else None
+    insentif["dibayar_bulan"] = _geser_periode(periode, 1)
     return {"akun": _oleh(request), "periode": periode, "insentif": insentif, "pelanggan": daftar}
 
 
