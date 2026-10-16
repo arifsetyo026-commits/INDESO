@@ -168,6 +168,7 @@ CONFIG = {
                            "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
                            "Terima kasih."),
     "PENGINGAT_JEDA_HARI": 3,           # pengingat massal melewati pelanggan yang baru diingatkan
+    "KOMISI_MULAI": "",                 # YYYY-MM: komisi mitra dihitung mulai bulan ini (kosong = sejak data pertama)
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     # Database (kecil) dikirim ke Telegram TIAP HARI tanpa bunyi notifikasi, supaya bila VPS
     # rusak data yang hilang paling lama 1 hari. Nota (besar) tetap mingguan.
@@ -2693,6 +2694,9 @@ _PENGATURAN = {
                                       "{total} {cara_bayar} {username}. Huruf di antara *bintang* jadi tebal di WA."},
     "PENGINGAT_JEDA_HARI": {"label": "Pengingat massal: lewati pelanggan yang sudah diingatkan dalam (hari)", "tipe": "int",
                             "min": 0, "max": 30},
+    "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
+                     "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
+                     "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
     "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID tujuan laporan keuangan: grup internal owner dan/atau chat pribadi (pisahkan koma)",
                                "tipe": "teks", "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
                                "bantuan": "Grup: tambahkan bot ke grup internal owner, lalu kirim /id di grup itu "
@@ -5297,7 +5301,7 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
     if not awal:
         return []
     akhir = max(sampai, conn.execute("SELECT MAX(periode) FROM tagihan").fetchone()[0] or sampai)
-    awal = max(awal, _geser_periode(akhir, -(maks_bulan - 1)))
+    awal = max(awal, _geser_periode(akhir, -(maks_bulan - 1)), CONFIG.get("KOMISI_MULAI") or "")
     hasil, p = [], awal
     while p <= akhir:
         ins = _hitung_insentif(conn, p)
@@ -5358,6 +5362,25 @@ def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
                     + (f" (terhitung {_rp(ins['total'])})" if total != ins["total"] else "")
                     + (f" · {d.catatan.strip()[:100]}" if d.catatan and d.catatan.strip() else ""))
     return {"ok": True, "total": total, "terhitung": ins["total"]}
+
+
+@app.post("/api/keuangan/insentif/{periode}/mulai")
+def keuangan_komisi_mulai(periode: str, request: Request):
+    """Owner: komisi mitra dihitung mulai bulan ini (bulan-bulan sebelumnya disembunyikan)."""
+    _wajib_owner(request, "Hanya owner yang bisa mengatur awal perhitungan komisi.")
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    conn = _billing_conn()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+        conn.execute("INSERT OR REPLACE INTO pengaturan (kunci, nilai) VALUES ('KOMISI_MULAI', ?)", (periode,))
+        conn.commit()
+    finally:
+        conn.close()
+    lama = CONFIG.get("KOMISI_MULAI") or "-"
+    CONFIG["KOMISI_MULAI"] = periode
+    catat_aktivitas(_oleh(request), "pengaturan_ubah", f"Komisi mitra dihitung mulai: {lama} → {periode}")
+    return {"ok": True, "mulai": periode}
 
 
 @app.delete("/api/keuangan/insentif/{periode}/kunci")
