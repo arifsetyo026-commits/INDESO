@@ -326,7 +326,15 @@ def test_mitra_dan_insentif(siap):
     # gratis yang tetap dihitung insentif
     o.put("/api/data-pelanggan/server", json={"nama": "Server", "paket_id": 1, "gratis": True, "status": "aktif",
                                               "insentif_gratis": True, "atur_secret": False})
-    assert m.get("/api/mitra/pelanggan?periode=2026-10").json()["insentif"]["total"] == 30000
+    d = m.get("/api/mitra/pelanggan?periode=2026-10").json()
+    assert d["insentif"]["total"] == 30000
+    # di HP mitra tampil seperti pelanggan biasa: lunas tgl 1, tanpa tanda gratis, rumus 3 lunas + 0 gratis
+    sv = next(p for p in d["pelanggan"] if p["username"] == "server")
+    assert sv["status_bayar"] == "lunas" and sv["tgl_bayar"] == "2026-10-01" and sv["gratis"] == 0
+    assert "insentif_gratis" not in sv
+    assert d["insentif"]["jumlah_lunas"] == 3 and d["insentif"]["jumlah_gratis"] == 0
+    depan = m.get("/api/mitra/pelanggan?periode=2999-01").json()
+    assert next(p for p in depan["pelanggan"] if p["username"] == "server")["status_bayar"] is None
     # bayar insentif, terikat ke periode walau dibayar bulan berikutnya
     hari = datetime.now().strftime("%Y-%m-%d")
     assert o.post("/api/keuangan/insentif/2026-10/bayar", json={"tanggal": hari, "jumlah": 99999999}).status_code == 400

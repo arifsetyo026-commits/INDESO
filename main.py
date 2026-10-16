@@ -6092,8 +6092,23 @@ def mitra_list_pelanggan(periode: str, request: Request):
         insentif["tertunggak_lain"] = [b for b in _insentif_tertunggak(conn, periode)["bulan"] if b["periode"] != periode]
     finally:
         conn.close()
-    return {"akun": _oleh(request), "periode": periode, "insentif": insentif,
-            "pelanggan": [dict(r) for r in rows]}
+    # Pelanggan gratis yang ikut dihitung komisi (mis. pengurus) ditampilkan ke mitra seperti pelanggan
+    # biasa: otomatis "lunas" sejak tanggal 1 bulan itu. Status gratisnya tidak dikirim ke HP mitra sama
+    # sekali, supaya tidak menimbulkan iri; jumlah komisinya tetap sama.
+    bulan_ini = datetime.now().strftime("%Y-%m")
+    daftar = []
+    for r in rows:
+        p = dict(r)
+        if p["gratis"] and p["insentif_gratis"]:
+            p["status_bayar"], p["tgl_bayar"], p["jatuh_tempo"] = (
+                ("lunas", f"{periode}-01", f"{periode}-{CONFIG['JATUH_TEMPO_TANGGAL']:02d}") if periode <= bulan_ini
+                else (None, None, None))
+        p.pop("insentif_gratis", None)
+        p["gratis"] = 0 if r["insentif_gratis"] else p["gratis"]
+        daftar.append(p)
+    insentif["jumlah_lunas"] += insentif.get("jumlah_gratis") or 0
+    insentif["jumlah_gratis"] = 0
+    return {"akun": _oleh(request), "periode": periode, "insentif": insentif, "pelanggan": daftar}
 
 
 class KontakIn(BaseModel):
