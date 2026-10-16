@@ -4910,7 +4910,9 @@ def tutup_buku(periode: str, d: TutupBukuIn, request: Request):
         r = _ringkas_periode(conn, periode)
         # Komisi mitra bulan ini ikut final (hasil kerja bulan ini, dibayar awal bulan depan)
         _siapkan_kunci_komisi(conn)
-        if not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ?", (periode,)).fetchone():
+        # Bulan tanpa tagihan di INDESO (sebelum Penagihan dipakai) tidak dikunci otomatis di Rp0;
+        # komisinya dikunci manual oleh owner dengan angka yang disepakati.
+        if _ada_tagihan(conn, periode) and not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ?", (periode,)).fetchone():
             _kunci_komisi(conn, periode, "tutup_buku", _oleh(request))
         conn.execute("INSERT INTO tutup_buku (periode, oleh, pada, catatan) VALUES (?,?,?,?)",
                      (periode, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -5273,25 +5275,38 @@ def _insentif_dibayar(conn, periode: str) -> int:
 
 
 def _periode_insentif_awal(conn) -> Optional[str]:
-    r = conn.execute("SELECT MIN(periode) FROM tagihan").fetchone()[0]
-    return r
+    """Bulan pertama ada data: tagihan pertama atau transaksi keuangan pertama (bulan-bulan sebelum
+    Penagihan dipakai tetap tampil supaya komisinya bisa dikunci manual & dibayar)."""
+    calon = [conn.execute("SELECT MIN(periode) FROM tagihan").fetchone()[0]]
+    try:
+        calon.append(conn.execute("SELECT MIN(substr(tanggal,1,7)) FROM transaksi WHERE status='aktif'").fetchone()[0])
+    except sqlite3.OperationalError:
+        pass
+    calon = [c for c in calon if c]
+    return min(calon) if calon else None
+
+
+def _ada_tagihan(conn, periode: str) -> bool:
+    return conn.execute("SELECT 1 FROM tagihan WHERE periode = ? LIMIT 1", (periode,)).fetchone() is not None
 
 
 def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
-    """Rekap per bulan dari periode tagihan pertama (maks. 24 bulan terakhir) s/d `sampai`."""
+    """Rekap per bulan dari bulan pertama ada data (maks. 24 bulan terakhir) s/d `sampai`, ditambah
+    periode tagihan yang sudah dibuat lebih dulu (mis. tagihan bulan depan)."""
     awal = _periode_insentif_awal(conn)
     if not awal:
         return []
-    awal = max(awal, _geser_periode(sampai, -(maks_bulan - 1)))
+    akhir = max(sampai, conn.execute("SELECT MAX(periode) FROM tagihan").fetchone()[0] or sampai)
+    awal = max(awal, _geser_periode(akhir, -(maks_bulan - 1)))
     hasil, p = [], awal
-    while p <= sampai:
+    while p <= akhir:
         ins = _hitung_insentif(conn, p)
         dibayar = _insentif_dibayar(conn, p)
         sisa = ins["total"] - dibayar
         hasil.append({"periode": p, "jumlah_pelanggan": ins["jumlah"], "jumlah_lunas": ins["jumlah_lunas"],
                       "jumlah_gratis": ins["jumlah_gratis"], "per_pelanggan": ins["per_pelanggan"],
                       "terhitung": ins["total"], "dibayar": dibayar, "sisa": max(0, sisa),
-                      "lebih": max(0, -sisa), "terkunci": ins.get("terkunci"),
+                      "lebih": max(0, -sisa), "terkunci": ins.get("terkunci"), "ada_tagihan": _ada_tagihan(conn, p),
                       "status": "lunas" if ins["total"] and sisa <= 0 else ("sebagian" if dibayar else
                                                                             ("belum" if ins["total"] else "nihil"))})
         p = _geser_periode(p, 1)
