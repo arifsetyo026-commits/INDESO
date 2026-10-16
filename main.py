@@ -8684,7 +8684,13 @@ class _TelnetOLT:
         self.terakhir = "(login)"
 
     def _terima(self) -> None:
-        data = self.sock.recv(4096)
+        try:
+            data = self.sock.recv(4096)
+        except TimeoutError:
+            raise
+        except OSError as e:
+            # mis. koneksi direset OLT (sesi telnet penuh / OLT sibuk menyimpan)
+            raise ConnectionError(f"koneksi telnet diputus OLT ({e.__class__.__name__}: {e})") from None
         if not data:
             raise ConnectionError("koneksi ditutup OLT")
         out, i = bytearray(), 0

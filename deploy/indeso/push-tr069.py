@@ -184,4 +184,10 @@ def main_cli() -> None:
 
 
 if __name__ == "__main__":
-    main_cli()
+    try:
+        main_cli()
+    except (OSError, TimeoutError, ConnectionError) as e:
+        sys.exit(f"\nGAGAL berbicara dengan OLT: {e}\n"
+                 "Kemungkinan: masih ada sesi telnet lain yang terbuka ke OLT (tutup dengan 'exit'), "
+                 "atau OLT sedang sibuk menyimpan konfigurasi. Tunggu 1 menit lalu jalankan lagi.\n"
+                 "Bila terjadi saat --kirim, jalankan lagi tanpa --kirim untuk melihat ONU mana yang sudah terkirim.")
