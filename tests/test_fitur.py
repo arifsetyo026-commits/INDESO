@@ -1786,3 +1786,25 @@ def test_komisi_bulan_sebelum_penagihan(siap):
     assert o.post("/api/keuangan/insentif/2026-09/kunci", json={"total": 260000}).status_code == 200
     rk = {b["periode"]: b for b in o.get("/api/keuangan/insentif?sampai=2026-10").json()["rekap"]}
     assert rk["2026-09"]["terhitung"] == 260000 and rk["2026-09"]["sisa"] == 260000
+
+
+def test_komisi_mulai_bulan(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    k.post("/api/keuangan/transaksi", json={"tanggal": "2026-08-03", "jenis": "masuk", "kategori_id": kat["Setoran modal"], "jumlah": 5000})
+    o.post("/api/tagihan/buat?periode=2026-11")
+    per = lambda: [b["periode"] for b in o.get("/api/keuangan/insentif?sampai=2026-10").json()["rekap"]]
+    assert "2026-08" in per()
+    assert k.post("/api/keuangan/insentif/2026-10/mulai").status_code == 403
+    assert o.post("/api/keuangan/insentif/2026-10/mulai").status_code == 200
+    assert per() == ["2026-11", "2026-10"]
+    o.post("/api/keuangan/insentif/2026-10/kunci", json={"total": 260000})
+    d = o.get("/api/keuangan/insentif?sampai=2026-10").json()
+    assert d["ringkasan"]["tertunggak"] == 260000 + next(b["sisa"] for b in d["rekap"] if b["periode"] == "2026-11")
+    # tersimpan permanen & bisa dikosongkan lagi lewat Pengaturan
+    main.CONFIG["KOMISI_MULAI"] = ""
+    main._muat_pengaturan()
+    assert main.CONFIG["KOMISI_MULAI"] == "2026-10"
+    assert o.put("/api/pengaturan", json={"nilai": {"KOMISI_MULAI": "2026-13"}}).status_code == 400
+    assert o.put("/api/pengaturan", json={"nilai": {"KOMISI_MULAI": ""}}).status_code == 200
+    assert "2026-08" in per()
