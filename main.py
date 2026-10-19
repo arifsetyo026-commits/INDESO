@@ -8367,10 +8367,46 @@ def _query_pppoe(username: str) -> dict:
     return {"$or": [{"VirtualParameters.pppoeUsername._value": username}] + [{j: username} for j in jalur]}
 
 
+_POLA_SN_GPON = re.compile(r"^[A-Z]{4}[0-9A-F]{8}$")
+_MEREK_SN = {"ZTEG": "zte", "FHTT": "fiberhome", "HWTC": "huawei", "ALCL": "nokia", "GPON": None}
+
+
+def _merek(teks: str) -> Optional[str]:
+    t = (teks or "").lower()
+    for kata, m in (("zte", "zte"), ("fiberhome", "fiberhome"), ("fhtt", "fiberhome"), ("huawei", "huawei"),
+                    ("hwtc", "huawei"), ("nokia", "nokia"), ("alcl", "nokia")):
+        if kata in t:
+            return m
+    return None
+
+
+def _onu_lama(doc: dict, sn_olt: Optional[str]) -> bool:
+    """True bila dokumen ACS jelas milik ONU lain dari yang sekarang terpasang menurut OLT
+    (ONU pelanggan sudah diganti, ONU baru belum lapor ke ACS)."""
+    if not sn_olt:
+        return False
+    di = doc.get("_deviceId") or {}
+    sn_acs = str(di.get("_SerialNumber") or "").upper()
+    sn_olt = sn_olt.upper()
+    if sn_acs == sn_olt:
+        return False
+    # Nomor seri ACS berformat SN GPON tapi berbeda → ONU lain. Format lain (sebagian ZTE melapor
+    # dengan nomor seri versi TR-069) hanya dianggap lain bila mereknya jelas berbeda.
+    if _POLA_SN_GPON.match(sn_acs) and _POLA_SN_GPON.match(sn_olt):
+        return True
+    m_olt = _MEREK_SN.get(sn_olt[:4]) or _merek(sn_olt[:4])
+    m_acs = _merek(f"{di.get('_Manufacturer') or ''} {sn_acs[:4]}")
+    return bool(m_olt and m_acs and m_olt != m_acs)
+
+
+_acs_onu_lama: dict = {}     # username -> ringkasan ONU lama yang tertolak (untuk pesan ke admin)
+
+
 def _cari_perangkat(username: str) -> Optional[dict]:
     """Cari dokumen ONU di GenieACS: nomor seri GPON dari OLT → id tersimpan → username PPPoE.
     Nomor seri didahulukan: bila ONU pelanggan diganti, dokumen ONU lama masih ada di GenieACS
-    (dengan id tersimpan & username PPPoE yang sama), jadi id tersimpan saja bisa salah ONU."""
+    (dengan id tersimpan & username PPPoE yang sama), jadi id tersimpan saja bisa salah ONU.
+    Dokumen yang ternyata milik ONU lama (SN/merek beda dengan yang terbaca OLT) tidak dipakai."""
     conn = _billing_conn()
     try:
         r = conn.execute("SELECT acs_id FROM pelanggan WHERE username=?", (username,)).fetchone()
@@ -8387,12 +8423,18 @@ def _cari_perangkat(username: str) -> Optional[dict]:
     if r["acs_id"]:
         queries.append({"_id": r["acs_id"]})
     queries.append(_query_pppoe(username))
+    _acs_onu_lama.pop(username, None)
     for q in queries:
         res = _acs("GET", "/devices/", params={"query": json.dumps(q)})
         if res.ok and res.json():
             # Beberapa dokumen cocok (mis. ONU lama & baru sama-sama menyimpan username PPPoE):
             # pakai yang paling baru melapor.
             doc = max(res.json(), key=lambda d: str(d.get("_lastInform") or ""))
+            if _onu_lama(doc, sn):
+                di = doc.get("_deviceId") or {}
+                _acs_onu_lama[username] = {"sn_olt": sn, "lama": f"{di.get('_Manufacturer') or ''} "
+                                           f"{di.get('_ProductClass') or ''} ({di.get('_SerialNumber') or '-'})".strip()}
+                continue
             if doc["_id"] != r["acs_id"]:
                 conn = _billing_conn()
                 try:
@@ -8594,6 +8636,12 @@ def _lapor_terakhir_menit(teks: Optional[str]) -> Optional[int]:
 def _info_acs(username: str, segarkan: bool = False) -> dict:
     doc = _cari_perangkat(username)
     if not doc:
+        lama = _acs_onu_lama.get(username)
+        if lama:
+            return {"terhubung": False, "diganti": True, "pesan": (
+                f"ONU pelanggan ini sudah diganti: OLT membaca ONU baru {lama['sn_olt']}, sedangkan data di ACS masih "
+                f"milik ONU lama {lama['lama']}. ONU baru belum lapor ke ACS. Kirim pengaturan TR-069 dari OLT di bawah; "
+                "untuk ZTE pastikan juga WAN PPPoE-nya berjenis INTERNET_TR069, lalu reboot ONU.")}
         return {"terhubung": False, "pesan": "ONU pelanggan ini belum terdaftar di server ACS. Pastikan TR-069 di ONU sudah "
                                               "diarahkan ke server ACS (lihat docs/genieacs.md)."}
     hasil_segar = None
@@ -9565,14 +9613,14 @@ def _onu_di_acs() -> Optional[dict]:
         return None
     if not r.ok:
         return None
-    sn, user, ids = set(), set(), set()
+    sn, user, ids = set(), {}, {}
     for d in r.json():
-        ids.add(d.get("_id"))
+        ids[d.get("_id")] = d
         sn.add(str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper())
         for j in ["VirtualParameters.pppoeUsername"] + jalur:
             u = _nilai(d, j)
             if u:
-                user.add(str(u))
+                user.setdefault(str(u), []).append(d)
     return {"sn": sn, "user": user, "id": ids}
 
 
@@ -9593,7 +9641,9 @@ def olt_tr069_daftar(request: Request):
         sn, u = (o.serial_number or "").upper(), o.pppoe_username
         ada = None
         if acs is not None and (sn or u):
-            ada = bool((sn and sn in acs["sn"]) or (u and (u in acs["user"] or acs_id.get(u) in acs["id"])))
+            # Lewat PPPoE / id tersimpan hanya dihitung bila dokumennya bukan milik ONU lama yang sudah diganti.
+            calon = (acs["user"].get(u, []) + ([acs["id"][acs_id[u]]] if acs_id.get(u) in acs["id"] else [])) if u else []
+            ada = bool((sn and sn in acs["sn"]) or any(not _onu_lama(d, sn) for d in calon))
         onu.append({"pon": o.pon, "onu_id": o.onu_id, "sn": o.serial_number, "vendor": o.vendor, "model": o.model,
                     "online": o.online, "pppoe_username": u, "nama": nama.get(u), "terdaftar_acs": ada})
     onu.sort(key=lambda x: (x["terdaftar_acs"] is True, x["pon"], x["onu_id"]))

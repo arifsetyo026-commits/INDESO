@@ -2035,3 +2035,26 @@ def test_pantau_internet_pusat(siap):
     assert o.post("/api/upstream/ukur").status_code == 200
     assert m.get("/api/upstream").status_code == 403
     mt.ping_per = None
+
+
+def test_acs_onu_diganti_belum_lapor(siap, monkeypatch):
+    """ONU pelanggan diganti (OLT membaca SN baru), ONU baru belum lapor ke ACS: data ONU lama tidak dipakai
+    untuk Diagnosa/ping, dan daftar TR-069 OLT menandai ONU baru 'belum di ACS'."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["_deviceId"].update(_Manufacturer="FiberHome", _ProductClass="HG6145D2",
+                                                _SerialNumber="FHTT9A8B7C6D")
+    onu = main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                         serial_number="ZTEGCF052DDB", pppoe_username="budi")
+    main._latest_data = main._build_dashboard([], None, [onu])
+    try:
+        a = k.get("/api/acs/budi").json()
+        assert a["terhubung"] is False and a["diganti"] and "ZTEGCF052DDB" in a["pesan"] and "HG6145D2" in a["pesan"]
+        assert k.post("/api/acs/budi/ping", json={}).status_code == 404
+        assert k.get("/api/olt/tr069").json()["onu"][0]["terdaftar_acs"] is False
+        assert main._onu_lama({"_deviceId": {"_Manufacturer": "ZTE", "_SerialNumber": "ZTEEQJNQ1F19726"}}, "ZTEGD5D276C6") is False
+        assert main._onu_lama({"_deviceId": {"_Manufacturer": "ZTE", "_SerialNumber": "ZTEGD0000001"}}, "ZTEGD5D276C6") is True
+    finally:
+        main._latest_data = None
