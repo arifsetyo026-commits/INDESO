@@ -428,6 +428,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="plForm" id="setForm" style="margin-top:10px"></div>
  <div class="plBtns"><button class="plSave" onclick="simpanPengaturan()">Simpan pengaturan</button></div>
  <div class="plSub" style="margin-top:8px">Alamat MikroTik/OLT, password, dan token Telegram tetap diatur di berkas <code>.env</code> server.</div>
+ <div class="kuPanel" style="margin-top:14px"><h4>Cek DNS &amp; MTU MikroTik</h4><div class="plSub">Untuk keluhan "WA chat jalan tapi status WA / Facebook / situs tidak terbuka". Hanya membaca pengaturan, tidak mengubah apa pun.</div>
+  <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="cekDnsMtu($('mtCek'))">Cek sekarang</button></div><div id="mtCek"></div></div>
  <div class="kuPanel" style="margin-top:14px"><h4>TR-069 ONU lewat OLT</h4><div class="plSub">Kirim ACS URL &amp; login ke ONU dari OLT (sama dengan menu TR-069 Service Configuration di web OLT), tanpa membuka ONU satu per satu.</div>
   <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="muatOltTr069()">Tampilkan daftar ONU</button></div>
   <div id="oltTr"></div></div>
@@ -1165,7 +1167,7 @@ async function hapusPaket(i){
  }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
 }
 // ===== Log aktivitas (di menu Pengaturan) =====
-const AKSI_LABEL={pasang_baru:'Pasang baru',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+const AKSI_LABEL={mikrotik_cek:'Cek DNS & MTU MikroTik',pasang_baru:'Pasang baru',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
 
 // ===== Pengaturan: akun saya, pengguna, sistem, log =====
 AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';
@@ -1260,6 +1262,16 @@ async function simpanPengaturan(){
  if(nilai.ISOLIR_MODE==='aktif'&&st.set.find(p=>p.kunci==='ISOLIR_MODE').nilai!=='aktif'&&!confirm('Mode isolir AKTIF: pelanggan menunggak akan benar-benar diisolir otomatis. Lanjutkan?')) return;
  try{ const d=await jsonAtauError(await fetch('/api/pengaturan',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nilai})})); await loadPengaturan(); stPesan(d.berubah?(d.berubah+' pengaturan disimpan dan langsung berlaku.'):'Tidak ada yang berubah.',true); }
  catch(e){ stPesan('Gagal: '+e.message); }
+}
+// ===== Cek DNS & MTU MikroTik (hanya membaca) =====
+async function cekDnsMtu(el){
+ el.innerHTML='<div class="muted" style="margin-top:8px">Membaca pengaturan MikroTik…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/mikrotik/cek-dns-mtu',{cache:'no-store'})); }
+ catch(e){ el.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
+ const warna={baik:['#0b7a3b','✓'],buruk:['#b42318','✖'],info:['#5f7669','ℹ']};
+ el.innerHTML=`<div class="kuPanel" style="margin:8px 0 12px;border-color:${d.masalah?'#f3b4ab':'#bfe6cb'};background:${d.masalah?'#fff6f5':'#f3faf5'}"><b style="font-size:var(--fs-sm);color:${d.masalah?'#b42318':'#0b7a3b'}">${d.masalah?d.masalah+' masalah ditemukan di MikroTik':'DNS & MTU MikroTik normal'}</b>`
+  +d.cek.map(c=>{const [w,ik]=warna[c.tingkat]||warna.info; return `<div style="margin-top:8px"><b style="color:${w};font-size:var(--fs-xs)">${ik} ${esc(c.judul)}</b><div class="plSub">${esc(c.keterangan)}</div>${c.perintah?`<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><code style="flex:1;font-size:var(--fs-2xs);background:#fff;border:1px solid var(--line);border-radius:8px;padding:5px 7px;overflow-x:auto;white-space:nowrap">${esc(c.perintah)}</code><button class="btnS" onclick="navigator.clipboard&&navigator.clipboard.writeText(${jsq(c.perintah)});this.textContent='Tersalin'">Salin</button></div>`:''}</div>`;}).join('')
+  +(d.masalah?'<div class="plSub" style="margin-top:8px">Jalankan perintah perbaikan di Winbox → New Terminal. Perubahan profil PPPoE berlaku saat pelanggan tersambung ulang.</div>':'')+'</div>';
 }
 // ===== TR-069 lewat OLT =====
 let oltTr=null;
@@ -1426,7 +1438,7 @@ function renderDiagnosa(){
   +kotak('Upload sekarang',(ll&&ll.upload_mbps!=null?ll.upload_mbps+' Mbps':'—')+bar(ll&&ll.upload_mbps))
   +kotak('Rata-rata pakai 24 jam',d.tren.pakai_rata_mbps!=null?d.tren.pakai_rata_mbps+' Mbps (puncak '+d.tren.pakai_puncak_mbps+')':'—')
   +kotak('Putus-sambung 24 jam',(d.putus_24jam||0)+' kali')+'</div>';
- h+=`<div class="tkAksi" style="margin:0 0 12px">${pp.online?'<button class="btnS go" onclick="tesPing()">Tes ping dari MikroTik</button>':''}<button class="btnS" onclick="muatDiagnosa()">Periksa ulang</button></div><div id="dgPing"></div>`;
+ h+=`<div class="tkAksi" style="margin:0 0 12px">${pp.online?'<button class="btnS go" onclick="tesPing()">Tes ping dari MikroTik</button>':''}<button class="btnS" onclick="muatDiagnosa()">Periksa ulang</button><button class="btnS" onclick="cekDnsMtu($('dgPing'))">Cek DNS &amp; MTU MikroTik</button></div><div id="dgPing"></div>`;
  const o=d.onu, t=d.tren;
  h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Optik (OLT)</div><div class="detailGrid" style="margin-bottom:12px">'
   +(o?kotak('ONU '+esc(o.pon)+'/'+esc(o.onu_id),(o.online?'Online':'<span style="color:#b42318">Offline</span>')+' · '+esc(o.status))

@@ -8827,6 +8827,125 @@ def diagnosa(username: str, request: Request):
     return hasil
 
 
+# --- Cek DNS & MTU di MikroTik (hanya membaca) ---
+def _ya(v) -> Optional[bool]:
+    v = str(v or "").strip().lower()
+    return True if v in ("yes", "true") else (False if v in ("no", "false") else None)
+
+
+@app.get("/api/mikrotik/cek-dns-mtu")
+def mikrotik_cek_dns_mtu(request: Request):
+    """Baca pengaturan DNS, profil PPPoE, aturan MSS, dan server PPPoE dari MikroTik, lalu beri
+    kesimpulan & perintah perbaikan untuk disalin. Tidak mengubah apa pun di MikroTik."""
+    _wajib_admin(request)
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        baca = lambda path: api.get_resource(path).get()
+        dns = (baca("/ip/dns") or [{}])[0]
+        profil = baca("/ppp/profile")
+        secret = baca("/ppp/secret")
+        try:
+            mangle = baca("/ip/firewall/mangle")
+        except Exception:
+            mangle = []
+        try:
+            server = baca("/interface/pppoe-server/server")
+        except Exception:
+            server = []
+        resolve = None
+        try:
+            r = api.get_resource("/").call("resolve", {"domain-name": "google.com"})
+            resolve = (r or [{}])[0].get("ret") if r else None
+        except Exception as e:
+            resolve = None
+            resolve_galat = str(e)[:120]
+        else:
+            resolve_galat = None
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gagal membaca MikroTik: {e}")
+    finally:
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+
+    cek = []
+    tambah = lambda tingkat, judul, ket, perintah=None: cek.append(
+        {"tingkat": tingkat, "judul": judul, "keterangan": ket, "perintah": perintah})
+
+    # 1. DNS MikroTik sendiri
+    servers = ",".join(x for x in (dns.get("servers"), dns.get("dynamic-servers")) if x)
+    remote = _ya(dns.get("allow-remote-requests"))
+    if not servers:
+        tambah("buruk", "MikroTik tidak punya server DNS", "MikroTik sendiri tidak bisa mencari alamat situs.",
+               "/ip dns set servers=8.8.8.8,1.1.1.1")
+    else:
+        tambah("baik", "Server DNS MikroTik", f"{servers} · allow-remote-requests={'yes' if remote else 'no'}")
+    if resolve:
+        tambah("baik", "Uji DNS dari MikroTik", f"google.com → {resolve}")
+    elif resolve_galat and re.search(r"(?i)no such command|unknown|not supported", resolve_galat):
+        tambah("info", "Uji DNS dari MikroTik tidak didukung lewat API",
+               "Uji manual di Winbox → New Terminal dengan perintah di bawah.", ":put [:resolve google.com]")
+    else:
+        tambah("buruk", "Uji DNS dari MikroTik gagal", "MikroTik tidak bisa menerjemahkan google.com"
+               + (f" ({resolve_galat})" if resolve_galat else "") + ". Periksa server DNS / koneksi upstream.",
+               "/ip dns set servers=8.8.8.8,1.1.1.1")
+
+    # 2. Profil PPPoE yang dipakai pelanggan
+    pakai = {}
+    for x in secret:
+        pakai[x.get("profile") or "default"] = pakai.get(x.get("profile") or "default", 0) + 1
+    by_nama = {p.get("name"): p for p in profil}
+    mss_bawaan = _ya((by_nama.get("default") or {}).get("change-tcp-mss"))
+    mangle_mss = [m for m in mangle if m.get("action") == "change-mss" and _ya(m.get("disabled")) is not True]
+    hasil_profil = []
+    for nama, n in sorted(pakai.items(), key=lambda x: -x[1]):
+        p = by_nama.get(nama, {})
+        dns_p = p.get("dns-server") or ""
+        mss_v = str(p.get("change-tcp-mss") or "default").lower()
+        mss = mss_bawaan if mss_v == "default" else _ya(mss_v)
+        hasil_profil.append({"profil": nama, "pelanggan": n, "dns_server": dns_p, "change_tcp_mss": mss_v,
+                             "mss_efektif": mss, "local_address": p.get("local-address") or ""})
+        if not dns_p:
+            tujuan = (p.get("local-address") if remote and p.get("local-address") else "8.8.8.8,1.1.1.1")
+            tambah("buruk" if nama != CONFIG["ISOLIR_PROFILE"] else "info",
+                   f"Profil '{nama}' tidak membagikan DNS ({n} pelanggan)",
+                   "Pelanggan di profil ini tidak menerima alamat DNS dari PPPoE. Gejala: WA chat jalan, tapi "
+                   "status WA, Facebook, dan situs lain tidak terbuka. Berlaku setelah pelanggan tersambung ulang.",
+                   f'/ppp profile set [find name="{nama}"] dns-server={tujuan}')
+        if not mss and not mangle_mss:
+            tambah("buruk" if nama != CONFIG["ISOLIR_PROFILE"] else "info",
+                   f"Profil '{nama}': penyesuaian MSS mati ({n} pelanggan)",
+                   "Paket data besar (gambar, video, halaman web) bisa tersangkut di PPPoE, sedangkan chat kecil tetap "
+                   "jalan. Aktifkan change-tcp-mss.",
+                   f'/ppp profile set [find name="{nama}"] change-tcp-mss=yes')
+    if hasil_profil and not any(c["judul"].startswith("Profil") for c in cek):
+        tambah("baik", "Profil PPPoE", "Semua profil yang dipakai pelanggan membagikan DNS dan menyesuaikan MSS.")
+    if mangle_mss:
+        tambah("baik", "Aturan MSS di firewall mangle", f"{len(mangle_mss)} aturan change-mss aktif.")
+
+    # 3. MTU server PPPoE
+    for sv in server:
+        try:
+            mtu = int(str(sv.get("max-mtu") or "0").split()[0] or 0)
+        except ValueError:
+            mtu = 0
+        nama = sv.get("service-name") or sv.get("interface") or "?"
+        if mtu > 1492:
+            tambah("buruk", f"MTU server PPPoE '{nama}' {mtu}",
+                   "PPPoE memakan 8 byte; MTU di atas 1492 membuat paket besar terpotong.",
+                   f'/interface pppoe-server server set [find interface="{sv.get("interface")}"] max-mtu=1480 max-mru=1480')
+        elif mtu:
+            tambah("baik", f"MTU server PPPoE '{nama}'", f"max-mtu {mtu}")
+
+    buruk = sum(1 for c in cek if c["tingkat"] == "buruk")
+    catat_aktivitas(_oleh(request), "mikrotik_cek", f"Cek DNS & MTU: {buruk} masalah")
+    return {"masalah": buruk, "cek": cek, "profil": hasil_profil}
+
+
 @app.post("/api/diagnosa/{username}/ping")
 def diagnosa_ping(username: str, request: Request):
     _wajib_admin(request)
