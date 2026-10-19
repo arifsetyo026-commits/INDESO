@@ -217,7 +217,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  </div>
  <div class="footer"><div><b>Internet Desa</b> &nbsp; v3.1 &nbsp; | &nbsp; Monitoring &nbsp; • &nbsp; Pelanggan &nbsp; • &nbsp; Jaringan &nbsp; • &nbsp; Masa Depan Desa</div><div class="footerRight">Internet untuk Semua 🌿 <span id="updated"></span></div></div>
 </div></main></div>
-<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button></div><div id="customerResults"></div></div></div></div>
+<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
 <div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
@@ -755,6 +755,7 @@ async function load(force=false){
   $('sideOlt').innerHTML=`<i class="dot ${d.olt_online?'':'off'}"></i>${d.olt_online?'Online':'Offline'}`;
   const users=d.pppoe_users||[],onus=d.onu_list||[]; renderCustomers(users,onus); muatAlertKartu(); if(Date.now()-_upKartuTerakhir>60000){ _upKartuTerakhir=Date.now(); muatKartuUpstream(); } if(Date.now()-_tkBadgeTerakhir>60000){ _tkBadgeTerakhir=Date.now(); muatBadgeTiket(); } updateOptical(onus);
   const rx=sum(users.map(x=>x.rx_mbps)),tx=sum(users.map(x=>x.tx_mbps)); $('rxNow').textContent=rx==null?'—':fmt(rx)+' Mbps';$('txNow').textContent=tx==null?'—':fmt(tx)+' Mbps';
+  if($('customerModal').classList.contains('show')) searchCustomers();
   state.history.push({rx:rx||0,tx:tx||0,t:Date.now()}); if(state.history.length>24)state.history.shift(); drawChart();
  }catch(e){$('overall').textContent='OFFLINE';$('overallSub').textContent='Dashboard tidak dapat mengambil data backend';$('updated').textContent='Gagal memuat: '+e.message}
 }
@@ -766,22 +767,33 @@ function searchCustomers(){
  const d=state.last; if(!d){ $('customerResults').innerHTML='<div class="muted">Memuat data OLT… coba lagi beberapa detik.</div>'; return; }
  const q=$('customerSearch').value.trim().toLowerCase();
  const nama=new Map((d.pppoe_users||[]).map(u=>[u.username,u.nama]));
+ const pp=new Map((d.pppoe_users||[]).map(u=>[u.username,u]));
+ const bw=o=>{ const u=pp.get(o.pppoe_username); return u&&u.rx_mbps!=null?u:null; };
  const daftar=(d.onu_list||[]).filter(o=>{
+  if(onuFilter==='trafik'&&!bw(o)) return false;
   if(onuFilter==='masalah'&&!['WARNING','CRITICAL'].includes(o.status)) return false;
   if(onuFilter==='offline'&&o.online) return false;
   if(onuFilter==='tanpa'&&o.pppoe_username) return false;
   if(!q) return true;
   return [o.pppoe_username,nama.get(o.pppoe_username),o.pon,o.pon+'/'+o.onu_id,o.model,o.serial_number,o.mac_address].some(x=>String(x||'').toLowerCase().includes(q));
- }).sort((a,b)=>String(a.pon).localeCompare(String(b.pon),undefined,{numeric:true})||a.onu_id-b.onu_id);
+ }).sort(onuFilter==='trafik'?(a,b)=>(bw(b).rx_mbps+bw(b).tx_mbps)-(bw(a).rx_mbps+bw(a).tx_mbps)
+   :(a,b)=>String(a.pon).localeCompare(String(b.pon),undefined,{numeric:true})||a.onu_id-b.onu_id);
+ // Trafik sesaat dari MikroTik (diperbarui tiap putaran pemantauan); bar = download dibanding limit paket.
+ const baris=o=>{ const u=bw(o); if(!u) return o.pppoe_username&&o.online?'<div class="plSub">Trafik: PPPoE tidak aktif</div>':'';
+  const lim=u.rate_limit_mbps, pct=lim?Math.min(100,Math.round(u.rx_mbps*100/lim)):null;
+  return `<div class="plSub" style="display:flex;align-items:center;gap:8px;margin-top:3px"><span>⬇ <b>${fmt(u.rx_mbps)}</b> · ⬆ <b>${fmt(u.tx_mbps)}</b> Mbps${lim?` <span class="muted">/ ${fmt(lim)}</span>`:''}</span>`
+   +(pct!=null?`<span style="flex:1;max-width:120px;height:6px;border-radius:3px;background:#e7eee9;overflow:hidden"><i style="display:block;height:100%;width:${Math.max(pct,2)}%;background:${pct>=90?'#dc3d3d':pct>=70?'#b45309':'#278ff2'}"></i></span>`:'')+'</div>'; };
+ const jumlahPon=p=>{ let r=0,t=0; for(const x of (d.onu_list||[])) if(x.pon===p){ const u=bw(x); if(u){ r+=u.rx_mbps; t+=u.tx_mbps; } } return `⬇ ${fmt(r)} · ⬆ ${fmt(t)} Mbps`; };
  const CH={OK:'<span class="chip ok">Normal</span>',WARNING:'<span class="chip warn">Warning</span>',CRITICAL:'<span class="chip bad">Kritis</span>'};
  let pon=null, h='';
  for(const o of daftar){
-  if(o.pon!==pon){ pon=o.pon; const semua=(d.onu_list||[]).filter(x=>x.pon===pon);
-   h+=`<div style="display:flex;justify-content:space-between;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online</span></div>`; }
+  if(onuFilter!=='trafik'&&o.pon!==pon){ pon=o.pon; const semua=(d.onu_list||[]).filter(x=>x.pon===pon);
+   h+=`<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online · ${jumlahPon(pon)}</span></div>`; }
   const u=o.pppoe_username, n=nama.get(u);
-  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'}</div><div class="plSub">${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div></div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
+  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'}</div><div class="plSub">${onuFilter==='trafik'?'PON '+esc(o.pon)+' · ':''}${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div>${baris(o)}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
  }
- $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · ketuk ONU yang terpetakan untuk membuka Diagnosa</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');
+ const jam=d.timestamp?String(d.timestamp).slice(11,16):'';
+ $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · trafik sesaat dari MikroTik${jam?' pukul '+esc(jam):''}, diperbarui otomatis · ketuk ONU yang terpetakan untuk membuka Diagnosa (rata-rata &amp; puncak 24 jam)</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');
 }
 // Muat ulang data berkala tanpa menumpuk: permintaan berikutnya baru dijadwalkan setelah
 // yang sebelumnya selesai. Berhenti saat tab tidak terlihat, dan melambat saat ada jendela
@@ -791,7 +803,7 @@ async function putaranLoad(){
  clearTimeout(_timerLoad); _timerLoad=null;
  if(document.hidden) return;
  if(!_sedangLoad){ _sedangLoad=true; try{ await load(); } finally{ _sedangLoad=false; _loadTerakhir=Date.now(); } }
- if(!document.hidden) _timerLoad=setTimeout(putaranLoad,document.querySelector('.overlay.show')?30000:5000);
+ if(!document.hidden) _timerLoad=setTimeout(putaranLoad,$('customerModal').classList.contains('show')?15000:document.querySelector('.overlay.show')?30000:5000);
 }
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden) putaranLoad(); else { clearTimeout(_timerLoad); _timerLoad=null; } });
 putaranLoad();
