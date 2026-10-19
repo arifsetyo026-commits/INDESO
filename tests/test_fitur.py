@@ -1909,3 +1909,23 @@ def test_acs_ping_gagal_langsung_dihapus_tanpa_ulang(siap, monkeypatch):
     assert len(acs.tugas) == jumlah + 1 and not r2["lewat_wan"]
     assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
     main._ping_tanpa_wan.discard(dev["_id"])
+
+
+def test_olt_tr069_daftar_cocok_lewat_pppoe(siap, monkeypatch):
+    """ONU yang melapor ke ACS dengan nomor seri berbeda dari SN di OLT tetap terbaca 'sudah di ACS'
+    lewat username PPPoE-nya."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["_deviceId"]["_SerialNumber"] = "ZTEEQJNQ1F19726"     # SN versi TR-069
+    onu = [main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                          serial_number="ZTEGC1234567", pppoe_username="budi"),
+           main.ONUStatus(pon="0/0/1", onu_id=2, snmp_index=2, olt_rx_dbm=-20.0, online=True, status="OK",
+                          serial_number="ZTEGD0000002", pppoe_username="ani")]
+    main._latest_data = main._build_dashboard([], None, onu)
+    try:
+        d = {x["onu_id"]: x["terdaftar_acs"] for x in k.get("/api/olt/tr069").json()["onu"]}
+    finally:
+        main._latest_data = None
+    assert d == {1: True, 2: False}

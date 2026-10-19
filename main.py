@@ -9203,23 +9203,52 @@ def _sn_terdaftar_acs() -> Optional[set]:
     return {str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper() for d in r.json()}
 
 
+def _onu_di_acs() -> Optional[dict]:
+    """Penanda ONU yang ada di GenieACS: nomor seri, username PPPoE, dan id dokumen.
+    Nomor seri saja tidak cukup: sebagian ONU (ZTE/Fiberhome) melapor ke ACS dengan nomor seri
+    yang berbeda dari SN GPON di OLT."""
+    if not _acs_aktif():
+        return None
+    jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username"
+             for w in range(1, 6) for p in range(1, 3)]
+    try:
+        r = _acs("GET", "/devices/", params={"query": "{}", "projection": ",".join(
+            ["_id", "_deviceId._SerialNumber", "VirtualParameters.pppoeUsername"] + jalur)}, timeout=15)
+    except HTTPException:
+        return None
+    if not r.ok:
+        return None
+    sn, user, ids = set(), set(), set()
+    for d in r.json():
+        ids.add(d.get("_id"))
+        sn.add(str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper())
+        for j in ["VirtualParameters.pppoeUsername"] + jalur:
+            u = _nilai(d, j)
+            if u:
+                user.add(str(u))
+    return {"sn": sn, "user": user, "id": ids}
+
+
 @app.get("/api/olt/tr069")
 def olt_tr069_daftar(request: Request):
     """ONU yang terbaca dari OLT beserta status terdaftar di ACS, untuk dipilih."""
     _wajib_admin(request)
-    terdaftar = _sn_terdaftar_acs()
-    nama = {}
+    acs = _onu_di_acs()
+    nama, acs_id = {}, {}
     conn = _billing_conn()
     try:
-        nama = dict(conn.execute("SELECT username, nama FROM pelanggan").fetchall())
+        for p in conn.execute("SELECT username, nama, acs_id FROM pelanggan").fetchall():
+            nama[p["username"]], acs_id[p["username"]] = p["nama"], p["acs_id"]
     finally:
         conn.close()
     onu = []
     for o in (_latest_data.onu_list if _latest_data else []):
-        sn = (o.serial_number or "").upper()
+        sn, u = (o.serial_number or "").upper(), o.pppoe_username
+        ada = None
+        if acs is not None and (sn or u):
+            ada = bool((sn and sn in acs["sn"]) or (u and (u in acs["user"] or acs_id.get(u) in acs["id"])))
         onu.append({"pon": o.pon, "onu_id": o.onu_id, "sn": o.serial_number, "vendor": o.vendor, "model": o.model,
-                    "online": o.online, "pppoe_username": o.pppoe_username, "nama": nama.get(o.pppoe_username),
-                    "terdaftar_acs": (sn in terdaftar) if (terdaftar is not None and sn) else None})
+                    "online": o.online, "pppoe_username": u, "nama": nama.get(u), "terdaftar_acs": ada})
     onu.sort(key=lambda x: (x["terdaftar_acs"] is True, x["pon"], x["onu_id"]))
     return {"aktif": _olt_telnet_aktif(), "acs_url": CONFIG["ACS_ONU_URL"], "onu": onu}
 
