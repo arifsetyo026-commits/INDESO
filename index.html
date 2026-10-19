@@ -1249,7 +1249,7 @@ async function loadPengaturan(){
   const kunci=p=>p.owner&&d.peran!=='owner'?' disabled title="Hanya owner yang bisa mengubah"':'';
   $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+(p.owner?' <span class="chip info">owner</span>':'')+'</label>'+(p.tipe==='pilihan'
    ?'<select id="set'+i+'"'+kunci(p)+'>'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
-   :p.tipe==='teks'?`<input id="set${i}" value="${esc(p.nilai)}" inputmode="numeric" placeholder="mis. 123456789"${kunci(p)}>`
+   :p.tipe==='teks'?`<input id="set${i}" value="${esc(p.nilai)}" inputmode="numeric" placeholder="mis. ${esc(p.contoh||'123456789')}"${kunci(p)}>`
    :p.tipe==='teksbebas'?`<textarea id="set${i}" rows="${p.baris||1}" maxlength="${p.maks}" style="width:100%;font:inherit;border:1px solid var(--line);border-radius:10px;padding:8px 10px;resize:vertical"${kunci(p)}>${esc(p.nilai)}</textarea>`
    :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric"${kunci(p)}>`)
    +(p.bantuan?'<div class="plSub" style="margin-top:4px">'+esc(p.bantuan)+'</div>':'')).join('');
@@ -1508,7 +1508,11 @@ async function pingOnu(host,catatan,tahap){
    clearInterval(_pantauPing);
    // Perintah ditolak ONU: hapus dari antrean supaya tidak diulang terus setiap ONU lapor.
    try{ await fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+s.tugas_id+'/batal',{method:'POST'}); }catch(e){}
-   if(tahap===0&&r.lewat_wan){ pingOnu(host,catatan,1); return; }   // ulang tanpa memilih jalur WAN
+   if(tahap===0&&r.lewat_wan){   // ulang tanpa memilih jalur WAN; beri jeda bila ONU masih sibuk diagnosa
+    const jeda=s.sibuk?20:2;
+    box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU menolak cara pertama${s.sibuk?' (sedang sibuk)':''}; mencoba cara kedua dalam ${jeda} detik…</div>`;
+    setTimeout(()=>pingOnu(host,catatan,1),jeda*1000); return;
+   }
    box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div></div>`;
    return;
   }
@@ -2330,6 +2334,7 @@ async function muatInsentif(){
    const riw=b.pembayaran.length?'<div class="kuRiwBayar">'+b.pembayaran.map(p=>`<div${p.status!=='aktif'?' style="text-decoration:line-through;opacity:.6"':''}>${esc(tglPendek(p.tanggal))} · ${rp(p.jumlah)} · ${esc(p.metode)} · ${esc(p.dicatat_oleh)}${p.status!=='aktif'?' · dibatalkan: '+esc(p.batal_alasan||''):''}${p.status==='aktif'&&bolehBatalBayar(p)?` <a href="#" onclick="batalBayarInsentif(${p.id});return false">batalkan</a>`:''}${htmlNota(p.nota,p.status==='aktif'&&bolehBatalBayar(p)?`tambahNota('transaksi',${p.id})`:null,false)}</div>`).join('')+'</div>':'';
    const form=ku.inBayar===b.periode?`<div class="kuBayarForm" style="grid-template-columns:repeat(4,minmax(0,1fr)) auto"><div><small>Tanggal bayar</small><input type="date" id="ibTgl" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div><div><small>Jumlah (sisa ${rp(b.sisa)})</small><input id="ibJml" inputmode="numeric" value="${Number(b.sisa).toLocaleString('id-ID')}" oninput="formatJumlah(this)"></div><div><small>Metode</small><select id="ibMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div><div><small>Penerima (opsional)</small><input id="ibPenerima" placeholder="nama mitra"></div><div><button class="btnS go" onclick="simpanBayarInsentif('${b.periode}')">Simpan</button></div></div><div class="plSub" style="margin-top:4px">Bukti transfer bisa dilampirkan setelah disimpan (tombol + Nota).</div>`:'';
    const tombol=(b.sisa>0?`<button class="btnS go" onclick="bukaBayarInsentif('${b.periode}')">Lunasi</button>`:'')
+    +(ku.ins.peran==='owner'&&!b.terkunci&&!b.dibayar&&i<d.rekap.length-1?`<button class="btnS" onclick="komisiMulai('${b.periode}')">Mulai dari sini</button>`:'')
     +(ku.ins.peran==='owner'?(b.terkunci?`<button class="btnS" onclick="bukaKunciKomisi('${b.periode}')">Buka kunci</button>`:`<button class="btnS" onclick="kunciKomisi('${b.periode}',${b.terhitung})">Kunci</button>`):'');
    const kunci=b.terkunci?`<div class="plSub" style="color:#0b7a3b">🔒 Final${b.terkunci.sumber==='tutup_buku'?' (tutup buku)':' (dikunci manual)'} · ${esc(b.terkunci.oleh||'')} ${esc(tglPendek(b.terkunci.pada))}${b.terkunci.catatan?' · '+esc(b.terkunci.catatan):''}</div>`:'';
    const rumus=b.terkunci&&b.terhitung!==b.jumlah_pelanggan*b.per_pelanggan?'angka disepakati':`${b.jumlah_lunas} lunas${b.jumlah_gratis?' + '+b.jumlah_gratis+' gratis':''} × ${rp(b.per_pelanggan)}`;
@@ -2348,6 +2353,11 @@ async function kunciKomisi(periode,terhitung){
  if(total!==null&&!(total>=0)){ kuPesan('Jumlah tidak valid.'); return; }
  try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({total,catatan:total!==null&&total!==terhitung?'disepakati '+rp(total):null})}));
   await muatInsentif(); kuPesan('Komisi '+namaPeriode(periode)+' dikunci '+rp(d.total)+'.',true); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function komisiMulai(periode){
+ if(!confirm('Hitung komisi mitra mulai '+namaPeriode(periode)+'?\nBulan-bulan sebelumnya disembunyikan dan tidak dihitung sebagai komisi belum dibayar. Bisa diubah lagi di Pengaturan → Sistem.')) return;
+ try{ await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/mulai',{method:'POST'})); await muatInsentif(); kuPesan('Komisi dihitung mulai '+namaPeriode(periode)+'.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 async function bukaKunciKomisi(periode){

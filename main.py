@@ -168,6 +168,7 @@ CONFIG = {
                            "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
                            "Terima kasih."),
     "PENGINGAT_JEDA_HARI": 3,           # pengingat massal melewati pelanggan yang baru diingatkan
+    "KOMISI_MULAI": "",                 # YYYY-MM: komisi mitra dihitung mulai bulan ini (kosong = sejak data pertama)
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     # Database (kecil) dikirim ke Telegram TIAP HARI tanpa bunyi notifikasi, supaya bila VPS
     # rusak data yang hilang paling lama 1 hari. Nota (besar) tetap mingguan.
@@ -1218,6 +1219,10 @@ async def background_monitor_loop():
             await asyncio.to_thread(proses_cek_acs)
         except Exception as e:
             logger.error(f"Error saat cek GenieACS: {e}")
+        try:
+            await asyncio.to_thread(proses_bersih_ping_tertahan)
+        except Exception as e:
+            logger.error(f"Error saat bersih ping tertahan: {e}")
 
         # Dibungkus juga: bila ini error tanpa try, seluruh loop (isolir, tagihan, backup) berhenti diam-diam.
         try:
@@ -1248,6 +1253,42 @@ def proses_bersih_harian() -> None:
     if _bersih_hari != hari:
         cleanup_old_history()
         _bersih_hari = hari
+
+
+_bersih_ping = {"terakhir": None}
+
+
+def proses_bersih_ping_tertahan(umur_menit: int = 10) -> int:
+    """Perintah ping yang tertahan > umur_menit dihapus beserta fault-nya. Tanpa ini GenieACS mengulangnya
+    setiap ONU lapor, ONU terus 'sibuk diagnosa', dan ping berikutnya ikut ditolak (9002 Internal error)."""
+    if not CONFIG.get("GENIEACS_URL") or (
+            _bersih_ping["terakhir"] is not None and time.monotonic() - _bersih_ping["terakhir"] < 600):
+        return 0
+    _bersih_ping["terakhir"] = time.monotonic()
+    from urllib.parse import quote
+    batas = (datetime.utcnow() - timedelta(minutes=umur_menit)).isoformat()
+    try:
+        r = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "setParameterValues"})}, timeout=15)
+    except HTTPException:
+        return 0
+    n = 0
+    for t in (r.json() if r.ok else []):
+        pv = t.get("parameterValues") or []
+        if not any(str(p[0]).startswith(_PING_ONU) for p in pv if p):
+            continue
+        if str(t.get("timestamp") or "")[:19] > batas[:19]:
+            continue
+        tid, dev = str(t.get("_id")), str(t.get("device") or "")
+        try:
+            _acs("DELETE", f"/tasks/{tid}")
+            if dev:
+                _acs("DELETE", f"/faults/{quote(dev + ':task_' + tid, safe='')}")
+            n += 1
+        except HTTPException:
+            pass
+    if n:
+        logger.warning(f"{n} perintah ping tertahan > {umur_menit} menit dihapus dari GenieACS")
+    return n
 
 
 def proses_cek_acs() -> None:
@@ -2693,6 +2734,9 @@ _PENGATURAN = {
                                       "{total} {cara_bayar} {username}. Huruf di antara *bintang* jadi tebal di WA."},
     "PENGINGAT_JEDA_HARI": {"label": "Pengingat massal: lewati pelanggan yang sudah diingatkan dalam (hari)", "tipe": "int",
                             "min": 0, "max": 30},
+    "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
+                     "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
+                     "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
     "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID tujuan laporan keuangan: grup internal owner dan/atau chat pribadi (pisahkan koma)",
                                "tipe": "teks", "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
                                "bantuan": "Grup: tambahkan bot ke grup internal owner, lalu kirim /id di grup itu "
@@ -5297,7 +5341,7 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
     if not awal:
         return []
     akhir = max(sampai, conn.execute("SELECT MAX(periode) FROM tagihan").fetchone()[0] or sampai)
-    awal = max(awal, _geser_periode(akhir, -(maks_bulan - 1)))
+    awal = max(awal, _geser_periode(akhir, -(maks_bulan - 1)), CONFIG.get("KOMISI_MULAI") or "")
     hasil, p = [], awal
     while p <= akhir:
         ins = _hitung_insentif(conn, p)
@@ -5358,6 +5402,25 @@ def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
                     + (f" (terhitung {_rp(ins['total'])})" if total != ins["total"] else "")
                     + (f" · {d.catatan.strip()[:100]}" if d.catatan and d.catatan.strip() else ""))
     return {"ok": True, "total": total, "terhitung": ins["total"]}
+
+
+@app.post("/api/keuangan/insentif/{periode}/mulai")
+def keuangan_komisi_mulai(periode: str, request: Request):
+    """Owner: komisi mitra dihitung mulai bulan ini (bulan-bulan sebelumnya disembunyikan)."""
+    _wajib_owner(request, "Hanya owner yang bisa mengatur awal perhitungan komisi.")
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    conn = _billing_conn()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+        conn.execute("INSERT OR REPLACE INTO pengaturan (kunci, nilai) VALUES ('KOMISI_MULAI', ?)", (periode,))
+        conn.commit()
+    finally:
+        conn.close()
+    lama = CONFIG.get("KOMISI_MULAI") or "-"
+    CONFIG["KOMISI_MULAI"] = periode
+    catat_aktivitas(_oleh(request), "pengaturan_ubah", f"Komisi mitra dihitung mulai: {lama} → {periode}")
+    return {"ok": True, "mulai": periode}
 
 
 @app.delete("/api/keuangan/insentif/{periode}/kunci")
@@ -8242,16 +8305,40 @@ def _param_ditolak(detail) -> list[str]:
     return hasil
 
 
+def _rincian_fault(detail) -> list[str]:
+    """'IPPingDiagnostics: Internal error (9002)' per kolom yang ditolak (SetParameterValuesFault)."""
+    hasil = []
+    if isinstance(detail, dict):
+        nama = detail.get("parameterName") or detail.get("ParameterName")
+        if isinstance(nama, str) and nama.strip():
+            bagian = nama.rstrip(".").rsplit(".", 1)[-1]
+            alasan = str(detail.get("faultString") or detail.get("FaultString") or "").strip()
+            kode = str(detail.get("faultCode") or detail.get("FaultCode") or "").strip()
+            hasil.append(bagian + (f": {alasan}" if alasan else "") + (f" ({kode})" if kode else ""))
+        else:
+            for v in detail.values():
+                hasil += _rincian_fault(v)
+    elif isinstance(detail, list):
+        for v in detail:
+            hasil += _rincian_fault(v)
+    return hasil
+
+
 def _status_tugas(acs_id: str, tid: str) -> dict:
     """antre = masih menunggu ONU; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
     q = json.dumps({"device": acs_id})
     r = _acs("GET", "/faults/", params={"query": q})
     for f in (r.json() if r.ok else []):
         if f.get("channel") == f"task_{tid}":
-            ditolak = [p.rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail")) if p.strip()]
+            ditolak = [p.rstrip(".").rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail")) if p.strip()]
+            rinci = _rincian_fault(f.get("detail"))
+            sibuk = any("internal error" in r.lower() or "(9002)" in r for r in rinci)
             return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"), "parameter": ditolak,
+                    "sibuk": sibuk,
                     "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"
-                             + (f" — kolom ditolak: {', '.join(ditolak[:6])}" if ditolak else "")}
+                             + (f" — {'; '.join(rinci[:4])}" if rinci else "")
+                             + (". ONU sedang sibuk atau fitur diagnosanya macet: coba lagi 5–10 menit lagi, "
+                                "atau Reboot ONU bila tetap gagal." if sibuk else "")}
     r = _acs("GET", "/tasks/", params={"query": q})
     if r.ok and any(str(t.get("_id")) == tid for t in r.json()):
         return {"status": "antre"}
