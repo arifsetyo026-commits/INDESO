@@ -36,7 +36,13 @@ class FakeRes:
         elif self.path == "/ppp/active":
             rows = [dict(v, name=k) for k, vs in self.mt.active.items() for v in vs]
         elif self.path == "/ppp/profile":
-            rows = [{"name": p} for p in self.mt.profiles]
+            rows = [dict(getattr(self.mt, "profil_detail", {}).get(p, {}), name=p) for p in self.mt.profiles]
+        elif self.path == "/ip/dns":
+            rows = [dict(getattr(self.mt, "dns", {}))]
+        elif self.path == "/ip/firewall/mangle":
+            rows = list(getattr(self.mt, "mangle", []))
+        elif self.path == "/interface/pppoe-server/server":
+            rows = list(getattr(self.mt, "pppoe_server", []))
         elif self.path == "/log":
             rows = list(self.mt.log)
         elif self.path == "/system/resource":
@@ -66,6 +72,10 @@ class FakeRes:
             return [dict(self.mt.traffic)] if getattr(self.mt, "traffic", None) else []
         if perintah == "ping":
             return list(getattr(self.mt, "ping", []))
+        if perintah == "resolve":
+            if not getattr(self.mt, "resolve", None):
+                raise Exception("failure: dns server failure")
+            return [{"ret": self.mt.resolve}]
         return []
 
 
@@ -1839,3 +1849,61 @@ def test_acs_ping_tertahan_dibersihkan_berkala_dan_pesan_jelas(siap, monkeypatch
     st = main._status_tugas("DEV1", baru)
     assert st["status"] == "gagal" and st["sibuk"] and "IPPingDiagnostics: Internal error (9002)" in st["pesan"]
     assert "Reboot ONU" in st["pesan"]
+
+
+
+def test_cek_dns_mtu_mikrotik(siap):
+    main, o, k, m = siap
+    mt = main._mt
+    mt.dns = {"servers": "", "dynamic-servers": "", "allow-remote-requests": "true"}
+    mt.profil_detail = {"default": {"change-tcp-mss": "yes"},
+                        "paket-10mbps": {"local-address": "10.10.0.1", "change-tcp-mss": "default"},
+                        "paket-20mbps": {"dns-server": "8.8.8.8", "change-tcp-mss": "no"}}
+    mt.pppoe_server = [{"service-name": "desa", "interface": "ether2", "max-mtu": "1500"}]
+    d = k.get("/api/mikrotik/cek-dns-mtu").json()
+    judul = {c["judul"]: c for c in d["cek"]}
+    assert judul["MikroTik tidak punya server DNS"]["perintah"] == "/ip dns set servers=8.8.8.8,1.1.1.1"
+    assert "Uji DNS dari MikroTik gagal" in judul
+    p10 = judul["Profil 'paket-10mbps' tidak membagikan DNS (2 pelanggan)"]
+    assert p10["perintah"] == '/ppp profile set [find name="paket-10mbps"] dns-server=10.10.0.1'
+    assert "Profil 'paket-20mbps': penyesuaian MSS mati (1 pelanggan)" in judul
+    assert not any("paket-10mbps': penyesuaian" in j for j in judul)        # default profil = yes
+    assert "max-mtu=1480" in judul["MTU server PPPoE 'desa' 1500"]["perintah"]
+    assert d["masalah"] >= 5
+    # setelah diperbaiki: normal
+    mt.dns = {"servers": "8.8.8.8", "allow-remote-requests": "true"}
+    mt.resolve = "142.250.4.100"
+    mt.profil_detail["paket-10mbps"]["dns-server"] = "10.10.0.1"
+    mt.profil_detail["paket-20mbps"]["change-tcp-mss"] = "yes"
+    mt.profil_detail["default"]["dns-server"] = "8.8.8.8"
+    mt.pppoe_server[0]["max-mtu"] = "1480"
+    d = k.get("/api/mikrotik/cek-dns-mtu").json()
+    assert d["masalah"] == 0, d
+    assert m.get("/api/mikrotik/cek-dns-mtu").status_code == 403
+
+
+def test_acs_ping_gagal_langsung_dihapus_tanpa_ulang(siap, monkeypatch):
+    """Ping yang ditolak ONU langsung dihapus (tugas + fault) supaya tidak menumpuk; ping berikutnya
+    untuk ONU itu otomatis memakai cara tanpa memilih WAN."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    dev["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"},
+                                                         "Interface": {"_value": ""}}
+    main._ping_tanpa_wan.discard(dev["_id"])
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    tid = r["tugas_id"]
+    assert r["lewat_wan"] and tid in acs.antrean
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments"})
+    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    assert h["status"] == "gagal" and h["dihapus"] and h["cara_berikutnya"] == "tanpa_wan"
+    assert tid not in acs.antrean and not acs.faults
+    jumlah = len(acs.tugas)
+    r2 = k.post("/api/acs/budi/ping", json={}).json()          # hanya bila diminta lagi
+    assert len(acs.tugas) == jumlah + 1 and not r2["lewat_wan"]
+    assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
+    main._ping_tanpa_wan.discard(dev["_id"])

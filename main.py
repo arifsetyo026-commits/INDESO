@@ -8577,6 +8577,21 @@ def _bersihkan_tugas_ping(acs_id: str) -> int:
     return n
 
 
+# Ping ONU tanpa coba-ulang otomatis: perintah yang ditolak langsung dihapus. ONU yang menolak cara
+# "lewat WAN" diingat, sehingga permintaan ping berikutnya langsung memakai cara tanpa memilih WAN.
+_ping_tugas: dict = {}          # id tugas -> (acs_id, lewat_wan)
+_ping_tanpa_wan: set = set()    # acs_id yang menolak kolom Interface
+
+
+def _hapus_tugas_acs(acs_id: str, tid: str) -> None:
+    from urllib.parse import quote
+    try:
+        _acs("DELETE", f"/tasks/{tid}")
+        _acs("DELETE", f"/faults/{quote(acs_id + ':task_' + tid, safe='')}")
+    except HTTPException:
+        pass
+
+
 @app.post("/api/acs/{username}/ping")
 def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     """Suruh ONU pelanggan ping ke host (default google.com) lewat TR-069 IPPingDiagnostics.
@@ -8596,7 +8611,7 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
     # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
     wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
-    if d.minimal:
+    if d.minimal or doc["_id"] in _ping_tanpa_wan:
         wan = None
     # Timeout/DataBlockSize sengaja tidak dikirim: bawaan ONU sudah wajar, dan makin sedikit
     # kolom makin kecil kemungkinan ditolak (teruji di ZTE F609 V7 & Fiberhome HG6145D2).
@@ -8611,6 +8626,10 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
         if isinstance(tipe, str) and tipe.startswith("xsd:"):
             v[2] = tipe
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    if hasil.get("tugas_id"):
+        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan))
+        while len(_ping_tugas) > 500:
+            _ping_tugas.pop(next(iter(_ping_tugas)))
     catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
     return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=d.minimal)
 
@@ -8626,7 +8645,15 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
     if tugas and re.fullmatch(r"[0-9a-f]{24}", tugas):
         st = _status_tugas(doc["_id"], tugas)
         if st["status"] == "gagal":
-            return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas}
+            # Hapus langsung supaya tidak diulang GenieACS tiap ONU lapor (tidak menumpuk). Tidak dicoba
+            # ulang otomatis; bila tadi lewat WAN, permintaan berikutnya memakai cara tanpa WAN.
+            _hapus_tugas_acs(doc["_id"], tugas)
+            asal = _ping_tugas.pop(tugas, None)
+            ganti_cara = bool(asal and asal[1])
+            if ganti_cara:
+                _ping_tanpa_wan.add(doc["_id"])
+            return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas, "dihapus": True,
+                    "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
     tertunda = False
     if segarkan:
         r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": doc["_id"], "name": "getParameterValues"})})
@@ -8825,6 +8852,125 @@ def diagnosa(username: str, request: Request):
         hasil["acs"] = None
     hasil["kesimpulan"] = _kesimpulan(hasil)
     return hasil
+
+
+# --- Cek DNS & MTU di MikroTik (hanya membaca) ---
+def _ya(v) -> Optional[bool]:
+    v = str(v or "").strip().lower()
+    return True if v in ("yes", "true") else (False if v in ("no", "false") else None)
+
+
+@app.get("/api/mikrotik/cek-dns-mtu")
+def mikrotik_cek_dns_mtu(request: Request):
+    """Baca pengaturan DNS, profil PPPoE, aturan MSS, dan server PPPoE dari MikroTik, lalu beri
+    kesimpulan & perintah perbaikan untuk disalin. Tidak mengubah apa pun di MikroTik."""
+    _wajib_admin(request)
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        baca = lambda path: api.get_resource(path).get()
+        dns = (baca("/ip/dns") or [{}])[0]
+        profil = baca("/ppp/profile")
+        secret = baca("/ppp/secret")
+        try:
+            mangle = baca("/ip/firewall/mangle")
+        except Exception:
+            mangle = []
+        try:
+            server = baca("/interface/pppoe-server/server")
+        except Exception:
+            server = []
+        resolve = None
+        try:
+            r = api.get_resource("/").call("resolve", {"domain-name": "google.com"})
+            resolve = (r or [{}])[0].get("ret") if r else None
+        except Exception as e:
+            resolve = None
+            resolve_galat = str(e)[:120]
+        else:
+            resolve_galat = None
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gagal membaca MikroTik: {e}")
+    finally:
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+
+    cek = []
+    tambah = lambda tingkat, judul, ket, perintah=None: cek.append(
+        {"tingkat": tingkat, "judul": judul, "keterangan": ket, "perintah": perintah})
+
+    # 1. DNS MikroTik sendiri
+    servers = ",".join(x for x in (dns.get("servers"), dns.get("dynamic-servers")) if x)
+    remote = _ya(dns.get("allow-remote-requests"))
+    if not servers:
+        tambah("buruk", "MikroTik tidak punya server DNS", "MikroTik sendiri tidak bisa mencari alamat situs.",
+               "/ip dns set servers=8.8.8.8,1.1.1.1")
+    else:
+        tambah("baik", "Server DNS MikroTik", f"{servers} · allow-remote-requests={'yes' if remote else 'no'}")
+    if resolve:
+        tambah("baik", "Uji DNS dari MikroTik", f"google.com → {resolve}")
+    elif resolve_galat and re.search(r"(?i)no such command|unknown|not supported", resolve_galat):
+        tambah("info", "Uji DNS dari MikroTik tidak didukung lewat API",
+               "Uji manual di Winbox → New Terminal dengan perintah di bawah.", ":put [:resolve google.com]")
+    else:
+        tambah("buruk", "Uji DNS dari MikroTik gagal", "MikroTik tidak bisa menerjemahkan google.com"
+               + (f" ({resolve_galat})" if resolve_galat else "") + ". Periksa server DNS / koneksi upstream.",
+               "/ip dns set servers=8.8.8.8,1.1.1.1")
+
+    # 2. Profil PPPoE yang dipakai pelanggan
+    pakai = {}
+    for x in secret:
+        pakai[x.get("profile") or "default"] = pakai.get(x.get("profile") or "default", 0) + 1
+    by_nama = {p.get("name"): p for p in profil}
+    mss_bawaan = _ya((by_nama.get("default") or {}).get("change-tcp-mss"))
+    mangle_mss = [m for m in mangle if m.get("action") == "change-mss" and _ya(m.get("disabled")) is not True]
+    hasil_profil = []
+    for nama, n in sorted(pakai.items(), key=lambda x: -x[1]):
+        p = by_nama.get(nama, {})
+        dns_p = p.get("dns-server") or ""
+        mss_v = str(p.get("change-tcp-mss") or "default").lower()
+        mss = mss_bawaan if mss_v == "default" else _ya(mss_v)
+        hasil_profil.append({"profil": nama, "pelanggan": n, "dns_server": dns_p, "change_tcp_mss": mss_v,
+                             "mss_efektif": mss, "local_address": p.get("local-address") or ""})
+        if not dns_p:
+            tujuan = (p.get("local-address") if remote and p.get("local-address") else "8.8.8.8,1.1.1.1")
+            tambah("buruk" if nama != CONFIG["ISOLIR_PROFILE"] else "info",
+                   f"Profil '{nama}' tidak membagikan DNS ({n} pelanggan)",
+                   "Pelanggan di profil ini tidak menerima alamat DNS dari PPPoE. Gejala: WA chat jalan, tapi "
+                   "status WA, Facebook, dan situs lain tidak terbuka. Berlaku setelah pelanggan tersambung ulang.",
+                   f'/ppp profile set [find name="{nama}"] dns-server={tujuan}')
+        if not mss and not mangle_mss:
+            tambah("buruk" if nama != CONFIG["ISOLIR_PROFILE"] else "info",
+                   f"Profil '{nama}': penyesuaian MSS mati ({n} pelanggan)",
+                   "Paket data besar (gambar, video, halaman web) bisa tersangkut di PPPoE, sedangkan chat kecil tetap "
+                   "jalan. Aktifkan change-tcp-mss.",
+                   f'/ppp profile set [find name="{nama}"] change-tcp-mss=yes')
+    if hasil_profil and not any(c["judul"].startswith("Profil") for c in cek):
+        tambah("baik", "Profil PPPoE", "Semua profil yang dipakai pelanggan membagikan DNS dan menyesuaikan MSS.")
+    if mangle_mss:
+        tambah("baik", "Aturan MSS di firewall mangle", f"{len(mangle_mss)} aturan change-mss aktif.")
+
+    # 3. MTU server PPPoE
+    for sv in server:
+        try:
+            mtu = int(str(sv.get("max-mtu") or "0").split()[0] or 0)
+        except ValueError:
+            mtu = 0
+        nama = sv.get("service-name") or sv.get("interface") or "?"
+        if mtu > 1492:
+            tambah("buruk", f"MTU server PPPoE '{nama}' {mtu}",
+                   "PPPoE memakan 8 byte; MTU di atas 1492 membuat paket besar terpotong.",
+                   f'/interface pppoe-server server set [find interface="{sv.get("interface")}"] max-mtu=1480 max-mru=1480')
+        elif mtu:
+            tambah("baik", f"MTU server PPPoE '{nama}'", f"max-mtu {mtu}")
+
+    buruk = sum(1 for c in cek if c["tingkat"] == "buruk")
+    catat_aktivitas(_oleh(request), "mikrotik_cek", f"Cek DNS & MTU: {buruk} masalah")
+    return {"masalah": buruk, "cek": cek, "profil": hasil_profil}
 
 
 @app.post("/api/diagnosa/{username}/ping")
