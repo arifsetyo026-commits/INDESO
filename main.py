@@ -8577,6 +8577,21 @@ def _bersihkan_tugas_ping(acs_id: str) -> int:
     return n
 
 
+# Ping ONU tanpa coba-ulang otomatis: perintah yang ditolak langsung dihapus. ONU yang menolak cara
+# "lewat WAN" diingat, sehingga permintaan ping berikutnya langsung memakai cara tanpa memilih WAN.
+_ping_tugas: dict = {}          # id tugas -> (acs_id, lewat_wan)
+_ping_tanpa_wan: set = set()    # acs_id yang menolak kolom Interface
+
+
+def _hapus_tugas_acs(acs_id: str, tid: str) -> None:
+    from urllib.parse import quote
+    try:
+        _acs("DELETE", f"/tasks/{tid}")
+        _acs("DELETE", f"/faults/{quote(acs_id + ':task_' + tid, safe='')}")
+    except HTTPException:
+        pass
+
+
 @app.post("/api/acs/{username}/ping")
 def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     """Suruh ONU pelanggan ping ke host (default google.com) lewat TR-069 IPPingDiagnostics.
@@ -8596,7 +8611,7 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
     # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
     wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
-    if d.minimal:
+    if d.minimal or doc["_id"] in _ping_tanpa_wan:
         wan = None
     # Timeout/DataBlockSize sengaja tidak dikirim: bawaan ONU sudah wajar, dan makin sedikit
     # kolom makin kecil kemungkinan ditolak (teruji di ZTE F609 V7 & Fiberhome HG6145D2).
@@ -8611,6 +8626,10 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
         if isinstance(tipe, str) and tipe.startswith("xsd:"):
             v[2] = tipe
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    if hasil.get("tugas_id"):
+        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan))
+        while len(_ping_tugas) > 500:
+            _ping_tugas.pop(next(iter(_ping_tugas)))
     catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
     return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=d.minimal)
 
@@ -8626,7 +8645,15 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
     if tugas and re.fullmatch(r"[0-9a-f]{24}", tugas):
         st = _status_tugas(doc["_id"], tugas)
         if st["status"] == "gagal":
-            return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas}
+            # Hapus langsung supaya tidak diulang GenieACS tiap ONU lapor (tidak menumpuk). Tidak dicoba
+            # ulang otomatis; bila tadi lewat WAN, permintaan berikutnya memakai cara tanpa WAN.
+            _hapus_tugas_acs(doc["_id"], tugas)
+            asal = _ping_tugas.pop(tugas, None)
+            ganti_cara = bool(asal and asal[1])
+            if ganti_cara:
+                _ping_tanpa_wan.add(doc["_id"])
+            return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas, "dihapus": True,
+                    "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
     tertunda = False
     if segarkan:
         r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": doc["_id"], "name": "getParameterValues"})})

@@ -1880,3 +1880,30 @@ def test_cek_dns_mtu_mikrotik(siap):
     d = k.get("/api/mikrotik/cek-dns-mtu").json()
     assert d["masalah"] == 0, d
     assert m.get("/api/mikrotik/cek-dns-mtu").status_code == 403
+
+
+def test_acs_ping_gagal_langsung_dihapus_tanpa_ulang(siap, monkeypatch):
+    """Ping yang ditolak ONU langsung dihapus (tugas + fault) supaya tidak menumpuk; ping berikutnya
+    untuk ONU itu otomatis memakai cara tanpa memilih WAN."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    dev["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"},
+                                                         "Interface": {"_value": ""}}
+    main._ping_tanpa_wan.discard(dev["_id"])
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    tid = r["tugas_id"]
+    assert r["lewat_wan"] and tid in acs.antrean
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments"})
+    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    assert h["status"] == "gagal" and h["dihapus"] and h["cara_berikutnya"] == "tanpa_wan"
+    assert tid not in acs.antrean and not acs.faults
+    jumlah = len(acs.tugas)
+    r2 = k.post("/api/acs/budi/ping", json={}).json()          # hanya bila diminta lagi
+    assert len(acs.tugas) == jumlah + 1 and not r2["lewat_wan"]
+    assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
+    main._ping_tanpa_wan.discard(dev["_id"])

@@ -1518,19 +1518,16 @@ async function pingOnu(host,catatan,tahap){
   finally{ sibuk=false; }
   if(s.status==='gagal'){
    clearInterval(_pantauPing);
-   // Perintah ditolak ONU: hapus dari antrean supaya tidak diulang terus setiap ONU lapor.
-   try{ await fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+s.tugas_id+'/batal',{method:'POST'}); }catch(e){}
-   if(tahap===0&&r.lewat_wan){   // ulang tanpa memilih jalur WAN; beri jeda bila ONU masih sibuk diagnosa
-    const jeda=s.sibuk?20:2;
-    box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU menolak cara pertama${s.sibuk?' (sedang sibuk)':''}; mencoba cara kedua dalam ${jeda} detik…</div>`;
-    setTimeout(()=>pingOnu(host,catatan,1),jeda*1000); return;
-   }
-   box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div></div>`;
+   // Perintah yang ditolak sudah dihapus server (tidak diulang, tidak menumpuk). Tidak dicoba ulang
+   // otomatis: ping berikutnya hanya bila tombol ditekan lagi.
+   box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div><div class="plSub" style="margin-top:4px">Perintah sudah dihapus dari antrean.${s.cara_berikutnya==='tanpa_wan'?' Tekan <b>Ping dari ONU ke Google</b> lagi: untuk ONU ini INDESO akan memakai cara lain (tanpa memilih jalur WAN).':' Tekan <b>Ping dari ONU ke Google</b> lagi bila ingin mencoba.'}</div></div>`;
    return;
   }
   if(s.status!=='selesai'){
    box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU sedang ping ke ${esc(host)}… (${dtk} detik)${dtk>90?' — ONU lambat merespons; hasil muncul begitu ONU lapor ke server (maks. ±5 menit).':''}</div>`;
-   if(dtk>360){ clearInterval(_pantauPing); box.innerHTML='<div class="muted">Belum ada hasil setelah 6 menit. ONU mungkin offline atau tidak mendukung tes ping. Coba lagi nanti.</div>'; }
+   if(dtk>360){ clearInterval(_pantauPing);
+    if(r.tugas_id) fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+r.tugas_id+'/batal',{method:'POST'}).catch(()=>{});
+    box.innerHTML='<div class="muted">Belum ada hasil setelah 6 menit; perintah ping dihapus dari antrean. ONU mungkin offline atau tidak mendukung tes ping. Coba lagi nanti.</div>'; }
    return;
   }
   clearInterval(_pantauPing);
