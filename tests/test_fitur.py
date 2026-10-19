@@ -75,7 +75,9 @@ class FakeRes:
         if perintah == "resolve":
             if not getattr(self.mt, "resolve", None):
                 raise Exception("failure: dns server failure")
-            return [{"ret": self.mt.resolve}]
+            balas = type("Balas", (list,), {})()              # seperti routeros_api: ret ada di done_message
+            balas.done_message = {"ret": self.mt.resolve}
+            return balas
         return []
 
 
