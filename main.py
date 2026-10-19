@@ -8883,7 +8883,8 @@ def mikrotik_cek_dns_mtu(request: Request):
         resolve = None
         try:
             r = api.get_resource("/").call("resolve", {"domain-name": "google.com"})
-            resolve = (r or [{}])[0].get("ret") if r else None
+            # Hasil `resolve` dikirim RouterOS di pesan !done (bukan baris !re), jadi baris balasannya kosong.
+            resolve = (getattr(r, "done_message", None) or {}).get("ret") or (r[0].get("ret") if r else None)
         except Exception as e:
             resolve = None
             resolve_galat = str(e)[:120]
@@ -8913,8 +8914,8 @@ def mikrotik_cek_dns_mtu(request: Request):
         tambah("baik", "Server DNS MikroTik", f"{servers} · allow-remote-requests={'yes' if remote else 'no'}")
     if resolve:
         tambah("baik", "Uji DNS dari MikroTik", f"google.com → {resolve}")
-    elif resolve_galat and re.search(r"(?i)no such command|unknown|not supported", resolve_galat):
-        tambah("info", "Uji DNS dari MikroTik tidak didukung lewat API",
+    elif not resolve_galat or re.search(r"(?i)no such command|unknown|not supported", resolve_galat):
+        tambah("info", "Uji DNS dari MikroTik tidak terbaca lewat API",
                "Uji manual di Winbox → New Terminal dengan perintah di bawah.", ":put [:resolve google.com]")
     else:
         tambah("buruk", "Uji DNS dari MikroTik gagal", "MikroTik tidak bisa menerjemahkan google.com"
