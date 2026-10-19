@@ -43,6 +43,8 @@ class FakeRes:
             rows = list(getattr(self.mt, "mangle", []))
         elif self.path == "/interface/pppoe-server/server":
             rows = list(getattr(self.mt, "pppoe_server", []))
+        elif self.path == "/ip/route":
+            rows = list(getattr(self.mt, "route", []))
         elif self.path == "/log":
             rows = list(self.mt.log)
         elif self.path == "/system/resource":
@@ -71,6 +73,8 @@ class FakeRes:
         if perintah == "monitor-traffic":
             return [dict(self.mt.traffic)] if getattr(self.mt, "traffic", None) else []
         if perintah == "ping":
+            if getattr(self.mt, "ping_per", None) is not None:
+                return list(self.mt.ping_per.get((arg or {}).get("address"), []))
             return list(getattr(self.mt, "ping", []))
         if perintah == "resolve":
             if not getattr(self.mt, "resolve", None):
@@ -1987,3 +1991,47 @@ def test_alert_putus_jenis_dan_alasan(siap, monkeypatch):
     for x in (main._putus_aktif, main._pernah_aktif, main._peta_onu):
         x.clear()
     main._listrik_malam.clear()
+
+
+def test_pantau_internet_pusat(siap):
+    """Ping dari MikroTik ke gateway ISP & internet + beban WAN; alert setelah 2x berturut-turut, kabar pulih."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.route = [{"dst-address": "0.0.0.0/0", "gateway": "192.168.1.1", "immediate-gw": "192.168.1.1%ether1",
+                 "active": "true"}]
+    mt.traffic = {"rx-bits-per-second": "95000000", "tx-bits-per-second": "12000000"}
+
+    def ping(hilang, ms="20ms"):
+        return [{"seq": "4", "sent": "5", "received": str(5 - hilang), "avg-rtt": ms, "max-rtt": ms}]
+    baik = {"192.168.1.1": ping(0, "2ms"), "8.8.8.8": ping(0), "1.1.1.1": ping(0, "18ms")}
+    mt.ping_per = dict(baik)
+    main.CONFIG.update(UPSTREAM_KAPASITAS_MBPS=100, UPSTREAM_WAN="", UPSTREAM_TUJUAN="8.8.8.8,1.1.1.1")
+    main._upstream.update(buruk=0, penuh=0, alert_buruk=False, alert_penuh=False)
+    t = datetime(2026, 10, 19, 20, 0)
+    main._terkirim.clear()
+    h = main.ukur_upstream(t)
+    assert h["wan"] == "ether1" and h["gateway"] == "192.168.1.1" and h["rx_mbps"] == 95.0
+    assert [p["jenis"] for p in h["ping"]] == ["gateway", "internet", "internet"]
+    n = main._nilai_upstream(h)
+    assert n["rata_ms"] == 18.0 and not n["buruk"] and n["pakai_persen"] == 95 and n["penuh"]
+    main.proses_upstream(h, t)
+    assert not main._terkirim                                  # satu kali belum cukup
+    # Internet putus (gateway normal) dua kali berturut-turut -> satu alert
+    mt.ping_per = {"192.168.1.1": ping(0, "2ms"), "8.8.8.8": ping(5), "1.1.1.1": ping(4)}
+    for i in (1, 2, 3):
+        main.proses_upstream(main.ukur_upstream(t + timedelta(minutes=2 * i)), t + timedelta(minutes=2 * i))
+    teks = [x["data"]["text"] for x in main._terkirim]
+    assert sum("Internet pusat bermasalah" in x for x in teks) == 1
+    assert any("gangguan di jaringan ISP" in x for x in teks)
+    assert sum("Bandwidth WAN hampir penuh" in x for x in teks) == 1
+    main._terkirim.clear()
+    mt.ping_per = dict(baik)
+    main.proses_upstream(main.ukur_upstream(t + timedelta(minutes=10)), t + timedelta(minutes=10))
+    assert any("normal kembali" in x["data"]["text"] for x in main._terkirim)
+    # API grafik
+    d = o.get("/api/upstream?jam=168").json()
+    assert d["wan"] == "ether1" and d["kapasitas_mbps"] == 100 and d["trafik"]
+    assert any(p["hilang_persen"] == 80 for p in d["ping"]) and all(p["gateway_ms"] == 2.0 for p in d["ping"])
+    assert o.post("/api/upstream/ukur").status_code == 200
+    assert m.get("/api/upstream").status_code == 403
+    mt.ping_per = None
