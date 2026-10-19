@@ -1219,6 +1219,10 @@ async def background_monitor_loop():
             await asyncio.to_thread(proses_cek_acs)
         except Exception as e:
             logger.error(f"Error saat cek GenieACS: {e}")
+        try:
+            await asyncio.to_thread(proses_bersih_ping_tertahan)
+        except Exception as e:
+            logger.error(f"Error saat bersih ping tertahan: {e}")
 
         # Dibungkus juga: bila ini error tanpa try, seluruh loop (isolir, tagihan, backup) berhenti diam-diam.
         try:
@@ -1249,6 +1253,42 @@ def proses_bersih_harian() -> None:
     if _bersih_hari != hari:
         cleanup_old_history()
         _bersih_hari = hari
+
+
+_bersih_ping = {"terakhir": None}
+
+
+def proses_bersih_ping_tertahan(umur_menit: int = 10) -> int:
+    """Perintah ping yang tertahan > umur_menit dihapus beserta fault-nya. Tanpa ini GenieACS mengulangnya
+    setiap ONU lapor, ONU terus 'sibuk diagnosa', dan ping berikutnya ikut ditolak (9002 Internal error)."""
+    if not CONFIG.get("GENIEACS_URL") or (
+            _bersih_ping["terakhir"] is not None and time.monotonic() - _bersih_ping["terakhir"] < 600):
+        return 0
+    _bersih_ping["terakhir"] = time.monotonic()
+    from urllib.parse import quote
+    batas = (datetime.utcnow() - timedelta(minutes=umur_menit)).isoformat()
+    try:
+        r = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "setParameterValues"})}, timeout=15)
+    except HTTPException:
+        return 0
+    n = 0
+    for t in (r.json() if r.ok else []):
+        pv = t.get("parameterValues") or []
+        if not any(str(p[0]).startswith(_PING_ONU) for p in pv if p):
+            continue
+        if str(t.get("timestamp") or "")[:19] > batas[:19]:
+            continue
+        tid, dev = str(t.get("_id")), str(t.get("device") or "")
+        try:
+            _acs("DELETE", f"/tasks/{tid}")
+            if dev:
+                _acs("DELETE", f"/faults/{quote(dev + ':task_' + tid, safe='')}")
+            n += 1
+        except HTTPException:
+            pass
+    if n:
+        logger.warning(f"{n} perintah ping tertahan > {umur_menit} menit dihapus dari GenieACS")
+    return n
 
 
 def proses_cek_acs() -> None:
@@ -8265,16 +8305,40 @@ def _param_ditolak(detail) -> list[str]:
     return hasil
 
 
+def _rincian_fault(detail) -> list[str]:
+    """'IPPingDiagnostics: Internal error (9002)' per kolom yang ditolak (SetParameterValuesFault)."""
+    hasil = []
+    if isinstance(detail, dict):
+        nama = detail.get("parameterName") or detail.get("ParameterName")
+        if isinstance(nama, str) and nama.strip():
+            bagian = nama.rstrip(".").rsplit(".", 1)[-1]
+            alasan = str(detail.get("faultString") or detail.get("FaultString") or "").strip()
+            kode = str(detail.get("faultCode") or detail.get("FaultCode") or "").strip()
+            hasil.append(bagian + (f": {alasan}" if alasan else "") + (f" ({kode})" if kode else ""))
+        else:
+            for v in detail.values():
+                hasil += _rincian_fault(v)
+    elif isinstance(detail, list):
+        for v in detail:
+            hasil += _rincian_fault(v)
+    return hasil
+
+
 def _status_tugas(acs_id: str, tid: str) -> dict:
     """antre = masih menunggu ONU; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
     q = json.dumps({"device": acs_id})
     r = _acs("GET", "/faults/", params={"query": q})
     for f in (r.json() if r.ok else []):
         if f.get("channel") == f"task_{tid}":
-            ditolak = [p.rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail")) if p.strip()]
+            ditolak = [p.rstrip(".").rsplit(".", 1)[-1] for p in _param_ditolak(f.get("detail")) if p.strip()]
+            rinci = _rincian_fault(f.get("detail"))
+            sibuk = any("internal error" in r.lower() or "(9002)" in r for r in rinci)
             return {"status": "gagal", "fault_id": f.get("_id"), "kode": f.get("code"), "parameter": ditolak,
+                    "sibuk": sibuk,
                     "pesan": f"ONU menolak perintah ({f.get('code')}): {str(f.get('message') or '')[:200]}"
-                             + (f" — kolom ditolak: {', '.join(ditolak[:6])}" if ditolak else "")}
+                             + (f" — {'; '.join(rinci[:4])}" if rinci else "")
+                             + (". ONU sedang sibuk atau fitur diagnosanya macet: coba lagi 5–10 menit lagi, "
+                                "atau Reboot ONU bila tetap gagal." if sibuk else "")}
     r = _acs("GET", "/tasks/", params={"query": q})
     if r.ok and any(str(t.get("_id")) == tid for t in r.json()):
         return {"status": "antre"}

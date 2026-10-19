@@ -1508,7 +1508,11 @@ async function pingOnu(host,catatan,tahap){
    clearInterval(_pantauPing);
    // Perintah ditolak ONU: hapus dari antrean supaya tidak diulang terus setiap ONU lapor.
    try{ await fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+s.tugas_id+'/batal',{method:'POST'}); }catch(e){}
-   if(tahap===0&&r.lewat_wan){ pingOnu(host,catatan,1); return; }   // ulang tanpa memilih jalur WAN
+   if(tahap===0&&r.lewat_wan){   // ulang tanpa memilih jalur WAN; beri jeda bila ONU masih sibuk diagnosa
+    const jeda=s.sibuk?20:2;
+    box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU menolak cara pertama${s.sibuk?' (sedang sibuk)':''}; mencoba cara kedua dalam ${jeda} detik…</div>`;
+    setTimeout(()=>pingOnu(host,catatan,1),jeda*1000); return;
+   }
    box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div></div>`;
    return;
   }

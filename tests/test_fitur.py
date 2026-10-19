@@ -1808,3 +1808,34 @@ def test_komisi_mulai_bulan(siap):
     assert o.put("/api/pengaturan", json={"nilai": {"KOMISI_MULAI": "2026-13"}}).status_code == 400
     assert o.put("/api/pengaturan", json={"nilai": {"KOMISI_MULAI": ""}}).status_code == 200
     assert "2026-08" in per()
+
+
+def test_acs_ping_tertahan_dibersihkan_berkala_dan_pesan_jelas(siap, monkeypatch):
+    """Ping yang ditolak '9002 Internal error' pada objek IPPingDiagnostics. (ONU sibuk) dihapus berkala
+    bila tertahan > 10 menit, dan pesan gagal menyebut bagian & alasannya."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    detail = {"faultCode": "9003", "faultString": "Invalid arguments", "setParameterValuesFault": [
+        {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002", "faultString": "Internal error"}]}
+    assert main._rincian_fault(detail) == ["IPPingDiagnostics: Internal error (9002)"]
+    lama, baru = "c" * 24, "d" * 24
+    jam_lalu = (datetime.utcnow() - timedelta(hours=1)).isoformat() + "Z"
+    pv = [["InternetGatewayDevice.IPPingDiagnostics.DiagnosticsState", "Requested", "xsd:string"]]
+    acs.antrean[lama] = {"name": "setParameterValues", "parameterValues": pv, "device": "DEV1", "timestamp": jam_lalu}
+    acs.antrean[baru] = {"name": "setParameterValues", "parameterValues": pv, "device": "DEV1",
+                         "timestamp": datetime.utcnow().isoformat() + "Z"}
+    acs.antrean["e" * 24] = {"name": "reboot", "device": "DEV1", "timestamp": jam_lalu}
+    acs.faults.append({"_id": f"DEV1:task_{lama}", "channel": f"task_{lama}", "device": "DEV1", "code": "cwmp.9003",
+                       "message": "Invalid arguments", "detail": detail})
+    main._bersih_ping["terakhir"] = None
+    assert main.proses_bersih_ping_tertahan() == 1
+    assert lama not in acs.antrean and baru in acs.antrean and "e" * 24 in acs.antrean and not acs.faults
+    assert main.proses_bersih_ping_tertahan() == 0            # dibatasi tiap 10 menit
+    # pesan gagal saat tugas ditolak
+    acs.faults.append({"_id": f"DEV1:task_{baru}", "channel": f"task_{baru}", "device": "DEV1", "code": "cwmp.9003",
+                       "message": "Invalid arguments", "detail": detail})
+    st = main._status_tugas("DEV1", baru)
+    assert st["status"] == "gagal" and st["sibuk"] and "IPPingDiagnostics: Internal error (9002)" in st["pesan"]
+    assert "Reboot ONU" in st["pesan"]
