@@ -189,12 +189,11 @@ CONFIG = {
     "BONCOS_LOOKBACK_DAYS": 7,
 
     # --- Deteksi pelanggan sering putus-nyambung ---
-    # Ini PERKIRAAN, bukan angka pasti — dihitung dari berapa kali pelanggan
-    # "kepergok" uptime-nya masih pendek saat snapshot diambil tiap 5 menit.
-    # Kalau pelanggan connect-disconnect di antara dua snapshot, itu tidak akan
-    # kehitung. Cukup buat prioritas cek, bukan bukti mutlak.
+    # Dihitung dari sesi PPPoE baru (uptime pendek) di snapshot tiap 5 menit. Satu sesi yang
+    # terekam di dua snapshot dihitung sekali. Sambung ulang beruntun di antara dua snapshot
+    # terhitung satu, jadi angkanya batas bawah.
     "SHORT_UPTIME_THRESHOLD_SECONDS": 600,
-    "SHORT_UPTIME_MIN_COUNT": 3,
+    "SHORT_UPTIME_MIN_COUNT": 5,      # sambung ulang (bukan jumlah snapshot) per PUTUS_LOOKBACK_DAYS
     "PUTUS_LOOKBACK_DAYS": 1,
 
     # --- Laporan Harian ---
@@ -207,6 +206,16 @@ CONFIG = {
     "ALERT_COOLDOWN_MINUTES": 720,   # 12 jam: satu alert per ONU, lalu diam sampai 12 jam kemudian
     "PUTUS_TUNGGU_MENIT": 10,         # tunggu sekian menit sebelum kirim peringatan putus
     "PUTUS_MASSAL_MIN": 5,
+    # --- Pantau internet pusat (MikroTik -> ISP) ---
+    "UPSTREAM_AKTIF": True,
+    "UPSTREAM_TUJUAN": "8.8.8.8,1.1.1.1",   # tujuan ping internet; gateway ISP ditambah otomatis
+    "UPSTREAM_WAN": "",                      # interface WAN; kosong = deteksi dari default route
+    "UPSTREAM_KAPASITAS_MBPS": 0,            # download langganan ISP; 0 = alert bandwidth mati
+    "UPSTREAM_INTERVAL_DETIK": 120,
+    "UPSTREAM_LOSS_PERSEN": 20,              # packet loss ke semua tujuan internet >= ini = bermasalah
+    "UPSTREAM_LATENSI_MS": 200,              # rata-rata latensi internet >= ini = lambat
+    "UPSTREAM_PENUH_PERSEN": 90,             # pemakaian WAN >= ini dari kapasitas = penuh
+    "PUTUS_SENYAP_MALAM": "21-06",    # jam (mulai-selesai) listrik ONU mati tidak dikabarkan per pelanggan; kosong = mati
     "TIKET_PENGINGAT_JAM": 24,        # tiket belum selesai sekian jam -> pengingat ke grup Telegram (0 = mati)            # sekian pelanggan putus bersamaan = satu pesan gangguan massal
     "ALERT_OFFLINE_LANGSUNG": False,  # False = matikan peringatan 'ONU OFFLINE' langsung yang lama
     "SNMP_TIMEOUT_SECONDS": 15,
@@ -766,16 +775,15 @@ def kirim_telegram_ke(chat_id: str, text: str) -> bool:
         return False
 
 
-def send_telegram_message(text: str) -> None:
+def send_telegram_message(text: str, senyap: bool = False) -> None:
     if not CONFIG["TELEGRAM_ENABLED"]:
         return
     url = f"https://api.telegram.org/bot{CONFIG['TELEGRAM_BOT_TOKEN']}/sendMessage"
+    data = {"chat_id": CONFIG["TELEGRAM_CHAT_ID"], "text": text, "parse_mode": "HTML"}
+    if senyap:
+        data["disable_notification"] = "true"
     try:
-        requests.post(
-            url,
-            data={"chat_id": CONFIG["TELEGRAM_CHAT_ID"], "text": text, "parse_mode": "HTML"},
-            timeout=5,
-        )
+        requests.post(url, data=data, timeout=5)
     except Exception as e:
         logger.error(f"Gagal kirim Telegram: {e}")
 
@@ -1346,6 +1354,19 @@ def init_history_db() -> None:
                 uptime_seconds INTEGER
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS upstream_history (
+                ts TEXT NOT NULL,
+                jenis TEXT NOT NULL,
+                tujuan TEXT NOT NULL,
+                rata_ms REAL,
+                maks_ms REAL,
+                hilang_persen INTEGER
+            )
+        """)
+        conn.execute("CREATE TABLE IF NOT EXISTS upstream_trafik (ts TEXT NOT NULL, rx_mbps REAL, tx_mbps REAL)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_hist_ts_user ON usage_history(ts, username)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_onu ON onu_history(pon, onu_id, ts)")
@@ -1476,6 +1497,8 @@ def cleanup_old_history() -> None:
     try:
         conn.execute("DELETE FROM onu_history WHERE ts < ?", (cutoff,))
         conn.execute("DELETE FROM usage_history WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM upstream_history WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM upstream_trafik WHERE ts < ?", (cutoff,))
         batas_event = (datetime.now() - timedelta(days=CONFIG["EVENT_RETENTION_DAYS"])).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM event WHERE waktu < ?", (batas_event,))
         conn.commit()
@@ -1547,29 +1570,39 @@ def get_boncos_candidates() -> list[dict]:
     return results
 
 
+def _hitung_sambung_ulang(rows) -> dict:
+    """Jumlah sambung ulang per pelanggan dari baris (username, ts, uptime) yang uptime-nya pendek.
+    Satu sesi bisa terekam di beberapa snapshot (uptime 2 menit, lalu 7 menit), jadi yang dihitung
+    adalah waktu mulai sesinya (ts - uptime), bukan jumlah snapshot."""
+    sesi: dict = {}
+    for u, ts, up in rows:
+        try:
+            mulai = datetime.fromisoformat(ts) - timedelta(seconds=int(up))
+        except (TypeError, ValueError):
+            continue
+        daftar = sesi.setdefault(u, [])
+        if not any(abs((mulai - m).total_seconds()) <= 90 for m in daftar):
+            daftar.append(mulai)
+    return {u: len(d) for u, d in sesi.items()}
+
+
 def get_frequent_disconnect_candidates() -> list[dict]:
-    """PERKIRAAN, bukan angka pasti — dihitung dari berapa kali pelanggan
-    'kepergok' uptime-nya masih pendek saat snapshot 5-menitan diambil.
-    Reconnect yang terjadi di antara dua snapshot tidak akan kehitung,
-    jadi angka ini adalah batas bawah, bukan jumlah pasti."""
+    """Pelanggan yang PPPoE-nya tersambung ulang berkali-kali (sesi baru) dalam PUTUS_LOOKBACK_DAYS.
+    Masih batas bawah: sambung ulang beruntun di antara dua snapshot terhitung satu."""
     since = (datetime.now() - timedelta(days=CONFIG["PUTUS_LOOKBACK_DAYS"])).isoformat(timespec="seconds")
     conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
-    conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
-            """
-            SELECT username, COUNT(*) AS short_uptime_count
-            FROM usage_history
-            WHERE ts >= ? AND uptime_seconds IS NOT NULL AND uptime_seconds < ?
-            GROUP BY username
-            HAVING short_uptime_count >= ?
-            ORDER BY short_uptime_count DESC
-            """,
-            (since, CONFIG["SHORT_UPTIME_THRESHOLD_SECONDS"], CONFIG["SHORT_UPTIME_MIN_COUNT"]),
+            "SELECT username, ts, uptime_seconds FROM usage_history "
+            "WHERE ts >= ? AND uptime_seconds IS NOT NULL AND uptime_seconds < ?",
+            (since, CONFIG["SHORT_UPTIME_THRESHOLD_SECONDS"]),
         ).fetchall()
     finally:
         conn.close()
-    return [{"username": r["username"], "short_uptime_count": r["short_uptime_count"]} for r in rows]
+    jumlah = _hitung_sambung_ulang(rows)
+    hasil = [{"username": u, "short_uptime_count": n} for u, n in jumlah.items()
+             if n >= CONFIG["SHORT_UPTIME_MIN_COUNT"]]
+    return sorted(hasil, key=lambda x: -x["short_uptime_count"])
 
 
 def _build_daily_report_text() -> str:
@@ -1609,12 +1642,20 @@ def _build_daily_report_text() -> str:
         logger.error(f"Gagal hitung tiket untuk laporan: {e}")
 
     try:
+        malam = _ringkasan_listrik_malam()
+        if malam:
+            lines.append("")
+            lines.extend(malam)
+    except Exception as e:
+        logger.error(f"Gagal hitung listrik ONU mati malam untuk laporan: {e}")
+
+    try:
         putus = get_frequent_disconnect_candidates()
         if putus:
             lines.append("")
-            lines.append(f"🔁 <b>Sering putus ({len(putus)})</b> — perlu dicek:")
+            lines.append(f"🔁 <b>Sering sambung ulang ({len(putus)})</b> — tiap kali internet terhenti beberapa detik:")
             for p in putus[:5]:
-                lines.append(f"- {_esc(p['username'])}: {p['short_uptime_count']}x kepergok uptime pendek")
+                lines.append(f"- {_esc(p['username'])}: {p['short_uptime_count']}x sambung ulang")
     except Exception as e:
         logger.error(f"Gagal hitung kandidat putus untuk laporan: {e}")
 
@@ -1669,6 +1710,7 @@ async def daily_report_loop():
                 # dicoba lagi menit berikutnya (sebelumnya laporan hilang diam-diam).
                 if await asyncio.to_thread(kirim_telegram_ke, str(CONFIG["TELEGRAM_CHAT_ID"]), text):
                     await asyncio.to_thread(_tandai_laporan_terkirim, today_str)
+                    _listrik_malam.clear()
                     _last_report_date = today_str
                     logger.info("Laporan harian terkirim.")
             except Exception as e:
@@ -1746,13 +1788,15 @@ def _format_boncos_list() -> str:
 def _format_putus_list() -> str:
     candidates = get_frequent_disconnect_candidates()
     if not candidates:
-        return f"Tidak ada pelanggan dengan pola sering putus dalam {CONFIG['PUTUS_LOOKBACK_DAYS']} hari terakhir."
+        return (f"Tidak ada pelanggan yang tersambung ulang {CONFIG['SHORT_UPTIME_MIN_COUNT']}x atau lebih "
+                f"dalam {CONFIG['PUTUS_LOOKBACK_DAYS']} hari terakhir.")
     lines = [
-        f"🔁 <b>{len(candidates)} pelanggan sering putus</b> ({CONFIG['PUTUS_LOOKBACK_DAYS']} hari terakhir, perkiraan):",
+        f"🔁 <b>{len(candidates)} pelanggan sering sambung ulang</b> ({CONFIG['PUTUS_LOOKBACK_DAYS']} hari terakhir):",
     ]
     for p in candidates[:15]:
-        lines.append(f"- {_esc(p['username'])}: {p['short_uptime_count']}x kepergok uptime pendek")
-    lines.append("\n<i>Catatan: ini perkiraan dari snapshot tiap 5 menit, bisa lebih sering dari yang tercatat.</i>")
+        lines.append(f"- {_esc(p['username'])}: {p['short_uptime_count']}x sambung ulang")
+    lines.append("\n<i>Sambung ulang = internet terhenti beberapa detik (ONU restart / PPPoE dial ulang). "
+                 "Sering tidak terasa pelanggan, tapi tanda ONU, adaptor, atau kabel mulai bermasalah.</i>")
     return "\n".join(lines)
 
 
@@ -2497,6 +2541,7 @@ async def on_startup():
         asyncio.create_task(telegram_command_listener()),
         asyncio.create_task(history_logger_loop()),
         asyncio.create_task(daily_report_loop()),
+        asyncio.create_task(upstream_loop()),
     ])
     logger.info("Semua background task dimulai: monitor, telegram listener, history logger, daily report.")
 
@@ -2718,6 +2763,17 @@ _PENGATURAN = {
     "TAGIHAN_JAM": {"label": "Jam pembuatan tagihan otomatis (0-23)", "tipe": "int", "min": 0, "max": 23},
     "MITRA_INSENTIF_PER_PELANGGAN": {"label": "Komisi mitra per pelanggan lunas (Rp)", "tipe": "int", "min": 0, "max": 1_000_000},
     "PUTUS_TUNGGU_MENIT": {"label": "Tunggu sebelum alert putus (menit)", "tipe": "int", "min": 1, "max": 240},
+    "UPSTREAM_KAPASITAS_MBPS": {"label": "Kapasitas download internet pusat dari ISP (Mbps, 0 = alert bandwidth mati)",
+                                "tipe": "int", "min": 0, "max": 100000},
+    "UPSTREAM_WAN": {"label": "Interface WAN MikroTik ke ISP (kosong = deteksi otomatis)", "tipe": "teks",
+                     "pola": r"^[\w.\-<>@ ]{0,64}$", "contoh": "ether1"},
+    "UPSTREAM_TUJUAN": {"label": "Tujuan ping internet pusat (pisahkan koma)", "tipe": "teks",
+                        "pola": r"^\s*[A-Za-z0-9.\-]{1,253}(\s*,\s*[A-Za-z0-9.\-]{1,253}){0,4}\s*$", "contoh": "8.8.8.8,1.1.1.1"},
+    "PUTUS_SENYAP_MALAM": {"label": "Jam malam: listrik ONU mati tidak dikabarkan satu per satu (mis. 21-06, kosong = selalu kabarkan)",
+                           "tipe": "teks", "pola": r"^\s*((\d|1\d|2[0-3])\s*-\s*(\d|1\d|2[0-3]))?\s*$", "contoh": "21-06",
+                           "bantuan": "Masuk ringkasan laporan harian. Gangguan massal tetap dikabarkan langsung."},
+    "SHORT_UPTIME_MIN_COUNT": {"label": "Laporan 'sering sambung ulang': minimal sambung ulang per hari", "tipe": "int",
+                               "min": 2, "max": 100},
     "TIKET_PENGINGAT_JAM": {"label": "Ingatkan tiket gangguan yang belum selesai setelah (jam, 0 = mati)", "tipe": "int",
                             "min": 0, "max": 168},
     "DAILY_REPORT_HOUR": {"label": "Jam laporan harian Telegram (0-23)", "tipe": "int", "min": 0, "max": 23},
@@ -7232,6 +7288,65 @@ def _dugaan_putus(username, onu_by_key, mulai):
     return "ONU offline: cek listrik ONT, lalu kabel fiber", "offline", lokasi
 
 
+_ALASAN_PPP = [
+    ("peer is not responding", "ONU tidak menjawab MikroTik (ONU mati/hang, listrik padam, atau jalur fiber terganggu)"),
+    ("hungup", "ONU sendiri yang memutus (restart, dial ulang, atau kabel LAN/WAN dicabut)"),
+    ("hung up", "ONU sendiri yang memutus (restart, dial ulang, atau kabel LAN/WAN dicabut)"),
+    ("user request", "ONU sendiri yang memutus (restart atau dial ulang)"),
+    ("session timeout", "batas waktu sesi habis (pengaturan session-timeout MikroTik)"),
+    ("admin", "diputus dari MikroTik (admin, isolir, atau ubah profil)"),
+    ("no response", "ONU tidak menjawab MikroTik"),
+]
+
+
+def _alasan_putus_mikrotik(username: str, mulai: datetime, sekarang: datetime) -> Optional[str]:
+    """Alasan putus menurut log PPPoE MikroTik (sudah tersimpan di tabel event) di sekitar waktu putus."""
+    try:
+        conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+        try:
+            r = conn.execute(
+                "SELECT detail FROM event WHERE kategori='pppoe' AND pelanggan=? AND judul='PPPoE terputus' "
+                "AND waktu BETWEEN ? AND ? ORDER BY waktu DESC LIMIT 1",
+                (username, (mulai - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"),
+                 sekarang.strftime("%Y-%m-%d %H:%M:%S"))).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if not r:
+        return None
+    pesan = re.sub(r"\s*\[[^\]]*\]$", "", r[0] or "")
+    rendah = pesan.lower()
+    for kunci, arti in _ALASAN_PPP:
+        if kunci in rendah:
+            return arti
+    m = re.search(r"terminating\.*\s*-\s*(.+)$", pesan)
+    return m.group(1).strip() if m else None
+
+
+def _jam_senyap(waktu: datetime) -> bool:
+    m = re.fullmatch(r"\s*(\d{1,2})\s*-\s*(\d{1,2})\s*", str(CONFIG.get("PUTUS_SENYAP_MALAM") or ""))
+    if not m:
+        return False
+    a, b, h = int(m.group(1)) % 24, int(m.group(2)) % 24, waktu.hour
+    return (a <= h < b) if a < b else (h >= a or h < b)
+
+
+_listrik_malam: list = []    # (username, mulai) listrik ONU mati di jam senyap, untuk laporan harian
+
+
+def _ringkasan_listrik_malam(data: Optional[dict] = None) -> list[str]:
+    if not _listrik_malam:
+        return []
+    data = data if data is not None else _data_pelanggan()
+    baris = [f"🔌 <b>Listrik ONU mati di jam malam ({len(_listrik_malam)})</b> — tidak dikabarkan satu per satu:"]
+    for u, mulai in _listrik_malam[:10]:
+        baris.append(f"- {_esc(data.get(u, {}).get('nama') or u)} ±{mulai.strftime('%H:%M')}")
+    if len(_listrik_malam) > 10:
+        baris.append(f"… dan {len(_listrik_malam) - 10} lainnya")
+    return baris
+
+
 def _daftar_nama(users, data, batas=15):
     nama = [_esc(data.get(u, {}).get("nama") or u) for u in users[:batas]]
     sisa = len(users) - len(nama)
@@ -7311,7 +7426,7 @@ def proses_putus_pelanggan(pppoe_users, mikrotik_error, onu_list, sekarang=None)
     for u in list(_putus_aktif):
         if u in aktif or u not in dipantau:
             st = _putus_aktif.pop(u)
-            if st["alert"] and u in aktif:
+            if st["alert"] is True and u in aktif:
                 up = aktif[u].uptime_seconds
                 waktu = sekarang - timedelta(seconds=up) if up is not None else sekarang
                 kembali.append((u, st, max(waktu, st["mulai"])))
@@ -7328,7 +7443,8 @@ def proses_putus_pelanggan(pppoe_users, mikrotik_error, onu_list, sekarang=None)
             send_telegram_message(
                 f"✅ <b>KEMBALI</b>\n{_esc(d.get('nama') or u)} ({_esc(u)})\n"
                 f"Putus: {awal} → kembali {waktu.strftime('%H:%M')}"
-                + ("" if st["awal"] else f" (±{lama} menit)")
+                + ("" if st["awal"] else f" (±{lama} menit)"),
+                senyap=st.get("jenis") == "dying",
             )
 
     # Peringatan putus yang masa tunggunya habis
@@ -7346,17 +7462,34 @@ def proses_putus_pelanggan(pppoe_users, mikrotik_error, onu_list, sekarang=None)
         else:
             for u in jatuh:
                 d = data.get(u, {})
-                mulai = _putus_aktif[u]["mulai"]
-                dugaan, _kat, lokasi = _dugaan_putus(u, onu_by_key, mulai)
+                st = _putus_aktif[u]
+                mulai = st["mulai"]
+                dugaan, kat, lokasi = _dugaan_putus(u, onu_by_key, mulai)
+                st["jenis"] = kat
+                if kat == "dying" and _jam_senyap(mulai):
+                    # ONU dimatikan/listrik rumah padam di malam hari: masuk laporan pagi saja.
+                    st["alert"] = "senyap"
+                    _listrik_malam.append((u, mulai))
+                    continue
+                alasan = _alasan_putus_mikrotik(u, mulai, sekarang)
+                durasi = round((sekarang - mulai).total_seconds() / 60)
+                if kat == "dying":
+                    judul = (f"🔌 <b>Listrik ONU mati</b> (sudah {durasi} menit)\n"
+                             "<i>Biasanya ONU dicabut/dimatikan pelanggan atau listrik rumah padam, "
+                             "bukan gangguan jaringan.</i>")
+                else:
+                    judul = f"🔴 <b>PUTUS lebih dari {tunggu} menit</b>"
                 send_telegram_message(
-                    f"🔴 <b>PUTUS lebih dari {tunggu} menit</b>\n"
+                    f"{judul}\n"
                     f"{_esc(d.get('nama') or u)} ({_esc(u)})\n"
-                    f"Mulai ±{mulai.strftime('%H:%M')} (sudah {round((sekarang - mulai).total_seconds() / 60)} menit)\n"
+                    f"Mulai ±{mulai.strftime('%H:%M')} (sudah {durasi} menit)\n"
                     f"Dugaan: {dugaan}\n"
-                    f"Alamat: {_esc(d.get('alamat') or '-')}\nHP: {_esc(d.get('no_hp') or '-')}\n"
-                    f"{lokasi}"
+                    + (f"Log MikroTik: {_esc(alasan)}\n" if alasan else "")
+                    + f"Alamat: {_esc(d.get('alamat') or '-')}\nHP: {_esc(d.get('no_hp') or '-')}\n"
+                    f"{lokasi}",
+                    senyap=kat == "dying",
                 )
-                _putus_aktif[u]["alert"] = True
+                st["alert"] = True
                 logger.warning(f"Alert PUTUS terkirim untuk {u}")
 _BLN_PANJANG = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
                 "Agustus", "September", "Oktober", "November", "Desember"]
@@ -8234,10 +8367,46 @@ def _query_pppoe(username: str) -> dict:
     return {"$or": [{"VirtualParameters.pppoeUsername._value": username}] + [{j: username} for j in jalur]}
 
 
+_POLA_SN_GPON = re.compile(r"^[A-Z]{4}[0-9A-F]{8}$")
+_MEREK_SN = {"ZTEG": "zte", "FHTT": "fiberhome", "HWTC": "huawei", "ALCL": "nokia", "GPON": None}
+
+
+def _merek(teks: str) -> Optional[str]:
+    t = (teks or "").lower()
+    for kata, m in (("zte", "zte"), ("fiberhome", "fiberhome"), ("fhtt", "fiberhome"), ("huawei", "huawei"),
+                    ("hwtc", "huawei"), ("nokia", "nokia"), ("alcl", "nokia")):
+        if kata in t:
+            return m
+    return None
+
+
+def _onu_lama(doc: dict, sn_olt: Optional[str]) -> bool:
+    """True bila dokumen ACS jelas milik ONU lain dari yang sekarang terpasang menurut OLT
+    (ONU pelanggan sudah diganti, ONU baru belum lapor ke ACS)."""
+    if not sn_olt:
+        return False
+    di = doc.get("_deviceId") or {}
+    sn_acs = str(di.get("_SerialNumber") or "").upper()
+    sn_olt = sn_olt.upper()
+    if sn_acs == sn_olt:
+        return False
+    # Nomor seri ACS berformat SN GPON tapi berbeda → ONU lain. Format lain (sebagian ZTE melapor
+    # dengan nomor seri versi TR-069) hanya dianggap lain bila mereknya jelas berbeda.
+    if _POLA_SN_GPON.match(sn_acs) and _POLA_SN_GPON.match(sn_olt):
+        return True
+    m_olt = _MEREK_SN.get(sn_olt[:4]) or _merek(sn_olt[:4])
+    m_acs = _merek(f"{di.get('_Manufacturer') or ''} {sn_acs[:4]}")
+    return bool(m_olt and m_acs and m_olt != m_acs)
+
+
+_acs_onu_lama: dict = {}     # username -> ringkasan ONU lama yang tertolak (untuk pesan ke admin)
+
+
 def _cari_perangkat(username: str) -> Optional[dict]:
     """Cari dokumen ONU di GenieACS: nomor seri GPON dari OLT → id tersimpan → username PPPoE.
     Nomor seri didahulukan: bila ONU pelanggan diganti, dokumen ONU lama masih ada di GenieACS
-    (dengan id tersimpan & username PPPoE yang sama), jadi id tersimpan saja bisa salah ONU."""
+    (dengan id tersimpan & username PPPoE yang sama), jadi id tersimpan saja bisa salah ONU.
+    Dokumen yang ternyata milik ONU lama (SN/merek beda dengan yang terbaca OLT) tidak dipakai."""
     conn = _billing_conn()
     try:
         r = conn.execute("SELECT acs_id FROM pelanggan WHERE username=?", (username,)).fetchone()
@@ -8254,12 +8423,18 @@ def _cari_perangkat(username: str) -> Optional[dict]:
     if r["acs_id"]:
         queries.append({"_id": r["acs_id"]})
     queries.append(_query_pppoe(username))
+    _acs_onu_lama.pop(username, None)
     for q in queries:
         res = _acs("GET", "/devices/", params={"query": json.dumps(q)})
         if res.ok and res.json():
             # Beberapa dokumen cocok (mis. ONU lama & baru sama-sama menyimpan username PPPoE):
             # pakai yang paling baru melapor.
             doc = max(res.json(), key=lambda d: str(d.get("_lastInform") or ""))
+            if _onu_lama(doc, sn):
+                di = doc.get("_deviceId") or {}
+                _acs_onu_lama[username] = {"sn_olt": sn, "lama": f"{di.get('_Manufacturer') or ''} "
+                                           f"{di.get('_ProductClass') or ''} ({di.get('_SerialNumber') or '-'})".strip()}
+                continue
             if doc["_id"] != r["acs_id"]:
                 conn = _billing_conn()
                 try:
@@ -8461,6 +8636,12 @@ def _lapor_terakhir_menit(teks: Optional[str]) -> Optional[int]:
 def _info_acs(username: str, segarkan: bool = False) -> dict:
     doc = _cari_perangkat(username)
     if not doc:
+        lama = _acs_onu_lama.get(username)
+        if lama:
+            return {"terhubung": False, "diganti": True, "pesan": (
+                f"ONU pelanggan ini sudah diganti: OLT membaca ONU baru {lama['sn_olt']}, sedangkan data di ACS masih "
+                f"milik ONU lama {lama['lama']}. ONU baru belum lapor ke ACS. Kirim pengaturan TR-069 dari OLT di bawah; "
+                "untuk ZTE pastikan juga WAN PPPoE-nya berjenis INTERNET_TR069, lalu reboot ONU.")}
         return {"terhubung": False, "pesan": "ONU pelanggan ini belum terdaftar di server ACS. Pastikan TR-069 di ONU sudah "
                                               "diarahkan ke server ACS (lihat docs/genieacs.md)."}
     hasil_segar = None
@@ -8754,6 +8935,220 @@ def _ms(t) -> Optional[float]:
     if not m or not any(m.groups()):
         return None
     return round(int(m.group(1) or 0) * 1000 + int(m.group(2) or 0) + int(m.group(3) or 0) / 1000, 1)
+
+
+# ============================================================
+# Pantau internet pusat: ping dari MikroTik ke gateway ISP & internet, beban WAN
+# ============================================================
+
+_upstream: dict = {"terakhir": None, "wan": None, "gateway": None, "buruk": 0, "lambat": 0, "penuh": 0,
+                   "alert_buruk": False, "alert_penuh": False, "mulai_buruk": None}
+
+
+def _deteksi_wan(api) -> tuple[Optional[str], Optional[str]]:
+    """(interface WAN, IP gateway ISP) dari default route yang aktif."""
+    try:
+        rute = api.get_resource("/ip/route").get()
+    except Exception:
+        return None, None
+    for r in rute:
+        if r.get("dst-address") != "0.0.0.0/0" or str(r.get("active", "true")).lower() not in ("true", "yes"):
+            continue
+        gw = str(r.get("gateway") or "")
+        iface, ip = None, None
+        m = re.match(r"^(\d+\.\d+\.\d+\.\d+)(?:%(.+))?$", gw)
+        if m:
+            ip, iface = m.group(1), m.group(2)
+        elif gw:
+            iface = gw                                     # mis. pppoe-out1
+        ig = str(r.get("immediate-gw") or "")
+        if "%" in ig:
+            iface = iface or ig.split("%", 1)[1]
+            ip = ip or ig.split("%", 1)[0]
+        return iface, ip
+    return None, None
+
+
+def _tujuan_upstream(gateway: Optional[str]) -> list[tuple[str, str]]:
+    tujuan = [("gateway", gateway)] if gateway else []
+    for t in str(CONFIG["UPSTREAM_TUJUAN"] or "").split(","):
+        t = t.strip()
+        if t and re.fullmatch(r"[A-Za-z0-9.\-]{1,253}", t):
+            tujuan.append(("internet", t))
+    return tujuan
+
+
+def ukur_upstream(sekarang: Optional[datetime] = None) -> Optional[dict]:
+    """Satu kali pengukuran. Kembalikan ringkasan, atau None bila MikroTik tidak terhubung."""
+    sekarang = sekarang or datetime.now()
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        wan, gateway = _deteksi_wan(api)
+        wan = str(CONFIG["UPSTREAM_WAN"] or "").strip() or wan
+        rx = tx = None
+        if wan:
+            try:
+                t = (api.get_resource("/interface").call("monitor-traffic", {"interface": wan, "once": ""}) or [{}])[0]
+                rx = round(int(t.get("rx-bits-per-second", 0)) / 1e6, 2)
+                tx = round(int(t.get("tx-bits-per-second", 0)) / 1e6, 2)
+            except Exception as e:
+                logger.warning(f"monitor-traffic WAN {wan} gagal: {e}")
+        ping = []
+        for jenis, alamat in _tujuan_upstream(gateway):
+            try:
+                h = api.get_resource("/").call("ping", {"address": alamat, "count": "5", "interval": "0.3"})
+            except Exception as e:
+                logger.warning(f"Ping upstream {alamat} gagal: {e}")
+                h = []
+            waktu = [w for w in (_ms(x.get("time")) for x in h or [] if x.get("status") != "timeout") if w is not None]
+            akhir = (h or [{}])[-1]
+            terkirim = int(akhir.get("sent") or 0) or max(5, len(h or []))
+            diterima = int(akhir.get("received") or 0) if akhir.get("sent") else len(waktu)
+            ping.append({"jenis": jenis, "tujuan": alamat,
+                         "hilang_persen": round((terkirim - diterima) * 100 / terkirim) if terkirim else 100,
+                         "rata_ms": _ms(akhir.get("avg-rtt")) if akhir.get("sent") else
+                         (round(sum(waktu) / len(waktu), 1) if waktu else None),
+                         "maks_ms": max(waktu) if waktu else None})
+    except Exception as e:
+        logger.warning(f"Pantau internet pusat: MikroTik tidak terhubung ({e})")
+        return None
+    finally:
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+    ts = sekarang.isoformat(timespec="seconds")
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    try:
+        conn.executemany("INSERT INTO upstream_history VALUES (?,?,?,?,?,?)",
+                         [(ts, p["jenis"], p["tujuan"], p["rata_ms"], p["maks_ms"], p["hilang_persen"]) for p in ping])
+        if rx is not None:
+            conn.execute("INSERT INTO upstream_trafik VALUES (?,?,?)", (ts, rx, tx))
+        conn.commit()
+    finally:
+        conn.close()
+    hasil = {"waktu": ts, "wan": wan, "gateway": gateway, "rx_mbps": rx, "tx_mbps": tx, "ping": ping}
+    _upstream.update(terakhir=hasil, wan=wan, gateway=gateway)
+    return hasil
+
+
+def _nilai_upstream(h: dict) -> dict:
+    """Kondisi dari satu pengukuran: internet putus/bermasalah, lambat, WAN penuh."""
+    net = [p for p in h["ping"] if p["jenis"] == "internet"]
+    gw = next((p for p in h["ping"] if p["jenis"] == "gateway"), None)
+    loss = min((p["hilang_persen"] for p in net), default=0)
+    rata = [p["rata_ms"] for p in net if p["rata_ms"] is not None]
+    kap = float(CONFIG["UPSTREAM_KAPASITAS_MBPS"] or 0)
+    pakai = round(h["rx_mbps"] * 100 / kap) if kap and h.get("rx_mbps") is not None else None
+    return {"loss": loss, "buruk": bool(net) and loss >= CONFIG["UPSTREAM_LOSS_PERSEN"],
+            "gateway_buruk": bool(gw) and gw["hilang_persen"] >= CONFIG["UPSTREAM_LOSS_PERSEN"],
+            "rata_ms": round(min(rata), 1) if rata else None,
+            "lambat": bool(rata) and min(rata) >= CONFIG["UPSTREAM_LATENSI_MS"],
+            "pakai_persen": pakai, "penuh": pakai is not None and pakai >= CONFIG["UPSTREAM_PENUH_PERSEN"]}
+
+
+def proses_upstream(h: Optional[dict], sekarang: Optional[datetime] = None) -> None:
+    """Alert Telegram dengan konfirmasi 2-3 pengukuran berturut-turut, dan kabar saat pulih."""
+    if not h:
+        return
+    sekarang = sekarang or datetime.now()
+    n = _nilai_upstream(h)
+    st = _upstream
+    st["buruk"] = st["buruk"] + 1 if (n["buruk"] or n["lambat"]) else 0
+    st["penuh"] = st["penuh"] + 1 if n["penuh"] else 0
+    if st["buruk"] == 1:
+        st["mulai_buruk"] = sekarang
+    if st["buruk"] >= 2 and not st["alert_buruk"]:
+        st["alert_buruk"] = True
+        if n["buruk"] and n["gateway_buruk"]:
+            dugaan = "Ping ke gateway ISP juga gagal: masalah di jalur/modem ISP atau kabel WAN MikroTik."
+        elif n["buruk"]:
+            dugaan = "Gateway ISP menjawab normal: gangguan di jaringan ISP ke internet."
+        elif n["penuh"]:
+            dugaan = "Bandwidth WAN sedang penuh: antrean panjang membuat latensi naik."
+        else:
+            dugaan = "Latensi tinggi tanpa bandwidth penuh: kemungkinan jaringan ISP padat."
+        rinci = "\n".join(f"• {p['tujuan']}{' (gateway)' if p['jenis'] == 'gateway' else ''}: "
+                          f"loss {p['hilang_persen']}%, {p['rata_ms'] if p['rata_ms'] is not None else '-'} ms"
+                          for p in h["ping"])
+        send_telegram_message(
+            f"🌐 <b>Internet pusat {'bermasalah' if n['buruk'] else 'lambat'}</b>\n{rinci}\n"
+            + (f"Bandwidth WAN: ⬇{h['rx_mbps']} / ⬆{h['tx_mbps']} Mbps"
+               + (f" ({n['pakai_persen']}% kapasitas)" if n["pakai_persen"] is not None else "") + "\n"
+               if h.get("rx_mbps") is not None else "")
+            + f"Dugaan: {dugaan}\nSemua pelanggan ikut terdampak. Sejak ±{st['mulai_buruk'].strftime('%H:%M')}")
+    elif st["buruk"] == 0 and st["alert_buruk"]:
+        st["alert_buruk"] = False
+        lama = round((sekarang - st["mulai_buruk"]).total_seconds() / 60) if st["mulai_buruk"] else None
+        send_telegram_message(f"✅ <b>Internet pusat normal kembali</b>"
+                              + (f" (±{lama} menit)" if lama is not None else "")
+                              + (f"\nLatensi {n['rata_ms']} ms" if n["rata_ms"] is not None else ""))
+    if st["penuh"] >= 3 and not st["alert_penuh"]:
+        st["alert_penuh"] = True
+        send_telegram_message(
+            f"📶 <b>Bandwidth WAN hampir penuh</b>\n⬇{h['rx_mbps']} Mbps dari {CONFIG['UPSTREAM_KAPASITAS_MBPS']} Mbps "
+            f"({n['pakai_persen']}%) selama ±{st['penuh'] * CONFIG['UPSTREAM_INTERVAL_DETIK'] // 60} menit.\n"
+            "Pelanggan akan merasa lemot di jam ini. Pertimbangkan tambah kapasitas atau atur antrean (queue).")
+    elif st["penuh"] == 0 and st["alert_penuh"] and (n["pakai_persen"] or 0) < CONFIG["UPSTREAM_PENUH_PERSEN"] - 10:
+        st["alert_penuh"] = False
+
+
+async def upstream_loop():
+    await asyncio.sleep(30)
+    while True:
+        try:
+            if CONFIG["UPSTREAM_AKTIF"]:
+                h = await asyncio.to_thread(ukur_upstream)
+                await asyncio.to_thread(proses_upstream, h)
+        except Exception as e:
+            logger.error(f"Error pantau internet pusat: {e}")
+        await asyncio.sleep(max(30, int(CONFIG["UPSTREAM_INTERVAL_DETIK"])))
+
+
+@app.get("/api/upstream")
+def get_upstream(request: Request, jam: int = 24):
+    """Kondisi & riwayat internet pusat untuk grafik."""
+    _wajib_admin(request)
+    jam = max(1, min(jam, 24 * 7))
+    batas = (datetime.now() - timedelta(hours=jam)).isoformat(timespec="seconds")
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    try:
+        ping = conn.execute("SELECT ts, jenis, rata_ms, maks_ms, hilang_persen FROM upstream_history "
+                            "WHERE ts >= ? ORDER BY ts", (batas,)).fetchall()
+        trafik = conn.execute("SELECT ts, rx_mbps, tx_mbps FROM upstream_trafik WHERE ts >= ? ORDER BY ts",
+                              (batas,)).fetchall()
+    finally:
+        conn.close()
+    # Satu titik per pengukuran: latensi = tujuan internet tercepat, loss = tujuan internet terbaik.
+    gw = _upstream.get("gateway")
+    titik: dict = {}
+    for ts, jenis, rata, maks, hilang in ping:
+        t = titik.setdefault(ts, {"ts": ts, "rata_ms": None, "hilang_persen": None, "gateway_ms": None})
+        if jenis == "gateway":
+            t["gateway_ms"] = rata
+            continue
+        if rata is not None and (t["rata_ms"] is None or rata < t["rata_ms"]):
+            t["rata_ms"] = rata
+        if t["hilang_persen"] is None or hilang < t["hilang_persen"]:
+            t["hilang_persen"] = hilang
+    kini = _upstream.get("terakhir")
+    return {"aktif": bool(CONFIG["UPSTREAM_AKTIF"]), "wan": _upstream.get("wan"), "gateway": gw,
+            "kapasitas_mbps": CONFIG["UPSTREAM_KAPASITAS_MBPS"] or None,
+            "batas": {"loss": CONFIG["UPSTREAM_LOSS_PERSEN"], "latensi": CONFIG["UPSTREAM_LATENSI_MS"],
+                      "penuh": CONFIG["UPSTREAM_PENUH_PERSEN"]},
+            "sekarang": dict(kini, **_nilai_upstream(kini)) if kini else None,
+            "ping": list(titik.values()),
+            "trafik": [{"ts": ts, "rx_mbps": rx, "tx_mbps": tx} for ts, rx, tx in trafik]}
+
+
+@app.post("/api/upstream/ukur")
+def ukur_upstream_sekarang(request: Request):
+    _wajib_admin(request)
+    h = ukur_upstream()
+    if h is None:
+        raise HTTPException(status_code=502, detail="MikroTik tidak bisa dihubungi.")
+    return dict(h, **_nilai_upstream(h))
 
 
 def _tren_optik(username: str, jam: int = 72) -> dict:
@@ -9218,14 +9613,14 @@ def _onu_di_acs() -> Optional[dict]:
         return None
     if not r.ok:
         return None
-    sn, user, ids = set(), set(), set()
+    sn, user, ids = set(), {}, {}
     for d in r.json():
-        ids.add(d.get("_id"))
+        ids[d.get("_id")] = d
         sn.add(str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper())
         for j in ["VirtualParameters.pppoeUsername"] + jalur:
             u = _nilai(d, j)
             if u:
-                user.add(str(u))
+                user.setdefault(str(u), []).append(d)
     return {"sn": sn, "user": user, "id": ids}
 
 
@@ -9246,7 +9641,9 @@ def olt_tr069_daftar(request: Request):
         sn, u = (o.serial_number or "").upper(), o.pppoe_username
         ada = None
         if acs is not None and (sn or u):
-            ada = bool((sn and sn in acs["sn"]) or (u and (u in acs["user"] or acs_id.get(u) in acs["id"])))
+            # Lewat PPPoE / id tersimpan hanya dihitung bila dokumennya bukan milik ONU lama yang sudah diganti.
+            calon = (acs["user"].get(u, []) + ([acs["id"][acs_id[u]]] if acs_id.get(u) in acs["id"] else [])) if u else []
+            ada = bool((sn and sn in acs["sn"]) or any(not _onu_lama(d, sn) for d in calon))
         onu.append({"pon": o.pon, "onu_id": o.onu_id, "sn": o.serial_number, "vendor": o.vendor, "model": o.model,
                     "online": o.online, "pppoe_username": u, "nama": nama.get(u), "terdaftar_acs": ada})
     onu.sort(key=lambda x: (x["terdaftar_acs"] is True, x["pon"], x["onu_id"]))

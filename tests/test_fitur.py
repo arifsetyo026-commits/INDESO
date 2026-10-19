@@ -43,6 +43,8 @@ class FakeRes:
             rows = list(getattr(self.mt, "mangle", []))
         elif self.path == "/interface/pppoe-server/server":
             rows = list(getattr(self.mt, "pppoe_server", []))
+        elif self.path == "/ip/route":
+            rows = list(getattr(self.mt, "route", []))
         elif self.path == "/log":
             rows = list(self.mt.log)
         elif self.path == "/system/resource":
@@ -71,6 +73,8 @@ class FakeRes:
         if perintah == "monitor-traffic":
             return [dict(self.mt.traffic)] if getattr(self.mt, "traffic", None) else []
         if perintah == "ping":
+            if getattr(self.mt, "ping_per", None) is not None:
+                return list(self.mt.ping_per.get((arg or {}).get("address"), []))
             return list(getattr(self.mt, "ping", []))
         if perintah == "resolve":
             if not getattr(self.mt, "resolve", None):
@@ -1929,3 +1933,128 @@ def test_olt_tr069_daftar_cocok_lewat_pppoe(siap, monkeypatch):
     finally:
         main._latest_data = None
     assert d == {1: True, 2: False}
+
+
+def test_sambung_ulang_dihitung_per_sesi(siap):
+    """Satu sambung ulang yang terekam di dua snapshot (uptime 2 & 7 menit) dihitung sekali."""
+    main, o, k, m = siap
+    t = datetime(2026, 10, 19, 10, 0)
+    baris = [("budi", (t + timedelta(minutes=2)).isoformat(), 120), ("budi", (t + timedelta(minutes=7)).isoformat(), 420),
+             ("budi", (t + timedelta(hours=3, minutes=1)).isoformat(), 60), ("ani", t.isoformat(), 30)]
+    assert main._hitung_sambung_ulang(baris) == {"budi": 2, "ani": 1}
+
+
+def test_alert_putus_jenis_dan_alasan(siap, monkeypatch):
+    """Listrik ONU mati: senyap di siang hari, tidak dikabarkan di jam malam (masuk laporan harian).
+    Putus lain menyertakan alasan dari log PPPoE MikroTik."""
+    main, o, k, m = siap
+    main.CONFIG.update(PUTUS_TUNGGU_MENIT=10, PUTUS_MASSAL_MIN=5, PUTUS_SENYAP_MALAM="21-06")
+    data = main._data_pelanggan()
+    a, b = sorted(data)[:2]
+    for x in (main._putus_aktif, main._pernah_aktif, main._peta_onu):
+        x.clear()
+    main._listrik_malam.clear()
+    monkeypatch.setattr(main, "_putus_siap", True)
+    main._pernah_aktif.update({a, b})
+
+    def onu(i, user, online, ev=None, waktu=None):
+        return main.ONUStatus(pon="0/0/1", onu_id=i, snmp_index=i, olt_rx_dbm=-20.0, online=online, status="OK",
+                              pppoe_username=user, last_event=ev, last_event_time=waktu and waktu.strftime("%Y-%m-%d %H:%M:%S"))
+
+    def jalan(t0):
+        main._terkirim.clear()
+        main._putus_aktif.clear()
+        onus = [onu(1, a, False, "DyingGasp", t0), onu(2, b, True)]
+        main.simpan_event([main._ev("mikrotik", "info", "pppoe", "PPPoE terputus",
+                                    f"<pppoe-{b}>: terminating... - peer is not responding [pppoe,ppp,info]",
+                                    pelanggan=b, waktu=t0.strftime("%Y-%m-%d %H:%M:%S"))])
+        main.proses_putus_pelanggan([], None, onus, t0)
+        main.proses_putus_pelanggan([], None, onus, t0 + timedelta(minutes=11))
+        return [x["data"] for x in main._terkirim]
+
+    siang = jalan(datetime(2026, 10, 19, 14, 0))
+    listrik = [d for d in siang if "Listrik ONU mati" in d["text"]]
+    putus = [d for d in siang if "PUTUS lebih dari" in d["text"]]
+    assert len(listrik) == 1 and listrik[0].get("disable_notification") == "true"
+    assert len(putus) == 1 and "ONU tidak menjawab MikroTik" in putus[0]["text"] and "disable_notification" not in putus[0]
+
+    malam = jalan(datetime(2026, 10, 19, 23, 0))
+    assert not any("Listrik ONU mati" in d["text"] for d in malam)
+    assert [u for u, _ in main._listrik_malam] == [a]
+    assert "Listrik ONU mati di jam malam (1)" in main._build_daily_report_text()
+    main._terkirim.clear()
+    main.proses_putus_pelanggan([main.PPPoEUser(username=a, ip_address="10.0.0.9", uptime="1m", uptime_seconds=60),
+                                 main.PPPoEUser(username=b, ip_address="10.0.0.8", uptime="1m", uptime_seconds=60)],
+                                None, [], datetime(2026, 10, 20, 6, 0))
+    kembali = [x["data"]["text"] for x in main._terkirim]
+    assert len(kembali) == 1 and b in kembali[0]           # yang senyap tidak dikabari kembali
+    for x in (main._putus_aktif, main._pernah_aktif, main._peta_onu):
+        x.clear()
+    main._listrik_malam.clear()
+
+
+def test_pantau_internet_pusat(siap):
+    """Ping dari MikroTik ke gateway ISP & internet + beban WAN; alert setelah 2x berturut-turut, kabar pulih."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.route = [{"dst-address": "0.0.0.0/0", "gateway": "192.168.1.1", "immediate-gw": "192.168.1.1%ether1",
+                 "active": "true"}]
+    mt.traffic = {"rx-bits-per-second": "95000000", "tx-bits-per-second": "12000000"}
+
+    def ping(hilang, ms="20ms"):
+        return [{"seq": "4", "sent": "5", "received": str(5 - hilang), "avg-rtt": ms, "max-rtt": ms}]
+    baik = {"192.168.1.1": ping(0, "2ms"), "8.8.8.8": ping(0), "1.1.1.1": ping(0, "18ms")}
+    mt.ping_per = dict(baik)
+    main.CONFIG.update(UPSTREAM_KAPASITAS_MBPS=100, UPSTREAM_WAN="", UPSTREAM_TUJUAN="8.8.8.8,1.1.1.1")
+    main._upstream.update(buruk=0, penuh=0, alert_buruk=False, alert_penuh=False)
+    t = datetime(2026, 10, 19, 20, 0)
+    main._terkirim.clear()
+    h = main.ukur_upstream(t)
+    assert h["wan"] == "ether1" and h["gateway"] == "192.168.1.1" and h["rx_mbps"] == 95.0
+    assert [p["jenis"] for p in h["ping"]] == ["gateway", "internet", "internet"]
+    n = main._nilai_upstream(h)
+    assert n["rata_ms"] == 18.0 and not n["buruk"] and n["pakai_persen"] == 95 and n["penuh"]
+    main.proses_upstream(h, t)
+    assert not main._terkirim                                  # satu kali belum cukup
+    # Internet putus (gateway normal) dua kali berturut-turut -> satu alert
+    mt.ping_per = {"192.168.1.1": ping(0, "2ms"), "8.8.8.8": ping(5), "1.1.1.1": ping(4)}
+    for i in (1, 2, 3):
+        main.proses_upstream(main.ukur_upstream(t + timedelta(minutes=2 * i)), t + timedelta(minutes=2 * i))
+    teks = [x["data"]["text"] for x in main._terkirim]
+    assert sum("Internet pusat bermasalah" in x for x in teks) == 1
+    assert any("gangguan di jaringan ISP" in x for x in teks)
+    assert sum("Bandwidth WAN hampir penuh" in x for x in teks) == 1
+    main._terkirim.clear()
+    mt.ping_per = dict(baik)
+    main.proses_upstream(main.ukur_upstream(t + timedelta(minutes=10)), t + timedelta(minutes=10))
+    assert any("normal kembali" in x["data"]["text"] for x in main._terkirim)
+    # API grafik
+    d = o.get("/api/upstream?jam=168").json()
+    assert d["wan"] == "ether1" and d["kapasitas_mbps"] == 100 and d["trafik"]
+    assert any(p["hilang_persen"] == 80 for p in d["ping"]) and all(p["gateway_ms"] == 2.0 for p in d["ping"])
+    assert o.post("/api/upstream/ukur").status_code == 200
+    assert m.get("/api/upstream").status_code == 403
+    mt.ping_per = None
+
+
+def test_acs_onu_diganti_belum_lapor(siap, monkeypatch):
+    """ONU pelanggan diganti (OLT membaca SN baru), ONU baru belum lapor ke ACS: data ONU lama tidak dipakai
+    untuk Diagnosa/ping, dan daftar TR-069 OLT menandai ONU baru 'belum di ACS'."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["_deviceId"].update(_Manufacturer="FiberHome", _ProductClass="HG6145D2",
+                                                _SerialNumber="FHTT9A8B7C6D")
+    onu = main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                         serial_number="ZTEGCF052DDB", pppoe_username="budi")
+    main._latest_data = main._build_dashboard([], None, [onu])
+    try:
+        a = k.get("/api/acs/budi").json()
+        assert a["terhubung"] is False and a["diganti"] and "ZTEGCF052DDB" in a["pesan"] and "HG6145D2" in a["pesan"]
+        assert k.post("/api/acs/budi/ping", json={}).status_code == 404
+        assert k.get("/api/olt/tr069").json()["onu"][0]["terdaftar_acs"] is False
+        assert main._onu_lama({"_deviceId": {"_Manufacturer": "ZTE", "_SerialNumber": "ZTEEQJNQ1F19726"}}, "ZTEGD5D276C6") is False
+        assert main._onu_lama({"_deviceId": {"_Manufacturer": "ZTE", "_SerialNumber": "ZTEGD0000001"}}, "ZTEGD5D276C6") is True
+    finally:
+        main._latest_data = None
