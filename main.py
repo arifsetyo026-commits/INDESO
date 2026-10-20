@@ -9526,8 +9526,10 @@ def _galat_cli(keluaran: str) -> Optional[str]:
     return None
 
 
-def olt_kirim_tr069(daftar: list) -> dict:
-    """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU."""
+def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
+    """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU.
+    reboot=True: setelah tersimpan, ONU yang berhasil dikirimi di-restart satu per satu
+    (`ont reboot P O`). ZTE F609 dkk. baru memakai pengaturan TR-069 dari OLT setelah restart."""
     if not _olt_telnet_aktif():
         raise HTTPException(status_code=503, detail="Login telnet OLT / login ACS ONU belum diisi di .env "
                                                     "(OLT_TELNET_USER, OLT_TELNET_PASS, ACS_ONU_USER, ACS_ONU_PASS).")
@@ -9578,6 +9580,27 @@ def olt_kirim_tr069(daftar: list) -> dict:
         if any(h["ok"] for h in hasil):
             # Wajib: tanpa save, perubahan hilang saat OLT restart.
             tersimpan = _simpan_olt(t)
+        if reboot and any(h["ok"] for h in hasil):
+            t.kirim("end")
+            t.kirim("config")
+            for antarmuka, onus in per_if.items():
+                ok = [(port, onu_id) for port, onu_id, pon in onus
+                      if any(h["ok"] and h["pon"] == pon and h["onu_id"] == onu_id for h in hasil)]
+                if not ok:
+                    continue
+                t.kirim(f"interface gpon {antarmuka}")
+                for port, onu_id in ok:
+                    # Selalu satu ONU (port & nomor dari angka tervalidasi), tidak pernah "all".
+                    out = t.kirim(f"ont reboot {port} {onu_id}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+                    if re.search(_POLA_KONFIRMASI, out):
+                        out = t.kirim("y")
+                    galat = _galat_cli(out)
+                    for h in hasil:
+                        if h["pon"] == f"{antarmuka}/{port}" and h["onu_id"] == onu_id:
+                            h["reboot"] = galat is None
+                            h["pesan"] += " ONU di-restart, internet pelanggan kembali ±2 menit." if galat is None \
+                                else f" Restart ONU gagal: {galat}"
+                t.kirim("exit")
         t.kirim("end")
     except (OSError, TimeoutError, ConnectionError) as e:
         raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
@@ -9652,6 +9675,7 @@ def olt_tr069_daftar(request: Request):
 
 class Tr069OnuIn(BaseModel):
     onu: list
+    reboot: bool = False
 
 
 @app.post("/api/olt/tr069")
@@ -9663,23 +9687,25 @@ def olt_tr069_kirim(d: Tr069OnuIn, request: Request):
         daftar = [(str(x["pon"]), int(x["onu_id"])) for x in d.onu]
     except (KeyError, TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Format ONU tidak valid.")
-    hasil = olt_kirim_tr069(daftar)
+    hasil = olt_kirim_tr069(daftar, reboot=d.reboot)
     ok = sum(1 for h in hasil["hasil"] if h["ok"])
     catat_aktivitas(_oleh(request), "olt_tr069",
                     f"Kirim TR-069 lewat OLT ke {len(daftar)} ONU: {ok} berhasil"
+                    + (f", {sum(1 for h in hasil['hasil'] if h.get('reboot'))} di-restart" if d.reboot else "")
                     + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
     return hasil
 
 
 @app.post("/api/olt/tr069/pelanggan/{username}")
-def olt_tr069_pelanggan(username: str, request: Request):
+def olt_tr069_pelanggan(username: str, request: Request, reboot: bool = False):
     _wajib_admin(request)
     onu = next((o for o in (_latest_data.onu_list if _latest_data else []) if o.pppoe_username == username), None)
     if not onu:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terbaca dari OLT (offline atau MAC belum cocok).")
-    hasil = olt_kirim_tr069([(onu.pon, onu.onu_id)])
+    hasil = olt_kirim_tr069([(onu.pon, onu.onu_id)], reboot=reboot)
+    h = hasil["hasil"][0]
     catat_aktivitas(_oleh(request), "olt_tr069", f"Kirim TR-069 lewat OLT ke ONU {username} ({onu.pon} onu {onu.onu_id}): "
-                    + ("berhasil" if hasil["hasil"][0]["ok"] else hasil["hasil"][0]["pesan"]))
+                    + (("berhasil" + (", ONU di-restart" if h.get("reboot") else "")) if h["ok"] else h["pesan"]))
     return hasil
 
 

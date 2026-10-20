@@ -1401,25 +1401,27 @@ function gambarOltTr069(hasil){
   <div style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px">`+d.onu.map(o=>{const k=o.pon+'#'+o.onu_id, h=hs.get(k);
    const st=o.terdaftar_acs===true?'<span class="chip ok">Terdaftar ACS</span>':o.terdaftar_acs===false?'<span class="chip warn">Belum di ACS</span>':'';
    return `<label style="display:flex;gap:8px;align-items:flex-start;padding:7px 9px;border-bottom:1px solid var(--line);font-weight:400;margin:0"><input type="checkbox" ${d.pilih.has(k)?'checked':''} onchange="this.checked?oltTr.pilih.add('${k}'):oltTr.pilih.delete('${k}')" style="margin-top:3px"><div style="flex:1"><b>${esc(o.nama||o.pppoe_username||'—')}</b> <span class="plSub">${esc(o.pon)} onu ${o.onu_id} · ${esc(o.sn||'')} ${esc(o.model||'')}${o.online?'':' · <span style="color:#b42318">offline</span>'}</span>${h?`<div class="plSub" style="color:${h.ok?'#0b7a3b':'#b42318'}">${h.ok?'✓ ':'✗ '}${esc(h.pesan)}</div>`:''}</div>${st}</label>`;}).join('')+`</div>
+  <label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0 0;font-weight:400"><input type="checkbox" id="oltTrReboot" ${d.reboot!==false?'checked':''} onchange="oltTr.reboot=this.checked" style="margin-top:3px"><span><b>Restart ONU setelah dikirim</b><span class="plSub" style="display:block">Perlu untuk ZTE F609 dkk. yang baru memakai pengaturan TR-069 setelah restart. Internet pelanggan putus ±1–2 menit.</span></span></label>
   <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" id="oltTrKirim" onclick="kirimOltTr069()">Kirim ke ONU yang dicentang</button><button class="btnS" onclick="oltTr.pilih=new Set();gambarOltTr069()">Kosongkan centang</button></div>
   <div class="plSub" style="margin-top:6px">ONU ZTE juga perlu jenis layanan WAN PPPoE <b>INTERNET_TR069</b> (di web ONU). ONU muncul di ACS ±5 menit setelah pengaturan diterima.</div><div class="plMsg" id="oltTrMsg"></div>`;
 }
 async function kirimOltTr069(){
  const onu=[...oltTr.pilih].map(k=>{const [pon,id]=k.split('#'); return {pon,onu_id:Number(id)};});
  if(!onu.length){ alert('Centang minimal satu ONU.'); return; }
- if(!confirm('Kirim pengaturan TR-069 ke '+onu.length+' ONU lewat OLT?\nInternet pelanggan tidak terputus.')) return;
+ const reboot=$('oltTrReboot').checked;
+ if(!confirm('Kirim pengaturan TR-069 ke '+onu.length+' ONU lewat OLT?\n'+(reboot?'ONU akan di-RESTART setelahnya: internet '+onu.length+' pelanggan putus ±1–2 menit.':'Internet pelanggan tidak terputus.'))) return;
  const b=$('oltTrKirim'); b.disabled=true; b.textContent='Mengirim ke OLT…';
- try{ const d=await jsonAtauError(await fetch('/api/olt/tr069',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({onu})}));
+ try{ const d=await jsonAtauError(await fetch('/api/olt/tr069',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({onu,reboot})}));
   gambarOltTr069(d.hasil); const ok=d.hasil.filter(h=>h.ok).length;
   $('oltTrMsg').style.color=ok===d.hasil.length?'#0b7a3b':'#b45309';
   $('oltTrMsg').textContent=ok+' dari '+d.hasil.length+' ONU berhasil'+(d.tersimpan===false?' · PERHATIAN: konfigurasi OLT belum tersimpan permanen (hilang bila OLT restart).':d.tersimpan?' · konfigurasi OLT tersimpan.':'');
  }catch(e){ $('oltTrMsg').style.color='#b42318'; $('oltTrMsg').textContent='Gagal: '+e.message; b.disabled=false; b.textContent='Kirim ke ONU yang dicentang'; }
 }
-async function oltTr069Pelanggan(btn){
- if(!confirm('Kirim pengaturan TR-069 ke ONU '+dg.user+' lewat OLT?')) return;
+async function oltTr069Pelanggan(btn,reboot){
+ if(!confirm('Kirim pengaturan TR-069 ke ONU '+dg.user+' lewat OLT?'+(reboot?'\nONU akan di-RESTART: internet pelanggan putus ±1–2 menit.':''))) return;
  btn.disabled=true; btn.textContent='Mengirim…';
- try{ const d=await jsonAtauError(await fetch('/api/olt/tr069/pelanggan/'+encodeURIComponent(dg.user),{method:'POST'}));
-  const h=d.hasil[0]; dgPesan(h.ok?('Pengaturan TR-069 terkirim lewat OLT'+(d.tersimpan===false?' — PERHATIAN: konfigurasi OLT BELUM tersimpan (hilang bila OLT restart), simpan manual di web OLT.':' dan konfigurasi OLT sudah disimpan.')+' Tunggu ±5 menit lalu buka ulang Diagnosa. ONU ZTE: pastikan WAN PPPoE berjenis INTERNET_TR069.'):'OLT menolak: '+h.pesan,h.ok&&d.tersimpan!==false);
+ try{ const d=await jsonAtauError(await fetch('/api/olt/tr069/pelanggan/'+encodeURIComponent(dg.user)+(reboot?'?reboot=true':''),{method:'POST'}));
+  const h=d.hasil[0]; dgPesan(h.ok?((h.reboot?'Pengaturan TR-069 terkirim dan ONU di-restart lewat OLT':h.reboot===false?'Pengaturan TR-069 terkirim, tapi restart ONU GAGAL ('+h.pesan+')':'Pengaturan TR-069 terkirim lewat OLT')+(d.tersimpan===false?' — PERHATIAN: konfigurasi OLT BELUM tersimpan (hilang bila OLT restart), simpan manual di web OLT.':' dan konfigurasi OLT sudah disimpan.')+' Tunggu ±5 menit lalu buka ulang Diagnosa. ONU ZTE: pastikan WAN PPPoE berjenis INTERNET_TR069.'):'OLT menolak: '+h.pesan,h.ok&&d.tersimpan!==false);
   btn.textContent=h.ok?'✓ Terkirim':'Kirim ulang'; btn.disabled=h.ok;
  }catch(e){ dgPesan('Gagal: '+e.message,false); btn.disabled=false; btn.textContent='Kirim ulang'; }
 }
@@ -1565,7 +1567,7 @@ function renderDiagnosa(){
 }
 function htmlAcs(a){
  if(a==null) return '<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">Kendali ONU dari pusat belum aktif</b><div class="plSub">Hubungkan server ACS (GenieACS) untuk melihat perangkat terhubung, mengganti nama/password WiFi, dan reboot ONU dari sini. Panduan: <code>docs/genieacs.md</code>.</div></div>';
- if(!a.terhubung) return `<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">ONU belum terhubung ke server ACS</b><div class="plSub">${esc(a.pesan||'')}</div><div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" onclick="oltTr069Pelanggan(this)">Kirim pengaturan TR-069 dari OLT</button></div></div>`;
+ if(!a.terhubung) return `<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">ONU belum terhubung ke server ACS</b><div class="plSub">${esc(a.pesan||'')}</div><div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" onclick="oltTr069Pelanggan(this,true)">Kirim TR-069 dari OLT + restart ONU</button><button class="btnS" onclick="oltTr069Pelanggan(this,false)">Kirim saja (tanpa restart)</button></div></div>`;
  const p=a.perangkat, kotak=(x,y)=>`<div class="detail"><small>${x}</small><b>${y}</b></div>`;
  const lapor=p.lapor_menit_lalu==null?'—':(p.lapor_menit_lalu<2?'baru saja':p.lapor_menit_lalu<120?p.lapor_menit_lalu+' menit lalu':p.lapor_menit_lalu<2880?Math.round(p.lapor_menit_lalu/60)+' jam lalu':Math.round(p.lapor_menit_lalu/1440)+' hari lalu')+(p.lapor_menit_lalu!=null&&p.lapor_menit_lalu>60?' <span style="color:#b45309">(ONU mungkin mati / tidak terhubung)</span>':'');
  let h=`<div class="plSub" style="font-weight:800;margin-bottom:4px">Perangkat ONU (TR-069)</div><div class="detailGrid" style="margin-bottom:8px">`

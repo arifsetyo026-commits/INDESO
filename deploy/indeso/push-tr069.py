@@ -10,8 +10,10 @@ Pilihan:
     --semua-merek   ikut kirim ke ONU non-ZTE (Fiberhome dll.; biasanya diatur lewat web ONU sendiri)
     --ulang         kirim juga ke ONU yang sudah punya pengaturan TR-069 di OLT
     --onu 2/5       hanya ONU port 2 nomor 5 (boleh diulang: --onu 1/3 --onu 2/5)
+    --reboot        restart ONU yang berhasil dikirimi (satu per satu, lewat OLT). Perlu untuk ZTE F609
+                    dkk. yang baru memakai pengaturan TR-069 setelah restart. Internet pelanggan putus ±1–2 menit.
 
-Hanya bagian ACS yang diubah; WAN/PPPoE pelanggan tidak disentuh, internet tidak terputus.
+Hanya bagian ACS yang diubah; WAN/PPPoE pelanggan tidak disentuh. Tanpa --reboot internet tidak terputus.
 ONU ZTE tetap perlu WAN PPPoE berjenis INTERNET_TR069 supaya bisa lapor ke ACS.
 """
 import argparse
@@ -109,6 +111,7 @@ def main_cli() -> None:
     ap.add_argument("--semua-merek", action="store_true", help="ikut ONU non-ZTE")
     ap.add_argument("--ulang", action="store_true", help="kirim juga ke ONU yang sudah punya pengaturan TR-069")
     ap.add_argument("--onu", action="append", default=[], help="hanya ONU tertentu, format PORT/NOMOR, mis. 2/5")
+    ap.add_argument("--reboot", action="store_true", help="restart ONU setelah dikirim (internet putus ±1–2 menit)")
     a = ap.parse_args()
 
     muat_env(ENV)
@@ -158,13 +161,19 @@ def main_cli() -> None:
         print("\nBelum ada yang diubah. Jalankan lagi dengan --kirim untuk mengirim, menyimpan, dan memeriksa.")
         return
 
+    if a.reboot:
+        jawab = input(f"\n{len(target)} ONU akan di-RESTART setelah dikirim (internet pelanggan putus ±1–2 menit). "
+                      "Ketik YA untuk lanjut: ")
+        if jawab.strip().upper() != "YA":
+            sys.exit("Dibatalkan.")
     print("\nMengirim lewat OLT…")
     try:
-        h = main.olt_kirim_tr069([(o["pon"], o["onu"]) for o in target])
+        h = main.olt_kirim_tr069([(o["pon"], o["onu"]) for o in target], reboot=a.reboot)
     except main.HTTPException as e:
         sys.exit(f"GAGAL: {e.detail}")
     for r in h["hasil"]:
-        print(f"  {r['pon'].rsplit('/', 1)[1]}/{r['onu_id']}: {'OK' if r['ok'] else 'DITOLAK — ' + r['pesan']}")
+        ket = "" if "reboot" not in r else (" · di-restart" if r["reboot"] else " · RESTART GAGAL")
+        print(f"  {r['pon'].rsplit('/', 1)[1]}/{r['onu_id']}: {'OK' + ket if r['ok'] else 'DITOLAK — ' + r['pesan']}")
     ok = sum(1 for r in h["hasil"] if r["ok"])
     print(f"{ok} dari {len(h['hasil'])} berhasil.")
     if h["tersimpan"]:
@@ -172,6 +181,10 @@ def main_cli() -> None:
     elif h["tersimpan"] is False:
         print("PERHATIAN: konfigurasi OLT BELUM tersimpan (hilang bila OLT restart). Simpan manual lewat web OLT.")
 
+    if a.reboot:
+        print("\nMenunggu ONU menyala kembali (90 detik)…")
+        import time
+        time.sleep(90)
     print("\nMemeriksa status ONU di OLT…")
     st = cek_config_state(main, [o for o in target])
     gagal = 0
@@ -180,7 +193,8 @@ def main_cli() -> None:
         gagal += "failed" in s
         print(f"  {o['port']}/{o['onu']} {o['sn']}: {s}")
     print("\nSelesai." + (f" {gagal} ONU berstatus config failed (ONU menolak; internet tetap jalan)." if gagal else ""))
-    print("ONU ZTE muncul di ACS ±5 menit kemudian, asalkan WAN PPPoE-nya berjenis INTERNET_TR069.")
+    print("ONU ZTE muncul di ACS ±5 menit kemudian, asalkan WAN PPPoE-nya berjenis INTERNET_TR069."
+          + ("" if a.reboot else "\nZTE F609 dkk. yang belum muncul: jalankan lagi dengan --onu P/O --reboot."))
 
 
 if __name__ == "__main__":
