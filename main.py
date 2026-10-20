@@ -9528,8 +9528,9 @@ def _galat_cli(keluaran: str) -> Optional[str]:
 
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU.
-    reboot=True: setelah tersimpan, ONU yang berhasil dikirimi di-restart satu per satu
-    (`ont reboot P O`). ZTE F609 dkk. baru memakai pengaturan TR-069 dari OLT setelah restart."""
+    reboot=True: ikatan `ip-index` TR-069 dilepas (`ip-index unbind`), konfigurasi disimpan, lalu ONU
+    yang berhasil dikirimi di-restart satu per satu (`ont reboot P O`). ZTE F609 dkk. baru memakai
+    pengaturan TR-069 dari OLT setelah langkah ini."""
     if not _olt_telnet_aktif():
         raise HTTPException(status_code=503, detail="Login telnet OLT / login ACS ONU belum diisi di .env "
                                                     "(OLT_TELNET_USER, OLT_TELNET_PASS, ACS_ONU_USER, ACS_ONU_PASS).")
@@ -9573,6 +9574,10 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
                     galat = _galat_cli(t.kirim(perintah))
                     if galat:
                         break
+                if galat is None and reboot:
+                    # Urutan yang terbukti di ZTE F609 (Gunawan 1/23): lepas ikatan ip-index, simpan, restart.
+                    # Ditolak (mis. memang belum terikat) tidak dianggap gagal.
+                    t.kirim(f"ont tr069 {port} {onu_id} ip-index unbind")
                 hasil.append({"pon": pon, "onu_id": onu_id, "ok": galat is None,
                               "pesan": galat or "Pengaturan TR-069 terkirim ke ONU."})
             t.kirim("exit")
