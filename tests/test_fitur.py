@@ -2077,8 +2077,9 @@ def test_olt_kirim_tr069_dengan_reboot(siap):
     p = olt.perintah
     assert "ont reboot 1 23" in p and p[p.index("ont reboot 1 23") + 1] == "y"
     assert not any(x.startswith("ont reboot 1 5") or "all" in x for x in p if x.startswith("ont reboot"))
-    assert p.index("save") < p.index("ont reboot 1 23")            # disimpan dulu baru restart
+    assert p.index("ont tr069 1 23 ip-index unbind") < p.index("save") < p.index("ont reboot 1 23")
+    assert "ont tr069 1 5 ip-index unbind" not in p                 # ONU yang ditolak tidak disentuh
     # tanpa reboot: tidak ada perintah restart
     olt.perintah.clear()
     k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}]})
-    assert not any(x.startswith("ont reboot") for x in olt.perintah)
+    assert not any(x.startswith("ont reboot") or "ip-index" in x for x in olt.perintah)
