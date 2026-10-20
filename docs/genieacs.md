@@ -123,6 +123,17 @@ Untuk **semua ONU sekaligus** dari terminal VPS (membaca daftar ONU langsung dar
 sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py           # lihat daftar dulu
 sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --kirim   # kirim + save + cek
 ```
+
+**ZTE F609 (dan ONU lain yang punya WAN bawaan "TR-069" yang tidak bisa dihapus)** menerima pengaturan dari OLT,
+tapi baru melapor ke ACS setelah restart. Sebelum restart, ONU melapor lewat WAN "TR-069" yang kosong.
+Pakai opsi restart, yang menjalankan `ont reboot <port> <onu>` per ONU setelah `save`. Internet pelanggan putus ±1–2 menit:
+- **Diagnosa**: tombol *Kirim TR-069 dari OLT + restart ONU*.
+- **Pengaturan → Sistem → TR-069 ONU lewat OLT**: centang *Restart ONU setelah dikirim*.
+- **Terminal**, untuk ONU yang sudah pernah dikirimi tapi belum muncul di ACS:
+  ```
+  sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --onu 1/23 --kirim --reboot
+  ```
+INDESO tidak pernah memakai `ont reboot <port> all`.
 Pilihan: `--onu 2/5` (hanya ONU tertentu), `--semua-merek`, `--ulang`.
 
 Atau dari dashboard: **Pengaturan → Sistem → TR-069 ONU lewat OLT** (pilih banyak ONU sekaligus), atau tombol **Kirim pengaturan TR-069 dari OLT** di Diagnosa pelanggan yang ONU-nya belum terdaftar. Setelah itu INDESO menjalankan `save` supaya tetap ada saat OLT restart. ONU ZTE tetap perlu WAN PPPoE berjenis `INTERNET_TR069`.
