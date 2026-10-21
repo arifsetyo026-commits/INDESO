@@ -439,6 +439,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="plSub" style="margin-top:8px">Alamat MikroTik/OLT, password, dan token Telegram tetap diatur di berkas <code>.env</code> server.</div>
  <div class="kuPanel" style="margin-top:14px"><h4>Cek DNS &amp; MTU MikroTik</h4><div class="plSub">Untuk keluhan "WA chat jalan tapi status WA / Facebook / situs tidak terbuka". Hanya membaca pengaturan, tidak mengubah apa pun.</div>
   <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="cekDnsMtu($('mtCek'))">Cek sekarang</button></div><div id="mtCek"></div></div>
+ <div class="kuPanel" style="margin-top:14px"><h4>Kesehatan ACS</h4><div class="plSub">ONU yang sudah/belum konek ke server ACS beserta saran, ONU yang berhenti lapor, perintah yang langsung jalan vs antre, dan perintah yang tertahan.</div>
+  <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="muatKesehatanAcs()">Periksa</button></div><div id="acsSehat"></div></div>
  <div class="kuPanel" style="margin-top:14px"><h4>Hasil ping dari ONU</h4><div class="plSub">Ringkasan tombol <i>Ping dari ONU ke Google</i> 30 hari terakhir, per model ONU. Model yang pernah menolak cara "lewat WAN" otomatis memakai cara lain untuk semua ONU bermodel sama.</div>
   <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="muatRingkasanPing()">Tampilkan</button></div><div id="pingRingkas"></div></div>
  <div class="kuPanel" style="margin-top:14px"><h4>TR-069 ONU lewat OLT</h4><div class="plSub">Kirim ACS URL &amp; login ke ONU dari OLT (sama dengan menu TR-069 Service Configuration di web OLT), tanpa membuka ONU satu per satu.</div>
@@ -1418,6 +1420,26 @@ async function kirimOltTr069(){
   $('oltTrMsg').style.color=ok===d.hasil.length?'#0b7a3b':'#b45309';
   $('oltTrMsg').textContent=ok+' dari '+d.hasil.length+' ONU berhasil'+(d.tersimpan===false?' · PERHATIAN: konfigurasi OLT belum tersimpan permanen (hilang bila OLT restart).':d.tersimpan?' · konfigurasi OLT tersimpan.':'');
  }catch(e){ $('oltTrMsg').style.color='#b42318'; $('oltTrMsg').textContent='Gagal: '+e.message; b.disabled=false; b.textContent='Kirim ke ONU yang dicentang'; }
+}
+async function muatKesehatanAcs(){
+ const el=$('acsSehat'); el.innerHTML='<div class="muted" style="margin-top:8px">Memeriksa server ACS…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/acs-kesehatan',{cache:'no-store'})); }catch(e){ el.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
+ if(!d.aktif){ el.innerHTML='<div class="plSub" style="margin-top:8px">Server ACS belum diatur.</div>'; return; }
+ const kotak=(l,v,w)=>`<div class="blBox"><small>${l}</small><b style="color:${w||'inherit'}">${v}</b></div>`;
+ const k=d.ketukan, pl=k.persen_langsung, belum=d.onu.belum;
+ let h=`<div class="khSum upSum" style="margin-top:10px">${kotak('Konek ACS',d.onu.di_acs+' / '+d.onu.total_olt+' ONU',d.onu.di_acs<d.onu.total_olt?'#b45309':'#0b7a3b')}${kotak('Lapor ≤ 1 jam',d.acs.lapor_1jam+' / '+d.acs.perangkat)}${kotak('Perintah langsung jalan',pl==null?'—':pl+'%',pl!=null&&pl<70?'#b42318':'#0b7a3b')}${kotak('Perintah tertahan',d.faults.length,d.faults.length?'#b42318':'#0b7a3b')}</div>`;
+ if(pl!=null&&pl<70) h+=`<div class="kuPanel" style="margin-top:8px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">Banyak perintah tidak langsung jalan (${k.antre} dari ${k.langsung+k.antre}, ${k.hari} hari)</b><div class="plSub">Server ACS gagal "mengetuk" ONU, jadi perintah (ping, WiFi, reboot) baru jalan saat ONU lapor rutin (±5 menit). Biasanya karena username/password connection request di ONU berbeda dengan di server ACS.${k.alasan_antre.length?' Alasan dari server: '+k.alasan_antre.map(a=>esc(a.alasan)+' ('+a.jumlah+'×)').join(', '):''}</div></div>`;
+ if(belum.length) h+=`<div style="margin-top:10px"><b style="font-size:var(--fs-sm)">Belum konek ACS (${belum.length})</b>`+belum.map(o=>`<div class="plSub" style="padding:5px 0;border-bottom:1px solid var(--line)"><b>${esc(o.nama||o.pppoe_username||'—')}</b> · ${esc(o.pon)} onu ${o.onu_id} · ${esc(String(o.model||'').replace(/"/g,''))}<br><span style="color:#b45309">${esc(o.saran)}</span></div>`).join('')+'</div>';
+ if(d.acs.diam.length) h+=`<div style="margin-top:10px"><b style="font-size:var(--fs-sm)">Terdaftar tapi berhenti lapor &gt; 1 jam (${d.acs.diam.length})</b><div class="plSub">ONU mati/dicabut, sudah diganti, atau TR-069-nya terputus.</div>`+d.acs.diam.map(x=>`<div class="plSub" style="padding:4px 0">${esc(x.model)} · ${esc(x.sn||x.id)} · ${x.menit<2880?Math.round(x.menit/60)+' jam':Math.round(x.menit/1440)+' hari'} lalu</div>`).join('')+'</div>';
+ if(d.faults.length) h+=`<div style="margin-top:10px"><b style="font-size:var(--fs-sm)">Perintah tertahan (${d.faults.length})</b><div class="plSub">GenieACS mengulang perintah ini setiap ONU lapor, sehingga sesi ONU jadi lambat.</div>`+d.faults.map(f=>`<div class="plSub" style="padding:4px 0">${esc(f.device)} · ${esc(f.kode||'')} ${esc(f.pesan)}${f.ulang?' · diulang '+f.ulang+'×':''}</div>`).join('')
+   +`<div class="blAksi" style="justify-content:flex-start;margin-top:6px"><button class="btnS" onclick="bersihkanFaultAcs(this)">Hapus semua perintah tertahan</button></div></div>`;
+ el.innerHTML=h;
+}
+async function bersihkanFaultAcs(btn){
+ if(!confirm('Hapus semua perintah yang tertahan di server ACS?\nInternet pelanggan tidak terpengaruh.')) return;
+ btn.disabled=true;
+ try{ const d=await jsonAtauError(await fetch('/api/acs-kesehatan/bersihkan',{method:'POST'})); alert(d.dihapus+' perintah tertahan dihapus.'); muatKesehatanAcs(); }
+ catch(e){ alert('Gagal: '+e.message); btn.disabled=false; }
 }
 async function muatRingkasanPing(){
  const el=$('pingRingkas'); el.innerHTML='<div class="muted" style="margin-top:8px">Memuat…</div>';
