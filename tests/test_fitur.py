@@ -2068,19 +2068,63 @@ def test_olt_kirim_tr069_dengan_reboot(siap):
     main, o, k, m = siap
     olt = FakeOLTTelnet(tolak_onu="1 5")
     main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
-                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26")
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26", OLT_JEDA_DETIK=0.3)
+    import time as _t
+    mulai = _t.monotonic()
     d = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}, {"pon": "0/0/1", "onu_id": 5}],
                                        "reboot": True}).json()
+    assert _t.monotonic() - mulai >= 0.9                            # ada jeda antartahap (seperti diketik tangan)
     hasil = {h["onu_id"]: h for h in d["hasil"]}
     assert hasil[23]["ok"] and hasil[23]["reboot"] is True and "di-restart" in hasil[23]["pesan"]
     assert not hasil[5]["ok"] and "reboot" not in hasil[5]
     p = olt.perintah
     assert "ont reboot 1 23" in p and p[p.index("ont reboot 1 23") + 1] == "y"
     assert not any(x.startswith("ont reboot 1 5") or "all" in x for x in p if x.startswith("ont reboot"))
-    assert (p.index("ont tr069 1 23 ip-index 0") < p.index("ont tr069 1 23 ip-index unbind")
-            < p.index("save") < p.index("ont reboot 1 23"))
+    # urutan uji manual yang berhasil (Endah 1/9): ip-index 0 → unbind → reboot, lalu save
+    assert (p.index("ont tr069 1 23 inform enable interval 300") < p.index("ont tr069 1 23 ip-index 0")
+            < p.index("ont tr069 1 23 ip-index unbind") < p.index("ont reboot 1 23") < p.index("save"))
     assert not any(x.startswith("ont tr069 1 5 ip-index") for x in p)   # ONU yang ditolak tidak disentuh
     # tanpa reboot: tidak ada perintah restart
     olt.perintah.clear()
     k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}]})
     assert not any(x.startswith("ont reboot") or "ip-index" in x for x in olt.perintah)
+
+
+def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
+    """Hasil ping disimpan; model ONU yang menolak kolom Interface diingat permanen (tidak hilang saat
+    INDESO restart) sehingga ONU lain bermodel sama langsung memakai cara tanpa WAN."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    dev["_deviceId"]["_ProductClass"] = "F670LV9.0"
+    igd = dev["InternetGatewayDevice"]
+    igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}, "Interface": {"_value": ""}}
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    assert r["lewat_wan"]
+    tid = r["tugas_id"]
+    # Jawaban F670L sungguhan (ZTEGD770288C): 9002 Internal error pada objek IPPingDiagnostics.
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments",
+                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
+                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002",
+                            "faultString": "Internal error"}]}})
+    g = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    assert g["status"] == "gagal" and g["cara_berikutnya"] == "tanpa_wan" and "tanpa memilih WAN" in g["pesan"]
+    main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
+    acs.antre = False
+    r2 = k.post("/api/acs/budi/ping", json={}).json()
+    assert not r2["lewat_wan"]
+    assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
+    igd["IPPingDiagnostics"].update({
+        "DiagnosticsState": {"_value": "Complete", "_timestamp": "2999-01-01T00:00:00.000Z"},
+        "SuccessCount": {"_value": 10}, "FailureCount": {"_value": 0}, "AverageResponseTime": {"_value": 21}})
+    h = k.get(f"/api/acs/budi/ping?mulai={r2['mulai']}&tugas={r2['tugas_id']}").json()
+    assert h["status"] == "selesai"
+    k.get(f"/api/acs/budi/ping?mulai={r2['mulai']}&tugas={r2['tugas_id']}")   # dibaca ulang: tidak dicatat dobel
+    d = k.get("/api/ping-onu/ringkasan").json()["model"]
+    assert len(d) == 1 and d[0]["model"] == "ZTE F670LV9.0" and d[0]["cara"] == "tanpa_wan"
+    assert d[0]["ditolak"] == 1 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
+    assert m.get("/api/ping-onu/ringkasan").status_code == 403
