@@ -2088,3 +2088,38 @@ def test_olt_kirim_tr069_dengan_reboot(siap):
     olt.perintah.clear()
     k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}]})
     assert not any(x.startswith("ont reboot") or "ip-index" in x for x in olt.perintah)
+
+
+def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
+    """Hasil ping disimpan; model ONU yang menolak kolom Interface diingat permanen (tidak hilang saat
+    INDESO restart) sehingga ONU lain bermodel sama langsung memakai cara tanpa WAN."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    dev["_deviceId"]["_ProductClass"] = "F670LV9.0"
+    igd = dev["InternetGatewayDevice"]
+    igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}, "Interface": {"_value": ""}}
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    assert r["lewat_wan"]
+    tid = r["tugas_id"]
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9007", "message": "Invalid parameter value"})
+    assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()["status"] == "gagal"
+    main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
+    acs.antre = False
+    r2 = k.post("/api/acs/budi/ping", json={}).json()
+    assert not r2["lewat_wan"]
+    assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
+    igd["IPPingDiagnostics"].update({
+        "DiagnosticsState": {"_value": "Complete", "_timestamp": "2999-01-01T00:00:00.000Z"},
+        "SuccessCount": {"_value": 10}, "FailureCount": {"_value": 0}, "AverageResponseTime": {"_value": 21}})
+    h = k.get(f"/api/acs/budi/ping?mulai={r2['mulai']}&tugas={r2['tugas_id']}").json()
+    assert h["status"] == "selesai"
+    k.get(f"/api/acs/budi/ping?mulai={r2['mulai']}&tugas={r2['tugas_id']}")   # dibaca ulang: tidak dicatat dobel
+    d = k.get("/api/ping-onu/ringkasan").json()["model"]
+    assert len(d) == 1 and d[0]["model"] == "ZTE F670LV9.0" and d[0]["cara"] == "tanpa_wan"
+    assert d[0]["ditolak"] == 1 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
+    assert m.get("/api/ping-onu/ringkasan").status_code == 403

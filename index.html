@@ -439,6 +439,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="plSub" style="margin-top:8px">Alamat MikroTik/OLT, password, dan token Telegram tetap diatur di berkas <code>.env</code> server.</div>
  <div class="kuPanel" style="margin-top:14px"><h4>Cek DNS &amp; MTU MikroTik</h4><div class="plSub">Untuk keluhan "WA chat jalan tapi status WA / Facebook / situs tidak terbuka". Hanya membaca pengaturan, tidak mengubah apa pun.</div>
   <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="cekDnsMtu($('mtCek'))">Cek sekarang</button></div><div id="mtCek"></div></div>
+ <div class="kuPanel" style="margin-top:14px"><h4>Hasil ping dari ONU</h4><div class="plSub">Ringkasan tombol <i>Ping dari ONU ke Google</i> 30 hari terakhir, per model ONU. Model yang pernah menolak cara "lewat WAN" otomatis memakai cara lain untuk semua ONU bermodel sama.</div>
+  <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="muatRingkasanPing()">Tampilkan</button></div><div id="pingRingkas"></div></div>
  <div class="kuPanel" style="margin-top:14px"><h4>TR-069 ONU lewat OLT</h4><div class="plSub">Kirim ACS URL &amp; login ke ONU dari OLT (sama dengan menu TR-069 Service Configuration di web OLT), tanpa membuka ONU satu per satu.</div>
   <div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS" onclick="muatOltTr069()">Tampilkan daftar ONU</button></div>
   <div id="oltTr"></div></div>
@@ -1416,6 +1418,15 @@ async function kirimOltTr069(){
   $('oltTrMsg').style.color=ok===d.hasil.length?'#0b7a3b':'#b45309';
   $('oltTrMsg').textContent=ok+' dari '+d.hasil.length+' ONU berhasil'+(d.tersimpan===false?' · PERHATIAN: konfigurasi OLT belum tersimpan permanen (hilang bila OLT restart).':d.tersimpan?' · konfigurasi OLT tersimpan.':'');
  }catch(e){ $('oltTrMsg').style.color='#b42318'; $('oltTrMsg').textContent='Gagal: '+e.message; b.disabled=false; b.textContent='Kirim ke ONU yang dicentang'; }
+}
+async function muatRingkasanPing(){
+ const el=$('pingRingkas'); el.innerHTML='<div class="muted" style="margin-top:8px">Memuat…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/ping-onu/ringkasan',{cache:'no-store'})); }catch(e){ el.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
+ if(!d.model.length){ el.innerHTML='<div class="plSub" style="margin-top:8px">Belum ada ping dari ONU yang tercatat. Hasil mulai dicatat sejak versi ini.</div>'; return; }
+ el.innerHTML=d.model.map(x=>{ const gagal=x.ditolak+x.tanpa_balasan;
+  return `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:8px"><div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap"><b>${esc(x.model)}</b><span class="plSub">${x.jumlah_onu} ONU · cara: ${x.cara==='tanpa_wan'?'tanpa memilih WAN':'lewat WAN'}</span></div>
+   <div class="plSub">✓ ${x.berhasil} berhasil · ${gagal?'<b style="color:#b42318">✖ '+x.ditolak+' ditolak</b>':'✖ 0 ditolak'}${x.tanpa_balasan?' · '+x.tanpa_balasan+' tanpa balasan':''}</div>
+   ${x.onu_menolak.length?'<div class="plSub" style="margin-top:4px">Hasil terakhir belum berhasil: '+x.onu_menolak.map(o=>`<b>${esc(o.username||'?')}</b> (${esc(o.status==='ditolak'?(o.pesan||'ditolak'):'tanpa balasan')})`).join(' · ')+'</div>':''}</div>`; }).join('');
 }
 async function oltTr069Pelanggan(btn,reboot){
  if(!confirm('Kirim pengaturan TR-069 ke ONU '+dg.user+' lewat OLT?'+(reboot?'\nONU akan di-RESTART: internet pelanggan putus ±1–2 menit.':''))) return;

@@ -1365,6 +1365,15 @@ def init_history_db() -> None:
             )
         """)
         conn.execute("CREATE TABLE IF NOT EXISTS upstream_trafik (ts TEXT NOT NULL, rx_mbps REAL, tx_mbps REAL)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ping_onu (
+                ts TEXT NOT NULL, username TEXT, acs_id TEXT, model TEXT, cara TEXT,
+                status TEXT NOT NULL, pesan TEXT, rata_ms REAL, hilang_persen INTEGER
+            )
+        """)
+        # Cara ping yang terbukti untuk satu model ONU (mis. F670L menolak kolom Interface),
+        # disimpan supaya tidak hilang saat INDESO dinyalakan ulang.
+        conn.execute("CREATE TABLE IF NOT EXISTS ping_cara (model TEXT PRIMARY KEY, cara TEXT NOT NULL, waktu TEXT)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -1499,6 +1508,7 @@ def cleanup_old_history() -> None:
         conn.execute("DELETE FROM usage_history WHERE ts < ?", (cutoff,))
         conn.execute("DELETE FROM upstream_history WHERE ts < ?", (cutoff,))
         conn.execute("DELETE FROM upstream_trafik WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM ping_onu WHERE ts < ?", (cutoff,))
         batas_event = (datetime.now() - timedelta(days=CONFIG["EVENT_RETENTION_DAYS"])).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM event WHERE waktu < ?", (batas_event,))
         conn.commit()
@@ -8760,8 +8770,39 @@ def _bersihkan_tugas_ping(acs_id: str) -> int:
 
 # Ping ONU tanpa coba-ulang otomatis: perintah yang ditolak langsung dihapus. ONU yang menolak cara
 # "lewat WAN" diingat, sehingga permintaan ping berikutnya langsung memakai cara tanpa memilih WAN.
-_ping_tugas: dict = {}          # id tugas -> (acs_id, lewat_wan)
+_ping_tugas: dict = {}          # id tugas -> (acs_id, lewat_wan, username, model)
 _ping_tanpa_wan: set = set()    # acs_id yang menolak kolom Interface
+
+
+def _model_onu(doc: dict) -> str:
+    di = doc.get("_deviceId") or {}
+    return f"{di.get('_Manufacturer') or ''} {di.get('_ProductClass') or ''}".strip() or "?"
+
+
+def _cara_ping_model(model: str) -> Optional[str]:
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    try:
+        r = conn.execute("SELECT cara FROM ping_cara WHERE model=?", (model,)).fetchone()
+    finally:
+        conn.close()
+    return r[0] if r else None
+
+
+def _catat_ping(asal, status: str, pesan: str = "", rata=None, hilang=None, belajar: bool = False) -> None:
+    """Simpan hasil ping (sebelum tugas gagal dihapus dari ACS). belajar=True: model ONU ini menolak
+    cara lewat WAN, jadi semua ONU bermodel sama langsung memakai cara tanpa WAN berikutnya."""
+    acs_id, lewat_wan, username, model = (list(asal) + [None, None])[:4]
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    try:
+        conn.execute("INSERT INTO ping_onu VALUES (?,?,?,?,?,?,?,?,?)",
+                     (datetime.now().isoformat(timespec="seconds"), username, acs_id, model,
+                      "wan" if lewat_wan else "tanpa_wan", status, (pesan or "")[:300], rata, hilang))
+        if belajar and model:
+            conn.execute("INSERT OR REPLACE INTO ping_cara VALUES (?,?,?)",
+                         (model, "tanpa_wan", datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _hapus_tugas_acs(acs_id: str, tid: str) -> None:
@@ -8792,7 +8833,8 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
     # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
     wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
-    if d.minimal or doc["_id"] in _ping_tanpa_wan:
+    model = _model_onu(doc)
+    if d.minimal or doc["_id"] in _ping_tanpa_wan or _cara_ping_model(model) == "tanpa_wan":
         wan = None
     # Timeout/DataBlockSize sengaja tidak dikirim: bawaan ONU sudah wajar, dan makin sedikit
     # kolom makin kecil kemungkinan ditolak (teruji di ZTE F609 V7 & Fiberhome HG6145D2).
@@ -8808,7 +8850,7 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
             v[2] = tipe
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     if hasil.get("tugas_id"):
-        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan))
+        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan), username, model)
         while len(_ping_tugas) > 500:
             _ping_tugas.pop(next(iter(_ping_tugas)))
     catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
@@ -8830,9 +8872,12 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
             # ulang otomatis; bila tadi lewat WAN, permintaan berikutnya memakai cara tanpa WAN.
             _hapus_tugas_acs(doc["_id"], tugas)
             asal = _ping_tugas.pop(tugas, None)
-            ganti_cara = bool(asal and asal[1])
+            # ONU yang sedang sibuk (9002 karena diagnosa lain) bukan tanda kolom Interface ditolak.
+            ganti_cara = bool(asal and asal[1]) and not st.get("sibuk")
             if ganti_cara:
                 _ping_tanpa_wan.add(doc["_id"])
+            if asal:
+                _catat_ping(asal, "ditolak", st["pesan"], belajar=ganti_cara)
             return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas, "dihapus": True,
                     "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
     tertunda = False
@@ -8853,11 +8898,43 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
     angka = lambda k: (lambda v: int(v) if str(v).lstrip("-").isdigit() else None)(_nilai(doc, f"{_PING_ONU}.{k}"))
     sukses, gagal = angka("SuccessCount"), angka("FailureCount")
     total = (sukses or 0) + (gagal or 0)
+    hilang = round((gagal or 0) * 100 / total) if total else None
+    asal = _ping_tugas.pop(tugas, None) if tugas else None
+    if asal:
+        _catat_ping(asal, "berhasil" if sukses else "tanpa_balasan", keadaan, angka("AverageResponseTime"), hilang)
     return {"status": "selesai", "keadaan": keadaan, "host": _nilai(doc, f"{_PING_ONU}.Host"),
             "sukses": sukses, "gagal": gagal,
-            "hilang_persen": round((gagal or 0) * 100 / total) if total else None,
+            "hilang_persen": hilang,
             "rata_ms": angka("AverageResponseTime"), "min_ms": angka("MinimumResponseTime"),
             "maks_ms": angka("MaximumResponseTime")}
+
+
+@app.get("/api/ping-onu/ringkasan")   # bukan /api/acs/...: akan tertangkap rute /api/acs/{username}
+def acs_ping_ringkasan(request: Request, hari: int = 30):
+    """Hasil ping ONU per model: berapa berhasil / ditolak, ONU mana yang menolak, cara yang dipakai."""
+    _wajib_admin(request)
+    hari = max(1, min(hari, 90))
+    batas = (datetime.now() - timedelta(days=hari)).isoformat(timespec="seconds")
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    try:
+        rows = conn.execute("SELECT ts, username, model, cara, status, pesan FROM ping_onu WHERE ts >= ? ORDER BY ts",
+                            (batas,)).fetchall()
+        cara = dict(conn.execute("SELECT model, cara FROM ping_cara").fetchall())
+    finally:
+        conn.close()
+    model: dict = {}
+    for ts, u, m, c, st, pesan in rows:
+        x = model.setdefault(m or "?", {"model": m or "?", "berhasil": 0, "ditolak": 0, "tanpa_balasan": 0,
+                                        "cara": cara.get(m) or "wan", "onu": {}})
+        x[st] = x.get(st, 0) + 1
+        x["onu"][u] = {"username": u, "status": st, "pesan": pesan, "waktu": ts, "cara": c}   # hasil terakhir per ONU
+    hasil = []
+    for x in model.values():
+        onu = list(x.pop("onu").values())
+        x["onu_menolak"] = sorted((o for o in onu if o["status"] != "berhasil"), key=lambda o: o["username"] or "")
+        x["jumlah_onu"] = len(onu)
+        hasil.append(x)
+    return {"hari": hari, "model": sorted(hasil, key=lambda x: -(x["ditolak"] + x["tanpa_balasan"]))}
 
 
 @app.post("/api/acs/{username}/reboot")
