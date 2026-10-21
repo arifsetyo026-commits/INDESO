@@ -9528,7 +9528,7 @@ def _galat_cli(keluaran: str) -> Optional[str]:
 
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU.
-    reboot=True: ikatan `ip-index` TR-069 dilepas (`ip-index unbind`), konfigurasi disimpan, lalu ONU
+    reboot=True: TR-069 diikat ke `ip-index 0` lalu dilepas lagi (`unbind`), konfigurasi disimpan, lalu ONU
     yang berhasil dikirimi di-restart satu per satu (`ont reboot P O`). ZTE F609 dkk. baru memakai
     pengaturan TR-069 dari OLT setelah langkah ini."""
     if not _olt_telnet_aktif():
@@ -9575,8 +9575,11 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
                     if galat:
                         break
                 if galat is None and reboot:
-                    # Urutan yang terbukti di ZTE F609 (Gunawan 1/23): lepas ikatan ip-index, simpan, restart.
-                    # Ditolak (mis. memang belum terikat) tidak dianggap gagal.
+                    # Urutan yang terbukti di ZTE F609 (Gunawan 1/23, Endah 1/9): ikat ke ip-index 0 lalu
+                    # lepas lagi, simpan, restart. Unbind saja tidak cukup (tidak ada ikatan yang dilepas);
+                    # pasang-lalu-lepas membuat ONU menyusun ulang jalur TR-069 ke WAN yang punya internet.
+                    # Konfigurasi akhir di OLT sama seperti sebelumnya (tanpa ip-index).
+                    t.kirim(f"ont tr069 {port} {onu_id} ip-index 0")
                     t.kirim(f"ont tr069 {port} {onu_id} ip-index unbind")
                 hasil.append({"pon": pon, "onu_id": onu_id, "ok": galat is None,
                               "pesan": galat or "Pengaturan TR-069 terkirim ke ONU."})

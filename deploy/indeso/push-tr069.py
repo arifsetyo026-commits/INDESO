@@ -10,8 +10,10 @@ Pilihan:
     --semua-merek   ikut kirim ke ONU non-ZTE (Fiberhome dll.; biasanya diatur lewat web ONU sendiri)
     --ulang         kirim juga ke ONU yang sudah punya pengaturan TR-069 di OLT
     --onu 2/5       hanya ONU port 2 nomor 5 (boleh diulang: --onu 1/3 --onu 2/5)
-    --reboot        restart ONU yang berhasil dikirimi (satu per satu, lewat OLT). Perlu untuk ZTE F609
-                    dkk. yang baru memakai pengaturan TR-069 setelah restart. Internet pelanggan putus ±1–2 menit.
+    --reboot        untuk ZTE F609 dkk.: kirim ulang, ip-index 0 → unbind, save, lalu restart ONU satu per satu.
+                    Tanpa --onu: semua ONU ZTE yang belum di ACS (menurut nomor seri). Internet putus ±1–2 menit.
+                    Lihat daftarnya dulu tanpa --kirim; ONU yang SN-nya di ACS berbeda bisa ikut terdaftar,
+                    pilih dengan --onu bila ragu.
 
 Hanya bagian ACS yang diubah; WAN/PPPoE pelanggan tidak disentuh. Tanpa --reboot internet tidak terputus.
 ONU ZTE tetap perlu WAN PPPoE berjenis INTERNET_TR069 supaya bisa lapor ke ACS.
@@ -146,7 +148,9 @@ def main_cli() -> None:
             ket = "DIKIRIM" if ikut else "-"
         elif not zte and not a.semua_merek:
             ikut, ket = False, "dilewati (bukan ZTE, atur lewat web ONU)"
-        elif o["tr069"] and not a.ulang:
+        elif a.reboot and acs:
+            ikut, ket = False, "dilewati (sudah di ACS)"
+        elif o["tr069"] and not a.ulang and not a.reboot:
             ikut, ket = False, "dilewati (sudah ada)"
         else:
             ikut, ket = True, "DIKIRIM"
