@@ -8887,6 +8887,19 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
              [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
     # Pakai tipe data yang dilaporkan ONU sendiri (mis. ZTE melaporkan NumberOfRepetitions
     # sebagai xsd:int): tipe yang tidak cocok dijawab sebagian ONU dengan 9003 Invalid arguments.
+    # ONU yang belum pernah sukses ping sering belum punya tipe ini di ACS (hanya DiagnosticsState
+    # yang terbaca), sehingga tipe bawaan yang salah terkirim dan ditolak terus (ZTEGD770288C).
+    # Minta ONU melaporkan isi IPPingDiagnostics dulu.
+    if any(not str(_param(doc, v[0]).get("_type") or "").startswith("xsd:") for v in nilai):
+        try:
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _PING_ONU + "."}, tunggu=20)
+            doc = _cari_perangkat(username) or doc
+        except HTTPException as e:
+            logger.warning(f"Gagal membaca tipe IPPingDiagnostics {doc['_id']}: {e.detail}")
+    zte = "zte" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
+    for v in nilai:
+        if zte and v[0].endswith(".NumberOfRepetitions") and not _param(doc, v[0]).get("_type"):
+            v[2] = "xsd:int"          # tipe yang dilaporkan ZTE F609/F670L bila belum terbaca
     for v in nilai:
         tipe = _param(doc, v[0]).get("_type")
         if isinstance(tipe, str) and tipe.startswith("xsd:"):
