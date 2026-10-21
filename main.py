@@ -39,7 +39,7 @@ import sys
 import re
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from html import escape as _esc
@@ -1374,6 +1374,10 @@ def init_history_db() -> None:
         # Cara ping yang terbukti untuk satu model ONU (mis. F670L menolak kolom Interface),
         # disimpan supaya tidak hilang saat INDESO dinyalakan ulang.
         conn.execute("CREATE TABLE IF NOT EXISTS ping_cara (model TEXT PRIMARY KEY, cara TEXT NOT NULL, waktu TEXT)")
+        # Setiap perintah ke ONU: langsung dijalankan (connection request berhasil) atau antre sampai
+        # ONU lapor rutin. Banyak 'antre' pada ONU yang online = ketukan ACS ke ONU bermasalah.
+        conn.execute("CREATE TABLE IF NOT EXISTS acs_tugas (ts TEXT NOT NULL, acs_id TEXT, nama TEXT, "
+                     "langsung INTEGER, alasan TEXT)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -1509,6 +1513,7 @@ def cleanup_old_history() -> None:
         conn.execute("DELETE FROM upstream_history WHERE ts < ?", (cutoff,))
         conn.execute("DELETE FROM upstream_trafik WHERE ts < ?", (cutoff,))
         conn.execute("DELETE FROM ping_onu WHERE ts < ?", (cutoff,))
+        conn.execute("DELETE FROM acs_tugas WHERE ts < ?", (cutoff,))
         batas_event = (datetime.now() - timedelta(days=CONFIG["EVENT_RETENTION_DAYS"])).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("DELETE FROM event WHERE waktu < ?", (batas_event,))
         conn.commit()
@@ -8466,6 +8471,18 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
         tid = (r.json() or {}).get("_id")
     except ValueError:
         tid = None
+    if r.status_code in (200, 202):
+        try:
+            conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+            try:
+                conn.execute("INSERT INTO acs_tugas VALUES (?,?,?,?,?)",
+                             (datetime.now().isoformat(timespec="seconds"), acs_id, tugas.get("name"),
+                              1 if r.status_code == 200 else 0, None if r.status_code == 200 else str(getattr(r, "reason", "") or "")[:200]))
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            logger.warning(f"Gagal mencatat tugas ACS: {e}")
     if r.status_code == 200:
         return {"status": "selesai", "tugas_id": tid}
     if r.status_code == 202:
@@ -9737,7 +9754,7 @@ def _onu_di_acs() -> Optional[dict]:
              for w in range(1, 6) for p in range(1, 3)]
     try:
         r = _acs("GET", "/devices/", params={"query": "{}", "projection": ",".join(
-            ["_id", "_deviceId._SerialNumber", "VirtualParameters.pppoeUsername"] + jalur)}, timeout=15)
+            ["_id", "_lastInform", "_deviceId", "VirtualParameters.pppoeUsername"] + jalur)}, timeout=15)
     except HTTPException:
         return None
     if not r.ok:
@@ -9750,14 +9767,18 @@ def _onu_di_acs() -> Optional[dict]:
             u = _nilai(d, j)
             if u:
                 user.setdefault(str(u), []).append(d)
-    return {"sn": sn, "user": user, "id": ids}
+    return {"sn": sn, "user": user, "id": ids, "docs": list(ids.values())}
 
 
 @app.get("/api/olt/tr069")
 def olt_tr069_daftar(request: Request):
     """ONU yang terbaca dari OLT beserta status terdaftar di ACS, untuk dipilih."""
     _wajib_admin(request)
-    acs = _onu_di_acs()
+    return {"aktif": _olt_telnet_aktif(), "acs_url": CONFIG["ACS_ONU_URL"], "onu": _onu_olt_vs_acs(_onu_di_acs())}
+
+
+def _onu_olt_vs_acs(acs: Optional[dict]) -> list:
+    """ONU dari data OLT terakhir + terdaftar_acs (True/False, None bila ACS tidak terjangkau)."""
     nama, acs_id = {}, {}
     conn = _billing_conn()
     try:
@@ -9776,7 +9797,89 @@ def olt_tr069_daftar(request: Request):
         onu.append({"pon": o.pon, "onu_id": o.onu_id, "sn": o.serial_number, "vendor": o.vendor, "model": o.model,
                     "online": o.online, "pppoe_username": u, "nama": nama.get(u), "terdaftar_acs": ada})
     onu.sort(key=lambda x: (x["terdaftar_acs"] is True, x["pon"], x["onu_id"]))
-    return {"aktif": _olt_telnet_aktif(), "acs_url": CONFIG["ACS_ONU_URL"], "onu": onu}
+    return onu
+
+
+def _saran_onu_tanpa_acs(o: dict) -> str:
+    model, sn = (o.get("model") or "").upper(), (o.get("sn") or "").upper()
+    if not o.get("online"):
+        return "ONU offline: cek setelah menyala"
+    if "F609" in model:
+        return "ZTE F609: Kirim TR-069 dari OLT + restart ONU"
+    if sn.startswith("ZTEG"):
+        return "ZTE: Kirim TR-069 dari OLT + restart; pastikan WAN PPPoE berjenis INTERNET_TR069 (web ONU)"
+    return "Bukan ZTE: atur TR-069 di web ONU (perlu kunjungan / akses web ONU)"
+
+
+@app.get("/api/acs-kesehatan")   # bukan /api/acs/...: akan tertangkap rute /api/acs/{username}
+def acs_kesehatan(request: Request, hari: int = 7):
+    """Ringkasan kesehatan ACS: ONU konek vs belum (beserta saran), ONU yang berhenti lapor,
+    perintah yang langsung jalan vs antre (ketukan ACS), dan fault yang tertahan."""
+    _wajib_admin(request)
+    if not _acs_aktif():
+        return {"aktif": False}
+    acs = _onu_di_acs()
+    if acs is None:
+        raise HTTPException(status_code=502, detail="Server ACS tidak terjangkau.")
+    onu = _onu_olt_vs_acs(acs)
+    online = [o for o in onu if o["online"]]
+    belum = [dict(o, saran=_saran_onu_tanpa_acs(o)) for o in onu if o["terdaftar_acs"] is False]
+    sekarang = datetime.now(timezone.utc)
+    diam = []
+    for d in acs["docs"]:
+        try:
+            t = datetime.fromisoformat(str(d.get("_lastInform") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        menit = int((sekarang - t).total_seconds() // 60)
+        if menit > 60:
+            di = d.get("_deviceId") or {}
+            diam.append({"id": d.get("_id"), "model": f"{di.get('_Manufacturer') or ''} {di.get('_ProductClass') or ''}".strip(),
+                         "sn": di.get("_SerialNumber"), "menit": menit})
+    lapor_baru = sum(1 for d in acs["docs"] if d.get("_lastInform")) - len(diam)
+    hari = max(1, min(hari, 30))
+    batas = (datetime.now() - timedelta(days=hari)).isoformat(timespec="seconds")
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    try:
+        langsung, antre = conn.execute("SELECT COALESCE(SUM(langsung),0), COALESCE(SUM(1-langsung),0) FROM acs_tugas "
+                                       "WHERE ts >= ?", (batas,)).fetchone()
+        alasan = conn.execute("SELECT alasan, COUNT(*) FROM acs_tugas WHERE ts >= ? AND langsung=0 "
+                              "GROUP BY alasan ORDER BY 2 DESC LIMIT 5", (batas,)).fetchall()
+    finally:
+        conn.close()
+    r = _acs("GET", "/faults/", timeout=10)
+    faults = [{"id": f.get("_id"), "device": f.get("device"), "kode": f.get("code"),
+               "pesan": str(f.get("message") or "")[:160], "ulang": f.get("retries"), "waktu": f.get("timestamp")}
+              for f in (r.json() if r.ok else [])]
+    r = _acs("GET", "/tasks/", params={"projection": "_id,device,name,timestamp"}, timeout=10)
+    tugas = r.json() if r.ok else []
+    return {"aktif": True,
+            "onu": {"total_olt": len(onu), "online": len(online), "di_acs": sum(1 for o in onu if o["terdaftar_acs"]),
+                    "belum": belum},
+            "acs": {"perangkat": len(acs["docs"]), "lapor_1jam": lapor_baru,
+                    "diam": sorted(diam, key=lambda x: -x["menit"])[:30]},
+            "ketukan": {"hari": hari, "langsung": langsung, "antre": antre,
+                        "persen_langsung": round(langsung * 100 / (langsung + antre)) if langsung + antre else None,
+                        "alasan_antre": [{"alasan": a or "-", "jumlah": n} for a, n in alasan]},
+            "faults": faults, "tugas_antre": len(tugas)}
+
+
+@app.post("/api/acs-kesehatan/bersihkan")
+def acs_bersihkan_fault(request: Request):
+    """Hapus semua fault tertahan beserta tugas penyebabnya, supaya GenieACS berhenti mengulanginya
+    setiap ONU lapor (fault yang terus diulang membuat sesi ONU lambat)."""
+    _wajib_admin(request)
+    from urllib.parse import quote
+    r = _acs("GET", "/faults/", timeout=10)
+    n = 0
+    for f in (r.json() if r.ok else []):
+        ch = str(f.get("channel") or "")
+        if ch.startswith("task_"):
+            _acs("DELETE", f"/tasks/{ch[5:]}")
+        if _acs("DELETE", f"/faults/{quote(str(f.get('_id')), safe='')}").ok:
+            n += 1
+    catat_aktivitas(_oleh(request), "acs_bersih_fault", f"{n} fault ACS dihapus")
+    return {"dihapus": n}
 
 
 class Tr069OnuIn(BaseModel):

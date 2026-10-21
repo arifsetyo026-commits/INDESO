@@ -2128,3 +2128,39 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     assert len(d) == 1 and d[0]["model"] == "ZTE F670LV9.0" and d[0]["cara"] == "tanpa_wan"
     assert d[0]["ditolak"] == 1 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
     assert m.get("/api/ping-onu/ringkasan").status_code == 403
+
+
+def test_kesehatan_acs(siap, monkeypatch):
+    """Panel kesehatan ACS: ONU belum di ACS beserta saran, ketukan langsung vs antre, fault tertahan
+    dan tombol bersihkan."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    dev["_lastInform"] = datetime.utcnow().isoformat() + "Z"
+    dev["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}}
+    onu = [main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                          serial_number="ZTEGC1234567", pppoe_username="budi", model="F609V5.3"),
+           main.ONUStatus(pon="0/0/1", onu_id=2, snmp_index=2, olt_rx_dbm=-20.0, online=True, status="OK",
+                          serial_number="ZTEGC0000002", pppoe_username="ani", model='"F609V5.3"'),
+           main.ONUStatus(pon="0/0/2", onu_id=1, snmp_index=3, olt_rx_dbm=-20.0, online=True, status="OK",
+                          serial_number="FHTT00000003", pppoe_username="dwi", model="HG6145D2")]
+    main._latest_data = main._build_dashboard([], None, onu)
+    try:
+        k.post("/api/acs/budi/ping", json={})                      # langsung (200)
+        acs.antre = True
+        tid = k.post("/api/acs/budi/ping", json={}).json()["tugas_id"]   # antre (202)
+        acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                           "code": "cwmp.9003", "message": "Invalid arguments", "retries": 9})
+        d = k.get("/api/acs-kesehatan").json()
+        assert d["onu"]["total_olt"] == 3 and d["onu"]["di_acs"] == 1
+        saran = {b["pppoe_username"]: b["saran"] for b in d["onu"]["belum"]}
+        assert "F609" in saran["ani"] and "Bukan ZTE" in saran["dwi"]
+        assert d["ketukan"]["langsung"] == 1 and d["ketukan"]["antre"] == 1 and d["ketukan"]["persen_langsung"] == 50
+        assert d["acs"]["lapor_1jam"] == 1 and len(d["faults"]) == 1 and d["faults"][0]["ulang"] == 9
+        assert m.get("/api/acs-kesehatan").status_code == 403
+        assert k.post("/api/acs-kesehatan/bersihkan").json()["dihapus"] == 1
+        assert not acs.faults and tid not in acs.antrean
+    finally:
+        main._latest_data = None
