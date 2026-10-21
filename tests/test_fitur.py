@@ -2164,3 +2164,36 @@ def test_kesehatan_acs(siap, monkeypatch):
         assert not acs.faults and tid not in acs.antrean
     finally:
         main._latest_data = None
+
+
+def test_reboot_onu_tidak_tertahan_dan_lewat_olt(siap, monkeypatch):
+    """Reboot lewat ACS: perintah ping yang tertahan (fault) dihapus dulu supaya reboot tidak ikut tertahan.
+    Restart lewat OLT: 'ont reboot P O' untuk ONU pelanggan, dijawab y, tanpa 'all'."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    lama = "f" * 24
+    acs.antrean[lama] = {"name": "setParameterValues", "device": dev["_id"], "parameterValues": [
+        ["InternetGatewayDevice.IPPingDiagnostics.DiagnosticsState", "Requested", "xsd:string"]]}
+    acs.faults.append({"_id": f"{dev['_id']}:task_{lama}", "channel": f"task_{lama}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments", "retries": 9})
+    assert k.post("/api/acs/budi/reboot").status_code == 200
+    assert lama not in acs.antrean and not acs.faults and acs.tugas[-1]["name"] == "reboot"
+    # lewat OLT
+    olt = FakeOLTTelnet()
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT")
+    onu = main.ONUStatus(pon="0/0/1", onu_id=21, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                         serial_number="ZTEGD770288C", pppoe_username="budi")
+    main._latest_data = main._build_dashboard([], None, [onu])
+    try:
+        r = k.post("/api/olt/reboot/pelanggan/budi").json()
+        assert r["ok"] and r["onu_id"] == 21
+        p = olt.perintah
+        assert "ont reboot 1 21" in p and p[p.index("ont reboot 1 21") + 1] == "y"
+        assert not any("all" in x for x in p if x.startswith("ont reboot")) and "save" not in p
+        assert k.post("/api/olt/reboot/pelanggan/ani").status_code == 404
+        assert m.post("/api/olt/reboot/pelanggan/budi").status_code == 403
+    finally:
+        main._latest_data = None

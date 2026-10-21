@@ -8726,6 +8726,7 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
         if not kunci:
             raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
         nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
+    _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else [])
     catat_aktivitas(_oleh(request), "onu_wifi",
@@ -8820,6 +8821,31 @@ def _catat_ping(asal, status: str, pesan: str = "", rata=None, hilang=None, bela
         conn.commit()
     finally:
         conn.close()
+
+
+def _bersihkan_tertahan(acs_id: str) -> int:
+    """Hapus perintah yang ditolak ONU (fault) beserta tugasnya. GenieACS menjalankan perintah per ONU
+    berurutan dan mengulang perintah yang gagal setiap ONU lapor; selama masih ada, perintah baru
+    (mis. reboot) ikut tertahan di belakangnya dan tidak pernah jalan."""
+    from urllib.parse import quote
+    try:
+        r = _acs("GET", "/faults/", params={"query": json.dumps({"device": acs_id})}, timeout=10)
+    except HTTPException:
+        return 0
+    n = 0
+    for f in (r.json() if r.ok else []):
+        ch = str(f.get("channel") or "")
+        if not ch.startswith("task_"):
+            continue
+        try:
+            _acs("DELETE", f"/tasks/{ch[5:]}")
+            _acs("DELETE", f"/faults/{quote(str(f.get('_id')), safe='')}")
+            n += 1
+        except HTTPException:
+            pass
+    if n:
+        logger.info(f"{n} perintah tertahan dihapus untuk {acs_id} sebelum perintah baru")
+    return n
 
 
 def _hapus_tugas_acs(acs_id: str, tid: str) -> None:
@@ -8966,6 +8992,8 @@ def acs_reboot(username: str, request: Request):
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    _bersihkan_tertahan(doc["_id"])
+    _bersihkan_tugas_ping(doc["_id"])     # ping yang belum jalan tidak berguna lagi setelah restart
     hasil = _tugas_acs(doc["_id"], {"name": "reboot"})
     catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({doc['_id']})"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
@@ -9666,6 +9694,50 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
                        else " Restart ONU gagal.") + (f" Catatan OLT: {'; '.join(cat)}" if cat else "")
 
 
+def _olt_masuk(t: "_TelnetOLT") -> None:
+    """Login telnet OLT sampai mode config."""
+    t.tunggu(r"(?i)(user ?name|login)\s*:\s*$")
+    t.kirim(CONFIG["OLT_TELNET_USER"], r"(?i)password\s*:\s*$")
+    masuk = t.kirim(CONFIG["OLT_TELNET_PASS"], r"(?i)([>#]\s*$|user ?name\s*:\s*$|fail|incorrect|invalid)")
+    if not re.search(r"[>#]\s*$", masuk):
+        raise HTTPException(status_code=502, detail="Login telnet OLT ditolak. Periksa OLT_TELNET_USER/OLT_TELNET_PASS.")
+    if masuk.rstrip().endswith(">"):
+        out = t.kirim("enable", r"(?i)(#\s*$|password\s*:\s*$)")
+        if not out.rstrip().endswith("#"):
+            t.kirim(CONFIG["OLT_TELNET_PASS"], r"#\s*$")
+    t.kirim("config")
+
+
+def olt_reboot_onu(pon: str, onu_id: int) -> None:
+    """Restart satu ONU lewat OLT (`ont reboot P O`), tidak bergantung pada ACS. Tidak ada konfigurasi
+    yang berubah, jadi tidak perlu save. Tidak pernah 'all'."""
+    if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
+        raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
+    m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
+    if not m or not 1 <= int(onu_id) <= 256:
+        raise HTTPException(status_code=400, detail=f"Alamat ONU tidak valid: {pon} {onu_id}")
+    try:
+        t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
+    except OSError as e:
+        raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
+    try:
+        _olt_masuk(t)
+        galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
+        if not galat:
+            out = t.kirim(f"ont reboot {int(m.group(2))} {int(onu_id)}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            if re.search(_POLA_KONFIRMASI, out):
+                out = t.kirim("y")
+            galat = _galat_cli(out)
+            t.kirim("exit")
+        t.kirim("end")
+    except (OSError, TimeoutError, ConnectionError) as e:
+        raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
+    finally:
+        t.tutup()
+    if galat:
+        raise HTTPException(status_code=502, detail=f"OLT menolak restart ONU: {galat}")
+
+
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU.
     reboot=True: ONU yang berhasil dikirimi menjalani `_ulang_jalur_tr069` (ip-index 0 → unbind → reboot,
@@ -9689,16 +9761,7 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     except OSError as e:
         raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
     try:
-        t.tunggu(r"(?i)(user ?name|login)\s*:\s*$")
-        t.kirim(CONFIG["OLT_TELNET_USER"], r"(?i)password\s*:\s*$")
-        masuk = t.kirim(CONFIG["OLT_TELNET_PASS"], r"(?i)([>#]\s*$|user ?name\s*:\s*$|fail|incorrect|invalid)")
-        if not re.search(r"[>#]\s*$", masuk):
-            raise HTTPException(status_code=502, detail="Login telnet OLT ditolak. Periksa OLT_TELNET_USER/OLT_TELNET_PASS.")
-        if masuk.rstrip().endswith(">"):
-            out = t.kirim("enable", r"(?i)(#\s*$|password\s*:\s*$)")
-            if not out.rstrip().endswith("#"):
-                t.kirim(CONFIG["OLT_TELNET_PASS"], r"#\s*$")
-        t.kirim("config")
+        _olt_masuk(t)
         for antarmuka, onus in per_if.items():
             out = t.kirim(f"interface gpon {antarmuka}")
             if _galat_cli(out):
@@ -9903,6 +9966,17 @@ def olt_tr069_kirim(d: Tr069OnuIn, request: Request):
                     + (f", {sum(1 for h in hasil['hasil'] if h.get('reboot'))} di-restart" if d.reboot else "")
                     + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
     return hasil
+
+
+@app.post("/api/olt/reboot/pelanggan/{username}")
+def olt_reboot_pelanggan(username: str, request: Request):
+    _wajib_admin(request)
+    onu = next((o for o in (_latest_data.onu_list if _latest_data else []) if o.pppoe_username == username), None)
+    if not onu:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terbaca dari OLT (offline atau MAC belum cocok).")
+    olt_reboot_onu(onu.pon, onu.onu_id)
+    catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({onu.pon} onu {onu.onu_id}) lewat OLT")
+    return {"ok": True, "pon": onu.pon, "onu_id": onu.onu_id}
 
 
 @app.post("/api/olt/tr069/pelanggan/{username}")
