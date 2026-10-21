@@ -126,12 +126,13 @@ sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --kiri
 
 **ZTE F609 (dan ONU lain yang punya WAN bawaan "TR-069" yang tidak bisa dihapus)** menerima pengaturan dari OLT,
 tapi baru melapor ke ACS setelah restart. Sebelum restart, ONU melapor lewat WAN "TR-069" yang kosong.
-Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index unbind`, `save`, lalu `ont reboot <port> <onu>` per ONU. Internet pelanggan putus ±1–2 menit:
+Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `save`, lalu `ont reboot <port> <onu>` per ONU. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. Internet pelanggan putus ±1–2 menit:
 - **Diagnosa**: tombol *Kirim TR-069 dari OLT + restart ONU*.
 - **Pengaturan → Sistem → TR-069 ONU lewat OLT**: centang *Restart ONU setelah dikirim*.
 - **Terminal**, untuk ONU yang sudah pernah dikirimi tapi belum muncul di ACS:
   ```
-  sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --onu 1/23 --kirim --reboot
+  sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --reboot                   # lihat daftar dulu
+  sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --onu 1/23 --kirim --reboot  # satu ONU
   ```
 INDESO tidak pernah memakai `ont reboot <port> all`.
 Pilihan: `--onu 2/5` (hanya ONU tertentu), `--semua-merek`, `--ulang`.
