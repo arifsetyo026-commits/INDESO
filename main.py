@@ -210,6 +210,7 @@ CONFIG = {
     "UPSTREAM_AKTIF": True,
     "UPSTREAM_TUJUAN": "8.8.8.8,1.1.1.1",   # tujuan ping internet; gateway ISP ditambah otomatis
     "UPSTREAM_WAN": "",                      # interface WAN; kosong = deteksi dari default route
+    "UPSTREAM_TRAFIK_IF": "",                # interface ke OLT untuk trafik total pelanggan; kosong = interface server PPPoE
     "UPSTREAM_KAPASITAS_MBPS": 0,            # download langganan ISP; 0 = alert bandwidth mati
     "UPSTREAM_INTERVAL_DETIK": 120,
     "UPSTREAM_LOSS_PERSEN": 20,              # packet loss ke semua tujuan internet >= ini = bermasalah
@@ -2779,10 +2780,12 @@ _PENGATURAN = {
     "TAGIHAN_JAM": {"label": "Jam pembuatan tagihan otomatis (0-23)", "tipe": "int", "min": 0, "max": 23},
     "MITRA_INSENTIF_PER_PELANGGAN": {"label": "Komisi mitra per pelanggan lunas (Rp)", "tipe": "int", "min": 0, "max": 1_000_000},
     "PUTUS_TUNGGU_MENIT": {"label": "Tunggu sebelum alert putus (menit)", "tipe": "int", "min": 1, "max": 240},
-    "UPSTREAM_KAPASITAS_MBPS": {"label": "Kapasitas download internet pusat dari ISP (Mbps, 0 = alert bandwidth mati)",
+    "UPSTREAM_KAPASITAS_MBPS": {"label": "Kapasitas download internet pusat, jumlah semua ISP/WAN (Mbps, 0 = alert penuh mati)",
                                 "tipe": "int", "min": 0, "max": 100000},
     "UPSTREAM_WAN": {"label": "Interface WAN MikroTik ke ISP (kosong = deteksi otomatis)", "tipe": "teks",
                      "pola": r"^[\w.\-<>@ ]{0,64}$", "contoh": "ether1"},
+    "UPSTREAM_TRAFIK_IF": {"label": "Interface ke OLT untuk trafik total pelanggan (kosong = interface server PPPoE)",
+                           "tipe": "teks", "pola": r"^[\w.\-<>@ ,]{0,120}$", "contoh": "sfp-sfpplus1"},
     "UPSTREAM_TUJUAN": {"label": "Tujuan ping internet pusat (pisahkan koma)", "tipe": "teks",
                         "pola": r"^\s*[A-Za-z0-9.\-]{1,253}(\s*,\s*[A-Za-z0-9.\-]{1,253}){0,4}\s*$", "contoh": "8.8.8.8,1.1.1.1"},
     "PUTUS_SENYAP_MALAM": {"label": "Jam malam: listrik ONU mati tidak dikabarkan satu per satu (mis. 21-06, kosong = selalu kabarkan)",
@@ -9140,6 +9143,20 @@ def _tujuan_upstream(gateway: Optional[str]) -> list[tuple[str, str]]:
     return tujuan
 
 
+def _interface_pelanggan(api) -> list:
+    """Interface tempat server PPPoE pelanggan berjalan (jalur ke OLT): semua trafik pelanggan lewat sini,
+    lewat WAN/ISP mana pun keluarnya. Dipakai bila UPSTREAM_TRAFIK_IF kosong."""
+    pilihan = [x for x in re.split(r"\s*,\s*", str(CONFIG.get("UPSTREAM_TRAFIK_IF") or "").strip()) if x]
+    if pilihan:
+        return pilihan
+    try:
+        server = api.get_resource("/interface/pppoe-server/server").get()
+    except Exception:
+        return []
+    return list(dict.fromkeys(s.get("interface") for s in server
+                              if s.get("interface") and str(s.get("disabled", "false")).lower() not in ("true", "yes")))
+
+
 def ukur_upstream(sekarang: Optional[datetime] = None) -> Optional[dict]:
     """Satu kali pengukuran. Kembalikan ringkasan, atau None bila MikroTik tidak terhubung."""
     sekarang = sekarang or datetime.now()
@@ -9149,13 +9166,20 @@ def ukur_upstream(sekarang: Optional[datetime] = None) -> Optional[dict]:
         wan, gateway = _deteksi_wan(api)
         wan = str(CONFIG["UPSTREAM_WAN"] or "").strip() or wan
         rx = tx = None
-        if wan:
+        # Trafik diukur di jalur ke OLT (total pelanggan) bila ada; dengan 2 WAN / load balance, satu WAN
+        # saja tidak mewakili pemakaian. Di sisi pelanggan arah dibalik: tx router = download pelanggan.
+        lan = _interface_pelanggan(api)
+        sisi, trafik_if = ("pelanggan", lan) if lan else ("wan", [wan] if wan else [])
+        if trafik_if:
             try:
-                t = (api.get_resource("/interface").call("monitor-traffic", {"interface": wan, "once": ""}) or [{}])[0]
-                rx = round(int(t.get("rx-bits-per-second", 0)) / 1e6, 2)
-                tx = round(int(t.get("tx-bits-per-second", 0)) / 1e6, 2)
+                baris = api.get_resource("/interface").call(
+                    "monitor-traffic", {"interface": ",".join(trafik_if), "once": ""}) or []
+                masuk = sum(int(b.get("rx-bits-per-second", 0) or 0) for b in baris)
+                keluar = sum(int(b.get("tx-bits-per-second", 0) or 0) for b in baris)
+                unduh, unggah = (keluar, masuk) if sisi == "pelanggan" else (masuk, keluar)
+                rx, tx = round(unduh / 1e6, 2), round(unggah / 1e6, 2)
             except Exception as e:
-                logger.warning(f"monitor-traffic WAN {wan} gagal: {e}")
+                logger.warning(f"monitor-traffic {','.join(trafik_if)} gagal: {e}")
         ping = []
         for jenis, alamat in _tujuan_upstream(gateway):
             try:
@@ -9190,8 +9214,9 @@ def ukur_upstream(sekarang: Optional[datetime] = None) -> Optional[dict]:
         conn.commit()
     finally:
         conn.close()
-    hasil = {"waktu": ts, "wan": wan, "gateway": gateway, "rx_mbps": rx, "tx_mbps": tx, "ping": ping}
-    _upstream.update(terakhir=hasil, wan=wan, gateway=gateway)
+    hasil = {"waktu": ts, "wan": wan, "gateway": gateway, "rx_mbps": rx, "tx_mbps": tx, "ping": ping,
+             "trafik_if": trafik_if, "trafik_sisi": sisi}
+    _upstream.update(terakhir=hasil, wan=wan, gateway=gateway, trafik_if=trafik_if, trafik_sisi=sisi)
     return hasil
 
 
@@ -9249,7 +9274,7 @@ def proses_upstream(h: Optional[dict], sekarang: Optional[datetime] = None) -> N
     if st["penuh"] >= 3 and not st["alert_penuh"]:
         st["alert_penuh"] = True
         send_telegram_message(
-            f"📶 <b>Bandwidth WAN hampir penuh</b>\n⬇{h['rx_mbps']} Mbps dari {CONFIG['UPSTREAM_KAPASITAS_MBPS']} Mbps "
+            f"📶 <b>Pemakaian internet pusat hampir penuh</b>\n⬇{h['rx_mbps']} Mbps dari {CONFIG['UPSTREAM_KAPASITAS_MBPS']} Mbps "
             f"({n['pakai_persen']}%) selama ±{st['penuh'] * CONFIG['UPSTREAM_INTERVAL_DETIK'] // 60} menit.\n"
             "Pelanggan akan merasa lemot di jam ini. Pertimbangkan tambah kapasitas atau atur antrean (queue).")
     elif st["penuh"] == 0 and st["alert_penuh"] and (n["pakai_persen"] or 0) < CONFIG["UPSTREAM_PENUH_PERSEN"] - 10:
@@ -9296,6 +9321,7 @@ def get_upstream(request: Request, jam: int = 24):
             t["hilang_persen"] = hilang
     kini = _upstream.get("terakhir")
     return {"aktif": bool(CONFIG["UPSTREAM_AKTIF"]), "wan": _upstream.get("wan"), "gateway": gw,
+            "trafik_if": _upstream.get("trafik_if") or [], "trafik_sisi": _upstream.get("trafik_sisi"),
             "kapasitas_mbps": CONFIG["UPSTREAM_KAPASITAS_MBPS"] or None,
             "batas": {"loss": CONFIG["UPSTREAM_LOSS_PERSEN"], "latensi": CONFIG["UPSTREAM_LATENSI_MS"],
                       "penuh": CONFIG["UPSTREAM_PENUH_PERSEN"]},
