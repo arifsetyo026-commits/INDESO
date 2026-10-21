@@ -2105,9 +2105,14 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     r = k.post("/api/acs/budi/ping", json={}).json()
     assert r["lewat_wan"]
     tid = r["tugas_id"]
+    # Jawaban F670L sungguhan (ZTEGD770288C): 9002 Internal error pada objek IPPingDiagnostics.
     acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
-                       "code": "cwmp.9007", "message": "Invalid parameter value"})
-    assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()["status"] == "gagal"
+                       "code": "cwmp.9003", "message": "Invalid arguments",
+                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
+                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002",
+                            "faultString": "Internal error"}]}})
+    g = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    assert g["status"] == "gagal" and g["cara_berikutnya"] == "tanpa_wan" and "tanpa memilih WAN" in g["pesan"]
     main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
     acs.antre = False
     r2 = k.post("/api/acs/budi/ping", json={}).json()

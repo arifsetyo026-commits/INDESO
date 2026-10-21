@@ -8872,13 +8872,19 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
             # ulang otomatis; bila tadi lewat WAN, permintaan berikutnya memakai cara tanpa WAN.
             _hapus_tugas_acs(doc["_id"], tugas)
             asal = _ping_tugas.pop(tugas, None)
-            # ONU yang sedang sibuk (9002 karena diagnosa lain) bukan tanda kolom Interface ditolak.
-            ganti_cara = bool(asal and asal[1]) and not st.get("sibuk")
+            # Ditolak saat memakai kolom Interface (lewat WAN): ganti cara untuk seluruh model ONU ini.
+            # Termasuk "9002 Internal error" pada objek IPPingDiagnostics: ZTE F670L (ZTEGD…) menjawab
+            # begitu bila nilai Interface tidak diterimanya, bukan karena sedang sibuk. Cara tanpa WAN
+            # adalah cara awal INDESO yang dulu berhasil di semua ONU.
+            ganti_cara = bool(asal and asal[1])
+            pesan = st["pesan"]
             if ganti_cara:
                 _ping_tanpa_wan.add(doc["_id"])
+                pesan = (f"ONU menolak perintah ping lewat jalur WAN ({st.get('kode') or 'fault'}). Model ONU ini "
+                         "sekarang dicatat memakai cara tanpa memilih WAN; tekan Ping lagi.")
             if asal:
                 _catat_ping(asal, "ditolak", st["pesan"], belajar=ganti_cara)
-            return {"status": "gagal", "pesan": st["pesan"], "tugas_id": tugas, "dihapus": True,
+            return {"status": "gagal", "pesan": pesan, "tugas_id": tugas, "dihapus": True,
                     "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
     tertunda = False
     if segarkan:
