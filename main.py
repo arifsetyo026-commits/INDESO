@@ -8810,7 +8810,7 @@ def _cara_ping_model(model: str) -> Optional[str]:
 def _catat_ping(asal, status: str, pesan: str = "", rata=None, hilang=None, belajar: bool = False) -> None:
     """Simpan hasil ping (sebelum tugas gagal dihapus dari ACS). belajar=True: model ONU ini menolak
     cara lewat WAN, jadi semua ONU bermodel sama langsung memakai cara tanpa WAN berikutnya."""
-    acs_id, lewat_wan, username, model = (list(asal) + [None, None])[:4]
+    acs_id, lewat_wan, username, model = (list(asal) + [None, None, None, None])[:4]
     conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
     try:
         conn.execute("INSERT INTO ping_onu VALUES (?,?,?,?,?,?,?,?,?)",
@@ -8872,13 +8872,19 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
     if not _ada(doc, _PING_ONU):
         raise HTTPException(status_code=400, detail="ONU ini tidak menyediakan tes ping lewat TR-069.")
+    hasil = _mulai_ping(username, doc, host, jumlah, d.lewat_wan, d.minimal)
+    catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
+    return hasil
+
+
+def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: bool = True, minimal: bool = False) -> dict:
     _bersihkan_tugas_ping(doc["_id"])
     mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
     # Tanpa Interface, sebagian ONU ping lewat jalur lain (mis. WAN manajemen/TR-069) yang
     # DNS-nya tidak jalan. Arahkan ke PPPoE internet pelanggan bila ONU menyediakan kolomnya.
-    wan = _wan_ppp_aktif(doc) if d.lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
+    wan = _wan_ppp_aktif(doc) if lewat_wan and _ada(doc, f"{_PING_ONU}.Interface") else None
     model = _model_onu(doc)
-    if d.minimal or doc["_id"] in _ping_tanpa_wan or _cara_ping_model(model) == "tanpa_wan":
+    if minimal or doc["_id"] in _ping_tanpa_wan or _cara_ping_model(model) == "tanpa_wan":
         wan = None
     # Timeout/DataBlockSize sengaja tidak dikirim: bawaan ONU sudah wajar, dan makin sedikit
     # kolom makin kecil kemungkinan ditolak (teruji di ZTE F609 V7 & Fiberhome HG6145D2).
@@ -8907,11 +8913,10 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
             v[2] = tipe
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     if hasil.get("tugas_id"):
-        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan), username, model)
+        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan), username, model, host, jumlah)
         while len(_ping_tugas) > 500:
             _ping_tugas.pop(next(iter(_ping_tugas)))
-    catat_aktivitas(_oleh(request), "onu_ping", f"{username} ({doc['_id']}) ping {host} {jumlah}x")
-    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=d.minimal)
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=minimal)
 
 
 @app.get("/api/acs/{username}/ping")
@@ -8932,6 +8937,17 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
             # Ditolak saat memakai kolom Interface (lewat WAN): ONU ini mencoba cara tanpa WAN berikutnya.
             # Seluruh model ONU baru ikut diganti bila ONU jelas menyebut kolom Interface yang ditolak;
             # penolakan umum (mis. 9002 pada objek IPPingDiagnostics) bisa karena hal lain (tipe data).
+            host_asal = asal[4] if asal and len(asal) > 4 else None
+            if host_asal and not re.fullmatch(r"[0-9.]+", host_asal):
+                # Ping ke nama situs ditolak (ZTE: 9002 pada objek IPPingDiagnostics). Di PITOYO (ZTEGD770288C)
+                # penolakan ini hilang setelah satu ping ke IP sukses (google.com kemudian 5/5, DNS WAN normal),
+                # jadi bukan DNS rusak melainkan keadaan fitur diagnosa ONU. Langsung uji sekali dengan IP
+                # (perintah yang gagal sudah dihapus): memastikan koneksi ONU dan memulihkan fitur diagnosanya.
+                _catat_ping(asal, "nama_ditolak", f"Ping ke {host_asal} ditolak: {st['pesan']}")
+                lanjut = _mulai_ping(username, doc, "8.8.8.8", asal[5] if len(asal) > 5 else 10, bool(asal[1]))
+                return {"status": "nama_ditolak", "tugas_id": tugas, "dihapus": True, "host": host_asal,
+                        "pesan": f"ONU menolak ping ke {host_asal}. Sedang dicek dengan ping ke 8.8.8.8…",
+                        "lanjut": lanjut}
             ganti_cara = bool(asal and asal[1])
             belajar_model = ganti_cara and "Interface" in (st.get("parameter") or [])
             pesan = st["pesan"]
@@ -8990,10 +9006,14 @@ def acs_ping_ringkasan(request: Request, hari: int = 30):
         x = model.setdefault(m or "?", {"model": m or "?", "berhasil": 0, "ditolak": 0, "tanpa_balasan": 0,
                                         "cara": cara.get(m) or "wan", "onu": {}})
         x[st] = x.get(st, 0) + 1
+        if st == "nama_ditolak":                  # disusul ping ke IP: catat terpisah supaya tidak tertimpa
+            x.setdefault("nama", {})[u] = {"username": u, "waktu": ts}
+            continue
         x["onu"][u] = {"username": u, "status": st, "pesan": pesan, "waktu": ts, "cara": c}   # hasil terakhir per ONU
     hasil = []
     for x in model.values():
         onu = list(x.pop("onu").values())
+        x["onu_nama_ditolak"] = sorted(x.pop("nama", {}).values(), key=lambda o: o["username"] or "")
         x["onu_menolak"] = sorted((o for o in onu if o["status"] != "berhasil"), key=lambda o: o["username"] or "")
         x["jumlah_onu"] = len(onu)
         hasil.append(x)
