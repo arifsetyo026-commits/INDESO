@@ -8939,15 +8939,14 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
             # penolakan umum (mis. 9002 pada objek IPPingDiagnostics) bisa karena hal lain (tipe data).
             host_asal = asal[4] if asal and len(asal) > 4 else None
             if host_asal and not re.fullmatch(r"[0-9.]+", host_asal):
-                # ZTE menolak seluruh perintah ping (9002) bila nama tujuan tidak bisa diterjemahkan ONU.
-                # Terbukti di PITOYO (ZTEGD770288C): google.com ditolak, 8.8.8.8 sukses 5/5. Langsung uji
-                # dengan IP (satu kali, perintah yang gagal sudah dihapus) untuk membedakan DNS ONU rusak
-                # dari ONU yang memang menolak ping.
-                _catat_ping(asal, "dns_gagal", f"Ping ke {host_asal} ditolak: {st['pesan']}")
+                # Ping ke nama situs ditolak (ZTE: 9002 pada objek IPPingDiagnostics). Di PITOYO (ZTEGD770288C)
+                # penolakan ini hilang setelah satu ping ke IP sukses (google.com kemudian 5/5, DNS WAN normal),
+                # jadi bukan DNS rusak melainkan keadaan fitur diagnosa ONU. Langsung uji sekali dengan IP
+                # (perintah yang gagal sudah dihapus): memastikan koneksi ONU dan memulihkan fitur diagnosanya.
+                _catat_ping(asal, "nama_ditolak", f"Ping ke {host_asal} ditolak: {st['pesan']}")
                 lanjut = _mulai_ping(username, doc, "8.8.8.8", asal[5] if len(asal) > 5 else 10, bool(asal[1]))
-                return {"status": "dns_gagal", "tugas_id": tugas, "dihapus": True, "host": host_asal,
-                        "pesan": (f"ONU menolak ping ke {host_asal}: kemungkinan besar DNS di ONU tidak jalan "
-                                  "(ONU tidak bisa menerjemahkan nama situs). Sedang dicek dengan ping ke 8.8.8.8…"),
+                return {"status": "nama_ditolak", "tugas_id": tugas, "dihapus": True, "host": host_asal,
+                        "pesan": f"ONU menolak ping ke {host_asal}. Sedang dicek dengan ping ke 8.8.8.8…",
                         "lanjut": lanjut}
             ganti_cara = bool(asal and asal[1])
             belajar_model = ganti_cara and "Interface" in (st.get("parameter") or [])
@@ -9007,14 +9006,14 @@ def acs_ping_ringkasan(request: Request, hari: int = 30):
         x = model.setdefault(m or "?", {"model": m or "?", "berhasil": 0, "ditolak": 0, "tanpa_balasan": 0,
                                         "cara": cara.get(m) or "wan", "onu": {}})
         x[st] = x.get(st, 0) + 1
-        if st == "dns_gagal":                     # disusul ping ke IP: catat terpisah supaya tidak tertimpa
-            x.setdefault("dns", {})[u] = {"username": u, "waktu": ts}
+        if st == "nama_ditolak":                  # disusul ping ke IP: catat terpisah supaya tidak tertimpa
+            x.setdefault("nama", {})[u] = {"username": u, "waktu": ts}
             continue
         x["onu"][u] = {"username": u, "status": st, "pesan": pesan, "waktu": ts, "cara": c}   # hasil terakhir per ONU
     hasil = []
     for x in model.values():
         onu = list(x.pop("onu").values())
-        x["onu_dns"] = sorted(x.pop("dns", {}).values(), key=lambda o: o["username"] or "")
+        x["onu_nama_ditolak"] = sorted(x.pop("nama", {}).values(), key=lambda o: o["username"] or "")
         x["onu_menolak"] = sorted((o for o in onu if o["status"] != "berhasil"), key=lambda o: o["username"] or "")
         x["jumlah_onu"] = len(onu)
         hasil.append(x)

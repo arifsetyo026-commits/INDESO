@@ -2244,10 +2244,9 @@ def test_ping_onu_baca_tipe_dulu_bila_belum_diketahui(siap, monkeypatch):
     assert [t["name"] for t in acs.tugas[n:]] == ["setParameterValues"]
 
 
-def test_ping_onu_nama_domain_ditolak_uji_dns(siap, monkeypatch):
-    """ZTE menolak seluruh perintah ping (9002) bila nama tujuan tidak bisa diterjemahkan ONU (PITOYO:
-    google.com ditolak, 8.8.8.8 sukses). INDESO langsung menguji dengan ping ke 8.8.8.8 sekali, mencatat
-    DNS ONU bermasalah, dan tidak mengganti cara ping."""
+def test_ping_onu_nama_situs_ditolak_uji_ip(siap, monkeypatch):
+    """Ping ke nama situs ditolak (9002): INDESO langsung menguji sekali dengan ping ke 8.8.8.8 (di PITOYO
+    ping IP sukses dan setelahnya google.com pulih), mencatatnya, dan tidak mengganti cara ping."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
@@ -2264,10 +2263,10 @@ def test_ping_onu_nama_domain_ditolak_uji_dns(siap, monkeypatch):
                        "detail": {"faultCode": "9003", "setParameterValuesFault": [
                            {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002"}]}})
     h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
-    assert h["status"] == "dns_gagal" and "DNS" in h["pesan"] and h["lanjut"]["host"] == "8.8.8.8"
+    assert h["status"] == "nama_ditolak" and "8.8.8.8" in h["pesan"] and h["lanjut"]["host"] == "8.8.8.8"
     assert tid not in acs.antrean and not acs.faults
     host = {p[0].rsplit(".", 1)[-1]: p[1] for p in acs.tugas[-1]["parameterValues"]}["Host"]
     assert host == "8.8.8.8" and h["lanjut"]["tugas_id"] in acs.antrean
     assert dev["_id"] not in main._ping_tanpa_wan                 # bukan alasan ganti cara ping
     d = k.get("/api/ping-onu/ringkasan").json()["model"][0]
-    assert [o_["username"] for o_ in d["onu_dns"]] == ["budi"] and d["cara"] == "wan"
+    assert [o_["username"] for o_ in d["onu_nama_ditolak"]] == ["budi"] and d["cara"] == "wan"
