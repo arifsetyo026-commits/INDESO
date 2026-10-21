@@ -2027,7 +2027,7 @@ def test_pantau_internet_pusat(siap):
     teks = [x["data"]["text"] for x in main._terkirim]
     assert sum("Internet pusat bermasalah" in x for x in teks) == 1
     assert any("gangguan di jaringan ISP" in x for x in teks)
-    assert sum("Bandwidth WAN hampir penuh" in x for x in teks) == 1
+    assert sum("Pemakaian internet pusat hampir penuh" in x for x in teks) == 1
     main._terkirim.clear()
     mt.ping_per = dict(baik)
     main.proses_upstream(main.ukur_upstream(t + timedelta(minutes=10)), t + timedelta(minutes=10))
@@ -2270,3 +2270,24 @@ def test_ping_onu_nama_situs_ditolak_uji_ip(siap, monkeypatch):
     assert dev["_id"] not in main._ping_tanpa_wan                 # bukan alasan ganti cara ping
     d = k.get("/api/ping-onu/ringkasan").json()["model"][0]
     assert [o_["username"] for o_ in d["onu_nama_ditolak"]] == ["budi"] and d["cara"] == "wan"
+
+
+def test_internet_pusat_trafik_dari_jalur_olt(siap):
+    """Dengan 2 WAN, trafik total pelanggan diukur di interface server PPPoE (jalur ke OLT); arah dibalik:
+    tx router = download pelanggan. Bisa juga diisi manual (UPSTREAM_TRAFIK_IF)."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.route = [{"dst-address": "0.0.0.0/0", "gateway": "100.64.0.1", "immediate-gw": "100.64.0.1%WAN STARLINK ETH4",
+                 "active": "true"}]
+    mt.pppoe_server = [{"service-name": "OLT", "interface": "sfp-sfpplus1", "disabled": "false"}]
+    mt.traffic = {"rx-bits-per-second": "9000000", "tx-bits-per-second": "84000000"}
+    mt.ping_per = {}
+    main.CONFIG.update(UPSTREAM_WAN="", UPSTREAM_TRAFIK_IF="")
+    h = main.ukur_upstream()
+    assert h["wan"] == "WAN STARLINK ETH4" and h["trafik_if"] == ["sfp-sfpplus1"] and h["trafik_sisi"] == "pelanggan"
+    assert h["rx_mbps"] == 84.0 and h["tx_mbps"] == 9.0
+    main.CONFIG["UPSTREAM_TRAFIK_IF"] = "ether2"
+    assert main.ukur_upstream()["trafik_if"] == ["ether2"]
+    d = o.get("/api/upstream").json()
+    assert d["trafik_if"] == ["ether2"] and d["trafik_sisi"] == "pelanggan"
+    mt.ping_per = None

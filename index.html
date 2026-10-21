@@ -284,7 +284,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="khJam"><button data-j="24" class="on" onclick="muatUpstream(24)">24 jam</button><button data-j="168" onclick="muatUpstream(168)">7 hari</button><button onclick="ukurUpstream(this)">Ukur sekarang</button></div>
 <div class="plMsg" id="upMsg"></div>
 <div class="kuPanel" style="margin-top:10px"><h4>Latensi ke internet (ms)</h4><div class="plSub" id="upLatInfo"></div><div style="position:relative"><svg id="upLatSvg" class="chartSvg" viewBox="0 0 720 200" preserveAspectRatio="none" style="width:100%;height:180px"></svg><div class="upTip" id="upLatTip"></div></div></div>
-<div class="kuPanel" style="margin-top:10px"><h4>Bandwidth WAN (Mbps)</h4><div class="plSub" id="upBwInfo"></div><div style="position:relative"><svg id="upBwSvg" class="chartSvg" viewBox="0 0 720 200" preserveAspectRatio="none" style="width:100%;height:180px"></svg><div class="upTip" id="upBwTip"></div></div><div class="chartLegend"><span class="legend"><i class="lg down"></i>Download</span><span class="legend"><i class="lg up"></i>Upload</span><span class="legend" id="upKapLg"><i class="lg" style="background:#b45309"></i>Kapasitas</span></div></div>
+<div class="kuPanel" style="margin-top:10px"><h4 id="upBwJudul">Trafik total pelanggan (Mbps)</h4><div class="plSub" id="upBwInfo"></div><div style="position:relative"><svg id="upBwSvg" class="chartSvg" viewBox="0 0 720 200" preserveAspectRatio="none" style="width:100%;height:180px"></svg><div class="upTip" id="upBwTip"></div></div><div class="chartLegend"><span class="legend"><i class="lg down"></i>Download</span><span class="legend"><i class="lg up"></i>Upload</span><span class="legend" id="upKapLg"><i class="lg" style="background:#b45309"></i>Kapasitas</span></div></div>
 <div class="plSub" id="upInfo" style="margin-top:8px"></div>
 </div></div></div>
 <div class="overlay" id="kesehatanModal"><div class="modal"><div class="modalHead"><h3>Kesehatan Jaringan</h3><button class="close" onclick="closeModal('kesehatanModal')">Tutup</button></div><div class="modalBody">
@@ -853,15 +853,17 @@ function renderUpstream(){
  const [t,w]=_upStatus(n);
  const kotak=(lbl,val,warna)=>`<div class="blBox"><small>${lbl}</small><b style="color:${warna||'inherit'}">${val}</b></div>`;
  $('upRingkas').innerHTML=kotak('Status',t,w)+kotak('Latensi',n&&n.rata_ms!=null?n.rata_ms+' ms':'—')+kotak('Packet loss',n?n.loss+'%':'—',n&&n.loss>=d.batas.loss?'#dc3d3d':'')
-  +kotak('Download WAN',n&&n.rx_mbps!=null?fmt(n.rx_mbps)+' Mbps'+(n.pakai_persen!=null?` (${n.pakai_persen}%)`:''):'—',n&&n.penuh?'#b45309':'');
+  +kotak('Pemakaian sekarang',n&&n.rx_mbps!=null?fmt(n.rx_mbps)+' Mbps'+(n.pakai_persen!=null?` (${n.pakai_persen}%)`:''):'—',n&&n.penuh?'#b45309':'');
  const gw=n&&n.ping?n.ping.find(p=>p.jenis==='gateway'):null;
- $('upInfo').innerHTML=`WAN: <b>${esc(d.wan||'tidak terdeteksi')}</b> · Gateway ISP: <b>${esc(d.gateway||'-')}</b>`+(gw?` (${gw.rata_ms??'—'} ms, loss ${gw.hilang_persen}%)`:'')
+ const tIf=(d.trafik_if||[]).join(', ');
+ $('upBwJudul').textContent=d.trafik_sisi==='wan'?'Bandwidth WAN (Mbps)':'Trafik total pelanggan (Mbps)';
+ $('upInfo').innerHTML=(tIf?`Trafik diukur di: <b>${esc(tIf)}</b> ${d.trafik_sisi==='wan'?'(WAN)':'(jalur ke OLT, semua WAN)'} · `:'')+`WAN ping: <b>${esc(d.wan||'tidak terdeteksi')}</b> · Gateway ISP: <b>${esc(d.gateway||'-')}</b>`+(gw?` (${gw.rata_ms??'—'} ms, loss ${gw.hilang_persen}%)`:'')
   +(d.kapasitas_mbps?` · Kapasitas: <b>${d.kapasitas_mbps} Mbps</b>`:' · <span style="color:#b45309">Kapasitas belum diisi (Pengaturan → Sistem), alert bandwidth penuh belum aktif.</span>');
  const lat=d.ping.filter(p=>p.rata_ms!=null||p.hilang_persen!=null);
  const rusak=lat.filter(p=>p.hilang_persen>=d.batas.loss).length;
  $('upLatInfo').textContent=lat.length?`${lat.length} pengukuran · ${rusak} kali packet loss ≥ ${d.batas.loss}% (titik merah) · batas lambat ${d.batas.latensi} ms (garis putus-putus)`:'Belum ada data.';
  _grafikUp('upLatSvg','upLatTip',lat,[{k:'rata_ms',w:'#18a95a',n:'Latensi',u:'ms'}],d.batas.latensi,p=>p.hilang_persen>=d.batas.loss,p=>`loss ${p.hilang_persen??'—'}%`);
- $('upBwInfo').textContent=d.trafik.length?'':(d.wan?'Belum ada data.':'Interface WAN tidak terdeteksi. Isi nama interface WAN di Pengaturan → Sistem.');
+ $('upBwInfo').textContent=d.trafik.length?'':(tIf?'Belum ada data.':'Interface ke OLT / WAN tidak terdeteksi. Isi di Pengaturan → Sistem.');
  $('upKapLg').style.display=d.kapasitas_mbps?'':'none';
  _grafikUp('upBwSvg','upBwTip',d.trafik,[{k:'rx_mbps',w:'#18a95a',n:'Download',u:'Mbps'},{k:'tx_mbps',w:'#278ff2',n:'Upload',u:'Mbps'}],d.kapasitas_mbps||null);
 }
@@ -873,7 +875,7 @@ function _grafikUp(svgId,tipId,data,seri,acuan,merah,ekstra){
  const semua=data.flatMap(p=>seri.map(s=>p[s.k])).filter(v=>v!=null);
  const max=Math.max(1,...semua,acuan||0)*1.15, Y=v=>pad.t+h-(v/max)*h;
  let o='';
- for(let i=0;i<=4;i++){ const y=pad.t+h*i/4; o+=`<line x1="${pad.l}" y1="${y}" x2="${pad.l+w}" y2="${y}" stroke="#e7eee9"/><text x="${pad.l-6}" y="${y+4}" text-anchor="end" font-size="10" fill="#7a8d83">${Math.round(max*(1-i/4))}</text>`; }
+ for(let i=0;i<=4;i++){ const y=pad.t+h*i/4; o+=`<line x1="${pad.l}" y1="${y}" x2="${pad.l+w}" y2="${y}" stroke="#e7eee9"/><text x="${pad.l-6}" y="${y+4}" text-anchor="end" font-size="10" fill="#7a8d83">${(v=>max<10?v.toFixed(1):Math.round(v))(max*(1-i/4))}</text>`; }
  for(let i=0;i<=4;i++){ const ts=t0+(t1-t0)*i/4, dt=new Date(ts); const lbl=up.jam>24?dt.toLocaleDateString('id-ID',{day:'numeric',month:'short'}):dt.toTimeString().slice(0,5);
   o+=`<text x="${pad.l+w*i/4}" y="${H-6}" text-anchor="${i===0?'start':i===4?'end':'middle'}" font-size="10" fill="#7a8d83">${lbl}</text>`; }
  if(acuan) o+=`<line x1="${pad.l}" y1="${Y(acuan)}" x2="${pad.l+w}" y2="${Y(acuan)}" stroke="#b45309" stroke-width="1.5" stroke-dasharray="5 4"/>`;
