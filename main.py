@@ -9394,6 +9394,7 @@ CONFIG.update({
     "OLT_TELNET_USER": _env("OLT_TELNET_USER", ""),
     "OLT_TELNET_PASS": _env("OLT_TELNET_PASS", ""),
     "OLT_SIMPAN_PERINTAH": _env("OLT_SIMPAN_PERINTAH", "save"),   # simpan permanen setelah berubah
+    "OLT_JEDA_DETIK": float(_env("OLT_JEDA_DETIK", "5")),          # jeda antartahap ip-index/restart (OMCI butuh waktu)
     "ACS_ONU_URL": _env("ACS_ONU_URL", "http://10.99.0.1:7547"),
     "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
     "ACS_ONU_PASS": _env("ACS_ONU_PASS", ""),
@@ -9526,11 +9527,49 @@ def _galat_cli(keluaran: str) -> Optional[str]:
     return None
 
 
+def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
+    """ZTE F609 dkk. (WAN bawaan 'TR-069' yang kosong) baru melapor ke ACS lewat WAN internet setelah
+    urutan yang terbukti manual di ONU Gunawan (1/23) & Endah (1/9): `ip-index 0`, `ip-index unbind`,
+    `ont reboot`, dengan jeda antarperintah seperti saat diketik tangan. Tanpa jeda, unbind tiba
+    sebelum ONU menerima ikatannya lewat OMCI dan tidak ada yang berubah. Dikerjakan per tahap untuk
+    semua ONU sekaligus supaya jeda tidak dikalikan jumlah ONU. Konfigurasi akhir tanpa ip-index."""
+    if not onus:
+        return
+    jeda = max(0.0, float(CONFIG.get("OLT_JEDA_DETIK", 5)))
+    catatan: dict = {}
+
+    def tahap(perintah_fn, nama):
+        for port, onu_id, pon in onus:
+            out = t.kirim(perintah_fn(port, onu_id), r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            if re.search(_POLA_KONFIRMASI, out):
+                out = t.kirim("y")
+            galat = _galat_cli(out)
+            if galat:
+                catatan.setdefault((pon, onu_id), []).append(f"{nama}: {galat}")
+            if nama == "restart":
+                for h in hasil:
+                    if h["pon"] == pon and h["onu_id"] == onu_id:
+                        h["reboot"] = galat is None
+
+    time.sleep(jeda)
+    tahap(lambda p, o: f"ont tr069 {p} {o} ip-index 0", "ip-index 0")
+    time.sleep(jeda)
+    tahap(lambda p, o: f"ont tr069 {p} {o} ip-index unbind", "unbind")
+    time.sleep(jeda)
+    # Selalu satu ONU (port & nomor dari angka tervalidasi), tidak pernah "all".
+    tahap(lambda p, o: f"ont reboot {p} {o}", "restart")
+    for h in hasil:
+        if "reboot" not in h:
+            continue
+        cat = catatan.get((h["pon"], h["onu_id"]))
+        h["pesan"] += (" ONU di-restart, internet pelanggan kembali ±2 menit." if h["reboot"]
+                       else " Restart ONU gagal.") + (f" Catatan OLT: {'; '.join(cat)}" if cat else "")
+
+
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU.
-    reboot=True: TR-069 diikat ke `ip-index 0` lalu dilepas lagi (`unbind`), konfigurasi disimpan, lalu ONU
-    yang berhasil dikirimi di-restart satu per satu (`ont reboot P O`). ZTE F609 dkk. baru memakai
-    pengaturan TR-069 dari OLT setelah langkah ini."""
+    reboot=True: ONU yang berhasil dikirimi menjalani `_ulang_jalur_tr069` (ip-index 0 → unbind → reboot,
+    berjeda), lalu konfigurasi disimpan."""
     if not _olt_telnet_aktif():
         raise HTTPException(status_code=503, detail="Login telnet OLT / login ACS ONU belum diisi di .env "
                                                     "(OLT_TELNET_USER, OLT_TELNET_PASS, ACS_ONU_USER, ACS_ONU_PASS).")
@@ -9574,41 +9613,17 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
                     galat = _galat_cli(t.kirim(perintah))
                     if galat:
                         break
-                if galat is None and reboot:
-                    # Urutan yang terbukti di ZTE F609 (Gunawan 1/23, Endah 1/9): ikat ke ip-index 0 lalu
-                    # lepas lagi, simpan, restart. Unbind saja tidak cukup (tidak ada ikatan yang dilepas);
-                    # pasang-lalu-lepas membuat ONU menyusun ulang jalur TR-069 ke WAN yang punya internet.
-                    # Konfigurasi akhir di OLT sama seperti sebelumnya (tanpa ip-index).
-                    t.kirim(f"ont tr069 {port} {onu_id} ip-index 0")
-                    t.kirim(f"ont tr069 {port} {onu_id} ip-index unbind")
                 hasil.append({"pon": pon, "onu_id": onu_id, "ok": galat is None,
                               "pesan": galat or "Pengaturan TR-069 terkirim ke ONU."})
+            if reboot:
+                _ulang_jalur_tr069(t, [(port, onu_id, pon) for port, onu_id, pon in onus
+                                       if any(h["ok"] and h["pon"] == pon and h["onu_id"] == onu_id for h in hasil)],
+                                   hasil)
             t.kirim("exit")
         tersimpan = None
         if any(h["ok"] for h in hasil):
             # Wajib: tanpa save, perubahan hilang saat OLT restart.
             tersimpan = _simpan_olt(t)
-        if reboot and any(h["ok"] for h in hasil):
-            t.kirim("end")
-            t.kirim("config")
-            for antarmuka, onus in per_if.items():
-                ok = [(port, onu_id) for port, onu_id, pon in onus
-                      if any(h["ok"] and h["pon"] == pon and h["onu_id"] == onu_id for h in hasil)]
-                if not ok:
-                    continue
-                t.kirim(f"interface gpon {antarmuka}")
-                for port, onu_id in ok:
-                    # Selalu satu ONU (port & nomor dari angka tervalidasi), tidak pernah "all".
-                    out = t.kirim(f"ont reboot {port} {onu_id}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
-                    if re.search(_POLA_KONFIRMASI, out):
-                        out = t.kirim("y")
-                    galat = _galat_cli(out)
-                    for h in hasil:
-                        if h["pon"] == f"{antarmuka}/{port}" and h["onu_id"] == onu_id:
-                            h["reboot"] = galat is None
-                            h["pesan"] += " ONU di-restart, internet pelanggan kembali ±2 menit." if galat is None \
-                                else f" Restart ONU gagal: {galat}"
-                t.kirim("exit")
         t.kirim("end")
     except (OSError, TimeoutError, ConnectionError) as e:
         raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")

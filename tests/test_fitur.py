@@ -2068,17 +2068,21 @@ def test_olt_kirim_tr069_dengan_reboot(siap):
     main, o, k, m = siap
     olt = FakeOLTTelnet(tolak_onu="1 5")
     main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
-                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26")
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26", OLT_JEDA_DETIK=0.3)
+    import time as _t
+    mulai = _t.monotonic()
     d = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}, {"pon": "0/0/1", "onu_id": 5}],
                                        "reboot": True}).json()
+    assert _t.monotonic() - mulai >= 0.9                            # ada jeda antartahap (seperti diketik tangan)
     hasil = {h["onu_id"]: h for h in d["hasil"]}
     assert hasil[23]["ok"] and hasil[23]["reboot"] is True and "di-restart" in hasil[23]["pesan"]
     assert not hasil[5]["ok"] and "reboot" not in hasil[5]
     p = olt.perintah
     assert "ont reboot 1 23" in p and p[p.index("ont reboot 1 23") + 1] == "y"
     assert not any(x.startswith("ont reboot 1 5") or "all" in x for x in p if x.startswith("ont reboot"))
-    assert (p.index("ont tr069 1 23 ip-index 0") < p.index("ont tr069 1 23 ip-index unbind")
-            < p.index("save") < p.index("ont reboot 1 23"))
+    # urutan uji manual yang berhasil (Endah 1/9): ip-index 0 → unbind → reboot, lalu save
+    assert (p.index("ont tr069 1 23 inform enable interval 300") < p.index("ont tr069 1 23 ip-index 0")
+            < p.index("ont tr069 1 23 ip-index unbind") < p.index("ont reboot 1 23") < p.index("save"))
     assert not any(x.startswith("ont tr069 1 5 ip-index") for x in p)   # ONU yang ditolak tidak disentuh
     # tanpa reboot: tidak ada perintah restart
     olt.perintah.clear()
