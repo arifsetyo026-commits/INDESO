@@ -1449,6 +1449,7 @@ async function muatRingkasanPing(){
  el.innerHTML=d.model.map(x=>{ const gagal=x.ditolak+x.tanpa_balasan;
   return `<div style="border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-top:8px"><div style="display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap"><b>${esc(x.model)}</b><span class="plSub">${x.jumlah_onu} ONU · cara: ${x.cara==='tanpa_wan'?'tanpa memilih WAN':'lewat WAN'}</span></div>
    <div class="plSub">✓ ${x.berhasil} berhasil · ${gagal?'<b style="color:#b42318">✖ '+x.ditolak+' ditolak</b>':'✖ 0 ditolak'}${x.tanpa_balasan?' · '+x.tanpa_balasan+' tanpa balasan':''}</div>
+   ${x.onu_dns&&x.onu_dns.length?'<div class="plSub" style="margin-top:4px;color:#8a5a00">⚠ DNS ONU bermasalah (nama situs ditolak, dicek ulang ke 8.8.8.8): '+x.onu_dns.map(o=>`<b>${esc(o.username||'?')}</b> ${esc(String(o.waktu).slice(5,16).replace('T',' '))}`).join(' · ')+'</div>':''}
    ${x.onu_menolak.length?'<div class="plSub" style="margin-top:4px">Hasil terakhir belum berhasil: '+x.onu_menolak.map(o=>`<b>${esc(o.username||'?')}</b> (${esc(o.status==='ditolak'?(o.pesan||'ditolak'):'tanpa balasan')})`).join(' · ')+'</div>':''}</div>`; }).join('');
 }
 async function oltTr069Pelanggan(btn,reboot){
@@ -1646,12 +1647,14 @@ async function batalTugas(tid){
 let _pantauPing=null;
 const PING_GAGAL={Error_CannotResolveHostName:'ONU tidak bisa menerjemahkan nama alamat (DNS bermasalah).',Error_Internal:'ONU mengalami kesalahan internal saat ping.',Error_Other:'ONU gagal menjalankan ping.'};
 // tahap: 0 = lewat WAN PPPoE, 1 = tanpa memilih WAN (bila ONU menolak kolom Interface)
-async function pingOnu(host,catatan,tahap){
+const CATATAN_DNS='<div class="kuPanel" style="margin:0 0 8px;border-color:#f3d48a;background:#fffaf0"><b style="font-size:var(--fs-xs);color:#8a5a00">⚠ ONU tidak bisa menerjemahkan nama google.com (DNS bermasalah)</b><div class="plSub">Diulang otomatis ke alamat IP 8.8.8.8 untuk memeriksa koneksinya.</div></div>';
+async function pingOnu(host,catatan,tahap,lanjut){
  tahap=tahap||0;
  host=host||'google.com'; clearInterval(_pantauPing); const user=dg.user, box=$('dgPingOnu');
  box.innerHTML=(catatan||'')+'<div class="muted">⏳ Menyuruh ONU ping ke '+esc(host)+' 10 kali…</div>';
- let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10,lewat_wan:tahap===0})})); }
- catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
+ // lanjut = ping ke IP yang sudah dimulai server setelah nama domain ditolak ONU (uji DNS)
+ let r=lanjut; if(!r){ try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({host,jumlah:10,lewat_wan:tahap===0})})); }
+ catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; } }
  // ONU ZTE tidak mengabari server saat ping selesai: minta hasilnya berkala (detik 12, 27, 42, … s/d 2 menit,
  // lalu tiap 30 detik). Permintaan tidak ditumpuk selama yang sebelumnya belum kembali.
  const awal=Date.now(); let segarBerikut=12, sibuk=false;
@@ -1663,11 +1666,12 @@ async function pingOnu(host,catatan,tahap){
   sibuk=true;
   let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/ping?mulai='+encodeURIComponent(r.mulai)+(r.tugas_id?'&tugas='+r.tugas_id:'')+(segar?'&segarkan=true':''),{cache:'no-store'})); }catch(e){ return; }
   finally{ sibuk=false; }
+  if(s.status==='dns_gagal'&&s.lanjut){ clearInterval(_pantauPing); pingOnu(s.lanjut.host,CATATAN_DNS,1,s.lanjut); return; }
   if(s.status==='gagal'){
    clearInterval(_pantauPing);
    // Perintah yang ditolak sudah dihapus server (tidak diulang, tidak menumpuk). Tidak dicoba ulang
    // otomatis: ping berikutnya hanya bila tombol ditekan lagi.
-   box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div><div class="plSub" style="margin-top:4px">Perintah sudah dihapus dari antrean.${s.cara_berikutnya==='tanpa_wan'?' Tekan <b>Ping dari ONU ke Google</b> lagi: untuk ONU ini INDESO akan memakai cara lain (tanpa memilih jalur WAN).':' Tekan <b>Ping dari ONU ke Google</b> lagi bila ingin mencoba.'}</div></div>`;
+   box.innerHTML=(catatan&&catatan!==CATATAN_DNS?catatan:'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ ONU menolak perintah ping</b><div class="plSub">${esc(s.pesan)}</div><div class="plSub" style="margin-top:4px">Perintah sudah dihapus dari antrean.${s.cara_berikutnya==='tanpa_wan'?' Tekan <b>Ping dari ONU ke Google</b> lagi: untuk ONU ini INDESO akan memakai cara lain (tanpa memilih jalur WAN).':' Tekan <b>Ping dari ONU ke Google</b> lagi bila ingin mencoba.'}</div></div>`;
    return;
   }
   if(s.status!=='selesai'){
@@ -1679,7 +1683,7 @@ async function pingOnu(host,catatan,tahap){
   }
   clearInterval(_pantauPing);
   // DNS ONU gagal: ulangi otomatis ke IP Google supaya jelas masalahnya DNS atau koneksi
-  if(s.keadaan==='Error_CannotResolveHostName'&&host!=='8.8.8.8'){ pingOnu('8.8.8.8','<div class="kuPanel" style="margin:0 0 8px;border-color:#f3d48a;background:#fffaf0"><b style="font-size:var(--fs-xs);color:#8a5a00">⚠ ONU tidak bisa menerjemahkan nama google.com (DNS bermasalah)</b><div class="plSub">Diulang otomatis ke alamat IP 8.8.8.8 untuk memeriksa koneksinya.</div></div>',tahap); return; }
+  if(s.keadaan==='Error_CannotResolveHostName'&&host!=='8.8.8.8'){ pingOnu('8.8.8.8',CATATAN_DNS,tahap); return; }
   if(String(s.keadaan).startsWith('Error')){ box.innerHTML=(catatan||'')+`<div class="kuPanel" style="margin:0 0 12px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ Ping dari ONU gagal</b><div class="plSub">${esc(PING_GAGAL[s.keadaan]||s.keadaan)}</div></div>`; return; }
   const buruk=(s.hilang_persen||0)>10||(s.rata_ms||0)>150;
   box.innerHTML=(catatan?catatan.replace('Diulang otomatis ke alamat IP 8.8.8.8 untuk memeriksa koneksinya.','Koneksi ke internet tetap jalan (lihat hasil ping IP di bawah), jadi masalahnya di pengaturan DNS ONU/WAN. Pelanggan bisa mengalami "terhubung tapi tidak bisa buka situs". Periksa DNS di WAN PPPoE ONU atau profil PPPoE MikroTik.'):'')+`<div class="kuPanel" style="margin:0 0 12px;${buruk?'border-color:#f3b4ab;background:#fff6f5':'border-color:#bfe6cb;background:#f3faf5'}"><b style="font-size:var(--fs-xs)">ONU → ${esc(s.host||'google.com')}: ${s.sukses??'—'}/${(s.sukses||0)+(s.gagal||0)} balas · hilang ${s.hilang_persen??'—'}% · rata-rata ${s.rata_ms??'—'} ms (min ${s.min_ms??'—'}, maks ${s.maks_ms??'—'})</b><div class="plSub">${buruk?'Internet dari rumah pelanggan ke luar lambat atau tidak stabil. Cek redaman/kabel pelanggan, lalu beban bandwidth & uplink di server.':'Internet dari ONU pelanggan ke Google normal. Bila pelanggan masih merasa lemot, kemungkinan besar masalahnya di WiFi rumah (jarak, tembok, terlalu banyak perangkat) atau di perangkatnya sendiri.'}</div></div>`;

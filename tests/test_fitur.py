@@ -1218,7 +1218,7 @@ def test_acs_onu_diganti_dan_ping_lewat_wan(siap, monkeypatch):
     assert not r2["lewat_wan"] and "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
     # ONU menolak (fault) -> gagal, bukan menunggu terus
     acs.antre = True
-    r3 = k.post("/api/acs/budi/ping", json={}).json()
+    r3 = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     tid = r3["tugas_id"]
     acs.faults.append({"_id": f"{baru['_id']}:task_{tid}", "channel": f"task_{tid}", "device": baru["_id"],
                        "code": "cwmp.9007", "message": "Invalid parameter value"})
@@ -1903,7 +1903,7 @@ def test_acs_ping_gagal_langsung_dihapus_tanpa_ulang(siap, monkeypatch):
                                                          "Interface": {"_value": ""}}
     main._ping_tanpa_wan.discard(dev["_id"])
     acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={}).json()
+    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     tid = r["tugas_id"]
     assert r["lewat_wan"] and tid in acs.antrean
     acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
@@ -2103,7 +2103,7 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     igd = dev["InternetGatewayDevice"]
     igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}, "Interface": {"_value": ""}}
     acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={}).json()
+    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     assert r["lewat_wan"]
     tid = r["tugas_id"]
     # Jawaban F670L sungguhan (ZTEGD770288C): 9002 Internal error pada objek IPPingDiagnostics.
@@ -2118,7 +2118,7 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     assert k.get("/api/ping-onu/ringkasan").json()["model"][0]["cara"] == "wan"
     main._ping_tanpa_wan.clear()
     acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={}).json()
+    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     assert r["lewat_wan"]
     tid = r["tugas_id"]
     # ONU menyebut kolom Interface yang ditolak -> seluruh model memakai cara tanpa WAN, juga setelah restart
@@ -2129,7 +2129,7 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}")
     main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
     acs.antre = False
-    r2 = k.post("/api/acs/budi/ping", json={}).json()
+    r2 = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     assert not r2["lewat_wan"]
     assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
     igd["IPPingDiagnostics"].update({
@@ -2242,3 +2242,32 @@ def test_ping_onu_baca_tipe_dulu_bila_belum_diketahui(siap, monkeypatch):
     n = len(acs.tugas)
     k.post("/api/acs/budi/ping", json={"minimal": True})
     assert [t["name"] for t in acs.tugas[n:]] == ["setParameterValues"]
+
+
+def test_ping_onu_nama_domain_ditolak_uji_dns(siap, monkeypatch):
+    """ZTE menolak seluruh perintah ping (9002) bila nama tujuan tidak bisa diterjemahkan ONU (PITOYO:
+    google.com ditolak, 8.8.8.8 sukses). INDESO langsung menguji dengan ping ke 8.8.8.8 sekali, mencatat
+    DNS ONU bermasalah, dan tidak mengganti cara ping."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    igd = dev["InternetGatewayDevice"]
+    igd["IPPingDiagnostics"] = {k_: {"_value": "", "_type": "xsd:string"} for k_ in ("DiagnosticsState", "Host", "Interface")}
+    igd["IPPingDiagnostics"]["NumberOfRepetitions"] = {"_value": 1, "_type": "xsd:unsignedInt"}
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    tid = r["tugas_id"]
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments",
+                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
+                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002"}]}})
+    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    assert h["status"] == "dns_gagal" and "DNS" in h["pesan"] and h["lanjut"]["host"] == "8.8.8.8"
+    assert tid not in acs.antrean and not acs.faults
+    host = {p[0].rsplit(".", 1)[-1]: p[1] for p in acs.tugas[-1]["parameterValues"]}["Host"]
+    assert host == "8.8.8.8" and h["lanjut"]["tugas_id"] in acs.antrean
+    assert dev["_id"] not in main._ping_tanpa_wan                 # bukan alasan ganti cara ping
+    d = k.get("/api/ping-onu/ringkasan").json()["model"][0]
+    assert [o_["username"] for o_ in d["onu_dns"]] == ["budi"] and d["cara"] == "wan"
