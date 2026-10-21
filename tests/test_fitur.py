@@ -2114,6 +2114,19 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
                             "faultString": "Internal error"}]}})
     g = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
     assert g["status"] == "gagal" and g["cara_berikutnya"] == "tanpa_wan" and "tanpa memilih WAN" in g["pesan"]
+    # penolakan umum (9002 pada objek) hanya mengganti cara untuk ONU ini, bukan seluruh model
+    assert k.get("/api/ping-onu/ringkasan").json()["model"][0]["cara"] == "wan"
+    main._ping_tanpa_wan.clear()
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    assert r["lewat_wan"]
+    tid = r["tugas_id"]
+    # ONU menyebut kolom Interface yang ditolak -> seluruh model memakai cara tanpa WAN, juga setelah restart
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments",
+                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
+                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.Interface", "faultCode": "9007"}]}})
+    k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}")
     main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
     acs.antre = False
     r2 = k.post("/api/acs/budi/ping", json={}).json()
@@ -2127,7 +2140,7 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     k.get(f"/api/acs/budi/ping?mulai={r2['mulai']}&tugas={r2['tugas_id']}")   # dibaca ulang: tidak dicatat dobel
     d = k.get("/api/ping-onu/ringkasan").json()["model"]
     assert len(d) == 1 and d[0]["model"] == "ZTE F670LV9.0" and d[0]["cara"] == "tanpa_wan"
-    assert d[0]["ditolak"] == 1 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
+    assert d[0]["ditolak"] == 2 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
     assert m.get("/api/ping-onu/ringkasan").status_code == 403
 
 
@@ -2156,11 +2169,16 @@ def test_kesehatan_acs(siap, monkeypatch):
         tid = k.post("/api/acs/budi/ping", json={}).json()["tugas_id"]   # antre (202)
         acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
                            "code": "cwmp.9003", "message": "Invalid arguments", "retries": 9})
+        import sqlite3 as _sq
+        c = _sq.connect(main.CONFIG["HISTORY_DB_PATH"])
+        c.execute("INSERT INTO acs_tugas VALUES (?,?,?,?,?)", (datetime.now().isoformat(), "x", "reboot", 0, "Task faulted"))
+        c.commit(); c.close()
         d = k.get("/api/acs-kesehatan").json()
+        assert d["ketukan"]["ditolak_onu"] == 1 and d["ketukan"]["langsung"] == 2   # 'Task faulted' = ONU terjangkau
         assert d["onu"]["total_olt"] == 3 and d["onu"]["di_acs"] == 1
         saran = {b["pppoe_username"]: b["saran"] for b in d["onu"]["belum"]}
         assert "F609" in saran["ani"] and "Bukan ZTE" in saran["dwi"]
-        assert d["ketukan"]["langsung"] == 1 and d["ketukan"]["antre"] == 1 and d["ketukan"]["persen_langsung"] == 50
+        assert d["ketukan"]["antre"] == 1 and d["ketukan"]["persen_langsung"] == 67
         assert d["acs"]["lapor_1jam"] == 1 and len(d["faults"]) == 1 and d["faults"][0]["ulang"] == 9
         assert m.get("/api/acs-kesehatan").status_code == 403
         assert k.post("/api/acs-kesehatan/bersihkan").json()["dihapus"] == 1
