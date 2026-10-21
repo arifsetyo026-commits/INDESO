@@ -1371,9 +1371,10 @@ def init_history_db() -> None:
                 status TEXT NOT NULL, pesan TEXT, rata_ms REAL, hilang_persen INTEGER
             )
         """)
-        # Cara ping yang terbukti untuk satu model ONU (mis. F670L menolak kolom Interface),
-        # disimpan supaya tidak hilang saat INDESO dinyalakan ulang.
-        conn.execute("CREATE TABLE IF NOT EXISTS ping_cara (model TEXT PRIMARY KEY, cara TEXT NOT NULL, waktu TEXT)")
+        # Cara ping untuk satu model ONU yang jelas menolak kolom Interface, disimpan supaya tidak hilang
+        # saat INDESO dinyalakan ulang. (ping_cara lama tidak dipakai: isinya hasil salah tebak, karena
+        # penolakan sebenarnya disebabkan tipe data, bukan kolom Interface.)
+        conn.execute("CREATE TABLE IF NOT EXISTS ping_cara2 (model TEXT PRIMARY KEY, cara TEXT NOT NULL, waktu TEXT)")
         # Setiap perintah ke ONU: langsung dijalankan (connection request berhasil) atau antre sampai
         # ONU lapor rutin. Banyak 'antre' pada ONU yang online = ketukan ACS ke ONU bermasalah.
         conn.execute("CREATE TABLE IF NOT EXISTS acs_tugas (ts TEXT NOT NULL, acs_id TEXT, nama TEXT, "
@@ -8726,6 +8727,7 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
         if not kunci:
             raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
         nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
+    _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else [])
     catat_aktivitas(_oleh(request), "onu_wifi",
@@ -8799,7 +8801,7 @@ def _model_onu(doc: dict) -> str:
 def _cara_ping_model(model: str) -> Optional[str]:
     conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
     try:
-        r = conn.execute("SELECT cara FROM ping_cara WHERE model=?", (model,)).fetchone()
+        r = conn.execute("SELECT cara FROM ping_cara2 WHERE model=?", (model,)).fetchone()
     finally:
         conn.close()
     return r[0] if r else None
@@ -8815,11 +8817,36 @@ def _catat_ping(asal, status: str, pesan: str = "", rata=None, hilang=None, bela
                      (datetime.now().isoformat(timespec="seconds"), username, acs_id, model,
                       "wan" if lewat_wan else "tanpa_wan", status, (pesan or "")[:300], rata, hilang))
         if belajar and model:
-            conn.execute("INSERT OR REPLACE INTO ping_cara VALUES (?,?,?)",
+            conn.execute("INSERT OR REPLACE INTO ping_cara2 VALUES (?,?,?)",
                          (model, "tanpa_wan", datetime.now().isoformat(timespec="seconds")))
         conn.commit()
     finally:
         conn.close()
+
+
+def _bersihkan_tertahan(acs_id: str) -> int:
+    """Hapus perintah yang ditolak ONU (fault) beserta tugasnya. GenieACS menjalankan perintah per ONU
+    berurutan dan mengulang perintah yang gagal setiap ONU lapor; selama masih ada, perintah baru
+    (mis. reboot) ikut tertahan di belakangnya dan tidak pernah jalan."""
+    from urllib.parse import quote
+    try:
+        r = _acs("GET", "/faults/", params={"query": json.dumps({"device": acs_id})}, timeout=10)
+    except HTTPException:
+        return 0
+    n = 0
+    for f in (r.json() if r.ok else []):
+        ch = str(f.get("channel") or "")
+        if not ch.startswith("task_"):
+            continue
+        try:
+            _acs("DELETE", f"/tasks/{ch[5:]}")
+            _acs("DELETE", f"/faults/{quote(str(f.get('_id')), safe='')}")
+            n += 1
+        except HTTPException:
+            pass
+    if n:
+        logger.info(f"{n} perintah tertahan dihapus untuk {acs_id} sebelum perintah baru")
+    return n
 
 
 def _hapus_tugas_acs(acs_id: str, tid: str) -> None:
@@ -8861,6 +8888,19 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
              [f"{_PING_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
     # Pakai tipe data yang dilaporkan ONU sendiri (mis. ZTE melaporkan NumberOfRepetitions
     # sebagai xsd:int): tipe yang tidak cocok dijawab sebagian ONU dengan 9003 Invalid arguments.
+    # ONU yang belum pernah sukses ping sering belum punya tipe ini di ACS (hanya DiagnosticsState
+    # yang terbaca), sehingga tipe bawaan yang salah terkirim dan ditolak terus (ZTEGD770288C).
+    # Minta ONU melaporkan isi IPPingDiagnostics dulu.
+    if any(not str(_param(doc, v[0]).get("_type") or "").startswith("xsd:") for v in nilai):
+        try:
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _PING_ONU + "."}, tunggu=20)
+            doc = _cari_perangkat(username) or doc
+        except HTTPException as e:
+            logger.warning(f"Gagal membaca tipe IPPingDiagnostics {doc['_id']}: {e.detail}")
+    zte = "zte" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
+    for v in nilai:
+        if zte and v[0].endswith(".NumberOfRepetitions") and not _param(doc, v[0]).get("_type"):
+            v[2] = "xsd:int"          # tipe yang dilaporkan ZTE F609/F670L bila belum terbaca
     for v in nilai:
         tipe = _param(doc, v[0]).get("_type")
         if isinstance(tipe, str) and tipe.startswith("xsd:"):
@@ -8889,18 +8929,18 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
             # ulang otomatis; bila tadi lewat WAN, permintaan berikutnya memakai cara tanpa WAN.
             _hapus_tugas_acs(doc["_id"], tugas)
             asal = _ping_tugas.pop(tugas, None)
-            # Ditolak saat memakai kolom Interface (lewat WAN): ganti cara untuk seluruh model ONU ini.
-            # Termasuk "9002 Internal error" pada objek IPPingDiagnostics: ZTE F670L (ZTEGD…) menjawab
-            # begitu bila nilai Interface tidak diterimanya, bukan karena sedang sibuk. Cara tanpa WAN
-            # adalah cara awal INDESO yang dulu berhasil di semua ONU.
+            # Ditolak saat memakai kolom Interface (lewat WAN): ONU ini mencoba cara tanpa WAN berikutnya.
+            # Seluruh model ONU baru ikut diganti bila ONU jelas menyebut kolom Interface yang ditolak;
+            # penolakan umum (mis. 9002 pada objek IPPingDiagnostics) bisa karena hal lain (tipe data).
             ganti_cara = bool(asal and asal[1])
+            belajar_model = ganti_cara and "Interface" in (st.get("parameter") or [])
             pesan = st["pesan"]
             if ganti_cara:
                 _ping_tanpa_wan.add(doc["_id"])
-                pesan = (f"ONU menolak perintah ping lewat jalur WAN ({st.get('kode') or 'fault'}). Model ONU ini "
-                         "sekarang dicatat memakai cara tanpa memilih WAN; tekan Ping lagi.")
+                pesan = (f"ONU menolak perintah ping lewat jalur WAN ({st.get('kode') or 'fault'}). Percobaan berikutnya "
+                         "untuk ONU ini memakai cara tanpa memilih WAN; tekan Ping lagi.")
             if asal:
-                _catat_ping(asal, "ditolak", st["pesan"], belajar=ganti_cara)
+                _catat_ping(asal, "ditolak", st["pesan"], belajar=belajar_model)
             return {"status": "gagal", "pesan": pesan, "tugas_id": tugas, "dihapus": True,
                     "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
     tertunda = False
@@ -8942,7 +8982,7 @@ def acs_ping_ringkasan(request: Request, hari: int = 30):
     try:
         rows = conn.execute("SELECT ts, username, model, cara, status, pesan FROM ping_onu WHERE ts >= ? ORDER BY ts",
                             (batas,)).fetchall()
-        cara = dict(conn.execute("SELECT model, cara FROM ping_cara").fetchall())
+        cara = dict(conn.execute("SELECT model, cara FROM ping_cara2").fetchall())
     finally:
         conn.close()
     model: dict = {}
@@ -8966,6 +9006,8 @@ def acs_reboot(username: str, request: Request):
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    _bersihkan_tertahan(doc["_id"])
+    _bersihkan_tugas_ping(doc["_id"])     # ping yang belum jalan tidak berguna lagi setelah restart
     hasil = _tugas_acs(doc["_id"], {"name": "reboot"})
     catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({doc['_id']})"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
@@ -9666,6 +9708,50 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
                        else " Restart ONU gagal.") + (f" Catatan OLT: {'; '.join(cat)}" if cat else "")
 
 
+def _olt_masuk(t: "_TelnetOLT") -> None:
+    """Login telnet OLT sampai mode config."""
+    t.tunggu(r"(?i)(user ?name|login)\s*:\s*$")
+    t.kirim(CONFIG["OLT_TELNET_USER"], r"(?i)password\s*:\s*$")
+    masuk = t.kirim(CONFIG["OLT_TELNET_PASS"], r"(?i)([>#]\s*$|user ?name\s*:\s*$|fail|incorrect|invalid)")
+    if not re.search(r"[>#]\s*$", masuk):
+        raise HTTPException(status_code=502, detail="Login telnet OLT ditolak. Periksa OLT_TELNET_USER/OLT_TELNET_PASS.")
+    if masuk.rstrip().endswith(">"):
+        out = t.kirim("enable", r"(?i)(#\s*$|password\s*:\s*$)")
+        if not out.rstrip().endswith("#"):
+            t.kirim(CONFIG["OLT_TELNET_PASS"], r"#\s*$")
+    t.kirim("config")
+
+
+def olt_reboot_onu(pon: str, onu_id: int) -> None:
+    """Restart satu ONU lewat OLT (`ont reboot P O`), tidak bergantung pada ACS. Tidak ada konfigurasi
+    yang berubah, jadi tidak perlu save. Tidak pernah 'all'."""
+    if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
+        raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
+    m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
+    if not m or not 1 <= int(onu_id) <= 256:
+        raise HTTPException(status_code=400, detail=f"Alamat ONU tidak valid: {pon} {onu_id}")
+    try:
+        t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
+    except OSError as e:
+        raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
+    try:
+        _olt_masuk(t)
+        galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
+        if not galat:
+            out = t.kirim(f"ont reboot {int(m.group(2))} {int(onu_id)}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            if re.search(_POLA_KONFIRMASI, out):
+                out = t.kirim("y")
+            galat = _galat_cli(out)
+            t.kirim("exit")
+        t.kirim("end")
+    except (OSError, TimeoutError, ConnectionError) as e:
+        raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
+    finally:
+        t.tutup()
+    if galat:
+        raise HTTPException(status_code=502, detail=f"OLT menolak restart ONU: {galat}")
+
+
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     """daftar = [("0/0/1", 3), ...]. Satu sesi telnet untuk semua ONU. Kembalikan hasil per ONU.
     reboot=True: ONU yang berhasil dikirimi menjalani `_ulang_jalur_tr069` (ip-index 0 → unbind → reboot,
@@ -9689,16 +9775,7 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     except OSError as e:
         raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
     try:
-        t.tunggu(r"(?i)(user ?name|login)\s*:\s*$")
-        t.kirim(CONFIG["OLT_TELNET_USER"], r"(?i)password\s*:\s*$")
-        masuk = t.kirim(CONFIG["OLT_TELNET_PASS"], r"(?i)([>#]\s*$|user ?name\s*:\s*$|fail|incorrect|invalid)")
-        if not re.search(r"[>#]\s*$", masuk):
-            raise HTTPException(status_code=502, detail="Login telnet OLT ditolak. Periksa OLT_TELNET_USER/OLT_TELNET_PASS.")
-        if masuk.rstrip().endswith(">"):
-            out = t.kirim("enable", r"(?i)(#\s*$|password\s*:\s*$)")
-            if not out.rstrip().endswith("#"):
-                t.kirim(CONFIG["OLT_TELNET_PASS"], r"#\s*$")
-        t.kirim("config")
+        _olt_masuk(t)
         for antarmuka, onus in per_if.items():
             out = t.kirim(f"interface gpon {antarmuka}")
             if _galat_cli(out):
@@ -9841,9 +9918,15 @@ def acs_kesehatan(request: Request, hari: int = 7):
     batas = (datetime.now() - timedelta(days=hari)).isoformat(timespec="seconds")
     conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
     try:
-        langsung, antre = conn.execute("SELECT COALESCE(SUM(langsung),0), COALESCE(SUM(1-langsung),0) FROM acs_tugas "
-                                       "WHERE ts >= ?", (batas,)).fetchone()
+        # 202 "Task faulted" = ONU terhubung tapi menolak perintahnya (ketukan berhasil); hanya 202 lain
+        # (mis. "Device is offline", connection request error) yang berarti ACS gagal mengetuk ONU.
+        langsung, antre, ditolak = conn.execute(
+            "SELECT COALESCE(SUM(langsung),0), "
+            "COALESCE(SUM(CASE WHEN langsung=0 AND LOWER(COALESCE(alasan,'')) NOT LIKE '%fault%' THEN 1 ELSE 0 END),0), "
+            "COALESCE(SUM(CASE WHEN langsung=0 AND LOWER(COALESCE(alasan,'')) LIKE '%fault%' THEN 1 ELSE 0 END),0) "
+            "FROM acs_tugas WHERE ts >= ?", (batas,)).fetchone()
         alasan = conn.execute("SELECT alasan, COUNT(*) FROM acs_tugas WHERE ts >= ? AND langsung=0 "
+                              "AND LOWER(COALESCE(alasan,'')) NOT LIKE '%fault%' "
                               "GROUP BY alasan ORDER BY 2 DESC LIMIT 5", (batas,)).fetchall()
     finally:
         conn.close()
@@ -9858,8 +9941,9 @@ def acs_kesehatan(request: Request, hari: int = 7):
                     "belum": belum},
             "acs": {"perangkat": len(acs["docs"]), "lapor_1jam": lapor_baru,
                     "diam": sorted(diam, key=lambda x: -x["menit"])[:30]},
-            "ketukan": {"hari": hari, "langsung": langsung, "antre": antre,
-                        "persen_langsung": round(langsung * 100 / (langsung + antre)) if langsung + antre else None,
+            "ketukan": {"hari": hari, "langsung": langsung + ditolak, "antre": antre, "ditolak_onu": ditolak,
+                        "persen_langsung": round((langsung + ditolak) * 100 / (langsung + ditolak + antre))
+                        if langsung + ditolak + antre else None,
                         "alasan_antre": [{"alasan": a or "-", "jumlah": n} for a, n in alasan]},
             "faults": faults, "tugas_antre": len(tugas)}
 
@@ -9903,6 +9987,17 @@ def olt_tr069_kirim(d: Tr069OnuIn, request: Request):
                     + (f", {sum(1 for h in hasil['hasil'] if h.get('reboot'))} di-restart" if d.reboot else "")
                     + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
     return hasil
+
+
+@app.post("/api/olt/reboot/pelanggan/{username}")
+def olt_reboot_pelanggan(username: str, request: Request):
+    _wajib_admin(request)
+    onu = next((o for o in (_latest_data.onu_list if _latest_data else []) if o.pppoe_username == username), None)
+    if not onu:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terbaca dari OLT (offline atau MAC belum cocok).")
+    olt_reboot_onu(onu.pon, onu.onu_id)
+    catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({onu.pon} onu {onu.onu_id}) lewat OLT")
+    return {"ok": True, "pon": onu.pon, "onu_id": onu.onu_id}
 
 
 @app.post("/api/olt/tr069/pelanggan/{username}")

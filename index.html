@@ -1427,8 +1427,9 @@ async function muatKesehatanAcs(){
  if(!d.aktif){ el.innerHTML='<div class="plSub" style="margin-top:8px">Server ACS belum diatur.</div>'; return; }
  const kotak=(l,v,w)=>`<div class="blBox"><small>${l}</small><b style="color:${w||'inherit'}">${v}</b></div>`;
  const k=d.ketukan, pl=k.persen_langsung, belum=d.onu.belum;
- let h=`<div class="khSum upSum" style="margin-top:10px">${kotak('Konek ACS',d.onu.di_acs+' / '+d.onu.total_olt+' ONU',d.onu.di_acs<d.onu.total_olt?'#b45309':'#0b7a3b')}${kotak('Lapor ≤ 1 jam',d.acs.lapor_1jam+' / '+d.acs.perangkat)}${kotak('Perintah langsung jalan',pl==null?'—':pl+'%',pl!=null&&pl<70?'#b42318':'#0b7a3b')}${kotak('Perintah tertahan',d.faults.length,d.faults.length?'#b42318':'#0b7a3b')}</div>`;
- if(pl!=null&&pl<70) h+=`<div class="kuPanel" style="margin-top:8px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">Banyak perintah tidak langsung jalan (${k.antre} dari ${k.langsung+k.antre}, ${k.hari} hari)</b><div class="plSub">Server ACS gagal "mengetuk" ONU, jadi perintah (ping, WiFi, reboot) baru jalan saat ONU lapor rutin (±5 menit). Biasanya karena username/password connection request di ONU berbeda dengan di server ACS.${k.alasan_antre.length?' Alasan dari server: '+k.alasan_antre.map(a=>esc(a.alasan)+' ('+a.jumlah+'×)').join(', '):''}</div></div>`;
+ let h=`<div class="khSum upSum" style="margin-top:10px">${kotak('Konek ACS',d.onu.di_acs+' / '+d.onu.total_olt+' ONU',d.onu.di_acs<d.onu.total_olt?'#b45309':'#0b7a3b')}${kotak('Lapor ≤ 1 jam',d.acs.lapor_1jam+' / '+d.acs.perangkat)}${kotak('ONU terjangkau langsung',pl==null?'—':pl+'%',pl!=null&&pl<70?'#b42318':'#0b7a3b')}${kotak('Perintah tertahan',d.faults.length,d.faults.length?'#b42318':'#0b7a3b')}</div>`;
+ if(pl!=null&&pl<70) h+=`<div class="kuPanel" style="margin-top:8px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">Server ACS sering gagal menjangkau ONU (${k.antre} dari ${k.langsung+k.antre} perintah, ${k.hari} hari)</b><div class="plSub">Perintah (ping, WiFi, reboot) baru jalan saat ONU lapor rutin (±5 menit). Penyebabnya ONU sedang offline, atau username/password connection request di ONU berbeda dengan di server ACS.${k.alasan_antre.length?' Alasan dari server: '+k.alasan_antre.map(a=>esc(a.alasan)+' ('+a.jumlah+'×)').join(', '):''}</div></div>`;
+ if(k.ditolak_onu) h+=`<div class="plSub" style="margin-top:6px">${k.ditolak_onu} perintah sampai ke ONU tetapi ditolak ONU-nya (bukan masalah jangkauan); rinciannya ada di <b>Hasil ping dari ONU</b>.</div>`;
  if(belum.length) h+=`<div style="margin-top:10px"><b style="font-size:var(--fs-sm)">Belum konek ACS (${belum.length})</b>`+belum.map(o=>`<div class="plSub" style="padding:5px 0;border-bottom:1px solid var(--line)"><b>${esc(o.nama||o.pppoe_username||'—')}</b> · ${esc(o.pon)} onu ${o.onu_id} · ${esc(String(o.model||'').replace(/"/g,''))}<br><span style="color:#b45309">${esc(o.saran)}</span></div>`).join('')+'</div>';
  if(d.acs.diam.length) h+=`<div style="margin-top:10px"><b style="font-size:var(--fs-sm)">Terdaftar tapi berhenti lapor &gt; 1 jam (${d.acs.diam.length})</b><div class="plSub">ONU mati/dicabut, sudah diganti, atau TR-069-nya terputus.</div>`+d.acs.diam.map(x=>`<div class="plSub" style="padding:4px 0">${esc(x.model)} · ${esc(x.sn||x.id)} · ${x.menit<2880?Math.round(x.menit/60)+' jam':Math.round(x.menit/1440)+' hari'} lalu</div>`).join('')+'</div>';
  if(d.faults.length) h+=`<div style="margin-top:10px"><b style="font-size:var(--fs-sm)">Perintah tertahan (${d.faults.length})</b><div class="plSub">GenieACS mengulang perintah ini setiap ONU lapor, sehingga sesi ONU jadi lambat.</div>`+d.faults.map(f=>`<div class="plSub" style="padding:4px 0">${esc(f.device)} · ${esc(f.kode||'')} ${esc(f.pesan)}${f.ulang?' · diulang '+f.ulang+'×':''}</div>`).join('')
@@ -1600,13 +1601,13 @@ function renderDiagnosa(){
 }
 function htmlAcs(a){
  if(a==null) return '<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">Kendali ONU dari pusat belum aktif</b><div class="plSub">Hubungkan server ACS (GenieACS) untuk melihat perangkat terhubung, mengganti nama/password WiFi, dan reboot ONU dari sini. Panduan: <code>docs/genieacs.md</code>.</div></div>';
- if(!a.terhubung) return `<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">ONU belum terhubung ke server ACS</b><div class="plSub">${esc(a.pesan||'')}</div><div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" onclick="oltTr069Pelanggan(this,true)">Kirim TR-069 dari OLT + restart ONU</button><button class="btnS" onclick="oltTr069Pelanggan(this,false)">Kirim saja (tanpa restart)</button></div></div>`;
+ if(!a.terhubung) return `<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">ONU belum terhubung ke server ACS</b><div class="plSub">${esc(a.pesan||'')}</div><div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" onclick="oltTr069Pelanggan(this,true)">Kirim TR-069 dari OLT + restart ONU</button><button class="btnS" onclick="oltTr069Pelanggan(this,false)">Kirim saja (tanpa restart)</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button></div></div>`;
  const p=a.perangkat, kotak=(x,y)=>`<div class="detail"><small>${x}</small><b>${y}</b></div>`;
  const lapor=p.lapor_menit_lalu==null?'—':(p.lapor_menit_lalu<2?'baru saja':p.lapor_menit_lalu<120?p.lapor_menit_lalu+' menit lalu':p.lapor_menit_lalu<2880?Math.round(p.lapor_menit_lalu/60)+' jam lalu':Math.round(p.lapor_menit_lalu/1440)+' hari lalu')+(p.lapor_menit_lalu!=null&&p.lapor_menit_lalu>60?' <span style="color:#b45309">(ONU mungkin mati / tidak terhubung)</span>':'');
  let h=`<div class="plSub" style="font-weight:800;margin-bottom:4px">Perangkat ONU (TR-069)</div><div class="detailGrid" style="margin-bottom:8px">`
   +kotak('Model',esc((p.pabrikan||'')+' '+(p.model||'')))+kotak('Firmware',esc(p.firmware||'—'))+kotak('ONU menyala',dgDurasi(p.uptime_detik))
   +kotak('Lapor ke ACS',lapor)+kotak('Perangkat terhubung',p.perangkat_aktif+' aktif')+'</div>';
- h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button></div><div id="dgPingOnu"></div>';
+ h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button></div><div id="dgPingOnu"></div>';
  const wifiAktif=p.wifi.filter(w=>w.aktif), wifiMati=p.wifi.filter(w=>!w.aktif);
  const kartuWifi=w=>`<div class="kuPanel" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b style="font-size:var(--fs-sm)">📶 ${esc(w.ssid)}</b> <span class="plSub">${esc(w.band)}${w.channel?' · channel '+esc(w.channel):''}${w.klien!=null?' · '+w.klien+' terhubung':''}${w.aktif?'':' · NONAKTIF'}</span></div><button class="btnS" onclick="const f=document.getElementById('dgW${w.index}');f.style.display=f.style.display==='none'?'block':'none'">Ganti nama / password</button></div>
    <div id="dgW${w.index}" class="plForm" style="display:none;margin-top:4px"><label>Nama WiFi baru (kosongkan bila tetap)</label><input id="dgSsid${w.index}" maxlength="32" placeholder="${esc(w.ssid)}">
@@ -1702,9 +1703,17 @@ async function segarkanOnu(diam){
 async function rebootOnu(){
  if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;
  try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/reboot',{method:'POST'}));
-  if(r.status==='antre') pantauTugas(r.tugas_id,'Reboot ONU','ONU sedang reboot, internet pelanggan menyala lagi dalam ±2 menit.');
+  if(r.status==='antre') pantauTugas(r.tugas_id,'Reboot ONU','ONU sedang reboot, internet pelanggan menyala lagi dalam ±2 menit.','<span class="plSub">Bila tidak jalan dalam 2 menit, pakai <b>Restart lewat OLT</b>.</span>');
   else dgPesan('✅ Perintah reboot diterima ONU. Internet pelanggan menyala lagi dalam ±2 menit.',true); }
  catch(e){ dgPesan('Gagal: '+e.message); }
+}
+// Restart lewat OLT (ont reboot P O): tetap bisa walau ONU tidak menjawab ACS.
+async function rebootOnuOlt(btn){
+ if(!confirm('Restart ONU '+dg.user+' lewat OLT?\nInternet pelanggan terputus ±1–2 menit.')) return;
+ btn.disabled=true; const teks=btn.textContent; btn.textContent='Merestart…';
+ try{ const r=await jsonAtauError(await fetch('/api/olt/reboot/pelanggan/'+encodeURIComponent(dg.user),{method:'POST'}));
+  dgPesan('✅ ONU '+r.pon+' onu '+r.onu_id+' di-restart lewat OLT. Internet pelanggan menyala lagi dalam ±2 menit.',true); btn.textContent='✓ Di-restart'; }
+ catch(e){ dgPesan('Gagal: '+e.message); btn.disabled=false; btn.textContent=teks; }
 }
 async function simpanWifi(i){
  const ssid=$('dgSsid'+i).value.trim(), pwEl=$('dgPw'+i), password=pwEl?pwEl.value:'';

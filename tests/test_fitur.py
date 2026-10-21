@@ -1911,9 +1911,10 @@ def test_acs_ping_gagal_langsung_dihapus_tanpa_ulang(siap, monkeypatch):
     h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
     assert h["status"] == "gagal" and h["dihapus"] and h["cara_berikutnya"] == "tanpa_wan"
     assert tid not in acs.antrean and not acs.faults
-    jumlah = len(acs.tugas)
+    spv = lambda: sum(1 for t in acs.tugas if t["name"] == "setParameterValues")
+    jumlah = spv()
     r2 = k.post("/api/acs/budi/ping", json={}).json()          # hanya bila diminta lagi
-    assert len(acs.tugas) == jumlah + 1 and not r2["lewat_wan"]
+    assert spv() == jumlah + 1 and not r2["lewat_wan"]
     assert "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
     main._ping_tanpa_wan.discard(dev["_id"])
 
@@ -2113,6 +2114,19 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
                             "faultString": "Internal error"}]}})
     g = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
     assert g["status"] == "gagal" and g["cara_berikutnya"] == "tanpa_wan" and "tanpa memilih WAN" in g["pesan"]
+    # penolakan umum (9002 pada objek) hanya mengganti cara untuk ONU ini, bukan seluruh model
+    assert k.get("/api/ping-onu/ringkasan").json()["model"][0]["cara"] == "wan"
+    main._ping_tanpa_wan.clear()
+    acs.antre = True
+    r = k.post("/api/acs/budi/ping", json={}).json()
+    assert r["lewat_wan"]
+    tid = r["tugas_id"]
+    # ONU menyebut kolom Interface yang ditolak -> seluruh model memakai cara tanpa WAN, juga setelah restart
+    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments",
+                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
+                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.Interface", "faultCode": "9007"}]}})
+    k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}")
     main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
     acs.antre = False
     r2 = k.post("/api/acs/budi/ping", json={}).json()
@@ -2126,7 +2140,7 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     k.get(f"/api/acs/budi/ping?mulai={r2['mulai']}&tugas={r2['tugas_id']}")   # dibaca ulang: tidak dicatat dobel
     d = k.get("/api/ping-onu/ringkasan").json()["model"]
     assert len(d) == 1 and d[0]["model"] == "ZTE F670LV9.0" and d[0]["cara"] == "tanpa_wan"
-    assert d[0]["ditolak"] == 1 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
+    assert d[0]["ditolak"] == 2 and d[0]["berhasil"] == 1 and d[0]["onu_menolak"] == []
     assert m.get("/api/ping-onu/ringkasan").status_code == 403
 
 
@@ -2139,7 +2153,9 @@ def test_kesehatan_acs(siap, monkeypatch):
     monkeypatch.setattr(main.requests, "request", acs.request)
     dev = acs.dev["ZTEGC1234567"]
     dev["_lastInform"] = datetime.utcnow().isoformat() + "Z"
-    dev["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}}
+    dev["InternetGatewayDevice"]["IPPingDiagnostics"] = {     # tipe sudah diketahui: 1 perintah per ping
+        k_: {"_value": "", "_type": t} for k_, t in (("DiagnosticsState", "xsd:string"), ("Host", "xsd:string"),
+                                                      ("NumberOfRepetitions", "xsd:int"), ("Interface", "xsd:string"))}
     onu = [main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
                           serial_number="ZTEGC1234567", pppoe_username="budi", model="F609V5.3"),
            main.ONUStatus(pon="0/0/1", onu_id=2, snmp_index=2, olt_rx_dbm=-20.0, online=True, status="OK",
@@ -2153,14 +2169,76 @@ def test_kesehatan_acs(siap, monkeypatch):
         tid = k.post("/api/acs/budi/ping", json={}).json()["tugas_id"]   # antre (202)
         acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
                            "code": "cwmp.9003", "message": "Invalid arguments", "retries": 9})
+        import sqlite3 as _sq
+        c = _sq.connect(main.CONFIG["HISTORY_DB_PATH"])
+        c.execute("INSERT INTO acs_tugas VALUES (?,?,?,?,?)", (datetime.now().isoformat(), "x", "reboot", 0, "Task faulted"))
+        c.commit(); c.close()
         d = k.get("/api/acs-kesehatan").json()
+        assert d["ketukan"]["ditolak_onu"] == 1 and d["ketukan"]["langsung"] == 2   # 'Task faulted' = ONU terjangkau
         assert d["onu"]["total_olt"] == 3 and d["onu"]["di_acs"] == 1
         saran = {b["pppoe_username"]: b["saran"] for b in d["onu"]["belum"]}
         assert "F609" in saran["ani"] and "Bukan ZTE" in saran["dwi"]
-        assert d["ketukan"]["langsung"] == 1 and d["ketukan"]["antre"] == 1 and d["ketukan"]["persen_langsung"] == 50
+        assert d["ketukan"]["antre"] == 1 and d["ketukan"]["persen_langsung"] == 67
         assert d["acs"]["lapor_1jam"] == 1 and len(d["faults"]) == 1 and d["faults"][0]["ulang"] == 9
         assert m.get("/api/acs-kesehatan").status_code == 403
         assert k.post("/api/acs-kesehatan/bersihkan").json()["dihapus"] == 1
         assert not acs.faults and tid not in acs.antrean
     finally:
         main._latest_data = None
+
+
+def test_reboot_onu_tidak_tertahan_dan_lewat_olt(siap, monkeypatch):
+    """Reboot lewat ACS: perintah ping yang tertahan (fault) dihapus dulu supaya reboot tidak ikut tertahan.
+    Restart lewat OLT: 'ont reboot P O' untuk ONU pelanggan, dijawab y, tanpa 'all'."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    lama = "f" * 24
+    acs.antrean[lama] = {"name": "setParameterValues", "device": dev["_id"], "parameterValues": [
+        ["InternetGatewayDevice.IPPingDiagnostics.DiagnosticsState", "Requested", "xsd:string"]]}
+    acs.faults.append({"_id": f"{dev['_id']}:task_{lama}", "channel": f"task_{lama}", "device": dev["_id"],
+                       "code": "cwmp.9003", "message": "Invalid arguments", "retries": 9})
+    assert k.post("/api/acs/budi/reboot").status_code == 200
+    assert lama not in acs.antrean and not acs.faults and acs.tugas[-1]["name"] == "reboot"
+    # lewat OLT
+    olt = FakeOLTTelnet()
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT")
+    onu = main.ONUStatus(pon="0/0/1", onu_id=21, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
+                         serial_number="ZTEGD770288C", pppoe_username="budi")
+    main._latest_data = main._build_dashboard([], None, [onu])
+    try:
+        r = k.post("/api/olt/reboot/pelanggan/budi").json()
+        assert r["ok"] and r["onu_id"] == 21
+        p = olt.perintah
+        assert "ont reboot 1 21" in p and p[p.index("ont reboot 1 21") + 1] == "y"
+        assert not any("all" in x for x in p if x.startswith("ont reboot")) and "save" not in p
+        assert k.post("/api/olt/reboot/pelanggan/ani").status_code == 404
+        assert m.post("/api/olt/reboot/pelanggan/budi").status_code == 403
+    finally:
+        main._latest_data = None
+
+
+def test_ping_onu_baca_tipe_dulu_bila_belum_diketahui(siap, monkeypatch):
+    """ONU yang belum pernah sukses ping (tipe kolom IPPingDiagnostics belum ada di ACS): INDESO meminta
+    ONU melaporkannya dulu (refreshObject) sebelum mengirim perintah ping; ZTE memakai xsd:int bila
+    tetap belum terbaca."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}}
+    k.post("/api/acs/budi/ping", json={"minimal": True})
+    nama = [t["name"] for t in acs.tugas]
+    assert nama[-2:] == ["refreshObject", "setParameterValues"]
+    assert acs.tugas[-2]["objectName"] == "InternetGatewayDevice.IPPingDiagnostics."
+    tipe = {p[0].rsplit(".", 1)[-1]: p[2] for p in acs.tugas[-1]["parameterValues"]}
+    assert tipe["NumberOfRepetitions"] == "xsd:int"
+    # tipe sudah diketahui: tidak perlu membaca dulu
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["IPPingDiagnostics"] = {
+        "DiagnosticsState": {"_value": "None", "_type": "xsd:string"}, "Host": {"_value": "", "_type": "xsd:string"},
+        "NumberOfRepetitions": {"_value": 1, "_type": "xsd:unsignedInt"}}
+    n = len(acs.tugas)
+    k.post("/api/acs/budi/ping", json={"minimal": True})
+    assert [t["name"] for t in acs.tugas[n:]] == ["setParameterValues"]
