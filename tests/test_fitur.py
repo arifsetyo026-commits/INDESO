@@ -43,6 +43,8 @@ class FakeRes:
             rows = list(getattr(self.mt, "mangle", []))
         elif self.path == "/interface/pppoe-server/server":
             rows = list(getattr(self.mt, "pppoe_server", []))
+        elif self.path == "/interface":
+            rows = list(getattr(self.mt, "interfaces", []))
         elif self.path == "/ip/route":
             rows = list(getattr(self.mt, "route", []))
         elif self.path == "/log":
@@ -2291,3 +2293,24 @@ def test_internet_pusat_trafik_dari_jalur_olt(siap):
     d = o.get("/api/upstream").json()
     assert d["trafik_if"] == ["ether2"] and d["trafik_sisi"] == "pelanggan"
     mt.ping_per = None
+
+
+def test_pilihan_interface_dari_mikrotik(siap):
+    """Interface WAN / ke OLT dipilih dari daftar MikroTik (nama persis, termasuk spasi); nama yang tidak
+    ada ditolak; interface PPPoE pelanggan tidak ikut di daftar."""
+    main, o, k, m = siap
+    main._mt.interfaces = [
+        {"name": "WAN STARLINK ETH4", "type": "ether", "running": "true", "disabled": "false", "comment": "Starlink"},
+        {"name": "sfp-sfpplus1", "type": "ether", "running": "true", "disabled": "false"},
+        {"name": "ether5", "type": "ether", "running": "false", "disabled": "true"},
+        {"name": "<pppoe-budi>", "type": "pppoe-in", "running": "true"}]
+    d = k.get("/api/mikrotik/interface").json()["interface"]
+    assert [i["nama"] for i in d] == ["sfp-sfpplus1", "WAN STARLINK ETH4", "ether5"]
+    assert d[2]["mati"] and d[1]["komentar"] == "Starlink"
+    r = o.put("/api/pengaturan", json={"nilai": {"UPSTREAM_TRAFIK_IF": "sfp-sfpplus"}})
+    assert r.status_code == 400 and "tidak ada di MikroTik" in r.json()["detail"]
+    assert o.put("/api/pengaturan", json={"nilai": {"UPSTREAM_WAN": "WAN STARLINK ETH4",
+                                                    "UPSTREAM_TRAFIK_IF": "sfp-sfpplus1"}}).status_code == 200
+    assert main.CONFIG["UPSTREAM_WAN"] == "WAN STARLINK ETH4" and main.CONFIG["UPSTREAM_TRAFIK_IF"] == "sfp-sfpplus1"
+    assert o.put("/api/pengaturan", json={"nilai": {"UPSTREAM_TRAFIK_IF": ""}}).status_code == 200   # kembali Otomatis
+    assert m.get("/api/mikrotik/interface").status_code == 403
