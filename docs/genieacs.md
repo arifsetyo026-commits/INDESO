@@ -139,6 +139,23 @@ Pilihan: `--onu 2/5` (hanya ONU tertentu), `--semua-merek`, `--ulang`.
 
 Atau dari dashboard: **Pengaturan → Sistem → TR-069 ONU lewat OLT** (pilih banyak ONU sekaligus), atau tombol **Kirim pengaturan TR-069 dari OLT** di Diagnosa pelanggan yang ONU-nya belum terdaftar. Setelah itu INDESO menjalankan `save` supaya tetap ada saat OLT restart. ONU ZTE tetap perlu WAN PPPoE berjenis `INTERNET_TR069`.
 
+### Menu "ONU Baru" (aktivasi ONU yang baru dicolok)
+
+OLT memakai `ont authmode ... auto`, jadi ONU yang dicolok langsung didaftarkan OLT. INDESO mencatat nomor seri
+(SN) setiap ONU yang terbaca. SN yang belum pernah terlihat masuk menu **ONU Baru**, dan grup Telegram dikabari.
+Saat fitur ini pertama kali jalan, semua ONU yang sudah ada dianggap lama, jadi daftar dan Telegram tidak banjir.
+
+Setiap ONU baru punya ceklis: terdaftar di OLT → sinyal fiber bagus → PPPoE tersambung → ada di data pelanggan →
+lapor ke ACS → WiFi diatur. Tombol yang tersedia:
+- **Kirim TR-069 + restart ONU**: urutan yang sama dengan bagian di atas (`ip-index 0` → `unbind` → `ont reboot`, lalu `save`).
+- **Kirim TR-069 saja** dan **Restart ONU**: lewat OLT, untuk satu ONU itu saja.
+- **Atur WiFi**: nama dan password diatur sekaligus untuk 2,4 GHz dan 5 GHz (nama 5 GHz diberi akhiran, bawaannya `-5G`).
+  Langkah ini perlu ONU sudah lapor ke ACS. Password WiFi tidak dicatat di log.
+- **Dipasang untuk pelanggan**: catatan sebelum PPPoE ONU tersambung. **Tandai selesai** / **Abaikan** memindahkan
+  ONU ke Riwayat 30 hari.
+
+PPPoE ONU baru masih diisi di web ONU. Pengisian PPPoE dari OLT menunggu perintah CLI C-Data yang sudah dipastikan.
+
 ## 6. Isi `.env` INDESO (di HP Termux)
 
 ```
