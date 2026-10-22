@@ -36,7 +36,7 @@ class FakeRes:
         elif self.path == "/ppp/active":
             rows = [dict(v, name=k) for k, vs in self.mt.active.items() for v in vs]
         elif self.path == "/ppp/profile":
-            rows = [dict(getattr(self.mt, "profil_detail", {}).get(p, {}), name=p, id=f"P:{p}") for p in self.mt.profiles]
+            rows = [dict(getattr(self.mt, "profil_detail", {}).get(p, {}), name=p) for p in self.mt.profiles]
         elif self.path == "/ip/dns":
             rows = [dict(getattr(self.mt, "dns", {}))]
         elif self.path == "/ip/firewall/mangle":
@@ -63,11 +63,6 @@ class FakeRes:
                                               disabled="no")
 
     def set(self, id, **kw):
-        if self.path == "/ppp/profile":
-            if not hasattr(self.mt, "profil_detail"):
-                self.mt.profil_detail = {}
-            self.mt.profil_detail.setdefault(id[2:], {}).update(kw)
-            return
         for v in self.mt.secret.values():
             if v["id"] == id:
                 v.update(kw)
@@ -2499,57 +2494,3 @@ def test_kesehatan_wifi(siap, monkeypatch):
     assert m.get("/api/wifi-kesehatan").status_code == 403
     r = k.post("/api/wifi-kesehatan/segarkan").json()
     assert r["diantrekan"] == 2 and all(t["name"] == "refreshObject" for t in acs.tugas)
-
-
-
-def test_jalur_isp_per_paket(siap):
-    """Paket gaming → address-list JALUR-GAMING di profil PPP-nya; paket beda jalur tidak boleh berbagi profil;
-    pindah paket pelanggan → profil secret ikut diganti + sesi diputus; isolir → profil asal yang diganti."""
-    main, o, k, m = siap
-    mt = main._mt
-    mt.profiles.append("gaming-20mbps")
-    pk = {p["nama"]: p for p in k.get("/api/paket").json()["paket"]}
-    assert pk["20M"]["jalur"] == "rumahan" and pk["20M"]["profil"] is None
-    # paket gaming 20M tanpa profil sendiri → bentrok dengan paket 20M rumahan (paket-20mbps)
-    r = k.post("/api/paket", json={"nama": "Gaming 20M", "kecepatan_mbps": 20, "harga": 250000, "jalur": "gaming"})
-    assert r.status_code == 409 and "gaming-20mbps" in r.json()["detail"]
-    r = k.post("/api/paket", json={"nama": "Gaming 20M", "kecepatan_mbps": 20, "harga": 250000, "jalur": "gaming",
-                                   "profil": "gaming-20mbps"}).json()
-    assert r["jalur"]["ok"] and mt.profil_detail["gaming-20mbps"]["address-list"] == "JALUR-GAMING"
-    assert k.post("/api/paket", json={"nama": "X", "kecepatan_mbps": 5, "harga": 1, "jalur": "vip"}).status_code == 400
-    gid = r["id"]
-    # address-list buatan sendiri tidak ditimpa
-    mt.profil_detail["paket-10mbps"] = {"address-list": "LIST-SAYA"}
-    r = k.put(f"/api/paket/{pk['10M']['id']}", json={"nama": "10M", "kecepatan_mbps": 10, "harga": 150000,
-                                                      "jalur": "gaming"}).json()
-    assert not r["jalur"]["ok"] and "LIST-SAYA" in r["jalur"]["pesan"]
-    assert mt.profil_detail["paket-10mbps"]["address-list"] == "LIST-SAYA"
-    k.put(f"/api/paket/{pk['10M']['id']}", json={"nama": "10M", "kecepatan_mbps": 10, "harga": 150000, "jalur": "rumahan"})
-
-    # pindah paket → profil secret ikut, sesi diputus
-    mt.active = {"ani": [{"id": "*a1"}]}
-    body = {"nama": "Ani", "paket_id": gid, "atur_secret": False}
-    d = k.put("/api/data-pelanggan/ani", json=body).json()
-    assert d["profil"]["ok"] and mt.secret["ani"]["profile"] == "gaming-20mbps" and mt.active["ani"] == []
-    # profil diatur khusus (bukan profil paket lama) tidak disentuh, mis. akun server
-    assert main._mt.secret["server"]["profile"] == "default"
-    d = k.put("/api/data-pelanggan/server", json={"nama": "Server", "paket_id": pk["20M"]["id"], "gratis": True}).json()
-    assert "diatur khusus" in d["profil"]["pesan"] and mt.secret["server"]["profile"] == "default"
-    # paket sama lagi: tidak ada perubahan / tidak memutus
-    mt.active = {"ani": [{"id": "*a2"}]}
-    assert k.put("/api/data-pelanggan/ani", json=body).json()["profil"] is None and mt.active["ani"]
-    # ikut_profil=False: MikroTik tidak disentuh
-    d = k.put("/api/data-pelanggan/ani", json={"nama": "Ani", "paket_id": pk["20M"]["id"], "ikut_profil": False}).json()
-    assert d["profil"] is None and mt.secret["ani"]["profile"] == "gaming-20mbps"
-    # pelanggan terisolir: profil asal saja yang diganti; buka isolir memakai profil paket gaming
-    main.isolir_pelanggan(["dwi"], otomatis=False)
-    assert mt.secret["dwi"]["profile"] == "ISOLIR"
-    d = k.put("/api/data-pelanggan/dwi", json={"nama": "dwi", "paket_id": gid}).json()
-    assert "diisolir" in d["profil"]["pesan"] and mt.secret["dwi"]["profile"] == "ISOLIR"
-    main.buka_isolir_pelanggan(["dwi"])
-    assert mt.secret["dwi"]["profile"] == "gaming-20mbps"
-    # putus sesi semua pelanggan paket gaming
-    mt.active = {"ani": [{"id": "*a3"}], "dwi": [{"id": "*d1"}], "budi": [{"id": "*b1"}]}
-    k.put("/api/data-pelanggan/ani", json={"nama": "Ani", "paket_id": gid})
-    assert k.post(f"/api/paket/{gid}/putus-sesi").json()["diputus"] == 2     # ani & dwi (gaming), budi tidak
-    assert mt.active["budi"] and not mt.active["ani"] and not mt.active["dwi"]

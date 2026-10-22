@@ -265,9 +265,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label>Nama paket</label><input id="pkNama" placeholder="mis. Paket 10 Mbps">
 <label>Kecepatan (Mbps)</label><input id="pkSpeed" type="number" min="1" step="any" inputmode="decimal">
 <label>Harga per bulan (Rp)</label><input id="pkHarga" type="number" min="0" step="1000" inputmode="numeric">
-<label>Jalur internet</label><select id="pkJalur"><option value="rumahan">Rumahan (Starlink)</option><option value="gaming">Gaming (ISP inti, ping rendah)</option></select>
-<label>Profil PPPoE di MikroTik</label><select id="pkProfil"><option value="">Otomatis dari kecepatan (paket-…mbps)</option></select>
-<div class="plSub" style="margin-top:6px">Paket gaming dan rumahan dengan kecepatan sama butuh profil PPPoE berbeda (mis. <code>gaming-20mbps</code>; buat dulu di MikroTik dengan menyalin profil paket). Jalur gaming memasang address-list <code>JALUR-GAMING</code> di profil itu. Nama profil sebaiknya berisi kecepatannya supaya impor otomatis mengenali paketnya. Perubahan harga hanya berlaku untuk tagihan baru.</div>
+<div class="plSub" style="margin-top:6px">Nama profil PPP di MikroTik sebaiknya berisi kecepatannya, mis. <code>paket-10mbps</code>, supaya impor otomatis mengenali paketnya. Perubahan harga hanya berlaku untuk tagihan baru.</div>
 <div class="plBtns"><button class="plSave" onclick="simpanPaket()">Simpan paket</button><button class="plCancel" onclick="batalPaket()">Kembali</button></div>
 <div class="plMsg" id="pkMsg"></div></div></div>
 </div></div></div>
@@ -1183,7 +1181,7 @@ function editPelanggan(i){
  $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0; $('plInsGratis').checked=!!p.insentif_gratis; aturCentangGratis();
  $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
  $('plTglPasang').value=p.tgl_pasang||''; $('plDiskon').value=p.diskon||0;
- $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value; pl.paketAwal=$('plPaket').value; $('plSecret').checked=true; aturCentangSecret();
+ $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value; $('plSecret').checked=true; aturCentangSecret();
  $('plSecretInfo').innerHTML=p.secret_target?'<span style="color:#b45309">⏳ Menunggu sinkron MikroTik: secret akan '+(p.secret_target==='nonaktif'?'dinonaktifkan':'diaktifkan')+' begitu MikroTik terjangkau.</span>':(p.secret_nonaktif?'Secret PPPoE pelanggan ini sedang nonaktif di MikroTik.':'');
  $('plPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}" ${k.id===p.paket_id?'selected':''}>${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
  $('plMsg').textContent='';
@@ -1199,14 +1197,12 @@ async function savePelanggan(){
  if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\n'+(body.atur_secret?'Secret PPPoE di MikroTik DINONAKTIFKAN dan sesinya diputus (tidak dihapus, bisa diaktifkan lagi).':'Secret PPPoE di MikroTik TIDAK diubah.'))) return;
  if(body.status==='aktif'&&pl.statusAwal==='berhenti'&&body.atur_secret&&!confirm('Aktifkan kembali '+body.nama+'? Secret PPPoE di MikroTik akan diaktifkan lagi.')) return;
  try{
-  if(body.paket_id&&String(body.paket_id)!==String(pl.paketAwal||'')&&body.status==='aktif'&&!confirm('Paket diganti: profil PPPoE '+body.nama+' di MikroTik ikut diganti (kecepatan & jalur ISP) dan internetnya tersambung ulang beberapa detik.\n\nLanjutkan?')) return;
   const r=await fetch('/api/data-pelanggan/'+encodeURIComponent(pl.cur),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
   await loadPelanggan(); backPelanggan();
   const sc=d.secret, teksSecret=sc?(sc.ok?' · secret PPPoE '+sc.pesan:(sc.tertunda?' · ⚠️ MikroTik gagal ('+sc.pesan+'), dicoba ulang otomatis':' · secret: '+sc.pesan)):'';
-  $('plListMsg').style.color=sc&&!sc.ok?'#b45309':'#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+teksSecret+(d.profil?(d.profil.ok?' · '+d.profil.pesan:' · ⚠️ '+d.profil.pesan):'')+'.';
-  if(d.profil&&!d.profil.ok) $('plListMsg').style.color='#b45309';
+  $('plListMsg').style.color=sc&&!sc.ok?'#b45309':'#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+teksSecret+'.';
  }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
 }
 async function imporPelanggan(){
@@ -1285,42 +1281,27 @@ async function simpanPasangBaru(){
 // ===== Paket =====
 async function bukaPaket(){
  $('plTitle').textContent='Kelola Paket'; tampilkanView('paket'); batalPaket(true);
- await loadPaket(); isiProfilPaket();
-}
-async function isiProfilPaket(pilih){
- const sel=$('pkProfil');
- try{ if(!pl.profilMt) pl.profilMt=(await jsonAtauError(await fetch('/api/mikrotik/profil'))).profil.map(x=>x.nama); }catch(e){ pl.profilMt=pl.profilMt||[]; }
- const daftar=[...new Set([...(pl.profilMt||[]),...(pilih?[pilih]:[])])];
- sel.innerHTML='<option value="">Otomatis dari kecepatan (paket-…mbps)</option>'+daftar.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
- sel.value=pilih||'';
-}
-async function putusSesiPaket(i){
- const k=pl.paket[i];
- if(!confirm('Sambung ulang semua pelanggan ONLINE paket '+k.nama+'?\nInternet mereka terputus beberapa detik, lalu login lagi dengan pengaturan profil terbaru (mis. jalur '+(k.jalur==='gaming'?'gaming':'rumahan')+').')) return;
- const m=$('pkMsg');
- try{ const d=await jsonAtauError(await fetch('/api/paket/'+k.id+'/putus-sesi',{method:'POST'})); m.style.color='#0b7a3b'; m.textContent=d.diputus+' pelanggan '+k.nama+' disambung ulang.'; }
- catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+ await loadPaket();
 }
 async function loadPaket(){
  $('pkList').innerHTML='<div class="muted">Memuat…</div>';
  try{
   const r=await fetch('/api/paket'); if(!r.ok) throw new Error('HTTP '+r.status);
   pl.paket=(await r.json()).paket||[];
-  $('pkList').innerHTML=pl.paket.length?pl.paket.map((k,i)=>`<div class="blRow akRow"><div><div class="plName">${esc(k.nama)}</div><div class="plSub">${k.kecepatan_mbps} Mbps · ${k.jumlah_pelanggan} pelanggan aktif · profil ${esc(k.profil||('paket-'+Math.trunc(k.kecepatan_mbps)+'mbps'))}</div><div style="margin-top:3px">${k.jalur==='gaming'?'<span class="chip info">🎮 Gaming · ISP inti</span>':'<span class="chip off">🏠 Rumahan · Starlink</span>'}</div></div><div class="blKanan"><div class="blAmt">${rp(k.harga)}</div><div class="blAksi"><button class="btnS" onclick="ubahPaket(${i})">Ubah</button><button class="btnS" onclick="hapusPaket(${i})">Hapus</button>${k.jumlah_pelanggan?`<button class="btnS" onclick="putusSesiPaket(${i})" title="Sambung ulang pelanggan paket ini supaya pengaturan profil (mis. jalur) langsung berlaku">Sambung ulang pelanggan</button>`:''}</div></div></div>`).join(''):'<div class="muted">Belum ada paket. Tambahkan di bawah.</div>';
+  $('pkList').innerHTML=pl.paket.length?pl.paket.map((k,i)=>`<div class="blRow"><div><div class="plName">${esc(k.nama)}</div><div class="plSub">${k.kecepatan_mbps} Mbps · ${k.jumlah_pelanggan} pelanggan aktif</div></div><div class="blKanan"><div class="blAmt">${rp(k.harga)}</div><div class="blAksi"><button class="btnS" onclick="ubahPaket(${i})">Ubah</button><button class="btnS" onclick="hapusPaket(${i})">Hapus</button></div></div></div>`).join(''):'<div class="muted">Belum ada paket. Tambahkan di bawah.</div>';
  }catch(e){ $('pkList').innerHTML='<div class="muted">Gagal memuat paket: '+esc(e.message)+'</div>'; }
 }
 function ubahPaket(i){
  const k=pl.paket[i]; pl.pkCur=k.id;
  $('pkJudul').textContent='Ubah paket '+k.nama; $('pkNama').value=k.nama; $('pkSpeed').value=k.kecepatan_mbps; $('pkHarga').value=k.harga; $('pkMsg').textContent='';
- $('pkJalur').value=k.jalur||'rumahan'; isiProfilPaket(k.profil||'');
  $('pkNama').focus();
 }
 function batalPaket(diam){
  if(pl.pkCur==null&&!diam){ backPelanggan(); loadPelanggan(); return; }
- pl.pkCur=null; $('pkJudul').textContent='Tambah paket'; $('pkNama').value=''; $('pkSpeed').value=''; $('pkHarga').value=''; $('pkJalur').value='rumahan'; $('pkProfil').value=''; if(diam) $('pkMsg').textContent='';
+ pl.pkCur=null; $('pkJudul').textContent='Tambah paket'; $('pkNama').value=''; $('pkSpeed').value=''; $('pkHarga').value=''; if(diam) $('pkMsg').textContent='';
 }
 async function simpanPaket(){
- const body={nama:$('pkNama').value.trim(),kecepatan_mbps:Number($('pkSpeed').value),harga:Math.round(Number($('pkHarga').value)),jalur:$('pkJalur').value,profil:$('pkProfil').value||null};
+ const body={nama:$('pkNama').value.trim(),kecepatan_mbps:Number($('pkSpeed').value),harga:Math.round(Number($('pkHarga').value))};
  const m=$('pkMsg');
  if(!body.nama||!(body.kecepatan_mbps>0)||!(body.harga>=0)||$('pkHarga').value===''){ m.style.color='#b42318'; m.textContent='Isi nama, kecepatan, dan harga dengan benar.'; return; }
  const baru=pl.pkCur==null;
@@ -1328,8 +1309,7 @@ async function simpanPaket(){
   const r=await fetch(baru?'/api/paket':'/api/paket/'+pl.pkCur,{method:baru?'POST':'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
   batalPaket(true); await loadPaket();
-  const j=d.jalur; m.style.color=j&&!j.ok?'#b45309':'#0b7a3b';
-  m.textContent='Paket '+body.nama+(baru?' ditambahkan.':' disimpan.')+(j?(j.ok?' MikroTik: '+j.pesan:' ⚠ Jalur belum diterapkan di MikroTik: '+j.pesan):'');
+  m.style.color='#0b7a3b'; m.textContent='Paket '+body.nama+(baru?' ditambahkan.':' disimpan.');
  }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
 }
 async function hapusPaket(i){

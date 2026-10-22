@@ -1471,13 +1471,6 @@ def init_billing_db() -> None:
         conn.execute("CREATE TABLE IF NOT EXISTS pengingat (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, "
                      "waktu TEXT NOT NULL, oleh TEXT, total INTEGER, bulan INTEGER)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pengingat_user ON pengingat(username, waktu)")
-        # jalur: 'rumahan' / 'gaming' (ISP yang dipakai, lewat address-list profil PPP di MikroTik).
-        # profil: nama profil PPP MikroTik untuk paket ini; NULL = dicocokkan dari kecepatan (paket-20mbps).
-        kolom_paket = [r[1] for r in conn.execute("PRAGMA table_info(paket)").fetchall()]
-        if "jalur" not in kolom_paket:
-            conn.execute("ALTER TABLE paket ADD COLUMN jalur TEXT NOT NULL DEFAULT 'rumahan'")
-        if "profil" not in kolom_paket:
-            conn.execute("ALTER TABLE paket ADD COLUMN profil TEXT")
         kolom = [r[1] for r in conn.execute("PRAGMA table_info(pelanggan)").fetchall()]
         if "gratis" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN gratis INTEGER NOT NULL DEFAULT 0")
@@ -2791,8 +2784,6 @@ class PaketIn(BaseModel):
     nama: str
     kecepatan_mbps: float
     harga: int
-    jalur: str = "rumahan"           # rumahan / gaming
-    profil: Optional[str] = None     # profil PPP MikroTik; kosong = dicocokkan dari kecepatan
 
 
 def _billing_conn():
@@ -3004,7 +2995,7 @@ def list_paket():
     conn = _billing_conn()
     try:
         rows = conn.execute(
-            "SELECT k.id, k.nama, k.kecepatan_mbps, k.harga, k.jalur, k.profil, "
+            "SELECT k.id, k.nama, k.kecepatan_mbps, k.harga, "
             "(SELECT COUNT(*) FROM pelanggan p WHERE p.paket_id = k.id AND p.status = 'aktif') AS jumlah_pelanggan "
             "FROM paket k ORDER BY k.kecepatan_mbps, k.harga"
         ).fetchall()
@@ -3017,84 +3008,26 @@ def _cek_paket(p: PaketIn) -> str:
     nama = p.nama.strip()
     if not nama or p.kecepatan_mbps <= 0 or p.harga < 0:
         raise HTTPException(status_code=400, detail="Data paket tidak valid: nama wajib, kecepatan > 0, harga tidak negatif.")
-    if p.jalur not in JALUR:
-        raise HTTPException(status_code=400, detail="Jalur paket harus 'rumahan' atau 'gaming'.")
-    p.profil = (p.profil or "").strip() or None
-    if p.profil and not re.fullmatch(r"[A-Za-z0-9._ -]{1,40}", p.profil):
-        raise HTTPException(status_code=400, detail="Nama profil PPP tidak valid.")
     return nama
-
-
-# ---- Jalur ISP per paket ----
-# Paket gaming: profil PPP-nya diberi address-list JALUR-GAMING di MikroTik. Aturan mangle di MikroTik
-# (docs/jalur-isp.md) mengarahkan daftar itu ke ISP inti; pelanggan lain lewat Starlink.
-JALUR = {"rumahan": "", "gaming": "JALUR-GAMING"}
-
-
-def _profil_efektif(kecepatan_mbps: float, profil: Optional[str]) -> str:
-    return profil or f"paket-{int(kecepatan_mbps)}mbps"
-
-
-def _cek_bentrok_jalur(conn, paket_id: Optional[int], profil: str, jalur: str) -> None:
-    """Satu profil PPP hanya bisa punya satu jalur: dua paket berbeda jalur tidak boleh berbagi profil."""
-    for r in conn.execute("SELECT id, nama, kecepatan_mbps, profil, jalur FROM paket").fetchall():
-        if r["id"] != paket_id and _profil_efektif(r["kecepatan_mbps"], r["profil"]) == profil and r["jalur"] != jalur:
-            raise HTTPException(status_code=409, detail=(
-                f"Profil PPP {profil} sudah dipakai paket {r['nama']} (jalur {r['jalur']}). Paket beda jalur butuh "
-                f"profil PPP sendiri: buat profil baru di MikroTik (mis. gaming-{int(r['kecepatan_mbps'])}mbps) lalu pilih di sini."))
-
-
-def _terapkan_jalur(profil: str, jalur: str) -> dict:
-    """Pasang address-list jalur pada profil PPP di MikroTik. Berlaku untuk sesi yang login setelahnya.
-    Address-list lain buatan sendiri tidak ditimpa."""
-    target = JALUR[jalur]
-    try:
-        pool = _mikrotik_pool()
-    except Exception as e:
-        return {"ok": False, "pesan": f"MikroTik tidak terbaca: {e}"}
-    try:
-        res = pool.get_api().get_resource("/ppp/profile")
-        rows = res.get(name=profil)
-        if not rows:
-            return {"ok": False, "pesan": f"Profil PPP {profil} tidak ada di MikroTik."}
-        sekarang = rows[0].get("address-list") or ""
-        if sekarang == target:
-            return {"ok": True, "pesan": "sudah sesuai", "berubah": False}
-        if sekarang and sekarang not in JALUR.values():
-            return {"ok": False, "pesan": f"Profil {profil} sudah memakai address-list '{sekarang}' (bukan buatan INDESO); "
-                                          "tidak diubah. Kosongkan dulu di MikroTik bila memang boleh."}
-        res.set(id=rows[0]["id"], **{"address-list": target})
-        return {"ok": True, "pesan": f"address-list {profil} → {target or '(kosong)'}", "berubah": True}
-    except Exception as e:
-        return {"ok": False, "pesan": f"Gagal mengubah profil {profil}: {e}"}
-    finally:
-        try:
-            pool.disconnect()
-        except Exception:
-            pass
 
 
 @app.post("/api/paket")
 def tambah_paket(p: PaketIn, request: Request):
     nama = _cek_paket(p)
-    profil = _profil_efektif(p.kecepatan_mbps, p.profil)
     conn = _billing_conn()
     try:
-        _cek_bentrok_jalur(conn, None, profil, p.jalur)
         try:
             cur = conn.execute(
-                "INSERT INTO paket (nama, kecepatan_mbps, harga, jalur, profil) VALUES (?,?,?,?,?)",
-                (nama, p.kecepatan_mbps, p.harga, p.jalur, p.profil),
+                "INSERT INTO paket (nama, kecepatan_mbps, harga) VALUES (?,?,?)",
+                (nama, p.kecepatan_mbps, p.harga),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="Nama paket sudah ada.")
         conn.commit()
     finally:
         conn.close()
-    jalur = _terapkan_jalur(profil, p.jalur) if p.jalur == "gaming" or p.profil else None
-    catat_aktivitas(_oleh(request), "paket_tambah", f"{nama} {p.kecepatan_mbps:g} Mbps {_rp(p.harga)} jalur {p.jalur}"
-                    + (f" ({jalur['pesan']})" if jalur else ""))
-    return {"id": cur.lastrowid, "jalur": jalur}
+    catat_aktivitas(_oleh(request), "paket_tambah", f"{nama} {p.kecepatan_mbps:g} Mbps {_rp(p.harga)}")
+    return {"id": cur.lastrowid}
 
 
 @app.put("/api/paket/{paket_id}")
@@ -3102,17 +3035,15 @@ def ubah_paket(paket_id: int, p: PaketIn, request: Request):
     """Harga baru hanya berlaku untuk tagihan yang dibuat setelahnya; tagihan yang
     sudah ada tidak berubah."""
     nama = _cek_paket(p)
-    profil = _profil_efektif(p.kecepatan_mbps, p.profil)
     conn = _billing_conn()
     try:
-        lama = conn.execute("SELECT nama, kecepatan_mbps, harga, jalur, profil FROM paket WHERE id=?", (paket_id,)).fetchone()
+        lama = conn.execute("SELECT nama, kecepatan_mbps, harga FROM paket WHERE id=?", (paket_id,)).fetchone()
         if not lama:
             raise HTTPException(status_code=404, detail="Paket tidak ditemukan.")
-        _cek_bentrok_jalur(conn, paket_id, profil, p.jalur)
         try:
             conn.execute(
-                "UPDATE paket SET nama=?, kecepatan_mbps=?, harga=?, jalur=?, profil=? WHERE id=?",
-                (nama, p.kecepatan_mbps, p.harga, p.jalur, p.profil, paket_id),
+                "UPDATE paket SET nama=?, kecepatan_mbps=?, harga=? WHERE id=?",
+                (nama, p.kecepatan_mbps, p.harga, paket_id),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="Nama paket sudah dipakai paket lain.")
@@ -3122,46 +3053,9 @@ def ubah_paket(paket_id: int, p: PaketIn, request: Request):
     catat_aktivitas(
         _oleh(request), "paket_ubah",
         f"{lama['nama']} {lama['kecepatan_mbps']:g} Mbps {_rp(lama['harga'])} → "
-        f"{nama} {p.kecepatan_mbps:g} Mbps {_rp(p.harga)}"
-        + (f"; jalur {lama['jalur']} → {p.jalur}" if lama["jalur"] != p.jalur else ""),
+        f"{nama} {p.kecepatan_mbps:g} Mbps {_rp(p.harga)}",
     )
-    jalur = None
-    if lama["jalur"] != p.jalur or _profil_efektif(lama["kecepatan_mbps"], lama["profil"]) != profil or p.jalur == "gaming":
-        jalur = _terapkan_jalur(profil, p.jalur)
-        if lama["jalur"] != p.jalur:
-            jalur["pesan"] += (". Pelanggan paket ini pindah jalur saat sambung ulang berikutnya; "
-                               "tekan 'Sambung ulang pelanggan' untuk memindahkan sekarang.")
-    return {"ok": True, "jalur": jalur}
-
-
-@app.post("/api/paket/{paket_id}/putus-sesi")
-def paket_putus_sesi(paket_id: int, request: Request):
-    """Putus sesi PPPoE pelanggan aktif paket ini supaya langsung login ulang dengan pengaturan profil terbaru
-    (mis. jalur ISP baru). Internet pelanggan terputus beberapa detik."""
-    _wajib_admin(request)
-    conn = _billing_conn()
-    try:
-        if not conn.execute("SELECT 1 FROM paket WHERE id=?", (paket_id,)).fetchone():
-            raise HTTPException(status_code=404, detail="Paket tidak ditemukan.")
-        user = [r[0] for r in conn.execute("SELECT username FROM pelanggan WHERE paket_id=? AND status='aktif'",
-                                           (paket_id,)).fetchall()]
-    finally:
-        conn.close()
-    putus = 0
-    if user:
-        pool = _mikrotik_pool()
-        try:
-            aktif = pool.get_api().get_resource("/ppp/active")
-            for sesi in aktif.get():
-                if sesi.get("name") in user:
-                    aktif.remove(id=sesi["id"])
-                    putus += 1
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Gagal memutus sesi di MikroTik: {e}")
-        finally:
-            pool.disconnect()
-    catat_aktivitas(_oleh(request), "paket_putus_sesi", f"paket #{paket_id}: {putus} sesi diputus untuk menerapkan profil")
-    return {"diputus": putus}
+    return {"ok": True}
 
 
 @app.delete("/api/paket/{paket_id}")
@@ -3278,7 +3172,6 @@ class PelangganIn(BaseModel):
     atur_secret: bool = True   # saat status berubah: nonaktifkan/aktifkan secret PPPoE di MikroTik
     tgl_pasang: Optional[str] = None   # None = tidak diubah, "" = dikosongkan
     diskon: Optional[int] = None       # None = tidak diubah
-    ikut_profil: bool = True           # paket berubah: ganti profil PPP secret di MikroTik sesuai paket baru
 
 
 @app.get("/api/data-pelanggan")
@@ -3406,7 +3299,7 @@ def pasang_baru(d: PasangBaruIn, request: Request):
                 raise HTTPException(status_code=409, detail=f"Akun PPPoE {username} sudah ada di MikroTik. "
                                                             "Hilangkan centang 'buat akun PPPoE' atau pakai username lain.")
             daftar = [r.get("name") for r in api.get_resource("/ppp/profile").get() if r.get("name")]
-            profil = (d.profil or "").strip() or paket["profil"] or next(
+            profil = (d.profil or "").strip() or next(
                 (n for n in daftar if _kecepatan_dari_profil(n) == paket["kecepatan_mbps"]), None)
             if not profil or profil not in daftar:
                 raise HTTPException(status_code=400, detail=f"Profil PPPoE untuk paket {paket['nama']} tidak ditemukan "
@@ -3562,54 +3455,7 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
             finally:
                 conn.close()
             catat_aktivitas(_oleh(request), "secret_tertunda", f"{username}: sinkron secret tertunda dibatalkan (status diubah)")
-    profil = None
-    if (lama["paket_id"] != d.paket_id and lama["paket_id"] is not None and d.paket_id is not None
-            and d.ikut_profil and status == "aktif"):
-        profil = _pindah_profil_paket(username, lama["paket_id"], d.paket_id)
-        catat_aktivitas(_oleh(request), "pelanggan_profil", f"{username}: {profil['pesan']}")
-    return {"ok": True, "tagihan_dihapus": terhapus, "secret": secret, "profil": profil}
-
-
-def _pindah_profil_paket(username: str, paket_lama: int, paket_baru: int) -> dict:
-    """Pelanggan pindah paket: samakan profil PPP secret dengan paket baru (kecepatan & jalur ISP), lalu putus
-    sesinya supaya langsung berlaku. Hanya bila profilnya sekarang memang profil paket lama; profil yang diatur
-    khusus (mis. akun server/kantor) tidak disentuh. Pelanggan terisolir: profil asalnya saja yang diganti."""
-    conn = _billing_conn()
-    try:
-        k = conn.execute("SELECT kecepatan_mbps, profil FROM paket WHERE id=?", (paket_baru,)).fetchone()
-        target = _profil_efektif(k["kecepatan_mbps"], k["profil"])
-        kl = conn.execute("SELECT kecepatan_mbps, profil FROM paket WHERE id=?", (paket_lama,)).fetchone()
-        asal = _profil_efektif(kl["kecepatan_mbps"], kl["profil"]) if kl else None
-        iso = conn.execute("SELECT profile_asal FROM isolir WHERE username=?", (username,)).fetchone()
-        if iso:
-            if iso["profile_asal"] and iso["profile_asal"] != asal:
-                return {"ok": True, "pesan": f"sedang diisolir dengan profil asal khusus {iso['profile_asal']}; tidak diubah"}
-            conn.execute("UPDATE isolir SET profile_asal=? WHERE username=?", (target, username))
-            conn.commit()
-            return {"ok": True, "pesan": f"sedang diisolir; profil {target} dipakai saat isolir dibuka"}
-    finally:
-        conn.close()
-    try:
-        pool = _mikrotik_pool()
-        try:
-            api = pool.get_api()
-            rows = api.get_resource("/ppp/secret").get(name=username)
-            ada = {r.get("name") for r in api.get_resource("/ppp/profile").get()}
-        finally:
-            pool.disconnect()
-    except Exception as e:
-        return {"ok": False, "pesan": f"MikroTik tidak terbaca, profil PPP belum diganti: {e}"}
-    if not rows:
-        return {"ok": False, "pesan": "secret PPPoE tidak ditemukan di MikroTik"}
-    if target not in ada:
-        return {"ok": False, "pesan": f"profil {target} tidak ada di MikroTik; profil PPP belum diganti"}
-    if rows[0].get("profile") == target:
-        return {"ok": True, "pesan": f"profil PPP sudah {target}"}
-    if rows[0].get("profile") != asal:
-        return {"ok": True, "pesan": f"profil PPP {rows[0].get('profile')} diatur khusus (bukan profil paket lama {asal}); "
-                                     "tidak diubah"}
-    ok, ket = _ganti_profil_mikrotik({username: target})[username]
-    return {"ok": ok, "pesan": f"profil PPP {ket} → {target}, sesi disambung ulang" if ok else f"gagal ganti profil: {ket}"}
+    return {"ok": True, "tagihan_dihapus": terhapus, "secret": secret}
 
 
 def _atur_secret_mikrotik(username: str, nonaktif: bool) -> tuple[bool, str]:
@@ -7948,10 +7794,10 @@ def _ganti_profil_mikrotik(perubahan: dict, hanya_dari=None) -> dict:
 
 def _profil_dari_paket(conn, username):
     r = conn.execute(
-        "SELECT k.kecepatan_mbps, k.profil FROM pelanggan p JOIN paket k ON k.id = p.paket_id "
+        "SELECT k.kecepatan_mbps FROM pelanggan p JOIN paket k ON k.id = p.paket_id "
         "WHERE p.username = ?", (username,)
     ).fetchone()
-    return _profil_efektif(r["kecepatan_mbps"], r["profil"]) if r else None
+    return f"paket-{int(r['kecepatan_mbps'])}mbps" if r else None
 
 
 def isolir_pelanggan(daftar, otomatis=True) -> dict:
