@@ -2578,3 +2578,32 @@ def test_acs_cocok_lewat_wan_pppoe_index_tinggi(siap, monkeypatch):
     d = k.get("/api/acs/dwi").json()
     assert d["terhubung"] and d["perangkat"]["id"] == "74B57E-F609-ZTEAQFGH4P10867"
     assert d["perangkat"]["wan_ip"] == "172.20.52.212"
+
+
+def test_hapus_wan_sisa_lewat_acs(siap, monkeypatch):
+    """Hanya WAN yang tidak tersambung, bukan akun pelanggan sendiri, dan selama ada WAN lain yang tersambung."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    wcd = dev["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]
+    wcd["2"] = {"WANPPPConnection": {"1": {"Username": {"_value": "Gagal"}, "ExternalIPAddress": {"_value": "0.0.0.0"},
+                                           "ConnectionStatus": {"_value": "Disconnected"}}}}
+    wcd["3"] = {"WANPPPConnection": {"1": {"Username": {"_value": "budi"}, "ExternalIPAddress": {"_value": ""}}}}
+    jalur = lambda n: f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{n}.WANPPPConnection.1"
+    wan = {w["path"]: w for w in k.get("/api/acs/budi").json()["perangkat"]["wan"]}
+    assert wan[jalur(1)]["tersambung"] and not wan[jalur(2)]["tersambung"] and not wan[jalur(3)]["tersambung"]
+    assert wan[jalur(2)]["username"] == "Gagal" and wan[jalur(2)]["status"] == "Disconnected"
+    hapus = lambda pth: k.post("/api/acs/budi/wan-hapus", json={"path": pth})
+    assert hapus("InternetGatewayDevice.X; reboot").status_code == 400
+    assert hapus(jalur(9)).status_code == 404
+    assert hapus(jalur(1)).status_code == 409                       # sedang tersambung
+    assert "akun PPPoE pelanggan" in hapus(jalur(3)).json()["detail"]  # username pelanggan sendiri
+    r = hapus(jalur(2)).json()
+    assert r["status"] == "selesai" and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur(2) + "."}
+    # tanpa WAN lain yang tersambung: ditolak
+    wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "0.0.0.0"
+    assert "Tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
+    assert m.post("/api/acs/budi/wan-hapus", json={"path": jalur(2)}).status_code == 403
+    assert "hapus WAN" in o.get("/api/aktivitas").text

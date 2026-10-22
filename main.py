@@ -8695,6 +8695,26 @@ def _band_wifi(doc: dict, b: str, ssid: str) -> str:
     return "5 GHz" if re.search(r"5\s*g", ssid or "", re.I) else "2,4 GHz"
 
 
+_POLA_WAN_PPP = re.compile(rf"^{_IGD}\.WANDevice\.\d+\.WANConnectionDevice\.\d+\.WANPPPConnection\.\d+$")
+
+
+def _daftar_wan_ppp(doc: dict) -> list[dict]:
+    """Semua WAN PPPoE di ONU: username, IP, status, jenis layanan (bila dilaporkan)."""
+    hasil = []
+    for d in _anak(doc, f"{_IGD}.WANDevice"):
+        for w in _anak(doc, f"{_IGD}.WANDevice.{d}.WANConnectionDevice"):
+            for p in _anak(doc, f"{_IGD}.WANDevice.{d}.WANConnectionDevice.{w}.WANPPPConnection"):
+                b = f"{_IGD}.WANDevice.{d}.WANConnectionDevice.{w}.WANPPPConnection.{p}"
+                ip = str(_nilai(doc, f"{b}.ExternalIPAddress") or "")
+                status = str(_nilai(doc, f"{b}.ConnectionStatus") or "")
+                layanan = next((str(v.get("_value")) for k, v in _param(doc, b).items()
+                                if "ServiceList" in k and isinstance(v, dict) and v.get("_value")), None)
+                hasil.append({"path": b, "username": _nilai(doc, f"{b}.Username"), "ip": ip or None,
+                              "status": status or None, "layanan": layanan, "nama": _nilai(doc, f"{b}.Name"),
+                              "tersambung": bool(ip and ip != "0.0.0.0") or status.lower() == "connected"})
+    return hasil
+
+
 def _ringkas_perangkat(doc: dict) -> dict:
     di = doc.get("_deviceId", {})
     wlan = []
@@ -8750,6 +8770,7 @@ def _ringkas_perangkat(doc: dict) -> dict:
         "lapor_terakhir": doc.get("_lastInform"), "wan_ip": wan_ip,
         "wifi": wlan, "perangkat": host, "perangkat_aktif": sum(1 for h in host if h["aktif"]),
         "perangkat_wifi": host_wifi,
+        "wan": _daftar_wan_ppp(doc),
     }
 
 
@@ -8839,6 +8860,40 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     catat_aktivitas(_oleh(request), "onu_wifi",
                     f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+    return hasil
+
+
+class HapusWanIn(BaseModel):
+    path: str
+
+
+@app.post("/api/acs/{username}/wan-hapus")
+def acs_hapus_wan(username: str, d: HapusWanIn, request: Request):
+    """Hapus WAN PPPoE sisa (tidak tersambung) dari ONU lewat TR-069 DeleteObject. Hanya WAN yang tidak
+    tersambung, bukan akun PPPoE pelanggan ini, dan selama masih ada WAN lain yang tersambung (ONU tetap
+    online & tetap terjangkau ACS)."""
+    _wajib_admin(request)
+    if not _POLA_WAN_PPP.match(d.path or ""):
+        raise HTTPException(status_code=400, detail="Alamat WAN tidak valid.")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    wan = _daftar_wan_ppp(doc)
+    w = next((x for x in wan if x["path"] == d.path), None)
+    if not w:
+        raise HTTPException(status_code=404, detail="WAN itu tidak ada di ONU (mungkin sudah terhapus). Ambil data terbaru dulu.")
+    if w["tersambung"]:
+        raise HTTPException(status_code=409, detail="WAN ini sedang tersambung; tidak boleh dihapus dari sini.")
+    if str(w["username"] or "").lower() == username.lower():
+        raise HTTPException(status_code=409, detail="WAN ini memakai akun PPPoE pelanggan sendiri; tidak dihapus.")
+    if not any(x["tersambung"] for x in wan if x["path"] != d.path):
+        raise HTTPException(status_code=409, detail="Tidak ada WAN lain yang tersambung. Menghapus WAN ini berisiko "
+                                                    "membuat ONU tidak terjangkau; hapus lewat web ONU di lokasi.")
+    _bersihkan_tertahan(doc["_id"])
+    hasil = _tugas_acs(doc["_id"], {"name": "deleteObject", "objectName": d.path + "."}, tunggu=25)
+    catat_aktivitas(_oleh(request), "onu_hapus_wan",
+                    f"{username} ({doc['_id']}) hapus WAN {d.path} (username {w['username'] or '-'})"
+                    + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
     return hasil
 
 
