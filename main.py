@@ -209,6 +209,9 @@ CONFIG = {
     # --- Pantau internet pusat (MikroTik -> ISP) ---
     "UPSTREAM_AKTIF": True,
     "UPSTREAM_TUJUAN": "8.8.8.8,1.1.1.1",   # tujuan ping internet; gateway ISP ditambah otomatis
+    # File uji speedtest dari ONU (TR-143 DownloadDiagnostics, HTTP). Kosong = file di GenieACS FS
+    # (http://<host ACS_ONU_URL>:7567/indeso-uji-20MB.bin), lihat docs/genieacs.md.
+    "SPEEDTEST_URL": "",
     "UPSTREAM_WAN": "",                      # interface WAN; kosong = deteksi dari default route
     "UPSTREAM_TRAFIK_IF": "",                # interface ke OLT untuk trafik total pelanggan; kosong = interface server PPPoE
     "UPSTREAM_KAPASITAS_MBPS": 0,            # download langganan ISP; 0 = alert bandwidth mati
@@ -1413,6 +1416,9 @@ def init_history_db() -> None:
         # ONU lapor rutin. Banyak 'antre' pada ONU yang online = ketukan ACS ke ONU bermasalah.
         conn.execute("CREATE TABLE IF NOT EXISTS acs_tugas (ts TEXT NOT NULL, acs_id TEXT, nama TEXT, "
                      "langsung INTEGER, alasan TEXT)")
+        # Speedtest dari ONU (TR-143 DownloadDiagnostics): kecepatan unduh sebenarnya sampai rumah pelanggan.
+        conn.execute("CREATE TABLE IF NOT EXISTS speedtest_onu (ts TEXT NOT NULL, username TEXT, model TEXT, url TEXT, "
+                     "status TEXT NOT NULL, mbps REAL, bytes INTEGER, detik REAL, paket_mbps REAL, pakai_mbps REAL, pesan TEXT)")
         # ONU yang pertama kali terlihat di OLT (OLT memakai authmode auto: ONU baru langsung terdaftar).
         # status: awal = sudah ada saat fitur ini pertama jalan (tidak ditampilkan), baru, selesai, abaikan.
         conn.execute("""
@@ -2832,6 +2838,11 @@ _PENGATURAN = {
                            "tipe": "interface", "pola": r"^[\w.\-<>@ ]{0,64}$"},
     "UPSTREAM_TUJUAN": {"label": "Tujuan ping internet pusat (pisahkan koma)", "tipe": "teks",
                         "pola": r"^\s*[A-Za-z0-9.\-]{1,253}(\s*,\s*[A-Za-z0-9.\-]{1,253}){0,4}\s*$", "contoh": "8.8.8.8,1.1.1.1"},
+    "SPEEDTEST_URL": {"label": "File uji speedtest dari ONU (HTTP, 10–50 MB; kosong = file di server ACS)", "tipe": "teks",
+                      "pola": r"^\s*(http://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9._~%/\-?=&+]*)?)?\s*$",
+                      "contoh": "http://10.99.0.1:7567/indeso-uji-20MB.bin",
+                      "bantuan": "ONU hanya bisa HTTP (bukan HTTPS). Pakai server yang dekat (VPS INDESO lewat "
+                                 "terowongan atau mirror di Indonesia) supaya yang terukur jaringan Anda, bukan jarak."},
     "PUTUS_SENYAP_MALAM": {"label": "Jam malam: listrik ONU mati tidak dikabarkan satu per satu (mis. 21-06, kosong = selalu kabarkan)",
                            "tipe": "teks", "pola": r"^\s*((\d|1\d|2[0-3])\s*-\s*(\d|1\d|2[0-3]))?\s*$", "contoh": "21-06",
                            "bantuan": "Masuk ringkasan laporan harian. Gangguan massal tetap dikabarkan langsung."},
@@ -9075,6 +9086,188 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
             "hilang_persen": hilang,
             "rata_ms": angka("AverageResponseTime"), "min_ms": angka("MinimumResponseTime"),
             "maks_ms": angka("MaximumResponseTime")}
+
+
+# ---- Speedtest dari ONU (TR-143 DownloadDiagnostics) ----
+# Ping hanya paket kecil; keluhan "lemot tapi ping normal" butuh ukuran unduhan sungguhan dari rumah pelanggan.
+_UNDUH_ONU = f"{_IGD}.DownloadDiagnostics"
+_speed_tugas: dict = {}          # tugas_id -> (acs_id, username, model, url, lewat_wan, pemakaian Mbps sebelum tes)
+_speed_tanpa_wan: set = set()    # ONU yang menolak kolom Interface
+_KEADAAN_UNDUH = {
+    "Error_InitConnectionFailed": "ONU tidak bisa menghubungi server file uji (alamat salah / server mati / terblokir).",
+    "Error_NoResponse": "Server file uji tidak menjawab.",
+    "Error_TransferFailed": "Unduhan terputus di tengah jalan.",
+    "Error_PasswordRequestFailed": "Server file uji meminta login.",
+    "Error_LoginFailed": "Login ke server file uji ditolak.",
+    "Error_NoTransferMode": "ONU tidak mendukung cara unduh ini.",
+    "Error_NoPASV": "ONU tidak mendukung cara unduh ini.",
+    "Error_IncorrectSize": "Ukuran file uji tidak sesuai.",
+    "Error_Timeout": "Unduhan terlalu lama (jaringan sangat lambat atau file uji terlalu besar).",
+}
+
+
+def _url_speedtest() -> str:
+    url = (CONFIG.get("SPEEDTEST_URL") or "").strip()
+    if url:
+        return url
+    from urllib.parse import urlparse
+    host = urlparse(CONFIG.get("ACS_ONU_URL") or "http://10.99.0.1:7547").hostname or "10.99.0.1"
+    return f"http://{host}:7567/indeso-uji-20MB.bin"
+
+
+def _waktu_iso(teks) -> Optional[datetime]:
+    t = str(teks or "").strip()
+    if not t or t.startswith("0001"):
+        return None
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:?\d\d)?$", t)
+    if not m:
+        return None
+    pecahan = (m.group(2) or ".0")[1:7].ljust(6, "0")
+    zona = m.group(3) or "Z"
+    zona = "+00:00" if zona == "Z" else (zona if ":" in zona else zona[:3] + ":" + zona[3:])
+    try:
+        return datetime.fromisoformat(f"{m.group(1)}.{pecahan}{zona}")
+    except ValueError:
+        return None
+
+
+def _catat_speedtest(asal, status: str, pesan: str, mbps=None, nbytes=None, detik=None) -> None:
+    acs_id, username, model, url, _wan, pakai = asal
+    paket = None
+    try:
+        conn = _billing_conn()
+        try:
+            r = conn.execute("SELECT k.kecepatan_mbps FROM pelanggan p JOIN paket k ON k.id=p.paket_id WHERE p.username=?",
+                             (username,)).fetchone()
+            paket = r[0] if r else None
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    try:
+        conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+        try:
+            conn.execute("INSERT INTO speedtest_onu VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (datetime.now().isoformat(timespec="seconds"), username, model, url, status,
+                          mbps, nbytes, detik, paket, pakai, (pesan or "")[:300]))
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.warning(f"Gagal mencatat speedtest ONU: {e}")
+
+
+class SpeedtestIn(BaseModel):
+    url: Optional[str] = None     # kosong = pengaturan SPEEDTEST_URL
+
+
+@app.post("/api/acs/{username}/speedtest")
+def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
+    """ONU mengunduh file uji (HTTP) lalu melaporkan byte & waktu; kecepatan dihitung dari situ."""
+    _wajib_admin(request)
+    url = (d.url or "").strip() or _url_speedtest()
+    if not re.fullmatch(_PENGATURAN["SPEEDTEST_URL"]["pola"], url) or not url:
+        raise HTTPException(status_code=400, detail="Alamat file uji harus http://… (ONU tidak bisa HTTPS).")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if not _ada(doc, _UNDUH_ONU) and not _ada(doc, _UNDUH_ONU + ".DiagnosticsState"):
+        # Belum pernah terbaca: minta ONU melaporkan objeknya dulu (sekalian tahu didukung atau tidak).
+        try:
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU + "."}, tunggu=20)
+            doc = _cari_perangkat(username) or doc
+        except HTTPException as e:
+            logger.warning(f"Gagal membaca DownloadDiagnostics {doc['_id']}: {e.detail}")
+        if not _ada(doc, _UNDUH_ONU):
+            raise HTTPException(status_code=409, detail="ONU ini tidak menyediakan tes kecepatan lewat TR-069 "
+                                                        "(DownloadDiagnostics). Uji dari HP pelanggan di dekat ONU.")
+    _bersihkan_tertahan(doc["_id"])
+    wan = (_wan_ppp_aktif(doc) if _ada(doc, f"{_UNDUH_ONU}.Interface") and doc["_id"] not in _speed_tanpa_wan else None)
+    nilai = ([[f"{_UNDUH_ONU}.Interface", wan, "xsd:string"]] if wan else []) + [
+        [f"{_UNDUH_ONU}.DownloadURL", url, "xsd:string"],
+        [f"{_UNDUH_ONU}.DiagnosticsState", "Requested", "xsd:string"]]
+    for v in nilai:
+        tipe = _param(doc, v[0]).get("_type")
+        if isinstance(tipe, str) and tipe.startswith("xsd:"):
+            v[2] = tipe
+    mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=25)
+    if hasil.get("tugas_id"):
+        # Pemakaian dicatat SEBELUM tes (data monitor terakhir), supaya unduhan tes sendiri tidak ikut terhitung.
+        u = next((x for x in (_latest_data.pppoe_users if _latest_data else []) if x.username == username), None)
+        _speed_tugas[str(hasil["tugas_id"])] = (doc["_id"], username, _model_onu(doc), url, bool(wan),
+                                               u.rx_mbps if u is not None else None)
+        while len(_speed_tugas) > 200:
+            _speed_tugas.pop(next(iter(_speed_tugas)))
+    catat_aktivitas(_oleh(request), "onu_speedtest", f"{username} ({doc['_id']}) unduh {url}")
+    return dict(hasil, mulai=mulai, url=url, lewat_wan=bool(wan))
+
+
+@app.get("/api/acs/{username}/speedtest")
+def acs_speedtest_hasil(username: str, request: Request, mulai: str, segarkan: bool = False, tugas: Optional[str] = None):
+    """menunggu / gagal (ONU menolak atau unduhan error) / selesai (Mbps)."""
+    _wajib_admin(request)
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    asal = _speed_tugas.get(tugas) if tugas else None
+    if tugas and re.fullmatch(r"[0-9a-f]{24}", tugas):
+        st = _status_tugas(doc["_id"], tugas)
+        if st["status"] == "gagal":
+            _hapus_tugas_acs(doc["_id"], tugas)
+            _speed_tugas.pop(tugas, None)
+            pesan = st["pesan"]
+            if asal and asal[4] and "Interface" in (st.get("parameter") or []):
+                _speed_tanpa_wan.add(doc["_id"])
+                pesan += " Percobaan berikutnya tanpa memilih WAN; tekan Tes lagi."
+            if asal:
+                _catat_speedtest(asal, "ditolak", st["pesan"])
+            return {"status": "gagal", "pesan": pesan}
+    if segarkan:
+        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": doc["_id"], "name": "getParameterValues"})})
+        tertunda = r.ok and any(any(str(n).startswith(_UNDUH_ONU) for n in (t.get("parameterNames") or [])) for t in r.json())
+        if not tertunda:
+            _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
+                f"{_UNDUH_ONU}.{k}" for k in ("DiagnosticsState", "BOMTime", "EOMTime", "TestBytesReceived",
+                                              "TotalBytesReceived", "ROMTime")]}, tunggu=15)
+            doc = _cari_perangkat(username) or doc
+    st = _param(doc, f"{_UNDUH_ONU}.DiagnosticsState")
+    keadaan, waktu = st.get("_value"), str(st.get("_timestamp") or "")
+    if not keadaan or keadaan in ("Requested", "None") or waktu < mulai:
+        return {"status": "menunggu", "keadaan": keadaan}
+    if tugas:
+        _speed_tugas.pop(tugas, None)
+    if keadaan != "Completed":
+        pesan = _KEADAAN_UNDUH.get(keadaan, f"ONU melaporkan {keadaan}.")
+        if asal:
+            _catat_speedtest(asal, "error", f"{keadaan}: {pesan}")
+        return {"status": "gagal", "keadaan": keadaan, "pesan": pesan}
+    awal, akhir = _waktu_iso(_nilai(doc, f"{_UNDUH_ONU}.BOMTime")), _waktu_iso(_nilai(doc, f"{_UNDUH_ONU}.EOMTime"))
+    angka = lambda k: (lambda v: int(v) if str(v).isdigit() else None)(_nilai(doc, f"{_UNDUH_ONU}.{k}"))
+    nbytes = angka("TestBytesReceived") or angka("TotalBytesReceived")
+    detik = (akhir - awal).total_seconds() if awal and akhir else None
+    if not nbytes or not detik or detik <= 0:
+        pesan = "ONU selesai mengunduh tapi tidak melaporkan waktu/ukuran yang bisa dihitung."
+        if asal:
+            _catat_speedtest(asal, "error", pesan)
+        return {"status": "gagal", "keadaan": keadaan, "pesan": pesan}
+    mbps = round(nbytes * 8 / detik / 1_000_000, 2)
+    if asal:
+        _catat_speedtest(asal, "berhasil", keadaan, mbps, nbytes, round(detik, 2))
+    return {"status": "selesai", "mbps": mbps, "bytes": nbytes, "detik": round(detik, 2)}
+
+
+@app.get("/api/speedtest-onu/{username}")   # bukan /api/acs/...: riwayat dari database, bukan dari ONU
+def speedtest_riwayat(username: str, request: Request):
+    _wajib_admin(request)
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT ts, status, mbps, detik, paket_mbps, pakai_mbps, pesan, model FROM speedtest_onu "
+                            "WHERE username=? ORDER BY ts DESC, rowid DESC LIMIT 10", (username,)).fetchall()
+    finally:
+        conn.close()
+    return {"riwayat": [dict(r) for r in rows], "url": _url_speedtest()}
 
 
 @app.get("/api/ping-onu/ringkasan")   # bukan /api/acs/...: akan tertangkap rute /api/acs/{username}

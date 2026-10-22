@@ -156,6 +156,30 @@ lapor ke ACS → WiFi diatur. Tombol yang tersedia:
 
 PPPoE ONU baru masih diisi di web ONU. Pengisian PPPoE dari OLT menunggu perintah CLI C-Data yang sudah dipastikan.
 
+### Tes kecepatan dari ONU (Diagnosa → ⚡ Tes kecepatan dari ONU)
+
+Ping hanya mengirim paket kecil, jadi keluhan "lemot tapi ping normal" tidak bisa dibuktikan dengan ping. Tombol
+ini menyuruh ONU pelanggan mengunduh file uji lewat TR-069 (TR-143 `DownloadDiagnostics`). INDESO lalu menghitung
+Mbps dari jumlah byte dan waktu yang dilaporkan ONU, dan membandingkannya dengan paket serta pemakaian pelanggan
+sesaat sebelum tes.
+
+File uji bawaan disimpan di **GenieACS FS** di VPS (`http://10.99.0.1:7567/indeso-uji-20MB.bin`). ONU menjangkaunya
+lewat terowongan WireGuard yang sama dengan jalur lapor ACS. Siapkan sekali di VPS:
+
+```
+sudo systemctl enable --now genieacs-fs
+head -c 20000000 /dev/urandom > /tmp/uji.bin
+curl -fsS -X PUT --data-binary @/tmp/uji.bin -H "fileType: X INDESO Speedtest" \
+  http://127.0.0.1:7557/files/indeso-uji-20MB.bin && rm /tmp/uji.bin
+curl -fsS -o /dev/null -w 'ukuran: %{size_download} byte\n' http://10.99.0.1:7567/indeso-uji-20MB.bin
+```
+
+Baris terakhir harus menampilkan `ukuran: 20000000 byte`.
+
+Hasil tes mencakup jalur sampai VPS. Kalau VPS jauh atau kecepatannya terbatas, isi **Pengaturan → File uji
+speedtest** dengan file HTTP 10–50 MB di server yang dekat, misalnya mirror di Indonesia. ONU tidak bisa memakai HTTPS.
+Tidak semua ONU mendukung tes ini. Kalau ONU tidak mendukung, INDESO menampilkan pesan yang jelas.
+
 ## 6. Isi `.env` INDESO (di HP Termux)
 
 ```

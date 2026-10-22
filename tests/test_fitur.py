@@ -2494,3 +2494,50 @@ def test_kesehatan_wifi(siap, monkeypatch):
     assert m.get("/api/wifi-kesehatan").status_code == 403
     r = k.post("/api/wifi-kesehatan/segarkan").json()
     assert r["diantrekan"] == 2 and all(t["name"] == "refreshObject" for t in acs.tugas)
+
+
+def test_speedtest_dari_onu(siap, monkeypatch):
+    """TR-143 DownloadDiagnostics: URL bawaan = file di GenieACS FS; Mbps dihitung dari byte & BOM/EOM;
+    error ONU dijelaskan; ONU tanpa DownloadDiagnostics ditolak jelas; riwayat tercatat dengan paket & pemakaian."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    U = main.PPPoEUser
+    main._latest_data = main._build_dashboard(
+        [U(username="budi", ip_address="10.0.0.2", uptime="1h", rx_mbps=1.5, tx_mbps=0.2)],
+        None, [main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, serial_number="ZTEGC1234567", olt_rx_dbm=-20.0,
+                              online=True, status="OK", pppoe_username="budi")])
+    dev = acs.dev["ZTEGC1234567"]
+    assert k.post("/api/acs/budi/speedtest", json={}).status_code == 409          # ONU tanpa DownloadDiagnostics
+    dd = {"DiagnosticsState": {"_value": "None", "_type": "xsd:string", "_timestamp": "2020-01-01T00:00:00.000Z"},
+          "DownloadURL": {"_value": "", "_type": "xsd:string"}, "Interface": {"_value": "", "_type": "xsd:string"}}
+    dev["InternetGatewayDevice"]["DownloadDiagnostics"] = dd
+    assert k.post("/api/acs/budi/speedtest", json={"url": "https://x.test/a.bin"}).status_code == 400   # HTTPS ditolak
+    r = k.post("/api/acs/budi/speedtest", json={}).json()
+    assert r["url"] == "http://10.99.0.1:7567/indeso-uji-20MB.bin" and r["lewat_wan"] and r["status"] == "selesai"
+    nilai = {p[0].rsplit(".", 1)[1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert nilai["DownloadURL"] == r["url"] and nilai["DiagnosticsState"] == "Requested"
+    assert nilai["Interface"].endswith("WANPPPConnection.1")
+    q = {"mulai": r["mulai"], "tugas": r["tugas_id"]}
+    assert k.get("/api/acs/budi/speedtest", params=q).json()["status"] == "menunggu"
+    # ONU selesai: 20 MB dalam 8,5 detik → 18,82 Mbps
+    dd["DiagnosticsState"] = {"_value": "Completed", "_timestamp": "2099-01-01T00:00:00.000Z"}
+    dd["BOMTime"] = {"_value": "2026-10-22T08:00:01.250000Z"}
+    dd["EOMTime"] = {"_value": "2026-10-22T08:00:09.750000Z"}
+    dd["TestBytesReceived"] = {"_value": 20_000_000}
+    h = k.get("/api/acs/budi/speedtest", params=q).json()
+    assert h == {"status": "selesai", "mbps": 18.82, "bytes": 20_000_000, "detik": 8.5}
+    # error dari ONU
+    r = k.post("/api/acs/budi/speedtest", json={"url": "http://mirror.test/uji.bin"}).json()
+    dd["DiagnosticsState"] = {"_value": "Error_InitConnectionFailed", "_timestamp": "2099-01-02T00:00:00.000Z"}
+    h = k.get("/api/acs/budi/speedtest", params={"mulai": r["mulai"], "tugas": r["tugas_id"]}).json()
+    assert h["status"] == "gagal" and "tidak bisa menghubungi" in h["pesan"]
+    rw = k.get("/api/speedtest-onu/budi").json()["riwayat"]
+    assert [x["status"] for x in rw] == ["error", "berhasil"]
+    assert rw[1]["mbps"] == 18.82 and rw[1]["paket_mbps"] == 10 and rw[1]["pakai_mbps"] == 1.5
+    assert m.post("/api/acs/budi/speedtest", json={}).status_code == 403
+    # pengaturan URL: hanya http
+    assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "https://a.test/x"}}).status_code == 400
+    assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "http://mirror.test:8080/uji-25MB.bin"}}).status_code == 200
+    assert k.get("/api/speedtest-onu/budi").json()["url"] == "http://mirror.test:8080/uji-25MB.bin"
