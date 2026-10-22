@@ -1368,11 +1368,24 @@ async function loadPengaturan(){
   const kunci=p=>p.owner&&d.peran!=='owner'?' disabled title="Hanya owner yang bisa mengubah"':'';
   $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+(p.owner?' <span class="chip info">owner</span>':'')+'</label>'+(p.tipe==='pilihan'
    ?'<select id="set'+i+'"'+kunci(p)+'>'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
+   :p.tipe==='interface'?`<select id="set${i}" data-iface="1"${kunci(p)}><option value="">Otomatis</option>${p.nilai?`<option value="${esc(p.nilai)}" selected>${esc(p.nilai)}</option>`:''}</select>`
    :p.tipe==='teks'?`<input id="set${i}" value="${esc(p.nilai)}" inputmode="numeric" placeholder="mis. ${esc(p.contoh||'123456789')}"${kunci(p)}>`
    :p.tipe==='teksbebas'?`<textarea id="set${i}" rows="${p.baris||1}" maxlength="${p.maks}" style="width:100%;font:inherit;border:1px solid var(--line);border-radius:10px;padding:8px 10px;resize:vertical"${kunci(p)}>${esc(p.nilai)}</textarea>`
    :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric"${kunci(p)}>`)
    +(p.bantuan?'<div class="plSub" style="margin-top:4px">'+esc(p.bantuan)+'</div>':'')).join('');
+  isiPilihanInterface();
  }catch(e){ $('sysInfo').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+// Pilihan interface diisi dari MikroTik supaya nama persis sama (spasi, huruf besar/kecil).
+async function isiPilihanInterface(){
+ const sel=[...document.querySelectorAll('#setForm select[data-iface]')]; if(!sel.length) return;
+ let d; try{ d=await jsonAtauError(await fetch('/api/mikrotik/interface',{cache:'no-store'})); }
+ catch(e){ sel.forEach(x=>x.insertAdjacentHTML('afterend','<div class="plSub" style="margin-top:4px;color:#b45309">Daftar interface MikroTik tidak bisa dibaca: '+esc(e.message)+'</div>')); return; }
+ for(const x of sel){
+  const kini=x.value, ada=d.interface.some(i=>i.nama===kini);
+  x.innerHTML='<option value="">Otomatis</option>'+(kini&&!ada?`<option value="${esc(kini)}" selected>${esc(kini)} (tidak ditemukan di MikroTik)</option>`:'')
+   +d.interface.map(i=>`<option value="${esc(i.nama)}" ${i.nama===kini?'selected':''}>${esc(i.nama)} · ${esc(i.jenis||'')}${i.mati?' · nonaktif':i.jalan?'':' · tidak tersambung'}${i.komentar?' · '+esc(i.komentar):''}</option>`).join('');
+ }
 }
 async function simpanPengaturan(){
  const nilai={}; st.set.forEach((p,i)=>{ const v=$('set'+i).value; nilai[p.kunci]=p.tipe==='int'?Number(v):v; });

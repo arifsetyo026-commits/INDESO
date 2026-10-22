@@ -2782,10 +2782,10 @@ _PENGATURAN = {
     "PUTUS_TUNGGU_MENIT": {"label": "Tunggu sebelum alert putus (menit)", "tipe": "int", "min": 1, "max": 240},
     "UPSTREAM_KAPASITAS_MBPS": {"label": "Kapasitas download internet pusat, jumlah semua ISP/WAN (Mbps, 0 = alert penuh mati)",
                                 "tipe": "int", "min": 0, "max": 100000},
-    "UPSTREAM_WAN": {"label": "Interface WAN MikroTik ke ISP (kosong = deteksi otomatis)", "tipe": "teks",
-                     "pola": r"^[\w.\-<>@ ]{0,64}$", "contoh": "ether1"},
-    "UPSTREAM_TRAFIK_IF": {"label": "Interface ke OLT untuk trafik total pelanggan (kosong = interface server PPPoE)",
-                           "tipe": "teks", "pola": r"^[\w.\-<>@ ,]{0,120}$", "contoh": "sfp-sfpplus1"},
+    "UPSTREAM_WAN": {"label": "Interface WAN MikroTik ke ISP untuk tes ping (Otomatis = dari default route)",
+                     "tipe": "interface", "pola": r"^[\w.\-<>@ ]{0,64}$"},
+    "UPSTREAM_TRAFIK_IF": {"label": "Interface ke OLT untuk trafik total pelanggan (Otomatis = interface server PPPoE)",
+                           "tipe": "interface", "pola": r"^[\w.\-<>@ ]{0,64}$"},
     "UPSTREAM_TUJUAN": {"label": "Tujuan ping internet pusat (pisahkan koma)", "tipe": "teks",
                         "pola": r"^\s*[A-Za-z0-9.\-]{1,253}(\s*,\s*[A-Za-z0-9.\-]{1,253}){0,4}\s*$", "contoh": "8.8.8.8,1.1.1.1"},
     "PUTUS_SENYAP_MALAM": {"label": "Jam malam: listrik ONU mati tidak dikabarkan satu per satu (mis. 21-06, kosong = selalu kabarkan)",
@@ -2819,7 +2819,7 @@ _PENGATURAN = {
 }
 
 
-def _validasi_pengaturan(kunci: str, nilai):
+def _validasi_pengaturan(kunci: str, nilai, periksa_mikrotik: bool = True):
     meta = _PENGATURAN.get(kunci)
     if meta is None:
         raise HTTPException(status_code=400, detail=f"Pengaturan {kunci} tidak bisa diubah dari dashboard.")
@@ -2838,6 +2838,15 @@ def _validasi_pengaturan(kunci: str, nilai):
         if len(nilai) > meta["maks"]:
             raise HTTPException(status_code=400, detail=f"{meta['label']} maksimal {meta['maks']} huruf.")
         return nilai
+    if meta["tipe"] == "interface":
+        nilai = str(nilai or "").strip()
+        if not re.fullmatch(meta["pola"], nilai):
+            raise HTTPException(status_code=400, detail=f"{meta['label']}: nama interface tidak valid.")
+        # Dicek ke MikroTik hanya bila diubah (bukan saat INDESO menyala atau menyimpan pengaturan lain).
+        ada = _daftar_interface_mikrotik() if periksa_mikrotik and nilai and nilai != CONFIG.get(kunci) else None
+        if ada is not None and nilai not in {i["nama"] for i in ada}:
+            raise HTTPException(status_code=400, detail=f"Interface '{nilai}' tidak ada di MikroTik. Pilih dari daftar.")
+        return nilai
     if meta["tipe"] == "teks":
         nilai = str(nilai or "").strip()
         if not re.fullmatch(meta["pola"], nilai):
@@ -2855,7 +2864,7 @@ def _muat_pengaturan() -> None:
         conn.commit()
         for kunci, nilai in conn.execute("SELECT kunci, nilai FROM pengaturan").fetchall():
             try:
-                CONFIG[kunci] = _validasi_pengaturan(kunci, nilai)
+                CONFIG[kunci] = _validasi_pengaturan(kunci, nilai, periksa_mikrotik=False)
             except HTTPException as e:
                 logger.warning(f"Pengaturan tersimpan {kunci}={nilai!r} diabaikan: {e.detail}")
     finally:
@@ -3135,6 +3144,39 @@ def list_data_pelanggan():
         return {"pelanggan": [dict(r) for r in rows]}
     finally:
         conn.close()
+
+
+def _daftar_interface_mikrotik() -> Optional[list]:
+    """Daftar interface MikroTik (nama persis), atau None bila MikroTik tidak bisa dibaca.
+    Interface PPPoE pelanggan (<pppoe-…>) tidak ikut."""
+    pool = _mikrotik_pool()
+    try:
+        rows = pool.get_api().get_resource("/interface").get()
+    except Exception as e:
+        logger.warning(f"Gagal membaca daftar interface MikroTik: {e}")
+        return None
+    finally:
+        try:
+            pool.disconnect()
+        except Exception:
+            pass
+    hasil = []
+    for r in rows:
+        nama = r.get("name") or ""
+        if not nama or nama.startswith("<pppoe-") or r.get("type") in ("pppoe-in", "l2tp-in", "pptp-in", "sstp-in", "ovpn-in"):
+            continue
+        hasil.append({"nama": nama, "jenis": r.get("type"), "jalan": str(r.get("running", "")).lower() in ("true", "yes"),
+                      "mati": str(r.get("disabled", "")).lower() in ("true", "yes"), "komentar": r.get("comment") or ""})
+    return sorted(hasil, key=lambda i: (i["mati"], not i["jalan"], i["nama"].lower()))
+
+
+@app.get("/api/mikrotik/interface")
+def mikrotik_interface(request: Request):
+    _wajib_admin(request)
+    ada = _daftar_interface_mikrotik()
+    if ada is None:
+        raise HTTPException(status_code=502, detail="MikroTik tidak bisa dibaca.")
+    return {"interface": ada}
 
 
 @app.get("/api/mikrotik/profil")
