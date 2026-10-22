@@ -2556,3 +2556,25 @@ def test_acs_onu_berhenti_lapor_ditandai(siap, monkeypatch):
     assert 36 <= p["lapor_menit_lalu"] <= 38 and p["diam"] is True
     dev["_lastInform"] = (sekarang - timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     assert k.get("/api/acs/budi").json()["perangkat"]["diam"] is False
+
+
+def test_acs_cocok_lewat_wan_pppoe_index_tinggi(siap, monkeypatch):
+    """Kasus KEMAT (ZTE F609 V2): SN TR-069 beda dengan SN GPON, WAN pertama sisa lama ('Gagal', 0.0.0.0),
+    WAN yang tersambung di index tinggi. ONU tetap dikenali lewat username PPPoE."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev.pop("ZTEGC1234567")
+    dev["_id"], dev["_deviceId"]["_SerialNumber"] = "74B57E-F609-ZTEAQFGH4P10867", "ZTEAQFGH4P10867"
+    dev["VirtualParameters"] = {"pppoeUsername": {"_value": "Gagal"}}
+    wcd = dev["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]
+    wcd["1"]["WANPPPConnection"]["1"] = {"Username": {"_value": "Gagal"}, "ExternalIPAddress": {"_value": "0.0.0.0"}}
+    wcd["7"] = {"WANPPPConnection": {"3": {"Username": {"_value": "dwi"}, "ExternalIPAddress": {"_value": "172.20.52.212"}}}}
+    acs.dev["x"] = dev
+    main._latest_data = main._build_dashboard([], None, [main.ONUStatus(
+        pon="0/0/1", onu_id=33, snmp_index=33, serial_number="ZTEGC6BF128D", model="F609V2.0", olt_rx_dbm=-21.9,
+        online=True, status="OK", pppoe_username="dwi")])
+    d = k.get("/api/acs/dwi").json()
+    assert d["terhubung"] and d["perangkat"]["id"] == "74B57E-F609-ZTEAQFGH4P10867"
+    assert d["perangkat"]["wan_ip"] == "172.20.52.212"

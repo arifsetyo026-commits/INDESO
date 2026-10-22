@@ -8479,7 +8479,7 @@ def _sn_onu(username: str) -> Optional[str]:
 
 def _query_pppoe(username: str) -> dict:
     jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username._value"
-             for w in range(1, 6) for p in range(1, 3)]
+             for w in range(1, 11) for p in range(1, 6)]
     return {"$or": [{"VirtualParameters.pppoeUsername._value": username}] + [{j: username} for j in jalur]}
 
 
@@ -8739,7 +8739,9 @@ def _ringkas_perangkat(doc: dict) -> dict:
     wan_ip = None
     for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
         for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
-            wan_ip = wan_ip or _nilai(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.ExternalIPAddress")
+            ip = _nilai(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.ExternalIPAddress")
+            if ip and ip != "0.0.0.0":       # WAN sisa lama yang tidak tersambung melapor 0.0.0.0
+                wan_ip = wan_ip or ip
     uptime = _nilai(doc, f"{_IGD}.DeviceInfo.UpTime")
     return {
         "id": doc.get("_id"), "pabrikan": di.get("_Manufacturer"), "model": di.get("_ProductClass"),
@@ -10222,7 +10224,7 @@ def _onu_di_acs() -> Optional[dict]:
     if not _acs_aktif():
         return None
     jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username"
-             for w in range(1, 6) for p in range(1, 3)]
+             for w in range(1, 11) for p in range(1, 6)]
     try:
         r = _acs("GET", "/devices/", params={"query": "{}", "projection": ",".join(
             ["_id", "_lastInform", "_deviceId", "VirtualParameters.pppoeUsername"] + jalur)}, timeout=15)
@@ -10499,7 +10501,7 @@ def wifi_kesehatan(request: Request):
     if not _acs_aktif():
         return {"aktif": False}
     jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username"
-             for w in range(1, 6) for p in range(1, 3)]
+             for w in range(1, 11) for p in range(1, 6)]
     r = _acs("GET", "/devices/", params={"query": "{}", "projection": ",".join(
         ["_id", "_lastInform", "_deviceId", "VirtualParameters.pppoeUsername",
          f"{_IGD}.LANDevice.1.WLANConfiguration"] + jalur)}, timeout=30)
