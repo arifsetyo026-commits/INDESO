@@ -1661,7 +1661,7 @@ function htmlAcs(a){
  let h=`<div class="plSub" style="font-weight:800;margin-bottom:4px">Perangkat ONU (TR-069)</div><div class="detailGrid" style="margin-bottom:8px">`
   +kotak('Model',esc((p.pabrikan||'')+' '+(p.model||'')))+kotak('Firmware',esc(p.firmware||'—'))+kotak('ONU menyala',dgDurasi(p.uptime_detik))
   +kotak('Lapor ke ACS',lapor)+kotak('Perangkat terhubung',p.perangkat_aktif+' aktif')+'</div>';
- h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button></div><div id="dgPingOnu"></div>';
+ h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button><button class="btnS go" onclick="speedOnu(this)">⚡ Tes kecepatan dari ONU</button></div><div id="dgPingOnu"></div><div id="dgSpeed"></div>';
  const wifiAktif=p.wifi.filter(w=>w.aktif), wifiMati=p.wifi.filter(w=>!w.aktif);
  const kartuWifi=w=>`<div class="kuPanel" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b style="font-size:var(--fs-sm)">📶 ${esc(w.ssid)}</b> <span class="plSub">${esc(w.band)}${w.channel?' · channel '+esc(w.channel):''}${w.klien!=null?' · '+w.klien+' terhubung':''}${w.aktif?'':' · NONAKTIF'}</span></div><button class="btnS" onclick="const f=document.getElementById('dgW${w.index}');f.style.display=f.style.display==='none'?'block':'none'">Ganti nama / password</button></div>
    <div id="dgW${w.index}" class="plForm" style="display:none;margin-top:4px"><label>Nama WiFi baru (kosongkan bila tetap)</label><input id="dgSsid${w.index}" maxlength="32" placeholder="${esc(w.ssid)}">
@@ -1744,6 +1744,56 @@ async function pingOnu(host,catatan,tahap,lanjut){
   box.innerHTML=(catatan?catatan.replace('Diulang otomatis ke alamat IP 8.8.8.8 untuk memeriksa koneksinya.','Koneksi ke internet tetap jalan (lihat hasil ping IP di bawah), jadi masalahnya di pengaturan DNS ONU/WAN. Pelanggan bisa mengalami "terhubung tapi tidak bisa buka situs". Periksa DNS di WAN PPPoE ONU atau profil PPPoE MikroTik.'):'')+`<div class="kuPanel" style="margin:0 0 12px;${buruk?'border-color:#f3b4ab;background:#fff6f5':'border-color:#bfe6cb;background:#f3faf5'}"><b style="font-size:var(--fs-xs)">ONU → ${esc(s.host||'google.com')}: ${s.sukses??'—'}/${(s.sukses||0)+(s.gagal||0)} balas · hilang ${s.hilang_persen??'—'}% · rata-rata ${s.rata_ms??'—'} ms (min ${s.min_ms??'—'}, maks ${s.maks_ms??'—'})</b><div class="plSub">${buruk?'Internet dari rumah pelanggan ke luar lambat atau tidak stabil. Cek redaman/kabel pelanggan, lalu beban bandwidth & uplink di server.':'Internet dari ONU pelanggan ke Google normal. Bila pelanggan masih merasa lemot, kemungkinan besar masalahnya di WiFi rumah (jarak, tembok, terlalu banyak perangkat) atau di perangkatnya sendiri.'}</div></div>`;
  };
  _pantauPing=setInterval(cek,4000); setTimeout(cek,2500);
+}
+// ===== Speedtest dari ONU (TR-143): kecepatan unduh sebenarnya sampai rumah pelanggan =====
+let _pantauSpeed=null;
+function nilaiSpeed(x){
+ const paket=x.paket_mbps, pakai=x.pakai_mbps, pct=paket?x.mbps/paket:null;
+ if(pct==null) return ['#1669aa','ℹ','Paket pelanggan belum diisi, jadi hasil tidak bisa dibandingkan.'];
+ if(pct>=0.8) return ['#0b7a3b','✅','Jaringan sampai ONU sehat. Bila pelanggan tetap merasa lemot, masalahnya di WiFi rumah, HP, atau aplikasinya: cek Kesehatan WiFi, minta coba di dekat ONU / WiFi 5 GHz.'];
+ const ramai=pakai!=null&&paket&&pakai>=paket*0.5;
+ if(ramai) return ['#b45309','⚠','Sesaat sebelum tes, perangkat lain di rumah pelanggan sedang memakai '+pakai.toFixed(1)+' Mbps, jadi kuota terbagi. Ulangi saat sepi, atau tawarkan paket lebih besar.'];
+ if(pct>=0.5) return ['#b45309','⚠','Agak di bawah paket. Ulangi di jam lain dan bandingkan dengan pelanggan lain di PON yang sama.'];
+ return ['#b42318','✖','Jauh di bawah paket padahal pemakaian lain kecil: masalah di jaringan (redaman/konektor, OLT, atau ISP). Cek redaman di atas, ulangi di jam lain, dan bandingkan dengan pelanggan lain.'];
+}
+async function riwayatSpeed(user,box,teratas){
+ try{ const d=await jsonAtauError(await fetch('/api/speedtest-onu/'+encodeURIComponent(user),{cache:'no-store'}));
+  const ok=d.riwayat.filter(x=>x.status==='berhasil'); let h='';
+  if(teratas&&ok[0]){ const x=ok[0], [w,ik,saran]=nilaiSpeed(x);
+   h+=`<div class="kuPanel" style="margin:0 0 10px"><b style="color:${w};font-size:var(--fs-sm)">${ik} ${x.mbps.toFixed(1)} Mbps</b>${x.paket_mbps?` <span class="plSub">dari paket ${x.paket_mbps} Mbps (${Math.round(x.mbps*100/x.paket_mbps)}%)</span>`:''}
+    <div class="plSub">Unduh ${x.detik} detik${x.pakai_mbps!=null?' · pemakaian pelanggan sesaat sebelum tes '+x.pakai_mbps.toFixed(1)+' Mbps':''}</div><div style="font-size:var(--fs-xs);margin-top:6px">${esc(saran)}</div>
+    <div class="plSub" style="margin-top:6px">Diukur dari ONU ke ${esc(d.url)} (termasuk jalur ISP sampai server itu).</div></div>`; }
+  if(d.riwayat.length>(teratas?1:0)) h+='<div class="plSub" style="margin-bottom:10px"><b>Riwayat tes:</b><br>'+d.riwayat.slice(teratas?1:0,8).map(x=>esc(khWaktu(String(x.ts).replace('T',' ')))+' · '+(x.status==='berhasil'?x.mbps.toFixed(1)+' Mbps'+(x.paket_mbps?' / '+x.paket_mbps:''):'gagal: '+esc(String(x.pesan||'').slice(0,80)))).join('<br>')+'</div>';
+  box.innerHTML=h;
+ }catch(e){}
+}
+async function speedOnu(btn){
+ const user=dg.user, box=$('dgSpeed'); clearInterval(_pantauSpeed);
+ if(!confirm('Tes kecepatan dari ONU '+user+'?\nONU mengunduh file uji ±20 MB; internet pelanggan sedikit tersendat selama beberapa detik.')) return;
+ btn.disabled=true; box.innerHTML='<div class="muted">⏳ Menyuruh ONU mengunduh file uji…</div>';
+ let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/speedtest',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})); }
+ catch(e){ box.innerHTML='<div class="kuPanel" style="margin:0 0 10px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ Tes kecepatan tidak bisa dimulai</b><div class="plSub">'+esc(e.message)+'</div></div>'; btn.disabled=false; return; }
+ const awal=Date.now(); let segarBerikut=10, sibuk=false;
+ const cek=async()=>{
+  if(dg.user!==user||!$('diagModal').classList.contains('show')){ clearInterval(_pantauSpeed); btn.disabled=false; return; }
+  if(sibuk) return;
+  const dtk=Math.round((Date.now()-awal)/1000), segar=dtk>=segarBerikut;
+  if(segar) segarBerikut=dtk+15;
+  sibuk=true;
+  let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/speedtest?mulai='+encodeURIComponent(r.mulai)+(r.tugas_id?'&tugas='+r.tugas_id:'')+(segar?'&segarkan=true':''),{cache:'no-store'})); }catch(e){ return; }
+  finally{ sibuk=false; }
+  if(s.status==='menunggu'){
+   box.innerHTML=`<div class="muted">⏳ ONU sedang mengunduh file uji… (${dtk} detik)${dtk>90?' — hasil muncul begitu ONU lapor ke server (maks. ±5 menit).':''}</div>`;
+   if(dtk>360){ clearInterval(_pantauSpeed); btn.disabled=false;
+    if(r.tugas_id) fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+r.tugas_id+'/batal',{method:'POST'}).catch(()=>{});
+    box.innerHTML='<div class="muted">Belum ada hasil setelah 6 menit; perintah dihapus dari antrean. ONU mungkin offline atau tidak mendukung tes kecepatan.</div>'; }
+   return;
+  }
+  clearInterval(_pantauSpeed); btn.disabled=false;
+  if(s.status==='gagal'){ box.innerHTML='<div class="kuPanel" style="margin:0 0 10px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ Tes kecepatan gagal</b><div class="plSub">'+esc(s.pesan||'')+'</div></div>'; const t=document.createElement('div'); box.appendChild(t); riwayatSpeed(user,t,false); return; }
+  riwayatSpeed(user,box,true);
+ };
+ _pantauSpeed=setInterval(cek,4000); setTimeout(cek,3000);
 }
 function passwordAcak(){ const c='abcdefghjkmnpqrstuvwxyz23456789'; let s=''; const a=new Uint32Array(10); crypto.getRandomValues(a); a.forEach(x=>s+=c[x%c.length]); return s; }
 async function tesPing(){
