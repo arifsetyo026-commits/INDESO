@@ -1366,6 +1366,10 @@ def init_history_db() -> None:
             )
         """)
         conn.execute("CREATE TABLE IF NOT EXISTS upstream_trafik (ts TEXT NOT NULL, rx_mbps REAL, tx_mbps REAL)")
+        try:   # sisi pengukuran: 'pelanggan' (jalur ke OLT) atau 'wan'; data lama tanpa sisi = dari satu WAN
+            conn.execute("ALTER TABLE upstream_trafik ADD COLUMN sisi TEXT")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ping_onu (
                 ts TEXT NOT NULL, username TEXT, acs_id TEXT, model TEXT, cara TEXT,
@@ -9252,7 +9256,7 @@ def ukur_upstream(sekarang: Optional[datetime] = None) -> Optional[dict]:
         conn.executemany("INSERT INTO upstream_history VALUES (?,?,?,?,?,?)",
                          [(ts, p["jenis"], p["tujuan"], p["rata_ms"], p["maks_ms"], p["hilang_persen"]) for p in ping])
         if rx is not None:
-            conn.execute("INSERT INTO upstream_trafik VALUES (?,?,?)", (ts, rx, tx))
+            conn.execute("INSERT INTO upstream_trafik (ts, rx_mbps, tx_mbps, sisi) VALUES (?,?,?,?)", (ts, rx, tx, sisi))
         conn.commit()
     finally:
         conn.close()
@@ -9335,18 +9339,81 @@ async def upstream_loop():
         await asyncio.sleep(max(30, int(CONFIG["UPSTREAM_INTERVAL_DETIK"])))
 
 
+def _statistik_trafik(rows: list, kapasitas: float) -> Optional[dict]:
+    """Tolok ukur upgrade dari download total (Mbps) per pengukuran: rata-rata, puncak, P95, profil per
+    jam, jam tersibuk, dan saran. Keputusan upgrade dilihat dari jam sibuk, bukan rata-rata harian."""
+    data = [(ts, rx) for ts, rx in rows if rx is not None]
+    if not data:
+        return None
+
+    def p95(xs):
+        xs = sorted(xs)
+        return round(xs[min(len(xs) - 1, int(len(xs) * 0.95))], 1)
+    nilai = [rx for _, rx in data]
+    per_jam: dict = {}
+    for ts, rx in data:
+        per_jam.setdefault(int(ts[11:13]), []).append(rx)
+    rata_jam = {j: sum(v) / len(v) for j, v in per_jam.items()}
+    sibuk = sorted(rata_jam, key=lambda j: -rata_jam[j])[:3]
+    nilai_sibuk = [rx for ts, rx in data if int(ts[11:13]) in sibuk]
+    hari = (datetime.fromisoformat(data[-1][0]) - datetime.fromisoformat(data[0][0])).total_seconds() / 86400
+    st = {"jumlah": len(data), "hari_data": round(hari, 1),
+          "rata": round(sum(nilai) / len(nilai), 1), "puncak": round(max(nilai), 1), "p95": p95(nilai),
+          "jam_sibuk": sorted(sibuk), "rata_jam_sibuk": round(sum(nilai_sibuk) / len(nilai_sibuk), 1),
+          "p95_jam_sibuk": p95(nilai_sibuk),
+          "per_jam": [round(rata_jam[j], 1) if j in rata_jam else None for j in range(24)],
+          "kapasitas": kapasitas or None}
+    if kapasitas:
+        st["persen_waktu_80"] = round(sum(1 for x in nilai if x >= 0.8 * kapasitas) * 100 / len(nilai), 1)
+        pakai = st["p95_jam_sibuk"] * 100 / kapasitas
+        st["persen_p95_sibuk"] = round(pakai)
+        if pakai >= 80:
+            st["saran"], st["tingkat"] = ("Sudah saatnya upgrade: di jam sibuk pemakaian sering mendekati penuh "
+                                          "(pelanggan mulai merasa lemot)."), "upgrade"
+        elif pakai >= 60:
+            st["saran"], st["tingkat"] = ("Mulai siapkan upgrade: jam sibuk sudah memakai lebih dari separuh "
+                                          "kapasitas; pantau 1–2 minggu ke depan atau saat pelanggan bertambah."), "siapkan"
+        else:
+            st["saran"], st["tingkat"] = "Kapasitas masih longgar untuk jumlah pelanggan sekarang.", "aman"
+        if hari < 7:
+            st["saran"] += f" (Data baru {st['hari_data']} hari; keputusan sebaiknya dari minimal 7 hari.)"
+    return st
+
+
+def _ringkas_titik(baris: list, maks: int = 720) -> list:
+    """Kurangi jumlah titik grafik (rentang 30 hari = ±21 ribu pengukuran): rata-rata per kelompok,
+    kecuali kolom *_maks yang diambil nilai terbesarnya."""
+    if len(baris) <= maks:
+        return baris
+    n = -(-len(baris) // maks)
+    hasil = []
+    for i in range(0, len(baris), n):
+        grup = baris[i:i + n]
+        t = {"ts": grup[0]["ts"]}
+        for k in grup[0]:
+            if k == "ts":
+                continue
+            v = [g[k] for g in grup if g.get(k) is not None]
+            t[k] = (max(v) if k.endswith("_maks") or k == "hilang_persen" else round(sum(v) / len(v), 2)) if v else None
+        hasil.append(t)
+    return hasil
+
+
 @app.get("/api/upstream")
 def get_upstream(request: Request, jam: int = 24):
     """Kondisi & riwayat internet pusat untuk grafik."""
     _wajib_admin(request)
-    jam = max(1, min(jam, 24 * 7))
+    jam = max(1, min(jam, 24 * 30))
     batas = (datetime.now() - timedelta(hours=jam)).isoformat(timespec="seconds")
     conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
     try:
         ping = conn.execute("SELECT ts, jenis, rata_ms, maks_ms, hilang_persen FROM upstream_history "
                             "WHERE ts >= ? ORDER BY ts", (batas,)).fetchall()
-        trafik = conn.execute("SELECT ts, rx_mbps, tx_mbps FROM upstream_trafik WHERE ts >= ? ORDER BY ts",
-                              (batas,)).fetchall()
+        # Hanya data dari sisi pengukuran yang sekarang (data lama satu-WAN tidak dicampur ke total pelanggan).
+        sisi = _upstream.get("trafik_sisi")
+        trafik = conn.execute("SELECT ts, rx_mbps, tx_mbps FROM upstream_trafik WHERE ts >= ?"
+                              + (" AND sisi = ?" if sisi else "") + " ORDER BY ts",
+                              (batas, sisi) if sisi else (batas,)).fetchall()
     finally:
         conn.close()
     # Satu titik per pengukuran: latensi = tujuan internet tercepat, loss = tujuan internet terbaik.
@@ -9368,8 +9435,10 @@ def get_upstream(request: Request, jam: int = 24):
             "batas": {"loss": CONFIG["UPSTREAM_LOSS_PERSEN"], "latensi": CONFIG["UPSTREAM_LATENSI_MS"],
                       "penuh": CONFIG["UPSTREAM_PENUH_PERSEN"]},
             "sekarang": dict(kini, **_nilai_upstream(kini)) if kini else None,
-            "ping": list(titik.values()),
-            "trafik": [{"ts": ts, "rx_mbps": rx, "tx_mbps": tx} for ts, rx, tx in trafik]}
+            "ping": _ringkas_titik(list(titik.values())),
+            "trafik": _ringkas_titik([{"ts": ts, "rx_mbps": rx, "tx_mbps": tx, "rx_maks": rx} for ts, rx, tx in trafik]),
+            "statistik": _statistik_trafik([(ts, rx) for ts, rx, _ in trafik],
+                                           float(CONFIG["UPSTREAM_KAPASITAS_MBPS"] or 0))}
 
 
 @app.post("/api/upstream/ukur")
