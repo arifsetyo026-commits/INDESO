@@ -1217,6 +1217,10 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat proses putus pelanggan: {e}")
         try:
+            await asyncio.to_thread(catat_onu_baru, onu_list)
+        except Exception as e:
+            logger.error(f"Error saat deteksi ONU baru: {e}")
+        try:
             await asyncio.to_thread(proses_tagihan_harian)
         except Exception as e:
             logger.error(f"Error saat proses tagihan harian: {e}")
@@ -1409,6 +1413,15 @@ def init_history_db() -> None:
         # ONU lapor rutin. Banyak 'antre' pada ONU yang online = ketukan ACS ke ONU bermasalah.
         conn.execute("CREATE TABLE IF NOT EXISTS acs_tugas (ts TEXT NOT NULL, acs_id TEXT, nama TEXT, "
                      "langsung INTEGER, alasan TEXT)")
+        # ONU yang pertama kali terlihat di OLT (OLT memakai authmode auto: ONU baru langsung terdaftar).
+        # status: awal = sudah ada saat fitur ini pertama jalan (tidak ditampilkan), baru, selesai, abaikan.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS onu_baru (
+                sn TEXT PRIMARY KEY, pertama TEXT NOT NULL, terakhir TEXT, pon TEXT, onu_id INTEGER,
+                vendor TEXT, model TEXT, status TEXT NOT NULL DEFAULT 'baru', untuk TEXT,
+                tr069 TEXT, wifi TEXT, selesai TEXT, oleh TEXT
+            )
+        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -10196,6 +10209,464 @@ def olt_tr069_pelanggan(username: str, request: Request, reboot: bool = False):
                     + (("berhasil" + (", ONU di-restart" if h.get("reboot") else "")) if h["ok"] else h["pesan"]))
     return hasil
 
+
+
+# ============================================================
+# KESEHATAN WIFI — sapu semua ONU di ACS: keamanan, nama bawaan, terlalu ramai, channel, mode lama
+# ============================================================
+
+_SSID_BAWAAN = re.compile(r"^(ZTE[-_]|ZTE$|FH_|fh_|FiberHome|HUAWEI[-_]|HG8|TP-?LINK|CDATA|C-DATA|ALCL|Nokia|"
+                          r"ChinaNet-|CMCC-|XPON|GPON|EPON|ONT[-_]|ONU[-_])", re.I)
+WIFI_RAMAI = 15          # perangkat tersambung pada satu pemancar WiFi
+
+
+def _masalah_wifi(doc: dict, b: str, w: dict) -> list[dict]:
+    """Temuan untuk satu WiFi (WLANConfiguration) yang aktif."""
+    hasil = []
+    tipe = str(_nilai(doc, f"{b}.BeaconType") or "")
+    dasar = str(_nilai(doc, f"{b}.BasicEncryptionModes") or "")
+    if tipe.lower() == "none" or (tipe.lower() == "basic" and dasar.lower() in ("", "none")):
+        hasil.append({"tingkat": "kritis", "kode": "terbuka", "judul": "WiFi tanpa password",
+                      "saran": "Siapa pun bisa ikut memakai kuota pelanggan. Pasang password lewat Diagnosa → WiFi."})
+    elif tipe.lower() == "basic" and "wep" in dasar.lower():
+        hasil.append({"tingkat": "kritis", "kode": "wep", "judul": "Keamanan WEP (mudah dibobol)",
+                      "saran": "Ganti password lewat Diagnosa → WiFi; atur keamanan ke WPA2 di web ONU."})
+    elif tipe.upper() == "WPA":
+        hasil.append({"tingkat": "perhatian", "kode": "wpa_lama", "judul": "Masih WPA lama",
+                      "saran": "Ubah keamanan ke WPA2 di web ONU supaya lebih aman dan lebih cepat."})
+    if _SSID_BAWAAN.match(w["ssid"] or ""):
+        hasil.append({"tingkat": "perhatian", "kode": "bawaan", "judul": "Nama WiFi masih bawaan pabrik",
+                      "saran": "Password-nya kemungkinan juga bawaan (tertera di stiker ONU, mudah ditebak). "
+                               "Ganti nama & password lewat Diagnosa → WiFi."})
+    if (w["klien"] or 0) >= WIFI_RAMAI:
+        hasil.append({"tingkat": "perhatian", "kode": "ramai", "judul": f"{w['klien']} perangkat di satu WiFi",
+                      "saran": "WiFi berdesakan → lambat. Arahkan HP yang mendukung ke 5 GHz, atau tawarkan paket lebih besar."})
+    ch = str(w["channel"] or "")
+    otomatis = _nilai(doc, f"{b}.AutoChannelEnable") in (True, "true", "1", 1)
+    if w["band"] == "2,4 GHz" and ch.isdigit() and int(ch) not in (0, 1, 6, 11) and not otomatis:
+        hasil.append({"tingkat": "perhatian", "kode": "channel", "judul": f"Channel {ch} bertumpuk dengan tetangga",
+                      "saran": "Channel 2,4 GHz yang tidak saling ganggu hanya 1, 6, 11. Pilih salah satunya atau 'otomatis' di web ONU."})
+    std = str(w["standar"] or "").lower().replace(" ", "")
+    if w["band"] == "2,4 GHz" and std in ("b", "g", "b,g", "bg", "802.11b", "802.11g", "802.11bg"):
+        hasil.append({"tingkat": "info", "kode": "mode_lama", "judul": f"Mode WiFi lama ({w['standar']})",
+                      "saran": "Tanpa 802.11n kecepatan WiFi maksimal ±20 Mbps. Ubah ke b/g/n di web ONU."})
+    return hasil
+
+
+def _kesehatan_wifi_onu(doc: dict, sekarang: datetime) -> dict:
+    wlan = []
+    for i in _anak(doc, f"{_IGD}.LANDevice.1.WLANConfiguration"):
+        b = f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"
+        ssid = _nilai(doc, f"{b}.SSID")
+        if ssid is None:
+            continue
+        total = _nilai(doc, f"{b}.TotalAssociations")
+        klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
+        wlan.append({"index": int(i), "b": b, "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
+                     "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
+                     "band": _band_wifi(doc, b, ssid), "klien": klien})
+    aktif = [w for w in wlan if w["aktif"]]
+    masalah = []
+    for w in aktif:
+        for m in _masalah_wifi(doc, w["b"], w):
+            masalah.append(dict(m, ssid=w["ssid"], band=w["band"]))
+    if wlan and not aktif:
+        masalah.append({"tingkat": "info", "kode": "mati", "judul": "Semua WiFi dimatikan", "ssid": None, "band": None,
+                        "saran": "Wajar bila pelanggan memakai router sendiri. Bila tidak, nyalakan di web ONU."})
+    ada_5g = [w for w in wlan if w["band"] == "5 GHz"]
+    if any(m["kode"] == "ramai" for m in masalah) and ada_5g and not any(w["aktif"] for w in ada_5g):
+        masalah.append({"tingkat": "perhatian", "kode": "5g_mati", "judul": "WiFi 5 GHz tersedia tapi mati",
+                        "ssid": ada_5g[0]["ssid"], "band": "5 GHz",
+                        "saran": "Nyalakan 5 GHz di web ONU supaya perangkat terbagi ke dua pemancar."})
+    menit = _lapor_terakhir_menit(doc.get("_lastInform"))
+    username = _nilai(doc, "VirtualParameters.pppoeUsername")
+    if not username:
+        for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
+            for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
+                username = username or _nilai(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username")
+    di = doc.get("_deviceId") or {}
+    urut = {"kritis": 0, "perhatian": 1, "info": 2}
+    masalah.sort(key=lambda m: urut[m["tingkat"]])
+    return {"id": doc.get("_id"), "username": username, "sn": di.get("_SerialNumber"),
+            "model": f"{di.get('_Manufacturer') or ''} {di.get('_ProductClass') or ''}".strip(),
+            "lapor_menit_lalu": menit, "data_lama": menit is None or menit > 24 * 60,
+            "wifi": [{k: w[k] for k in ("ssid", "aktif", "band", "channel", "klien")} for w in wlan],
+            "klien": sum(w["klien"] or 0 for w in aktif), "masalah": masalah,
+            "tingkat": masalah[0]["tingkat"] if masalah else "sehat"}
+
+
+@app.get("/api/wifi-kesehatan")   # bukan /api/acs/...: akan tertangkap rute /api/acs/{username}
+def wifi_kesehatan(request: Request):
+    """Sapu WiFi semua ONU yang terdaftar di ACS, dari data laporan terakhir masing-masing ONU."""
+    _wajib_admin(request)
+    if not _acs_aktif():
+        return {"aktif": False}
+    jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username"
+             for w in range(1, 6) for p in range(1, 3)]
+    r = _acs("GET", "/devices/", params={"query": "{}", "projection": ",".join(
+        ["_id", "_lastInform", "_deviceId", "VirtualParameters.pppoeUsername",
+         f"{_IGD}.LANDevice.1.WLANConfiguration"] + jalur)}, timeout=30)
+    if not r.ok:
+        raise HTTPException(status_code=502, detail=f"Server ACS menolak permintaan (HTTP {r.status_code}).")
+    nama = {}
+    conn = _billing_conn()
+    try:
+        for p in conn.execute("SELECT username, nama FROM pelanggan").fetchall():
+            nama[p["username"]] = p["nama"] or p["username"]
+    finally:
+        conn.close()
+    sekarang = datetime.now(timezone.utc)
+    onu = []
+    for d in r.json():
+        h = _kesehatan_wifi_onu(d, sekarang)
+        if not h["wifi"]:
+            continue          # ONU tanpa data WiFi di ACS (mis. baru lapor sekali, belum dibaca)
+        h["nama"] = nama.get(h["username"]) if h["username"] else None
+        onu.append(h)
+    urut = {"kritis": 0, "perhatian": 1, "info": 2, "sehat": 3}
+    onu.sort(key=lambda h: (urut[h["tingkat"]], -(h["klien"] or 0)))
+    jumlah: dict = {}
+    for h in onu:
+        for m in h["masalah"]:
+            jumlah[m["kode"]] = jumlah.get(m["kode"], 0) + 1
+    return {"aktif": True, "onu": onu, "ringkas": {
+        "total": len(onu), "kritis": sum(1 for h in onu if h["tingkat"] == "kritis"),
+        "perhatian": sum(1 for h in onu if h["tingkat"] == "perhatian"),
+        "sehat": sum(1 for h in onu if h["tingkat"] in ("sehat", "info")),
+        "data_lama": sum(1 for h in onu if h["data_lama"]), "per_masalah": jumlah}, "ambang_ramai": WIFI_RAMAI}
+
+
+@app.post("/api/wifi-kesehatan/segarkan")
+def wifi_kesehatan_segarkan(request: Request):
+    """Minta semua ONU mengirim ulang data WiFi-nya saat lapor berikutnya (≤ ±5 menit). Tugas diantrekan
+    tanpa mengetuk ONU satu per satu, supaya ringan dan tidak mengganggu pelanggan."""
+    _wajib_admin(request)
+    from urllib.parse import quote
+    r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_id"}, timeout=15)
+    if not r.ok:
+        raise HTTPException(status_code=502, detail=f"Server ACS menolak permintaan (HTTP {r.status_code}).")
+    antre = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "refreshObject"}),
+                                            "projection": "device,objectName"}, timeout=15)
+    sudah = {t.get("device") for t in (antre.json() if antre.ok else [])
+             if str(t.get("objectName") or "").endswith("WLANConfiguration")}
+    n = 0
+    for d in r.json():
+        if d.get("_id") in sudah:
+            continue
+        x = _acs("POST", f"/devices/{quote(d['_id'], safe='')}/tasks",
+                 json={"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.WLANConfiguration"}, timeout=15)
+        n += x.status_code in (200, 202)
+    catat_aktivitas(_oleh(request), "wifi_segarkan", f"Data WiFi {n} ONU diminta diperbarui")
+    return {"diantrekan": n, "sudah_antre": len(sudah)}
+
+# ============================================================
+# ONU BARU — deteksi ONU yang baru dicolok + aktivasi (TR-069, WiFi)
+# ============================================================
+
+_POLA_SN = re.compile(r"^[A-Za-z0-9]{8,16}$")
+
+
+def _history_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def catat_onu_baru(onu_list: list[ONUStatus], sekarang: Optional[datetime] = None) -> list[dict]:
+    """Catat nomor seri ONU yang belum pernah terlihat. Saat pertama kali dijalankan, semua ONU yang
+    sudah ada dicatat sebagai 'awal' (bukan baru) supaya tidak membanjiri daftar & Telegram.
+    Kembalikan ONU yang baru terdeteksi pada putaran ini."""
+    daftar = [o for o in onu_list if o.serial_number]
+    if not daftar:
+        return []           # OLT tidak terbaca: jangan simpulkan apa pun
+    waktu = (sekarang or datetime.now()).isoformat(timespec="seconds")
+    conn = _history_conn()
+    baru = []
+    try:
+        awal = conn.execute("SELECT COUNT(*) FROM onu_baru").fetchone()[0] == 0
+        for o in daftar:
+            sn = o.serial_number.upper()
+            ada = conn.execute("SELECT status FROM onu_baru WHERE sn=?", (sn,)).fetchone()
+            if ada:
+                conn.execute("UPDATE onu_baru SET terakhir=?, pon=?, onu_id=?, vendor=COALESCE(?,vendor), "
+                             "model=COALESCE(?,model) WHERE sn=?", (waktu, o.pon, o.onu_id, o.vendor, o.model, sn))
+                continue
+            conn.execute("INSERT INTO onu_baru (sn, pertama, terakhir, pon, onu_id, vendor, model, status) "
+                         "VALUES (?,?,?,?,?,?,?,?)",
+                         (sn, waktu, waktu, o.pon, o.onu_id, o.vendor, o.model, "awal" if awal else "baru"))
+            if not awal:
+                baru.append({"sn": sn, "pon": o.pon, "onu_id": o.onu_id, "model": o.model, "vendor": o.vendor,
+                             "olt_rx": o.olt_rx_dbm})
+        conn.commit()
+    finally:
+        conn.close()
+    if baru:
+        baris = []
+        for b in baru[:10]:
+            sinyal = f" · sinyal {b['olt_rx']:.1f} dBm" if b["olt_rx"] is not None else ""
+            baris.append(f"• {_esc(' '.join(x for x in (b['vendor'], b['model']) if x) or 'ONU')} "
+                         f"<code>{b['sn']}</code>\n  PON {b['pon']} · ONU {b['onu_id']}{sinyal}")
+        lebih = f"\n…dan {len(baru) - 10} lainnya" if len(baru) > 10 else ""
+        send_telegram_message(f"🆕 <b>ONU baru terdeteksi di OLT</b> ({len(baru)})\n\n" + "\n".join(baris) + lebih
+                              + "\n\nAktifkan dari INDESO: menu <b>ONU Baru</b>.")
+        logger.info(f"ONU baru terdeteksi: {', '.join(b['sn'] for b in baru)}")
+    return baru
+
+
+def _onu_live(sn: str) -> Optional[ONUStatus]:
+    sn = sn.upper()
+    return next((o for o in (_latest_data.onu_list if _latest_data else [])
+                 if (o.serial_number or "").upper() == sn), None)
+
+
+def _baris_onu_baru(sn: str) -> sqlite3.Row:
+    if not _POLA_SN.match(sn or ""):
+        raise HTTPException(status_code=400, detail="Nomor seri ONU tidak valid.")
+    conn = _history_conn()
+    try:
+        r = conn.execute("SELECT * FROM onu_baru WHERE sn=?", (sn.upper(),)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        raise HTTPException(status_code=404, detail="ONU ini tidak ada di daftar ONU baru.")
+    return r
+
+
+def _ubah_onu_baru(sn: str, **kolom) -> None:
+    conn = _history_conn()
+    try:
+        conn.execute(f"UPDATE onu_baru SET {', '.join(k + '=?' for k in kolom)} WHERE sn=?",
+                     (*kolom.values(), sn.upper()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _doc_acs_onu(sn: str, username: Optional[str]) -> Optional[dict]:
+    """Dokumen GenieACS ONU ini: lewat nomor seri, lalu lewat username PPPoE (sebagian ZTE melapor
+    ke ACS dengan nomor seri yang berbeda dari SN GPON). Dokumen milik ONU lain tidak dipakai."""
+    queries = [{"_deviceId._SerialNumber": sn.upper()}]
+    if username:
+        queries.append(_query_pppoe(username))
+    for q in queries:
+        r = _acs("GET", "/devices/", params={"query": json.dumps(q)})
+        if r.ok and r.json():
+            cocok = [d for d in r.json() if not _onu_lama(d, sn)]
+            if cocok:
+                return max(cocok, key=lambda d: str(d.get("_lastInform") or ""))
+    return None
+
+
+def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict) -> dict:
+    o = _onu_live(r["sn"])
+    user = o.pppoe_username if o else None
+    di_acs = None
+    if acs is not None:
+        di_acs = r["sn"] in acs["sn"] or bool(user and any(not _onu_lama(d, r["sn"]) for d in acs["user"].get(user, [])))
+    sinyal_ok = bool(o and o.online and o.status in ("OK", "WARNING"))
+    langkah = {
+        "olt": True,
+        "sinyal": sinyal_ok,
+        "internet": bool(user),
+        "pelanggan": bool(user and user in nama),
+        "acs": di_acs,
+        "wifi": bool(r["wifi"]),
+    }
+    return {
+        "sn": r["sn"], "pertama": r["pertama"], "terakhir": r["terakhir"], "status": r["status"],
+        "pon": o.pon if o else r["pon"], "onu_id": o.onu_id if o else r["onu_id"],
+        "vendor": (o.vendor if o else None) or r["vendor"], "model": (o.model if o else None) or r["model"],
+        "online": bool(o and o.online), "terbaca": o is not None,
+        "olt_rx": o.olt_rx_dbm if o else None, "onu_rx": o.onu_rx_dbm if o else None,
+        "redaman": o.status if o else None,
+        "pppoe_username": user, "nama": nama.get(user) if user else None,
+        "untuk": r["untuk"], "nama_untuk": nama.get(r["untuk"]) if r["untuk"] else None,
+        "tr069": r["tr069"], "wifi": r["wifi"], "selesai": r["selesai"], "oleh": r["oleh"],
+        "langkah": langkah, "saran": _saran_onu_baru(o, langkah, r),
+    }
+
+
+def _saran_onu_baru(o: Optional[ONUStatus], langkah: dict, r: sqlite3.Row) -> str:
+    if o is None:
+        return "ONU tidak terbaca di OLT saat ini (dicabut / mati). Nyalakan ONU dulu."
+    if not o.online:
+        return "ONU offline: cek listrik ONU dan kabel fiber."
+    if not langkah["sinyal"]:
+        return "Redaman buruk: periksa konektor / sambungan fiber sebelum aktivasi."
+    if not langkah["internet"]:
+        return ("Isi PPPoE di ONU (username & password dari MikroTik) lewat web ONU 192.168.1.1, "
+                "lalu tunggu ±1 menit sampai PPPoE tersambung.")
+    if not langkah["pelanggan"]:
+        return "PPPoE sudah tersambung tapi belum ada di data pelanggan: Impor dari MikroTik / Pasang baru."
+    if langkah["acs"] is False:
+        sn = (r["sn"] or "").upper()
+        if "F609" in (o.model or "").upper() or sn.startswith("ZTEG"):
+            return "Kirim TR-069 dari OLT + restart ONU, lalu tunggu ±3 menit sampai ONU lapor ke ACS."
+        return "Kirim TR-069 dari OLT. Bila tidak lapor juga, atur TR-069 di web ONU (merek non-ZTE)."
+    if langkah["acs"] and not langkah["wifi"]:
+        return "Atur nama & password WiFi pelanggan di bawah."
+    if langkah["acs"] is None:
+        return "Server ACS tidak terjangkau: status TR-069 belum bisa dicek."
+    return "Semua langkah beres. Tandai selesai."
+
+
+@app.get("/api/onu-baru")
+def onu_baru_daftar(request: Request, riwayat: bool = False):
+    _wajib_admin(request)
+    conn = _history_conn()
+    try:
+        if riwayat:
+            batas = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
+            rows = conn.execute("SELECT * FROM onu_baru WHERE status IN ('selesai','abaikan') AND COALESCE(selesai,'') >= ? "
+                                "ORDER BY selesai DESC LIMIT 100", (batas,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM onu_baru WHERE status='baru' ORDER BY pertama DESC LIMIT 100").fetchall()
+        dipantau = conn.execute("SELECT COUNT(*) FROM onu_baru").fetchone()[0]
+    finally:
+        conn.close()
+    nama = {}
+    c2 = _billing_conn()
+    try:
+        for p in c2.execute("SELECT username, nama FROM pelanggan").fetchall():
+            nama[p["username"]] = p["nama"] or p["username"]
+    finally:
+        c2.close()
+    acs = _onu_di_acs() if rows and not riwayat else None
+    return {"onu": [_ringkas_onu_baru(r, acs, nama) for r in rows], "dipantau": dipantau,
+            "acs_aktif": _acs_aktif(), "acs_terjangkau": acs is not None if rows and not riwayat else None,
+            "olt_telnet": bool(CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")),
+            "tr069_siap": _olt_telnet_aktif()}
+
+
+@app.get("/api/onu-baru/jumlah")
+def onu_baru_jumlah(request: Request):
+    _wajib_admin(request)
+    conn = _history_conn()
+    try:
+        return {"baru": conn.execute("SELECT COUNT(*) FROM onu_baru WHERE status='baru'").fetchone()[0]}
+    finally:
+        conn.close()
+
+
+def _alamat_onu_baru(sn: str) -> ONUStatus:
+    o = _onu_live(sn)
+    if not o:
+        raise HTTPException(status_code=409, detail="ONU ini sedang tidak terbaca di OLT. Pastikan ONU menyala.")
+    return o
+
+
+@app.post("/api/onu-baru/{sn}/tr069")
+def onu_baru_tr069(sn: str, request: Request, reboot: bool = True):
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    o = _alamat_onu_baru(sn)
+    hasil = olt_kirim_tr069([(o.pon, o.onu_id)], reboot=reboot)
+    h = hasil["hasil"][0]
+    if h["ok"]:
+        _ubah_onu_baru(sn, tr069=datetime.now().isoformat(timespec="seconds"))
+    catat_aktivitas(_oleh(request), "olt_tr069", f"ONU baru {sn.upper()} ({o.pon} onu {o.onu_id}): "
+                    + (("TR-069 terkirim" + (", ONU di-restart" if h.get("reboot") else "")) if h["ok"] else h["pesan"]))
+    return hasil
+
+
+@app.post("/api/onu-baru/{sn}/restart")
+def onu_baru_restart(sn: str, request: Request):
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    o = _alamat_onu_baru(sn)
+    olt_reboot_onu(o.pon, o.onu_id)
+    catat_aktivitas(_oleh(request), "onu_reboot", f"ONU baru {sn.upper()} ({o.pon} onu {o.onu_id}) lewat OLT")
+    return {"ok": True}
+
+
+@app.get("/api/onu-baru/{sn}/wifi")
+def onu_baru_wifi_info(sn: str, request: Request):
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    o = _onu_live(sn)
+    doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
+    if not doc:
+        return {"terhubung": False}
+    info = _ringkas_perangkat(doc)
+    return {"terhubung": True, "wifi": info["wifi"], "model": info["model"],
+            "lapor_menit_lalu": _lapor_terakhir_menit(info["lapor_terakhir"])}
+
+
+class WifiBaruIn(BaseModel):
+    ssid: str
+    password: str
+    akhiran_5g: str = "-5G"     # nama WiFi 5 GHz = nama + akhiran (kosong = sama persis)
+
+
+@app.post("/api/onu-baru/{sn}/wifi")
+def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
+    """Atur nama & password semua WiFi yang aktif di ONU sekaligus (2,4 GHz dan 5 GHz)."""
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    ssid, pw, akhir = (d.ssid or "").strip(), d.password or "", (d.akhiran_5g or "").strip()
+    if not (1 <= len(ssid) <= 32 and ssid.isprintable()) or len(ssid + akhir) > 32 or not akhir.isprintable():
+        raise HTTPException(status_code=400, detail="Nama WiFi 1–32 karakter (termasuk akhiran 5 GHz).")
+    if not (8 <= len(pw) <= 63 and all(32 <= ord(c) < 127 for c in pw)):
+        raise HTTPException(status_code=400, detail="Password WiFi 8–63 karakter, huruf/angka/simbol biasa (tanpa emoji).")
+    o = _onu_live(sn)
+    doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
+    if not doc:
+        raise HTTPException(status_code=409, detail="ONU belum lapor ke server ACS. Kirim TR-069 dari OLT dulu.")
+    wlan = _ringkas_perangkat(doc)["wifi"]
+    target = [w for w in wlan if w["aktif"]] or wlan[:1]
+    if not target:
+        raise HTTPException(status_code=404, detail="ONU tidak melaporkan jaringan WiFi apa pun.")
+    nilai, diatur = [], []
+    for w in target:
+        b = f"{_IGD}.LANDevice.1.WLANConfiguration.{w['index']}"
+        nama = ssid + akhir if w["band"] == "5 GHz" and akhir else ssid
+        nilai.append([f"{b}.SSID", nama, "xsd:string"])
+        kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
+        if kunci:
+            nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
+        diatur.append(f"{nama} ({w['band']}{'' if kunci else ', password tidak bisa diatur lewat TR-069'})")
+    _bersihkan_tertahan(doc["_id"])
+    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"))
+    catat_aktivitas(_oleh(request), "onu_wifi", f"ONU baru {sn.upper()} ({doc['_id']}) WiFi: {', '.join(diatur)}"
+                    + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+    return dict(hasil, diatur=diatur)
+
+
+class OnuBaruUntukIn(BaseModel):
+    username: Optional[str] = None
+
+
+@app.post("/api/onu-baru/{sn}/untuk")
+def onu_baru_untuk(sn: str, d: OnuBaruUntukIn, request: Request):
+    """Catat ONU ini dipasang untuk pelanggan siapa (sebelum PPPoE-nya tersambung)."""
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    u = (d.username or "").strip() or None
+    if u:
+        conn = _billing_conn()
+        try:
+            if not conn.execute("SELECT 1 FROM pelanggan WHERE username=?", (u,)).fetchone():
+                raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+        finally:
+            conn.close()
+    _ubah_onu_baru(sn, untuk=u)
+    return {"ok": True}
+
+
+@app.post("/api/onu-baru/{sn}/{aksi}")
+def onu_baru_tandai(sn: str, aksi: str, request: Request):
+    """selesai / abaikan (keluar dari daftar aktif) atau buka (kembali ke daftar aktif)."""
+    _wajib_admin(request)
+    if aksi not in ("selesai", "abaikan", "buka"):
+        raise HTTPException(status_code=404, detail="Aksi tidak dikenal.")
+    _baris_onu_baru(sn)
+    if aksi == "buka":
+        _ubah_onu_baru(sn, status="baru", selesai=None, oleh=None)
+    else:
+        _ubah_onu_baru(sn, status=aksi, selesai=datetime.now().isoformat(timespec="seconds"), oleh=_oleh(request))
+    catat_aktivitas(_oleh(request), "onu_baru_" + aksi, sn.upper())
+    return {"ok": True}
 
 if __name__ == "__main__":
     import uvicorn

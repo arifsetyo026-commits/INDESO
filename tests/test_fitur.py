@@ -2383,3 +2383,114 @@ def test_pengingat_liabilitas_tanpa_backslash_n(siap):
     main.proses_pengingat_utang(hari.replace(hour=9))
     teks = [x["data"]["text"] for x in main._terkirim if "Liabilitas" in x["data"].get("text", "")]
     assert teks and "\\n" not in teks[0] and "\n• Shopee paylater" in teks[0]
+
+
+def test_onu_baru_deteksi_dan_aktivasi(siap, monkeypatch):
+    """ONU yang sudah ada saat fitur pertama jalan tidak dianggap baru; SN baru dicatat + dikabarkan
+    sekali; langkah aktivasi (TR-069 lewat OLT, WiFi 2,4 & 5 GHz lewat ACS, tandai selesai)."""
+    main, o, k, m = siap
+    O = main.ONUStatus
+
+    def onu(i, sn, user=None, online=True, model="F670LV9.0"):
+        return O(pon="0/0/1", onu_id=i, snmp_index=i, serial_number=sn, vendor="ZTE", model=model,
+                 olt_rx_dbm=-21.0 if online else None, onu_rx_dbm=-19.5 if online else None,
+                 online=online, status="OK" if online else "UNKNOWN", pppoe_username=user)
+    lama = [onu(1, "ZTEGC1234567", "budi"), onu(2, "FHTT11112222", "ani")]
+    main._terkirim.clear()
+    assert main.catat_onu_baru([]) == []                                    # OLT tidak terbaca: tidak menyimpulkan apa pun
+    assert main.catat_onu_baru(lama) == []                                  # putaran pertama: semua dianggap lama
+    assert k.get("/api/onu-baru").json()["onu"] == [] and k.get("/api/onu-baru/jumlah").json()["baru"] == 0
+    assert not main._terkirim
+    baru = onu(23, "ZTEGD08EDD99")
+    hasil = main.catat_onu_baru(lama + [baru])
+    assert [b["sn"] for b in hasil] == ["ZTEGD08EDD99"]
+    pesan = [x["data"]["text"] for x in main._terkirim if "ONU baru" in x["data"].get("text", "")]
+    assert len(pesan) == 1 and "ZTEGD08EDD99" in pesan[0] and "PON 0/0/1 · ONU 23" in pesan[0]
+    assert main.catat_onu_baru(lama + [baru]) == []                         # tidak dikabarkan ulang
+    assert k.get("/api/onu-baru/jumlah").json()["baru"] == 1
+    assert m.get("/api/onu-baru").status_code == 403                        # mitra tidak boleh
+
+    main._latest_data = main._build_dashboard([], None, lama + [baru])
+    d = k.get("/api/onu-baru").json()
+    (x,) = d["onu"]
+    assert x["sn"] == "ZTEGD08EDD99" and x["online"] and x["langkah"]["sinyal"] and not x["langkah"]["internet"]
+    assert x["langkah"]["acs"] is None and "PPPoE" in x["saran"]               # ACS belum diatur
+    assert k.post("/api/onu-baru/ZTEGD08EDD99/untuk", json={"username": "dwi"}).status_code == 200
+    assert k.post("/api/onu-baru/ZTEGD08EDD99/untuk", json={"username": "hantu"}).status_code == 404
+    assert k.get("/api/onu-baru").json()["onu"][0]["untuk"] == "dwi"
+    assert k.post("/api/onu-baru/ZTEGXXX/selesai").status_code == 400
+    assert k.post("/api/onu-baru/ZTEGC1234567/selesai").status_code == 200   # ONU lama pun bisa dibuka lewat SN
+
+    # PPPoE tersambung (cocok MAC) → internet & pelanggan tercentang; TR-069 lewat OLT dengan restart
+    baru = onu(23, "ZTEGD08EDD99", "dwi")
+    main._latest_data = main._build_dashboard([], None, lama + [baru])
+    olt = FakeOLTTelnet()
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26", OLT_JEDA_DETIK=0)
+    r = k.post("/api/onu-baru/ZTEGD08EDD99/tr069?reboot=1").json()
+    assert r["hasil"][0]["ok"] and "ont reboot 1 23" in olt.perintah and "ont tr069 1 23 ip-index 0" in olt.perintah
+    assert not any(p.startswith("ont reboot") and p != "ont reboot 1 23" for p in olt.perintah)
+
+    # ONU lapor ke ACS dengan SN TR-069 yang berbeda: tetap ketemu lewat username PPPoE
+    acs = FakeACS()
+    doc = acs.dev.pop("ZTEGC1234567")
+    doc["_id"], doc["_deviceId"]["_SerialNumber"] = "ZTE-F670L-ZTE0QHEQ1234", "ZTE0QHEQ1234"
+    doc["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]["1"]["WANPPPConnection"]["1"]["Username"]["_value"] = "dwi"
+    acs.dev["x"] = doc
+    main.CONFIG.update(GENIEACS_URL="http://acs.test:7557")
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["langkah"]["internet"] and x["langkah"]["pelanggan"] and x["langkah"]["acs"] is True and x["tr069"]
+    assert "WiFi" in x["saran"]
+    w = k.get("/api/onu-baru/ZTEGD08EDD99/wifi").json()
+    assert w["terhubung"] and {v["band"] for v in w["wifi"]} == {"2,4 GHz", "5 GHz"}
+    assert k.post("/api/onu-baru/ZTEGD08EDD99/wifi", json={"ssid": "DWI", "password": "pendek"}).status_code == 400
+    r = k.post("/api/onu-baru/ZTEGD08EDD99/wifi", json={"ssid": "DWI", "password": "rahasia123"}).json()
+    assert r["status"] == "selesai"
+    nilai = {p[0].rsplit("WLANConfiguration.", 1)[1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert nilai == {"1.SSID": "DWI", "1.PreSharedKey.1.KeyPassphrase": "rahasia123",
+                     "5.SSID": "DWI-5G", "5.KeyPassphrase": "rahasia123"}
+    log = o.get("/api/aktivitas")
+    assert log.status_code == 200 and "DWI-5G" in log.text and "rahasia123" not in log.text   # password tidak dicatat
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert all(x["langkah"].values()) and "selesai" in x["saran"].lower()
+
+    # selesai → pindah ke riwayat; buka → kembali
+    assert k.post("/api/onu-baru/ZTEGD08EDD99/selesai").status_code == 200
+    assert k.get("/api/onu-baru").json()["onu"] == []
+    rw = k.get("/api/onu-baru?riwayat=1").json()["onu"]
+    assert {y["sn"]: y["oleh"] for y in rw}["ZTEGD08EDD99"] == "kasir"
+    assert k.post("/api/onu-baru/ZTEGD08EDD99/buka").status_code == 200
+    assert k.get("/api/onu-baru/jumlah").json()["baru"] == 1
+
+
+def test_kesehatan_wifi(siap, monkeypatch):
+    """Sapu WiFi semua ONU: tanpa password (kritis), nama bawaan, terlalu ramai + 5 GHz mati, channel bertumpuk;
+    ONU sehat tidak ditandai; segarkan hanya mengantrekan tugas (tanpa mengetuk ONU), tidak dobel."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    assert k.get("/api/wifi-kesehatan").json() == {"aktif": False}
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    import copy
+    sehat = acs.dev["ZTEGC1234567"]
+    w = sehat["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    w["1"].update(BeaconType={"_value": "11i"}, AutoChannelEnable={"_value": True})
+    w["5"]["BeaconType"] = {"_value": "11i"}
+    sakit = copy.deepcopy(sehat)
+    sakit["_id"], sakit["_deviceId"]["_SerialNumber"] = "ZTE-F609-ZTEGC7654321", "ZTEGC7654321"
+    sakit["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]["1"]["WANPPPConnection"]["1"]["Username"]["_value"] = "ani"
+    w2 = sakit["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    w2["1"].update(SSID={"_value": "ZTE-a1b2c3"}, BeaconType={"_value": "None"}, Channel={"_value": 3},
+                   AutoChannelEnable={"_value": False}, TotalAssociations={"_value": 18})
+    w2["5"]["Enable"] = {"_value": False}
+    acs.dev["sakit"] = sakit
+    d = k.get("/api/wifi-kesehatan").json()
+    assert d["aktif"] and d["ringkas"]["total"] == 2 and d["ringkas"]["kritis"] == 1
+    a, b = d["onu"]
+    assert a["username"] == "ani" and a["tingkat"] == "kritis" and a["masalah"][0]["kode"] == "terbuka"
+    assert {"terbuka", "bawaan", "ramai", "channel", "5g_mati"} <= {x["kode"] for x in a["masalah"]}
+    assert b["username"] == "budi" and b["tingkat"] == "sehat" and b["masalah"] == []
+    assert m.get("/api/wifi-kesehatan").status_code == 403
+    r = k.post("/api/wifi-kesehatan/segarkan").json()
+    assert r["diantrekan"] == 2 and all(t["name"] == "refreshObject" for t in acs.tugas)
