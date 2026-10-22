@@ -193,3 +193,23 @@ dan tidak dicatat di INDESO. Setelah ganti password, ada tombol untuk mengirimka
 - Backup database GenieACS mingguan di VPS, misalnya lewat cron:
   `0 3 * * 0 mongodump --archive=/root/genieacs-$(date +\%F).gz --gzip`
 - Perbarui VPS berkala: `sudo apt update && sudo apt upgrade`.
+
+## Akses MikroTik dari HP owner (WireGuard)
+Winbox/WebFig MikroTik bisa dibuka dari HP di mana saja (data seluler pun bisa), tanpa membuka port
+MikroTik ke internet, dan tetap jalan walaupun WAN kantor CGNAT (Starlink). HP tersambung ke VPS
+lewat antarmuka WireGuard sendiri (`wghp`, 10.98.0.0/24). VPS meneruskan ke MikroTik lewat
+terowongan INDESO (`wgacs`) atas nama VPS (10.99.0.1). Terowongan INDESO tidak diubah.
+
+```
+cd /opt/indeso/deploy/genieacs
+sudo bash tambah-hp.sh                 # kode QR untuk "hp-owner" (jalankan lagi untuk menampilkan ulang)
+sudo bash tambah-hp.sh hp-teknisi      # perangkat lain
+sudo bash tambah-hp.sh hapus hp-lama   # cabut akses (HP hilang)
+```
+Di HP: pasang aplikasi **WireGuard**, ketuk **+**, pilih **Pindai dari kode QR**, lalu nyalakan tombolnya.
+Setelah itu buka Winbox ke `10.99.0.2` atau WebFig ke `http://10.99.0.2/`.
+
+Kalau ada kendala:
+- **HP tidak tersambung**: izinkan port UDP yang tertulis di akhir skrip pada firewall penyedia VPS.
+- **Winbox/WebFig ditolak**: di MikroTik, tambahkan `10.99.0.0/24` pada kolom address layanan `winbox` dan `www`
+  (`/ip service print`).
