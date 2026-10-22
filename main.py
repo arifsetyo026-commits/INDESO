@@ -616,15 +616,18 @@ async def fetch_all_onu() -> list[ONUStatus]:
         olt_rx = _to_scaled_float(olt_rx_map.get(snmp_index_str, (None, None))[1])
         mac_addr = mac_by_index.get(snmp_index_str)
 
-        # Slot ONU "hantu" — biasanya sisa dari ONU yang pernah dicabut/belum
-        # benar aktif: tidak ada MAC sama sekali DAN redaman 0.0 dBm (angka ini
-        # secara fisik mustahil untuk penerimaan optik nyata, selalu negatif).
-        # Ditandai UNKNOWN, BUKAN CRITICAL, supaya tidak memicu alert palsu.
-        is_ghost_slot = mac_addr is None and olt_rx == 0.0
+        # OLT-RX 0.0 dBm secara fisik mustahil untuk penerimaan optik nyata (selalu negatif), dan ONU-RX
+        # -40 dBm adalah batas bawah alat ukur: keduanya berarti OLT TIDAK punya bacaan dari ONU (ONU mati,
+        # baru menyala, atau slot "hantu" sisa ONU yang dicabut). Bukan redaman kritis: ditandai UNKNOWN /
+        # offline supaya tidak memicu alert "Redaman Kritis" palsu (mis. zidni 1/17 saat baru menyala).
+        if onu_rx is not None and onu_rx <= -40.0:
+            onu_rx = None
+        tanpa_bacaan = olt_rx == 0.0
+        is_ghost_slot = mac_addr is None and tanpa_bacaan
 
-        online = olt_rx is not None and not is_ghost_slot
+        online = olt_rx is not None and not tanpa_bacaan
         hw_status, hw_notes = classify_hardware(bias, voltage, temperature)
-        final_status = "UNKNOWN" if is_ghost_slot else combine_status(olt_rx, onu_rx)
+        final_status = "UNKNOWN" if tanpa_bacaan else combine_status(olt_rx, onu_rx)
 
         results.append(
             ONUStatus(
@@ -636,8 +639,8 @@ async def fetch_all_onu() -> list[ONUStatus]:
                 firmware=fw_map.get(snmp_index_str, (None, None))[1],
                 serial_number=_decode_serial(sn_map.get(snmp_index_str, (None, None))[1]),
                 mac_address=mac_addr,
-                olt_rx_dbm=None if is_ghost_slot else olt_rx,
-                onu_rx_dbm=None if is_ghost_slot else onu_rx,
+                olt_rx_dbm=None if tanpa_bacaan else olt_rx,
+                onu_rx_dbm=None if tanpa_bacaan else onu_rx,
                 onu_tx_dbm=None if is_ghost_slot else onu_tx,
                 bias_current_ma=bias,
                 voltage_v=voltage,
@@ -5422,8 +5425,8 @@ def proses_pengingat_utang(sekarang=None) -> None:
                 apa = (f"angsuran ke-{u['cicilan_ke']}/{u['tenor']} {_rp(u['tagihan_berikut'])}" if u.get("cicilan_ke")
                        else f"sisa {_rp(u['sisa'])}")
                 baris.append(f"• {_esc(u['pemasok'])}: {apa}, jatuh tempo {u['jatuh_tempo'][8:10]}/{u['jatuh_tempo'][5:7]} ({ket})")
-            send_telegram_message(f"💳 <b>Liabilitas jatuh tempo</b> ({len(dekat)})\\n" + "\\n".join(baris[:15])
-                                  + "\\nBayar lewat dashboard → Keuangan → Liabilitas.")
+            send_telegram_message(f"💳 <b>Liabilitas jatuh tempo</b> ({len(dekat)})\n\n" + "\n".join(baris[:15])
+                                  + "\n\nBayar lewat dashboard → Keuangan → Liabilitas.")
         conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?, 'utang')", (hari,))
         conn.commit()
         _pengingat_utang_terakhir = hari
