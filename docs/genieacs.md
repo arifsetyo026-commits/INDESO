@@ -205,7 +205,11 @@ cd /opt/indeso/deploy/genieacs
 sudo bash tambah-hp.sh                 # kode QR untuk "hp-owner" (jalankan lagi untuk menampilkan ulang)
 sudo bash tambah-hp.sh hp-teknisi      # perangkat lain
 sudo bash tambah-hp.sh hapus hp-lama   # cabut akses (HP hilang)
+sudo bash tambah-hp.sh berkas          # salin konfigurasi ke folder home untuk diimpor sebagai berkas
 ```
+Kalau skrip dijalankan dari HP yang sama lewat Termux, kode QR di layar tidak bisa dipindai, dan
+tampilannya sering pecah. Pakai opsi `berkas`, ambil berkasnya dengan `scp` ke folder Download HP,
+lalu di aplikasi WireGuard pilih **+ → Impor dari berkas**. Hapus salinan berkasnya setelah diimpor.
 Di HP: pasang aplikasi **WireGuard**, ketuk **+**, pilih **Pindai dari kode QR**, lalu nyalakan tombolnya.
 Setelah itu buka Winbox ke `10.99.0.2` atau WebFig ke `http://10.99.0.2/`.
 
