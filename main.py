@@ -8778,6 +8778,10 @@ def _info_acs(username: str, segarkan: bool = False) -> dict:
         doc = _cari_perangkat(username) or doc
     info = _ringkas_perangkat(doc)
     info["lapor_menit_lalu"] = _lapor_terakhir_menit(info["lapor_terakhir"])
+    # ONU lapor rutin tiap ACS_ONU_INTERVAL. Lewat dari 3x itu (min. 15 menit) berarti ONU berhenti lapor,
+    # mis. di-reset pabrik (pengaturan TR-069 hilang): data di bawahnya adalah laporan TERAKHIR, bukan keadaan sekarang.
+    batas = max(15, 3 * int(CONFIG.get("ACS_ONU_INTERVAL") or 300) // 60)
+    info["diam"] = info["lapor_menit_lalu"] is not None and info["lapor_menit_lalu"] > batas
     return {"terhubung": True, "perangkat": info, "segarkan": hasil_segar}
 
 
