@@ -2345,3 +2345,41 @@ def test_statistik_trafik_untuk_upgrade(siap):
         assert o.get("/api/upstream?jam=720").json()["statistik"]["tingkat"] == "aman"
     finally:
         main._upstream["trafik_sisi"] = None
+
+
+def test_redaman_tanpa_bacaan_bukan_kritis(siap, monkeypatch):
+    """OLT-RX 0.0 dBm / ONU-RX -40 dBm = OLT tidak punya bacaan dari ONU (mis. baru menyala): bukan
+    'Redaman Kritis'. Redaman buruk sungguhan tetap kritis."""
+    main, o, k, m = siap
+    import asyncio
+    data = {
+        main.CONFIG["OID_LOCATION"]: {"1": ("s", '"0/0/1 onu 17"'), "2": ("s", '"0/0/1 onu 18"')},
+        main.CONFIG["OID_OLT_RX"]: {"1": ("i", "0"), "2": ("i", "-2850")},
+        main.CONFIG["OID_ONU_OPTICAL"]: {"4.1.0.0": ("i", "-4000"), "4.2.0.0": ("i", "-2900")},
+        main.CONFIG["OID_MAC_TABLE"]: {"200.76.120.26.158.250.1": ("i", "1"), "1.2.3.4.5.6.1": ("i", "2")},
+    }
+
+    async def walk(oid):
+        return data.get(oid, {})
+    monkeypatch.setattr(main, "snmp_walk", walk)
+    onu = {x.onu_id: x for x in asyncio.run(main.fetch_all_onu())}
+    assert onu[17].status == "UNKNOWN" and not onu[17].online and onu[17].olt_rx_dbm is None and onu[17].onu_rx_dbm is None
+    assert onu[18].status == "CRITICAL" and onu[18].online
+    main._terkirim.clear()
+    main.check_and_send_onu_alerts(list(onu.values()))
+    teks = [x["data"]["text"] for x in main._terkirim]
+    assert sum("Redaman Kritis" in t for t in teks) == 1 and not any("ONU 17" in t for t in teks)
+
+
+def test_pengingat_liabilitas_tanpa_backslash_n(siap):
+    main, o, k, m = siap
+    kat = _kat(o)
+    hari = datetime.now()
+    k.post("/api/keuangan/utang", json={"tanggal": hari.strftime("%Y-%m-%d"), "pemasok": "Shopee paylater",
+                                        "kategori_id": kat["Beban bahan habis pakai (konektor, pigtail, isolasi)"],
+                                        "jumlah": 600_000, "jatuh_tempo": (hari + timedelta(days=2)).strftime("%Y-%m-%d"),
+                                        "tenor": 3, "cicilan": 210_000})
+    main._terkirim.clear()
+    main.proses_pengingat_utang(hari.replace(hour=9))
+    teks = [x["data"]["text"] for x in main._terkirim if "Liabilitas" in x["data"].get("text", "")]
+    assert teks and "\\n" not in teks[0] and "\n• Shopee paylater" in teks[0]

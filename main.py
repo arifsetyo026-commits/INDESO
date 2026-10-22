@@ -484,6 +484,30 @@ def _parse_pon_onu(location_raw: str) -> Optional[tuple[str, int]]:
     return (m.group(1), int(m.group(2))) if m else None
 
 
+def _tanpa_kutip(teks: Optional[str]) -> Optional[str]:
+    """Nilai teks SNMP datang berkutip ('"F670LV9.0"'); buang kutipnya supaya rapi di pesan & dashboard."""
+    if teks is None:
+        return None
+    t = str(teks).strip().strip('"').strip()
+    return t or None
+
+
+def _nama_pelanggan(username: Optional[str]) -> str:
+    """'Nama (username)' untuk pesan Telegram; username saja bila nama belum diisi."""
+    if not username:
+        return "pelanggan belum terpetakan"
+    try:
+        conn = _billing_conn()
+        try:
+            r = conn.execute("SELECT nama FROM pelanggan WHERE username=?", (username,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        r = None
+    nama = r[0] if r and r[0] else None
+    return f"{_esc(nama)} ({_esc(username)})" if nama and nama != username else _esc(username)
+
+
 def _to_scaled_float(raw_value: Optional[str], scale: float = 0.01) -> Optional[float]:
     if raw_value is None:
         return None
@@ -616,28 +640,31 @@ async def fetch_all_onu() -> list[ONUStatus]:
         olt_rx = _to_scaled_float(olt_rx_map.get(snmp_index_str, (None, None))[1])
         mac_addr = mac_by_index.get(snmp_index_str)
 
-        # Slot ONU "hantu" — biasanya sisa dari ONU yang pernah dicabut/belum
-        # benar aktif: tidak ada MAC sama sekali DAN redaman 0.0 dBm (angka ini
-        # secara fisik mustahil untuk penerimaan optik nyata, selalu negatif).
-        # Ditandai UNKNOWN, BUKAN CRITICAL, supaya tidak memicu alert palsu.
-        is_ghost_slot = mac_addr is None and olt_rx == 0.0
+        # OLT-RX 0.0 dBm secara fisik mustahil untuk penerimaan optik nyata (selalu negatif), dan ONU-RX
+        # -40 dBm adalah batas bawah alat ukur: keduanya berarti OLT TIDAK punya bacaan dari ONU (ONU mati,
+        # baru menyala, atau slot "hantu" sisa ONU yang dicabut). Bukan redaman kritis: ditandai UNKNOWN /
+        # offline supaya tidak memicu alert "Redaman Kritis" palsu (mis. zidni 1/17 saat baru menyala).
+        if onu_rx is not None and onu_rx <= -40.0:
+            onu_rx = None
+        tanpa_bacaan = olt_rx == 0.0
+        is_ghost_slot = mac_addr is None and tanpa_bacaan
 
-        online = olt_rx is not None and not is_ghost_slot
+        online = olt_rx is not None and not tanpa_bacaan
         hw_status, hw_notes = classify_hardware(bias, voltage, temperature)
-        final_status = "UNKNOWN" if is_ghost_slot else combine_status(olt_rx, onu_rx)
+        final_status = "UNKNOWN" if tanpa_bacaan else combine_status(olt_rx, onu_rx)
 
         results.append(
             ONUStatus(
                 pon=pon,
                 onu_id=onu_id,
                 snmp_index=snmp_index,
-                vendor=vendor_map.get(snmp_index_str, (None, None))[1],
-                model=model_map.get(snmp_index_str, (None, None))[1],
-                firmware=fw_map.get(snmp_index_str, (None, None))[1],
+                vendor=_tanpa_kutip(vendor_map.get(snmp_index_str, (None, None))[1]),
+                model=_tanpa_kutip(model_map.get(snmp_index_str, (None, None))[1]),
+                firmware=_tanpa_kutip(fw_map.get(snmp_index_str, (None, None))[1]),
                 serial_number=_decode_serial(sn_map.get(snmp_index_str, (None, None))[1]),
                 mac_address=mac_addr,
-                olt_rx_dbm=None if is_ghost_slot else olt_rx,
-                onu_rx_dbm=None if is_ghost_slot else onu_rx,
+                olt_rx_dbm=None if tanpa_bacaan else olt_rx,
+                onu_rx_dbm=None if tanpa_bacaan else onu_rx,
                 onu_tx_dbm=None if is_ghost_slot else onu_tx,
                 bias_current_ma=bias,
                 voltage_v=voltage,
@@ -805,18 +832,16 @@ def check_and_send_onu_alerts(onu_list: list[ONUStatus]) -> None:
         key = (onu.pon, onu.onu_id)
         seen_keys.add(key)
         was_online = _previous_online.get(key)
-        pelanggan = f" ({_esc(onu.pppoe_username)})" if onu.pppoe_username else ""
+        siapa = _nama_pelanggan(onu.pppoe_username)
 
         if CONFIG["ALERT_OFFLINE_LANGSUNG"] and was_online is True and not onu.online:
             if _cooldown_ok(key, now):
                 send_telegram_message(
                     f"⚠️ <b>ONU OFFLINE</b>\n"
-                    f"PON {onu.pon} / ONU {onu.onu_id}{pelanggan}\n"
-                    f"Model: {_esc(onu.model or '-')}\n"
-                    f"SN: <code>{onu.serial_number or '-'}</code>\n"
-                    f"MAC: <code>{onu.mac_address or '-'}</code>\n"
-                    f"Event terakhir: {_esc(onu.last_event or '-')} ({_esc(onu.last_event_time or '-')})\n"
-                    f"Waktu: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"{siapa}\n"
+                    f"PON {onu.pon} · ONU {onu.onu_id} · {_esc(onu.model or '-')}\n"
+                    f"Kejadian terakhir: {_esc(_tanpa_kutip(onu.last_event) or '-')} ({_esc(_tanpa_kutip(onu.last_event_time) or '-')})\n"
+                    f"SN <code>{onu.serial_number or '-'}</code> · pukul {now.strftime('%H:%M')}"
                 )
                 _last_alert_sent[key] = now
                 logger.warning(f"Alert OFFLINE terkirim untuk PON {onu.pon} ONU {onu.onu_id}")
@@ -825,12 +850,12 @@ def check_and_send_onu_alerts(onu_list: list[ONUStatus]) -> None:
             if _cooldown_ok(key, now):
                 send_telegram_message(
                     f"🔴 <b>Redaman Kritis</b>\n"
-                    f"PON {onu.pon} / ONU {onu.onu_id}{pelanggan}\n"
-                    f"OLT-RX: <b>{onu.olt_rx_dbm} dBm</b> | ONU-RX: <b>{onu.onu_rx_dbm} dBm</b> (threshold: {CONFIG['RX_POWER_CRITICAL_DBM']} dBm)\n"
-                    f"Model: {_esc(onu.model or '-')}\n"
-                    f"SN: <code>{onu.serial_number or '-'}</code>\n"
-                    f"MAC: <code>{onu.mac_address or '-'}</code>\n"
-                    f"Waktu: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"{siapa}\n"
+                    f"PON {onu.pon} · ONU {onu.onu_id} · {_esc(onu.model or '-')}\n"
+                    f"Redaman: OLT-RX <b>{onu.olt_rx_dbm} dBm</b> · ONU-RX <b>{onu.onu_rx_dbm if onu.onu_rx_dbm is not None else '-'} dBm</b> "
+                    f"(batas {CONFIG['RX_POWER_CRITICAL_DBM']} dBm)\n"
+                    f"Cek konektor/kabel drop, sambungan di ODP, atau kabel tertekuk.\n"
+                    f"SN <code>{onu.serial_number or '-'}</code> · pukul {now.strftime('%H:%M')}"
                 )
                 _last_alert_sent[key] = now
                 logger.warning(f"Alert CRITICAL terkirim untuk PON {onu.pon} ONU {onu.onu_id} ({onu.olt_rx_dbm} dBm)")
@@ -1643,7 +1668,7 @@ def _build_daily_report_text() -> str:
             lines.append(f"📈 <b>Kandidat upgrade ({len(boncos)})</b> — pemakaian mendekati limit:")
             for b in boncos[:5]:
                 tanda = " (perkiraan, limit tidak terbaca)" if b["limit_is_fallback"] else ""
-                lines.append(f"- {_esc(b['username'])}: rata² {b['avg_usage_mbps']} / limit {b['limit_mbps']} Mbps ({int(b['ratio']*100)}%){tanda}")
+                lines.append(f"• {_nama_pelanggan(b['username'])}: rata² {b['avg_usage_mbps']} / limit {b['limit_mbps']} Mbps ({int(b['ratio']*100)}%){tanda}")
     except Exception as e:
         logger.error(f"Gagal hitung kandidat boncos untuk laporan: {e}")
 
@@ -1676,7 +1701,7 @@ def _build_daily_report_text() -> str:
             lines.append("")
             lines.append(f"🔁 <b>Sering sambung ulang ({len(putus)})</b> — tiap kali internet terhenti beberapa detik:")
             for p in putus[:5]:
-                lines.append(f"- {_esc(p['username'])}: {p['short_uptime_count']}x sambung ulang")
+                lines.append(f"• {_nama_pelanggan(p['username'])}: {p['short_uptime_count']}x sambung ulang")
     except Exception as e:
         logger.error(f"Gagal hitung kandidat putus untuk laporan: {e}")
 
@@ -1761,22 +1786,24 @@ def _format_onu_report(onu: ONUStatus) -> str:
     if _latest_data is not None:
         pppoe = next((u for u in _latest_data.pppoe_users if u.username == onu.pppoe_username), None)
 
+    teks_status = {"OK": "Normal", "WARNING": "Redaman perlu dipantau", "CRITICAL": "Redaman kritis",
+                   "UNKNOWN": "Belum ada bacaan"}.get(onu.status, onu.status)
     lines = [
-        f"👤 <b>{_esc(onu.pppoe_username or '(tanpa PPPoE aktif)')}</b>",
-        f"PON {onu.pon} / ONU {onu.onu_id}  {status_icon} {onu.status}",
-        f"OLT-RX: {onu.olt_rx_dbm} dBm | ONU-RX: {onu.onu_rx_dbm} dBm",
-        f"Model: {_esc(onu.model or '-')} | SN: <code>{_esc(onu.serial_number or '-')}</code>",
-        f"MAC: <code>{onu.mac_address or '-'}</code>",
-        f"Online: {'Ya' if onu.online else 'Tidak'}",
+        f"👤 <b>{_nama_pelanggan(onu.pppoe_username) if onu.pppoe_username else '(tanpa PPPoE aktif)'}</b>",
+        f"PON {onu.pon} · ONU {onu.onu_id} · {'🟢 online' if onu.online else '🔴 offline'}",
+        f"{status_icon} {teks_status}: OLT-RX {onu.olt_rx_dbm if onu.olt_rx_dbm is not None else '-'} dBm · "
+        f"ONU-RX {onu.onu_rx_dbm if onu.onu_rx_dbm is not None else '-'} dBm",
+        f"{_esc(onu.model or '-')} · SN <code>{_esc(onu.serial_number or '-')}</code>",
     ]
     if onu.hardware_status != "OK":
         lines.append(f"⚠️ Hardware: {_esc('; '.join(onu.hardware_notes))}")
     if pppoe:
-        lines.append(f"IP: {pppoe.ip_address} | Uptime: {pppoe.uptime}")
+        lines.append(f"IP {pppoe.ip_address} · tersambung {_esc(pppoe.uptime)}")
         if pppoe.rx_mbps is not None:
-            lines.append(f"Bandwidth saat ini: ⬇{pppoe.rx_mbps} / ⬆{pppoe.tx_mbps} Mbps")
-        if pppoe.rate_limit_raw:
-            lines.append(f"Rate-limit paket: {_esc(pppoe.rate_limit_raw)}")
+            lines.append(f"Pemakaian sekarang: unduh {pppoe.rx_mbps} / unggah {pppoe.tx_mbps} Mbps"
+                         + (f" (paket {_esc(pppoe.rate_limit_raw)})" if pppoe.rate_limit_raw else ""))
+        elif pppoe.rate_limit_raw:
+            lines.append(f"Paket: {_esc(pppoe.rate_limit_raw)}")
     return "\n".join(lines)
 
 
@@ -1785,13 +1812,13 @@ def _format_masalah_list() -> str:
         return "Data belum tersedia."
     bermasalah = [o for o in _latest_data.onu_list if o.status in ("WARNING", "CRITICAL")]
     if not bermasalah:
-        return "✅ Semua ONU normal, tidak ada yang WARNING/CRITICAL saat ini."
+        return "✅ Semua ONU normal, tidak ada redaman yang perlu dipantau atau kritis saat ini."
     bermasalah.sort(key=lambda o: (o.status != "CRITICAL", o.olt_rx_dbm or 0))
     lines = [f"📋 <b>{len(bermasalah)} ONU bermasalah:</b>"]
     for o in bermasalah:
         icon = "🔴" if o.status == "CRITICAL" else "🟡"
-        nama = _esc(o.pppoe_username or f"PON {o.pon} ONU {o.onu_id}")
-        lines.append(f"{icon} {nama}: OLT-RX {o.olt_rx_dbm} / ONU-RX {o.onu_rx_dbm} dBm")
+        nama = _nama_pelanggan(o.pppoe_username) if o.pppoe_username else f"PON {o.pon} ONU {o.onu_id}"
+        lines.append(f"{icon} {nama}: OLT-RX {o.olt_rx_dbm} / ONU-RX {o.onu_rx_dbm if o.onu_rx_dbm is not None else '-'} dBm")
     return "\n".join(lines)
 
 
@@ -1802,7 +1829,7 @@ def _format_boncos_list() -> str:
     lines = [f"📈 <b>{len(candidates)} kandidat upgrade</b> (pemakaian ≥{int(CONFIG['BONCOS_RATIO_THRESHOLD']*100)}% dari limit, {CONFIG['BONCOS_LOOKBACK_DAYS']} hari terakhir):"]
     for b in candidates[:15]:
         tanda = " ⚠️(limit tidak terbaca, dibanding default)" if b["limit_is_fallback"] else ""
-        lines.append(f"- {_esc(b['username'])}: rata² {b['avg_usage_mbps']} Mbps / limit {b['limit_mbps']} Mbps ({int(b['ratio']*100)}%){tanda}")
+        lines.append(f"• {_nama_pelanggan(b['username'])}: rata² {b['avg_usage_mbps']} Mbps / limit {b['limit_mbps']} Mbps ({int(b['ratio']*100)}%){tanda}")
     return "\n".join(lines)
 
 
@@ -1815,7 +1842,7 @@ def _format_putus_list() -> str:
         f"🔁 <b>{len(candidates)} pelanggan sering sambung ulang</b> ({CONFIG['PUTUS_LOOKBACK_DAYS']} hari terakhir):",
     ]
     for p in candidates[:15]:
-        lines.append(f"- {_esc(p['username'])}: {p['short_uptime_count']}x sambung ulang")
+        lines.append(f"• {_nama_pelanggan(p['username'])}: {p['short_uptime_count']}x sambung ulang")
     lines.append("\n<i>Sambung ulang = internet terhenti beberapa detik (ONU restart / PPPoE dial ulang). "
                  "Sering tidak terasa pelanggan, tapi tanda ONU, adaptor, atau kabel mulai bermasalah.</i>")
     return "\n".join(lines)
@@ -5422,8 +5449,8 @@ def proses_pengingat_utang(sekarang=None) -> None:
                 apa = (f"angsuran ke-{u['cicilan_ke']}/{u['tenor']} {_rp(u['tagihan_berikut'])}" if u.get("cicilan_ke")
                        else f"sisa {_rp(u['sisa'])}")
                 baris.append(f"• {_esc(u['pemasok'])}: {apa}, jatuh tempo {u['jatuh_tempo'][8:10]}/{u['jatuh_tempo'][5:7]} ({ket})")
-            send_telegram_message(f"💳 <b>Liabilitas jatuh tempo</b> ({len(dekat)})\\n" + "\\n".join(baris[:15])
-                                  + "\\nBayar lewat dashboard → Keuangan → Liabilitas.")
+            send_telegram_message(f"💳 <b>Liabilitas jatuh tempo</b> ({len(dekat)})\n\n" + "\n".join(baris[:15])
+                                  + "\n\nBayar lewat dashboard → Keuangan → Liabilitas.")
         conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?, 'utang')", (hari,))
         conn.commit()
         _pengingat_utang_terakhir = hari
@@ -7646,7 +7673,7 @@ def proses_tagihan_harian(sekarang=None) -> None:
                 f"{jumlah} tagihan, total {_rp(total)}\n"
                 f"Jatuh tempo tanggal {jatuh_tempo}\n"
                 + ("\n".join(f"• {c}" for c in catatan) + "\n" if catatan else "")
-                + "Saatnya kirim pemberitahuan: dashboard → Billing → Ingatkan."
+                + "Saatnya kirim pemberitahuan: dashboard → Penagihan → Ingatkan WA."
             )
             tandai("buat")
             logger.warning(f"Tagihan {periode_buat} dibuat otomatis: {hasil}")
@@ -7674,7 +7701,7 @@ def proses_tagihan_harian(sekarang=None) -> None:
                     f"{judul}\nTagihan {_nama_periode(periode_ini)}: {len(rows)} belum bayar, "
                     f"total {_rp(total)}\n" + "\n".join(nama)
                     + (f"\n… dan {sisa} lainnya" if sisa > 0 else "")
-                    + "\nBuka dashboard → Billing untuk kirim pengingat WhatsApp."
+                    + "\nBuka dashboard → Penagihan untuk kirim pengingat WhatsApp."
                 )
             elif sekarang.day >= jatuh_tempo:
                 send_telegram_message(f"✅ Semua tagihan {_nama_periode(periode_ini)} sudah lunas.")
@@ -9307,7 +9334,7 @@ def proses_upstream(h: Optional[dict], sekarang: Optional[datetime] = None) -> N
                           for p in h["ping"])
         send_telegram_message(
             f"🌐 <b>Internet pusat {'bermasalah' if n['buruk'] else 'lambat'}</b>\n{rinci}\n"
-            + (f"Bandwidth WAN: ⬇{h['rx_mbps']} / ⬆{h['tx_mbps']} Mbps"
+            + (f"Pemakaian: unduh {h['rx_mbps']} / unggah {h['tx_mbps']} Mbps"
                + (f" ({n['pakai_persen']}% kapasitas)" if n["pakai_persen"] is not None else "") + "\n"
                if h.get("rx_mbps") is not None else "")
             + f"Dugaan: {dugaan}\nSemua pelanggan ikut terdampak. Sejak ±{st['mulai_buruk'].strftime('%H:%M')}")
@@ -9320,7 +9347,7 @@ def proses_upstream(h: Optional[dict], sekarang: Optional[datetime] = None) -> N
     if st["penuh"] >= 3 and not st["alert_penuh"]:
         st["alert_penuh"] = True
         send_telegram_message(
-            f"📶 <b>Pemakaian internet pusat hampir penuh</b>\n⬇{h['rx_mbps']} Mbps dari {CONFIG['UPSTREAM_KAPASITAS_MBPS']} Mbps "
+            f"📶 <b>Pemakaian internet pusat hampir penuh</b>\nUnduh {h['rx_mbps']} Mbps dari {CONFIG['UPSTREAM_KAPASITAS_MBPS']} Mbps "
             f"({n['pakai_persen']}%) selama ±{st['penuh'] * CONFIG['UPSTREAM_INTERVAL_DETIK'] // 60} menit.\n"
             "Pelanggan akan merasa lemot di jam ini. Pertimbangkan tambah kapasitas atau atur antrean (queue).")
     elif st["penuh"] == 0 and st["alert_penuh"] and (n["pakai_persen"] or 0) < CONFIG["UPSTREAM_PENUH_PERSEN"] - 10:
