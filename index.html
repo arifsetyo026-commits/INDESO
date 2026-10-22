@@ -281,8 +281,9 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="upstreamModal"><div class="modal"><div class="modalHead"><h3>Internet Pusat</h3><button class="close" onclick="closeModal('upstreamModal')">Tutup</button></div><div class="modalBody">
 <div class="plSub">Diukur dari MikroTik setiap 2 menit: ping ke gateway ISP dan ke internet, serta beban interface WAN. Bila internet pusat bermasalah, semua pelanggan ikut terdampak dan Telegram mengirim peringatan.</div>
 <div class="khSum upSum" id="upRingkas" style="margin-top:10px"></div>
-<div class="khJam"><button data-j="24" class="on" onclick="muatUpstream(24)">24 jam</button><button data-j="168" onclick="muatUpstream(168)">7 hari</button><button onclick="ukurUpstream(this)">Ukur sekarang</button></div>
+<div class="khJam"><button data-j="24" class="on" onclick="muatUpstream(24)">24 jam</button><button data-j="168" onclick="muatUpstream(168)">7 hari</button><button data-j="720" onclick="muatUpstream(720)">30 hari</button><button onclick="ukurUpstream(this)">Ukur sekarang</button></div>
 <div class="plMsg" id="upMsg"></div>
+<div class="kuPanel" style="margin-top:10px" id="upStatPanel"><h4>Tolok ukur upgrade bandwidth</h4><div class="plSub">Download total pelanggan pada rentang waktu yang dipilih. Keputusan upgrade dilihat dari <b>jam sibuk</b>, bukan rata-rata seharian. Pilih <b>30 hari</b> untuk gambaran yang lebih pasti.</div><div id="upStat"></div></div>
 <div class="kuPanel" style="margin-top:10px"><h4>Latensi ke internet (ms)</h4><div class="plSub" id="upLatInfo"></div><div style="position:relative"><svg id="upLatSvg" class="chartSvg" viewBox="0 0 720 200" preserveAspectRatio="none" style="width:100%;height:180px"></svg><div class="upTip" id="upLatTip"></div></div></div>
 <div class="kuPanel" style="margin-top:10px"><h4 id="upBwJudul">Trafik total pelanggan (Mbps)</h4><div class="plSub" id="upBwInfo"></div><div style="position:relative"><svg id="upBwSvg" class="chartSvg" viewBox="0 0 720 200" preserveAspectRatio="none" style="width:100%;height:180px"></svg><div class="upTip" id="upBwTip"></div></div><div class="chartLegend"><span class="legend"><i class="lg down"></i>Download</span><span class="legend"><i class="lg up"></i>Upload</span><span class="legend" id="upKapLg"><i class="lg" style="background:#b45309"></i>Kapasitas</span></div></div>
 <div class="plSub" id="upInfo" style="margin-top:8px"></div>
@@ -859,6 +860,7 @@ function renderUpstream(){
  $('upBwJudul').textContent=d.trafik_sisi==='wan'?'Bandwidth WAN (Mbps)':'Trafik total pelanggan (Mbps)';
  $('upInfo').innerHTML=(tIf?`Trafik diukur di: <b>${esc(tIf)}</b> ${d.trafik_sisi==='wan'?'(WAN)':'(jalur ke OLT, semua WAN)'} · `:'')+`WAN ping: <b>${esc(d.wan||'tidak terdeteksi')}</b> · Gateway ISP: <b>${esc(d.gateway||'-')}</b>`+(gw?` (${gw.rata_ms??'—'} ms, loss ${gw.hilang_persen}%)`:'')
   +(d.kapasitas_mbps?` · Kapasitas: <b>${d.kapasitas_mbps} Mbps</b>`:' · <span style="color:#b45309">Kapasitas belum diisi (Pengaturan → Sistem), alert bandwidth penuh belum aktif.</span>');
+ gambarStatUp(d);
  const lat=d.ping.filter(p=>p.rata_ms!=null||p.hilang_persen!=null);
  const rusak=lat.filter(p=>p.hilang_persen>=d.batas.loss).length;
  $('upLatInfo').textContent=lat.length?`${lat.length} pengukuran · ${rusak} kali packet loss ≥ ${d.batas.loss}% (titik merah) · batas lambat ${d.batas.latensi} ms (garis putus-putus)`:'Belum ada data.';
@@ -866,6 +868,27 @@ function renderUpstream(){
  $('upBwInfo').textContent=d.trafik.length?'':(tIf?'Belum ada data.':'Interface ke OLT / WAN tidak terdeteksi. Isi di Pengaturan → Sistem.');
  $('upKapLg').style.display=d.kapasitas_mbps?'':'none';
  _grafikUp('upBwSvg','upBwTip',d.trafik,[{k:'rx_mbps',w:'#18a95a',n:'Download',u:'Mbps'},{k:'tx_mbps',w:'#278ff2',n:'Upload',u:'Mbps'}],d.kapasitas_mbps||null);
+}
+function gambarStatUp(d){
+ const st=d.statistik, el=$('upStat');
+ if(!st){ el.innerHTML='<div class="plSub" style="margin-top:8px">Belum ada data trafik untuk rentang ini.</div>'; return; }
+ const kap=st.kapasitas, pr=v=>kap?` <span class="plSub">(${Math.round(v*100/kap)}%)</span>`:'';
+ const kotak=(l,v,s)=>`<div class="blBox"><small>${l}</small><b>${v}</b>${s?`<div class="plSub">${s}</div>`:''}</div>`;
+ const jam=st.jam_sibuk.map(j=>String(j).padStart(2,'0')+'.00').join(', ');
+ const warna={upgrade:['#fff6f5','#f3b4ab','#b42318'],siapkan:['#fffaf0','#f3d48a','#8a5a00'],aman:['#f3faf5','#bfe6cb','#0b7a3b']}[st.tingkat]||null;
+ // Profil per jam (rata-rata download tiap jam dalam sehari): batang biru, jam sibuk oranye.
+ const W=720,H=120,pl=34,pb=18,w=W-pl-6,h=H-pb-8, mx=Math.max(1,...st.per_jam.filter(v=>v!=null),kap||0)*1.1, bw=w/24;
+ let svg='';
+ for(let i=0;i<=2;i++){ const y=8+h*i/2; svg+=`<line x1="${pl}" y1="${y}" x2="${pl+w}" y2="${y}" stroke="#e7eee9"/><text x="${pl-4}" y="${y+4}" text-anchor="end" font-size="10" fill="#7a8d83">${Math.round(mx*(1-i/2))}</text>`; }
+ if(kap) svg+=`<line x1="${pl}" y1="${8+h-(kap/mx)*h}" x2="${pl+w}" y2="${8+h-(kap/mx)*h}" stroke="#b45309" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+ st.per_jam.forEach((v,j)=>{ if(v==null) return; const bh=Math.max(1,(v/mx)*h);
+  svg+=`<rect x="${pl+j*bw+2}" y="${8+h-bh}" width="${bw-4}" height="${bh}" rx="3" fill="${st.jam_sibuk.includes(j)?'#e08a1e':'#278ff2'}"><title>${String(j).padStart(2,'0')}.00 · rata-rata ${v} Mbps</title></rect>`;
+  if(j%3===0) svg+=`<text x="${pl+j*bw+bw/2}" y="${H-4}" text-anchor="middle" font-size="10" fill="#7a8d83">${String(j).padStart(2,'0')}</text>`; });
+ el.innerHTML=`<div class="khSum upSum" style="margin-top:8px">${kotak('Rata-rata',st.rata+' Mbps'+pr(st.rata))}${kotak('Jam sibuk (rata-rata)',st.rata_jam_sibuk+' Mbps'+pr(st.rata_jam_sibuk),'pukul '+jam)}${kotak('Jam sibuk (P95)',st.p95_jam_sibuk+' Mbps'+pr(st.p95_jam_sibuk),'95% waktu di bawah angka ini')}${kotak('Puncak',st.puncak+' Mbps'+pr(st.puncak),st.persen_waktu_80!=null?st.persen_waktu_80+'% waktu ≥ 80% kapasitas':'')}</div>`
+  +`<div style="margin-top:10px"><b style="font-size:var(--fs-xs)">Rata-rata per jam dalam sehari</b><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:110px;display:block">${svg}</svg><div class="chartLegend"><span class="legend"><i class="lg" style="background:#278ff2"></i>Rata-rata jam itu</span><span class="legend"><i class="lg" style="background:#e08a1e"></i>3 jam tersibuk</span>${kap?'<span class="legend"><i class="lg" style="background:#b45309"></i>Kapasitas</span>':''}</div></div>`
+  +(st.saran&&warna?`<div class="kuPanel" style="margin-top:8px;background:${warna[0]};border-color:${warna[1]}"><b style="font-size:var(--fs-xs);color:${warna[2]}">${st.tingkat==='upgrade'?'⬆ ':st.tingkat==='siapkan'?'⚠ ':'✓ '}${esc(st.saran)}</b><div class="plSub">Jam sibuk P95 = ${st.persen_p95_sibuk}% dari kapasitas ${kap} Mbps. Patokan: di bawah 60% longgar, 60–80% siapkan, di atas 80% upgrade.</div></div>`
+   :`<div class="plSub" style="margin-top:8px;color:#b45309">Isi <b>kapasitas internet pusat</b> (jumlah semua ISP) di Pengaturan → Sistem supaya INDESO bisa memberi saran upgrade.</div>`)
+  +`<div class="plSub" style="margin-top:4px">${st.jumlah} pengukuran · ${st.hari_data} hari data.</div>`;
 }
 function _grafikUp(svgId,tipId,data,seri,acuan,merah,ekstra){
  const svg=$(svgId),W=720,H=200,pad={l:40,r:10,t:12,b:24},w=W-pad.l-pad.r,h=H-pad.t-pad.b;

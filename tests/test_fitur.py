@@ -2314,3 +2314,34 @@ def test_pilihan_interface_dari_mikrotik(siap):
     assert main.CONFIG["UPSTREAM_WAN"] == "WAN STARLINK ETH4" and main.CONFIG["UPSTREAM_TRAFIK_IF"] == "sfp-sfpplus1"
     assert o.put("/api/pengaturan", json={"nilai": {"UPSTREAM_TRAFIK_IF": ""}}).status_code == 200   # kembali Otomatis
     assert m.get("/api/mikrotik/interface").status_code == 403
+
+
+def test_statistik_trafik_untuk_upgrade(siap):
+    """Tolok ukur upgrade: rata-rata, P95 jam sibuk, profil per jam, saran sesuai kapasitas; data lama
+    dari sisi lain (satu WAN) tidak dicampur."""
+    main, o, k, m = siap
+    import sqlite3 as _sq
+    c = _sq.connect(main.CONFIG["HISTORY_DB_PATH"])
+    t0 = datetime.now().replace(minute=0, second=0, microsecond=0) - timedelta(days=8)
+    baris = []
+    for i in range(8 * 24 * 6):                                     # tiap 10 menit selama 8 hari
+        t = t0 + timedelta(minutes=10 * i)
+        rx = 85.0 if t.hour in (19, 20, 21) else 20.0
+        baris.append((t.isoformat(timespec="seconds"), rx, rx / 10, "pelanggan"))
+    baris.append((datetime.now().isoformat(timespec="seconds"), 0.0, 0.0, "wan"))       # data lama satu WAN
+    c.executemany("INSERT INTO upstream_trafik (ts, rx_mbps, tx_mbps, sisi) VALUES (?,?,?,?)", baris)
+    c.commit(); c.close()
+    main._upstream["trafik_sisi"] = "pelanggan"
+    main.CONFIG["UPSTREAM_KAPASITAS_MBPS"] = 100
+    try:
+        st = o.get("/api/upstream?jam=720").json()["statistik"]
+        assert st["jam_sibuk"] == [19, 20, 21] and st["rata_jam_sibuk"] == 85.0 and st["p95_jam_sibuk"] == 85.0
+        assert st["per_jam"][20] == 85.0 and st["per_jam"][3] == 20.0 and st["puncak"] == 85.0
+        assert st["tingkat"] == "upgrade" and st["persen_p95_sibuk"] == 85 and st["persen_waktu_80"] == 12.5
+        assert "minimal 7 hari" not in st["saran"]
+        d = o.get("/api/upstream?jam=720").json()
+        assert len(d["trafik"]) <= 720                               # titik grafik diringkas
+        main.CONFIG["UPSTREAM_KAPASITAS_MBPS"] = 200
+        assert o.get("/api/upstream?jam=720").json()["statistik"]["tingkat"] == "aman"
+    finally:
+        main._upstream["trafik_sisi"] = None
