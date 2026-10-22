@@ -2541,3 +2541,18 @@ def test_speedtest_dari_onu(siap, monkeypatch):
     assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "https://a.test/x"}}).status_code == 400
     assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "http://mirror.test:8080/uji-25MB.bin"}}).status_code == 200
     assert k.get("/api/speedtest-onu/budi").json()["url"] == "http://mirror.test:8080/uji-25MB.bin"
+
+
+def test_acs_onu_berhenti_lapor_ditandai(siap, monkeypatch):
+    """ONU yang di-reset pabrik berhenti lapor: data ACS-nya laporan lama → ditandai 'diam' (tombol TR-069 muncul)."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    sekarang = datetime.now(main.timezone.utc)
+    dev["_lastInform"] = (sekarang - timedelta(minutes=37)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    p = k.get("/api/acs/budi").json()["perangkat"]
+    assert 36 <= p["lapor_menit_lalu"] <= 38 and p["diam"] is True
+    dev["_lastInform"] = (sekarang - timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert k.get("/api/acs/budi").json()["perangkat"]["diam"] is False
