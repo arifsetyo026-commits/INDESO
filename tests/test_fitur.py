@@ -2462,3 +2462,35 @@ def test_onu_baru_deteksi_dan_aktivasi(siap, monkeypatch):
     assert {y["sn"]: y["oleh"] for y in rw}["ZTEGD08EDD99"] == "kasir"
     assert k.post("/api/onu-baru/ZTEGD08EDD99/buka").status_code == 200
     assert k.get("/api/onu-baru/jumlah").json()["baru"] == 1
+
+
+def test_kesehatan_wifi(siap, monkeypatch):
+    """Sapu WiFi semua ONU: tanpa password (kritis), nama bawaan, terlalu ramai + 5 GHz mati, channel bertumpuk;
+    ONU sehat tidak ditandai; segarkan hanya mengantrekan tugas (tanpa mengetuk ONU), tidak dobel."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    assert k.get("/api/wifi-kesehatan").json() == {"aktif": False}
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    import copy
+    sehat = acs.dev["ZTEGC1234567"]
+    w = sehat["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    w["1"].update(BeaconType={"_value": "11i"}, AutoChannelEnable={"_value": True})
+    w["5"]["BeaconType"] = {"_value": "11i"}
+    sakit = copy.deepcopy(sehat)
+    sakit["_id"], sakit["_deviceId"]["_SerialNumber"] = "ZTE-F609-ZTEGC7654321", "ZTEGC7654321"
+    sakit["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]["1"]["WANPPPConnection"]["1"]["Username"]["_value"] = "ani"
+    w2 = sakit["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    w2["1"].update(SSID={"_value": "ZTE-a1b2c3"}, BeaconType={"_value": "None"}, Channel={"_value": 3},
+                   AutoChannelEnable={"_value": False}, TotalAssociations={"_value": 18})
+    w2["5"]["Enable"] = {"_value": False}
+    acs.dev["sakit"] = sakit
+    d = k.get("/api/wifi-kesehatan").json()
+    assert d["aktif"] and d["ringkas"]["total"] == 2 and d["ringkas"]["kritis"] == 1
+    a, b = d["onu"]
+    assert a["username"] == "ani" and a["tingkat"] == "kritis" and a["masalah"][0]["kode"] == "terbuka"
+    assert {"terbuka", "bawaan", "ramai", "channel", "5g_mati"} <= {x["kode"] for x in a["masalah"]}
+    assert b["username"] == "budi" and b["tingkat"] == "sehat" and b["masalah"] == []
+    assert m.get("/api/wifi-kesehatan").status_code == 403
+    r = k.post("/api/wifi-kesehatan/segarkan").json()
+    assert r["diantrekan"] == 2 and all(t["name"] == "refreshObject" for t in acs.tugas)

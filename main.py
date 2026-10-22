@@ -10212,6 +10212,154 @@ def olt_tr069_pelanggan(username: str, request: Request, reboot: bool = False):
 
 
 # ============================================================
+# KESEHATAN WIFI — sapu semua ONU di ACS: keamanan, nama bawaan, terlalu ramai, channel, mode lama
+# ============================================================
+
+_SSID_BAWAAN = re.compile(r"^(ZTE[-_]|ZTE$|FH_|fh_|FiberHome|HUAWEI[-_]|HG8|TP-?LINK|CDATA|C-DATA|ALCL|Nokia|"
+                          r"ChinaNet-|CMCC-|XPON|GPON|EPON|ONT[-_]|ONU[-_])", re.I)
+WIFI_RAMAI = 15          # perangkat tersambung pada satu pemancar WiFi
+
+
+def _masalah_wifi(doc: dict, b: str, w: dict) -> list[dict]:
+    """Temuan untuk satu WiFi (WLANConfiguration) yang aktif."""
+    hasil = []
+    tipe = str(_nilai(doc, f"{b}.BeaconType") or "")
+    dasar = str(_nilai(doc, f"{b}.BasicEncryptionModes") or "")
+    if tipe.lower() == "none" or (tipe.lower() == "basic" and dasar.lower() in ("", "none")):
+        hasil.append({"tingkat": "kritis", "kode": "terbuka", "judul": "WiFi tanpa password",
+                      "saran": "Siapa pun bisa ikut memakai kuota pelanggan. Pasang password lewat Diagnosa → WiFi."})
+    elif tipe.lower() == "basic" and "wep" in dasar.lower():
+        hasil.append({"tingkat": "kritis", "kode": "wep", "judul": "Keamanan WEP (mudah dibobol)",
+                      "saran": "Ganti password lewat Diagnosa → WiFi; atur keamanan ke WPA2 di web ONU."})
+    elif tipe.upper() == "WPA":
+        hasil.append({"tingkat": "perhatian", "kode": "wpa_lama", "judul": "Masih WPA lama",
+                      "saran": "Ubah keamanan ke WPA2 di web ONU supaya lebih aman dan lebih cepat."})
+    if _SSID_BAWAAN.match(w["ssid"] or ""):
+        hasil.append({"tingkat": "perhatian", "kode": "bawaan", "judul": "Nama WiFi masih bawaan pabrik",
+                      "saran": "Password-nya kemungkinan juga bawaan (tertera di stiker ONU, mudah ditebak). "
+                               "Ganti nama & password lewat Diagnosa → WiFi."})
+    if (w["klien"] or 0) >= WIFI_RAMAI:
+        hasil.append({"tingkat": "perhatian", "kode": "ramai", "judul": f"{w['klien']} perangkat di satu WiFi",
+                      "saran": "WiFi berdesakan → lambat. Arahkan HP yang mendukung ke 5 GHz, atau tawarkan paket lebih besar."})
+    ch = str(w["channel"] or "")
+    otomatis = _nilai(doc, f"{b}.AutoChannelEnable") in (True, "true", "1", 1)
+    if w["band"] == "2,4 GHz" and ch.isdigit() and int(ch) not in (0, 1, 6, 11) and not otomatis:
+        hasil.append({"tingkat": "perhatian", "kode": "channel", "judul": f"Channel {ch} bertumpuk dengan tetangga",
+                      "saran": "Channel 2,4 GHz yang tidak saling ganggu hanya 1, 6, 11. Pilih salah satunya atau 'otomatis' di web ONU."})
+    std = str(w["standar"] or "").lower().replace(" ", "")
+    if w["band"] == "2,4 GHz" and std in ("b", "g", "b,g", "bg", "802.11b", "802.11g", "802.11bg"):
+        hasil.append({"tingkat": "info", "kode": "mode_lama", "judul": f"Mode WiFi lama ({w['standar']})",
+                      "saran": "Tanpa 802.11n kecepatan WiFi maksimal ±20 Mbps. Ubah ke b/g/n di web ONU."})
+    return hasil
+
+
+def _kesehatan_wifi_onu(doc: dict, sekarang: datetime) -> dict:
+    wlan = []
+    for i in _anak(doc, f"{_IGD}.LANDevice.1.WLANConfiguration"):
+        b = f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"
+        ssid = _nilai(doc, f"{b}.SSID")
+        if ssid is None:
+            continue
+        total = _nilai(doc, f"{b}.TotalAssociations")
+        klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
+        wlan.append({"index": int(i), "b": b, "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
+                     "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
+                     "band": _band_wifi(doc, b, ssid), "klien": klien})
+    aktif = [w for w in wlan if w["aktif"]]
+    masalah = []
+    for w in aktif:
+        for m in _masalah_wifi(doc, w["b"], w):
+            masalah.append(dict(m, ssid=w["ssid"], band=w["band"]))
+    if wlan and not aktif:
+        masalah.append({"tingkat": "info", "kode": "mati", "judul": "Semua WiFi dimatikan", "ssid": None, "band": None,
+                        "saran": "Wajar bila pelanggan memakai router sendiri. Bila tidak, nyalakan di web ONU."})
+    ada_5g = [w for w in wlan if w["band"] == "5 GHz"]
+    if any(m["kode"] == "ramai" for m in masalah) and ada_5g and not any(w["aktif"] for w in ada_5g):
+        masalah.append({"tingkat": "perhatian", "kode": "5g_mati", "judul": "WiFi 5 GHz tersedia tapi mati",
+                        "ssid": ada_5g[0]["ssid"], "band": "5 GHz",
+                        "saran": "Nyalakan 5 GHz di web ONU supaya perangkat terbagi ke dua pemancar."})
+    menit = _lapor_terakhir_menit(doc.get("_lastInform"))
+    username = _nilai(doc, "VirtualParameters.pppoeUsername")
+    if not username:
+        for w in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice"):
+            for p in _anak(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection"):
+                username = username or _nilai(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username")
+    di = doc.get("_deviceId") or {}
+    urut = {"kritis": 0, "perhatian": 1, "info": 2}
+    masalah.sort(key=lambda m: urut[m["tingkat"]])
+    return {"id": doc.get("_id"), "username": username, "sn": di.get("_SerialNumber"),
+            "model": f"{di.get('_Manufacturer') or ''} {di.get('_ProductClass') or ''}".strip(),
+            "lapor_menit_lalu": menit, "data_lama": menit is None or menit > 24 * 60,
+            "wifi": [{k: w[k] for k in ("ssid", "aktif", "band", "channel", "klien")} for w in wlan],
+            "klien": sum(w["klien"] or 0 for w in aktif), "masalah": masalah,
+            "tingkat": masalah[0]["tingkat"] if masalah else "sehat"}
+
+
+@app.get("/api/wifi-kesehatan")   # bukan /api/acs/...: akan tertangkap rute /api/acs/{username}
+def wifi_kesehatan(request: Request):
+    """Sapu WiFi semua ONU yang terdaftar di ACS, dari data laporan terakhir masing-masing ONU."""
+    _wajib_admin(request)
+    if not _acs_aktif():
+        return {"aktif": False}
+    jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username"
+             for w in range(1, 6) for p in range(1, 3)]
+    r = _acs("GET", "/devices/", params={"query": "{}", "projection": ",".join(
+        ["_id", "_lastInform", "_deviceId", "VirtualParameters.pppoeUsername",
+         f"{_IGD}.LANDevice.1.WLANConfiguration"] + jalur)}, timeout=30)
+    if not r.ok:
+        raise HTTPException(status_code=502, detail=f"Server ACS menolak permintaan (HTTP {r.status_code}).")
+    nama = {}
+    conn = _billing_conn()
+    try:
+        for p in conn.execute("SELECT username, nama FROM pelanggan").fetchall():
+            nama[p["username"]] = p["nama"] or p["username"]
+    finally:
+        conn.close()
+    sekarang = datetime.now(timezone.utc)
+    onu = []
+    for d in r.json():
+        h = _kesehatan_wifi_onu(d, sekarang)
+        if not h["wifi"]:
+            continue          # ONU tanpa data WiFi di ACS (mis. baru lapor sekali, belum dibaca)
+        h["nama"] = nama.get(h["username"]) if h["username"] else None
+        onu.append(h)
+    urut = {"kritis": 0, "perhatian": 1, "info": 2, "sehat": 3}
+    onu.sort(key=lambda h: (urut[h["tingkat"]], -(h["klien"] or 0)))
+    jumlah: dict = {}
+    for h in onu:
+        for m in h["masalah"]:
+            jumlah[m["kode"]] = jumlah.get(m["kode"], 0) + 1
+    return {"aktif": True, "onu": onu, "ringkas": {
+        "total": len(onu), "kritis": sum(1 for h in onu if h["tingkat"] == "kritis"),
+        "perhatian": sum(1 for h in onu if h["tingkat"] == "perhatian"),
+        "sehat": sum(1 for h in onu if h["tingkat"] in ("sehat", "info")),
+        "data_lama": sum(1 for h in onu if h["data_lama"]), "per_masalah": jumlah}, "ambang_ramai": WIFI_RAMAI}
+
+
+@app.post("/api/wifi-kesehatan/segarkan")
+def wifi_kesehatan_segarkan(request: Request):
+    """Minta semua ONU mengirim ulang data WiFi-nya saat lapor berikutnya (≤ ±5 menit). Tugas diantrekan
+    tanpa mengetuk ONU satu per satu, supaya ringan dan tidak mengganggu pelanggan."""
+    _wajib_admin(request)
+    from urllib.parse import quote
+    r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_id"}, timeout=15)
+    if not r.ok:
+        raise HTTPException(status_code=502, detail=f"Server ACS menolak permintaan (HTTP {r.status_code}).")
+    antre = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "refreshObject"}),
+                                            "projection": "device,objectName"}, timeout=15)
+    sudah = {t.get("device") for t in (antre.json() if antre.ok else [])
+             if str(t.get("objectName") or "").endswith("WLANConfiguration")}
+    n = 0
+    for d in r.json():
+        if d.get("_id") in sudah:
+            continue
+        x = _acs("POST", f"/devices/{quote(d['_id'], safe='')}/tasks",
+                 json={"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.WLANConfiguration"}, timeout=15)
+        n += x.status_code in (200, 202)
+    catat_aktivitas(_oleh(request), "wifi_segarkan", f"Data WiFi {n} ONU diminta diperbarui")
+    return {"diantrekan": n, "sudah_antre": len(sudah)}
+
+# ============================================================
 # ONU BARU — deteksi ONU yang baru dicolok + aktivasi (TR-069, WiFi)
 # ============================================================
 

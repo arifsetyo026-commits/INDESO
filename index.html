@@ -292,7 +292,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 </div></div></div>
 <div class="overlay" id="kesehatanModal"><div class="modal"><div class="modalHead"><h3>Kesehatan Jaringan</h3><button class="close" onclick="closeModal('kesehatanModal')">Tutup</button></div><div class="modalBody">
 <div class="khSum"><div class="blBox khBtn" onclick="setFilterKesehatan('BERMASALAH')"><small>Bermasalah</small><b id="khBermasalah" style="color:#b42318">—</b></div><div class="blBox khBtn" onclick="setFilterKesehatan('PANTAU')"><small>Pantau</small><b id="khPantau" style="color:#b45309">—</b></div><div class="blBox khBtn" onclick="setFilterKesehatan('SEHAT')"><small>Sehat</small><b id="khSehat" style="color:#0b7a3b">—</b></div></div>
-<div class="khJam"><button data-j="24" class="on" onclick="ubahJamKesehatan(24)">24 jam</button><button data-j="72" onclick="ubahJamKesehatan(72)">3 hari</button><button data-j="168" onclick="ubahJamKesehatan(168)">7 hari</button><button onclick="loadKesehatan()">Muat ulang</button></div>
+<div class="khJam"><button data-j="24" class="on" onclick="ubahJamKesehatan(24)">24 jam</button><button data-j="72" onclick="ubahJamKesehatan(72)">3 hari</button><button data-j="168" onclick="ubahJamKesehatan(168)">7 hari</button><button onclick="loadKesehatan()">Muat ulang</button><button onclick="openWifiKesehatan()">📶 Kesehatan WiFi</button></div>
 <div class="search"><input id="khSearch" placeholder="Cari nama atau username…" oninput="renderKesehatan()"></div>
 <div class="khFilters"><button data-f="cek" class="on" onclick="setFilterKesehatan('cek')">Perlu dicek</button><button data-f="BERMASALAH" onclick="setFilterKesehatan('BERMASALAH')">Bermasalah</button><button data-f="PANTAU" onclick="setFilterKesehatan('PANTAU')">Pantau</button><button data-f="SEHAT" onclick="setFilterKesehatan('SEHAT')">Sehat</button><button data-f="semua" onclick="setFilterKesehatan('semua')">Semua</button></div>
 <div class="plSub" id="khInfo"></div><div class="plMsg" id="khMsg"></div><div id="khList"></div>
@@ -417,6 +417,13 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="plSub" id="obInfo" style="margin-bottom:8px">ONU yang baru dicolok terdeteksi otomatis dari OLT (dicek ±1 menit sekali) dan dikabarkan lewat Telegram. Ikuti langkahnya sampai semua tercentang, lalu tandai selesai.</div>
 <div class="plMsg" id="obMsg"></div>
 <div id="obList"><div class="muted">Memuat…</div></div>
+</div></div></div>
+<div class="overlay" id="wifiKhModal"><div class="modal"><div class="modalHead"><h3>Kesehatan WiFi</h3><button class="close" onclick="closeModal('wifiKhModal')">Tutup</button></div><div class="modalBody">
+<div class="khSum"><div class="blBox khBtn" onclick="wk.filter='kritis';renderWifiKh()"><small>Kritis</small><b id="wkKritis" style="color:#b42318">—</b></div><div class="blBox khBtn" onclick="wk.filter='perhatian';renderWifiKh()"><small>Perlu perhatian</small><b id="wkPerhatian" style="color:#b45309">—</b></div><div class="blBox khBtn" onclick="wk.filter='sehat';renderWifiKh()"><small>Sehat</small><b id="wkSehat" style="color:#0b7a3b">—</b></div></div>
+<div class="search"><input id="wkSearch" placeholder="Cari nama, username, nama WiFi…" oninput="renderWifiKh()"></div>
+<div class="blFilters wkFilters"><button data-f="cek" class="on" onclick="wk.filter='cek';renderWifiKh()">Perlu dicek</button><button data-f="kritis" onclick="wk.filter='kritis';renderWifiKh()">Kritis</button><button data-f="perhatian" onclick="wk.filter='perhatian';renderWifiKh()">Perhatian</button><button data-f="sehat" onclick="wk.filter='sehat';renderWifiKh()">Sehat</button><button data-f="semua" onclick="wk.filter='semua';renderWifiKh()">Semua</button></div>
+<div class="plSub" id="wkInfo"></div><div class="blAksi" style="justify-content:flex-start;margin:6px 0 10px"><button class="btnS" onclick="muatWifiKh()">Muat ulang</button><button class="btnS" id="wkSegar" onclick="segarkanWifiKh(this)">Minta semua ONU kirim data WiFi terbaru</button></div>
+<div class="plMsg" id="wkMsg"></div><div id="wkList"></div>
 </div></div></div>
 <div class="overlay" id="settingsModal"><div class="modal"><div class="modalHead"><h3>Pengaturan</h3><button class="close" onclick="closeModal('settingsModal')">Tutup</button></div><div class="modalBody">
 <div class="blFilters stTabs"><button data-t="saya" class="on" onclick="tabPengaturan('saya')">Akun saya</button><button data-t="akun" onclick="tabPengaturan('akun')">Pengguna</button><button data-t="sistem" onclick="tabPengaturan('sistem')">Sistem</button><button data-t="log" onclick="tabPengaturan('log')">Log aktivitas</button></div>
@@ -1878,6 +1885,45 @@ async function tandaiOnuBaru(sn,aksi){
  if(aksi==='abaikan'&&!confirm('Abaikan ONU '+sn+'? (mis. ONU uji coba / bukan pelanggan)')) return;
  try{ await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/'+aksi,{method:'POST'})); obPesan(aksi==='buka'?'ONU '+sn+' dikembalikan ke daftar.':'ONU '+sn+' '+(aksi==='selesai'?'ditandai selesai.':'diabaikan.'),true); muatOnuBaru(); }
  catch(e){ obPesan('Gagal: '+e.message); }
+}
+
+// ===== Kesehatan WiFi semua ONU (dari ACS) =====
+const wk={filter:'cek',data:null};
+const WK_WARNA={kritis:['#b42318','bad','Kritis'],perhatian:['#b45309','warn','Perhatian'],info:['#1669aa','info','Info'],sehat:['#0b7a3b','ok','Sehat']};
+function wkPesan(t,ok){ const m=$('wkMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+async function openWifiKesehatan(){ $('wifiKhModal').classList.add('show'); wk.filter='cek'; wkPesan(''); await muatWifiKh(); }
+async function muatWifiKh(){
+ $('wkList').innerHTML='<div class="muted">Membaca data WiFi semua ONU dari server ACS…</div>';
+ try{ const d=await jsonAtauError(await fetch('/api/wifi-kesehatan',{cache:'no-store'})); wk.data=d;
+  if(!d.aktif){ $('wkList').innerHTML='<div class="muted">Server ACS belum diatur, jadi WiFi ONU belum bisa diperiksa.</div>'; return; }
+  const R=d.ringkas; $('wkKritis').textContent=R.kritis; $('wkPerhatian').textContent=R.perhatian; $('wkSehat').textContent=R.sehat;
+  $('wkInfo').textContent=R.total+' ONU diperiksa dari laporan terakhirnya ke ACS'+(R.data_lama?' · '+R.data_lama+' ONU datanya lebih dari 24 jam (tekan tombol di bawah untuk memperbarui)':'')+'.';
+  renderWifiKh();
+ }catch(e){ $('wkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function renderWifiKh(){
+ document.querySelectorAll('.wkFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===wk.filter));
+ const d=wk.data; if(!d||!d.aktif) return;
+ const q=$('wkSearch').value.trim().toLowerCase();
+ const lolos=h=>wk.filter==='semua'||(wk.filter==='cek'?['kritis','perhatian'].includes(h.tingkat):wk.filter==='sehat'?['sehat','info'].includes(h.tingkat):h.tingkat===wk.filter);
+ const cari=h=>!q||[h.nama,h.username,h.model,...h.wifi.map(w=>w.ssid)].some(x=>String(x||'').toLowerCase().includes(q));
+ const daftar=d.onu.filter(h=>lolos(h)&&cari(h));
+ $('wkList').innerHTML=daftar.map(h=>{
+  const [w,c,t]=WK_WARNA[h.tingkat];
+  const wifi=h.wifi.map(x=>`${esc(x.ssid)} <span class="plSub">(${esc(x.band)}${x.channel?' · ch '+esc(x.channel):''}${x.aktif?' · '+(x.klien??'?')+' perangkat':' · mati'})</span>`).join('<br>');
+  const masalah=h.masalah.map(m=>`<div style="margin-top:6px;font-size:var(--fs-xs)"><b style="color:${WK_WARNA[m.tingkat][0]}">${esc(m.judul)}</b>${m.ssid?' <span class="plSub">· '+esc(m.ssid)+'</span>':''}<div class="plSub">${esc(m.saran)}</div></div>`).join('');
+  return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="min-width:0"><div class="plName">${esc(h.nama||h.username||h.sn||h.id)}${h.username&&h.nama?' <span class="plSub">· '+esc(h.username)+'</span>':''}</div>
+   <div class="plSub">${esc(h.model)}${h.lapor_menit_lalu!=null?' · lapor '+(h.lapor_menit_lalu<120?h.lapor_menit_lalu+' menit':h.lapor_menit_lalu<2880?Math.round(h.lapor_menit_lalu/60)+' jam':Math.round(h.lapor_menit_lalu/1440)+' hari')+' lalu':''}${h.data_lama?' · <b style="color:#b45309">data lama</b>':''}</div></div><span class="chip ${c}">${t}</span></div>
+   <div style="margin-top:6px;font-size:var(--fs-xs)">${wifi}</div>${masalah}
+   ${h.username?`<div class="blAksi" style="justify-content:flex-start"><button class="btnS" onclick="closeModal('wifiKhModal');openDiagnosa(${jsq(h.username)})">Buka Diagnosa (ganti WiFi)</button></div>`:''}</div>`;
+ }).join('')||'<div class="muted">Tidak ada ONU di kelompok ini.</div>';
+}
+async function segarkanWifiKh(btn){
+ if(!confirm('Minta semua ONU mengirim data WiFi terbaru?\nData diperbarui saat masing-masing ONU lapor berikutnya (±5 menit). Tidak mengganggu internet pelanggan.')) return;
+ btn.disabled=true;
+ try{ const r=await jsonAtauError(await fetch('/api/wifi-kesehatan/segarkan',{method:'POST'}));
+  wkPesan('✅ '+r.diantrekan+' ONU diminta memperbarui data WiFi'+(r.sudah_antre?' ('+r.sudah_antre+' sudah dalam antrean)':'')+'. Tekan Muat ulang ±5–10 menit lagi.',true); }
+ catch(e){ wkPesan('Gagal: '+e.message); btn.disabled=false; }
 }
 
 // ===== Tiket gangguan =====
