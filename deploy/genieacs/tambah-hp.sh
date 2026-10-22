@@ -5,11 +5,15 @@
 #   sudo bash tambah-hp.sh                # buat akses untuk "hp-owner" (atau tampilkan lagi kode QR-nya)
 #   sudo bash tambah-hp.sh hp-teknisi     # akses untuk perangkat lain
 #   sudo bash tambah-hp.sh hapus hp-lama  # cabut akses satu perangkat (mis. HP hilang)
+#   sudo bash tambah-hp.sh berkas         # salin konfigurasi ke folder home untuk diimpor di HP
+#                                         # (bila skrip dijalankan dari HP yang sama lewat SSH/Termux,
+#                                         #  kode QR di layar tidak bisa dipindai HP itu sendiri)
 #
 # Cara kerja: HP <-> VPS lewat antarmuka WireGuard sendiri (wghp, 10.98.0.0/24); VPS meneruskan ke
 # MikroTik lewat terowongan INDESO yang sudah ada (wgacs) ATAS NAMA VPS (10.99.0.1), alamat yang sudah
 # diizinkan MikroTik sejak pemasangan ACS. Terowongan wgacs tidak diubah sama sekali.
 set -euo pipefail
+umask 077            # kunci WireGuard tidak boleh terbaca pengguna lain
 [ "$(id -u)" -eq 0 ] || { echo "Jalankan dengan sudo."; exit 1; }
 
 WG_ACS="${WG_ACS:-wgacs}"
@@ -36,6 +40,8 @@ PY
   exit 0
 fi
 
+BERKAS=0
+if [ "${1:-}" = "berkas" ]; then BERKAS=1; shift; fi
 NAMA="${1:-hp-owner}"
 [[ "$NAMA" =~ ^[A-Za-z0-9_-]{1,30}$ ]] || { echo "Nama hanya huruf, angka, - atau _ (maks. 30)."; exit 1; }
 command -v qrencode >/dev/null || apt-get install -y qrencode >/dev/null
@@ -101,9 +107,28 @@ CL
   chmod 600 "$DIR/$NAMA.conf"
 fi
 
+if [ "$BERKAS" = 1 ]; then
+  PEMILIK="${SUDO_USER:-root}"
+  RUMAH=$(getent passwd "$PEMILIK" | cut -d: -f6)
+  install -m 600 -o "$PEMILIK" "$DIR/$NAMA.conf" "$RUMAH/$NAMA.conf"
+  echo
+  echo "Berkas disalin ke: $RUMAH/$NAMA.conf"
+  echo "Di Termux HP (sesi baru, BUKAN di dalam SSH), ambil berkasnya:"
+  echo "     termux-setup-storage"
+  echo "     scp ${PEMILIK}@$(curl -4 -fsS https://api.ipify.org 2>/dev/null || echo IP_VPS):${NAMA}.conf ~/storage/downloads/"
+  echo "Lalu di aplikasi WireGuard: + -> Impor dari berkas -> Download -> ${NAMA}.conf"
+  echo "Setelah berhasil diimpor, HAPUS salinannya (berisi kunci akses):"
+  echo "     di VPS : rm ~/${NAMA}.conf"
+  echo "     di HP  : rm ~/storage/downloads/${NAMA}.conf"
+  exit 0
+fi
+
 echo
 echo "================ Kode QR untuk '${NAMA}' ================"
-qrencode -t ansiutf8 < "$DIR/$NAMA.conf"
+# Kode QR di terminal HP (Termux) sering pecah karena jarak antarbaris; pindai dari layar laptop/PC,
+# atau pakai: sudo bash tambah-hp.sh berkas
+qrencode -t ansiutf8 -m 2 < "$DIR/$NAMA.conf"
+echo "(Kode QR pecah/tidak terbaca, atau dijalankan dari HP yang sama? Pakai: sudo bash $0 berkas ${NAMA})"
 echo
 echo "1. Pasang aplikasi WireGuard di HP (Play Store / App Store)."
 echo "2. Ketuk tombol + -> Pindai dari kode QR -> arahkan kamera ke kode di atas -> beri nama 'MikroTik'."
