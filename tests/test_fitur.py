@@ -2642,7 +2642,7 @@ def test_aktivasi_onu_baru_dari_olt(siap):
     assert ("ont ipconfig 2 4 ip-index 0 pppoe username dwi password Rahasia26 vlan 1 priority 0" in p
             and p.index("ont ipconfig 2 4 ip-index 0 connection-type route") < p.index("ont internet-config 2 4 ip-index 0"))
     assert "ont ipconfig 2 4 ip-index 0 nat enable" in p
-    assert p.index("ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1-8") < p.index("ont internet-config 2 4 ip-index 0")
+    assert p.index("ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1,5") < p.index("ont internet-config 2 4 ip-index 0")
     assert any(x.startswith("ont wifi 2 4 2.4g 1 enable username RUMAH-DWI password wifi12345") for x in p)
     assert any(x.startswith("ont tr069 2 4 acs-url") for x in p) and "save" in p
     assert not any(x.startswith("ont wan") or x.startswith("ont reboot") for x in p)
@@ -2653,12 +2653,12 @@ def test_aktivasi_onu_baru_dari_olt(siap):
     assert "Rahasia26" not in log and "wifi12345" not in log and "RUMAH-DWI" in log
     x = k.get("/api/onu-baru").json()["onu"][0]
     assert x["untuk"] == "dwi" and x["tr069"] and x["wifi"]
-    # ONU satu band: daftar SSID penuh ditolak → dicoba versi lebih kecil
-    olt3 = FakeOLTTelnet(tolak_awalan=("ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1-8",))
+    # ONU satu band (tanpa WLAN 5): cukup WLAN 1
+    olt3 = FakeOLTTelnet(tolak_awalan=("ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1,5",))
     main.CONFIG["OLT_TELNET_PORT"] = olt3.port
     d = k.post(url, json={"username": "dwi"}).json()
     assert {h["langkah"]: h["ok"] for h in d["langkah"]}["Port LAN & WiFi ke WAN"]
-    assert "ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1-4" in olt3.perintah and d["pppoe"]
+    assert "ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1" in olt3.perintah and d["pppoe"]
     # PPPoE ditolak OLT → berhenti, tidak lanjut WiFi/TR-069
     olt2 = FakeOLTTelnet(tolak_awalan=("ont ipconfig 2 4 ip-index 0 pppoe",))
     main.CONFIG["OLT_TELNET_PORT"] = olt2.port

@@ -159,7 +159,7 @@ lapor ke ACS → WiFi diatur. Tombol yang tersedia:
 ont ipconfig P O ip-index 0 pppoe username U password P vlan 1 priority 0
 ont ipconfig P O ip-index 0 connection-type route
 ont ipconfig P O ip-index 0 nat enable
-ont ipconfig P O ip-index 0 binding eth 1-4 wlan 1-8   (ikat port LAN & WiFi ke WAN ini)
+ont ipconfig P O ip-index 0 binding eth 1-4 wlan 1,5   (port LAN + SSID utama 2,4 GHz & 5 GHz; ONU satu band: wlan 1)
 ont internet-config P O ip-index 0
 ont wifi P O 2.4g 1 enable username NAMA password SANDI authentication wpa2-psk encryption aes
 ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk encryption aes
