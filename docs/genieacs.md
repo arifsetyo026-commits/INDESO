@@ -177,7 +177,15 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 - Akun yang sedang dipakai ONU lain ditolak, karena profil memakai `only-one`.
 - Nama dan password WiFi lewat OLT tidak boleh berisi spasi.
 - VLAN bisa diubah lewat `OLT_PPPOE_VLAN` di `.env` (bawaan 1, untuk jaringan tanpa tag).
-- Model selain F670L (mis. F609, FiberHome) belum diuji. Bila PPPoE belum tersambung 2 menit setelah dikirim, tekan
+- **Huawei HG8145V5** (uji 23 Okt 2026, PON 0/0/2, ONU 5):
+  - PPPoE dari OLT berhasil, dan ONU lapor ke ACS;
+  - **WiFi dari OLT diabaikan** (SSID tidak muncul). Atur WiFi lewat **Atur WiFi** (jalur ACS), yang juga menyalakan WiFi
+    bila mati;
+  - Huawei menolak ping dari arah WAN secara bawaan, jadi ping dari MikroTik ke IP PPPoE-nya selalu "loss". Itu bukan
+    gangguan. Pakai **Ping dari ONU ke Google** atau **Tes kecepatan**.
+- Ceklis **WiFi diatur** di ONU Baru dicek dari laporan ONU ke ACS: tercentang hanya bila SSID yang dikirim benar-benar
+  menyala di ONU.
+- Model lain (mis. F609, FiberHome) belum diuji. Bila PPPoE belum tersambung 2 menit setelah dikirim, tekan
   **Restart ONU** sekali. Bila tetap belum, isi lewat web ONU.
 
 ### Tes kecepatan dari ONU (Diagnosa → ⚡ Tes kecepatan dari ONU)

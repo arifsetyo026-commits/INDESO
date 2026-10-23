@@ -1431,6 +1431,9 @@ def init_history_db() -> None:
                 tr069 TEXT, wifi TEXT, selesai TEXT, oleh TEXT
             )
         """)
+        # wifi_ssid: nama WiFi 2,4 GHz yang dikirim, untuk memastikan ONU benar-benar memancarkannya (dari laporan ACS).
+        if "wifi_ssid" not in [r[1] for r in conn.execute("PRAGMA table_info(onu_baru)").fetchall()]:
+            conn.execute("ALTER TABLE onu_baru ADD COLUMN wifi_ssid TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -10896,13 +10899,30 @@ def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict) -> dict:
     if acs is not None:
         di_acs = r["sn"] in acs["sn"] or bool(user and any(not _onu_lama(d, r["sn"]) for d in acs["user"].get(user, [])))
     sinyal_ok = bool(o and o.online and o.status in ("OK", "WARNING"))
+    wifi_ok = bool(r["wifi"])
+    if r["wifi_ssid"] and di_acs:
+        # Dicek dari laporan ONU: perintah diterima OLT/ACS belum tentu dijalankan ONU (Huawei mengabaikan WiFi dari OLT).
+        try:
+            doc = _doc_acs_onu(r["sn"], user)
+        except HTTPException:
+            doc = None
+        if doc:
+            wifi = _ringkas_perangkat(doc)["wifi"]
+            ts = max((str(_param(doc, f"{_IGD}.LANDevice.1.WLANConfiguration.{w['index']}.SSID").get("_timestamp") or "")
+                      for w in wifi), default="")
+            if any(w["ssid"] == r["wifi_ssid"] and w["aktif"] for w in wifi):
+                wifi_ok = True
+            elif ts and _waktu_iso(ts) and _waktu_iso(ts) >= datetime.fromisoformat(r["wifi"]).astimezone(timezone.utc):
+                wifi_ok = False        # data WiFi sudah dibaca setelah perintah dikirim, tapi SSID itu tidak menyala
+            else:
+                wifi_ok = None         # belum terbaca sejak perintah dikirim
     langkah = {
         "olt": True,
         "sinyal": sinyal_ok,
         "internet": bool(user),
         "pelanggan": bool(user and user in nama),
         "acs": di_acs,
-        "wifi": bool(r["wifi"]),
+        "wifi": wifi_ok,
     }
     return {
         "sn": r["sn"], "pertama": r["pertama"], "terakhir": r["terakhir"], "status": r["status"],
@@ -10935,6 +10955,11 @@ def _saran_onu_baru(o: Optional[ONUStatus], langkah: dict, r: sqlite3.Row) -> st
         if "F609" in (o.model or "").upper() or sn.startswith("ZTEG"):
             return "Kirim TR-069 dari OLT + restart ONU, lalu tunggu ±3 menit sampai ONU lapor ke ACS."
         return "Kirim TR-069 dari OLT. Bila tidak lapor juga, atur TR-069 di web ONU (merek non-ZTE)."
+    if langkah["acs"] and langkah["wifi"] is False:
+        return (f"WiFi '{r['wifi_ssid']}' belum memancar di ONU (ONU mengabaikan perintah WiFi dari OLT, mis. Huawei). "
+                "Atur ulang lewat tombol Atur WiFi (jalur ACS), yang juga menyalakan WiFi bila mati.")
+    if langkah["acs"] and langkah["wifi"] is None and r["wifi"]:
+        return "Buka Atur WiFi untuk membaca ulang WiFi di ONU dan memastikan WiFi sudah memancar."
     if langkah["acs"] and not langkah["wifi"]:
         return "Atur nama & password WiFi pelanggan di bawah."
     if langkah["acs"] is None:
@@ -11056,7 +11081,7 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
     if any(h["ok"] and h["langkah"].startswith("TR-069") for h in hasil["langkah"]):
         kolom["tr069"] = sekarang
     if any(h["ok"] and h["langkah"].startswith("WiFi") for h in hasil["langkah"]):
-        kolom["wifi"] = sekarang
+        kolom["wifi"], kolom["wifi_ssid"] = sekarang, ssid
     _ubah_onu_baru(sn, **kolom)
     ringkas = ", ".join(f"{h['langkah']} {'ok' if h['ok'] else 'GAGAL'}" for h in hasil["langkah"])
     catat_aktivitas(_oleh(request), "onu_aktivasi_olt",
@@ -11073,9 +11098,26 @@ def onu_baru_wifi_info(sn: str, request: Request):
     doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
     if not doc:
         return {"terhubung": False}
+    # Baca ulang status WiFi dari ONU supaya yang tampil keadaan sekarang (mis. setelah perintah WiFi dari OLT).
+    try:
+        _segarkan_perangkat(doc)
+        doc = _doc_acs_onu(sn, o.pppoe_username if o else None) or doc
+    except HTTPException as e:
+        logger.warning(f"Gagal menyegarkan WiFi ONU baru {sn}: {e.detail}")
     info = _ringkas_perangkat(doc)
     return {"terhubung": True, "wifi": info["wifi"], "model": info["model"],
             "lapor_menit_lalu": _lapor_terakhir_menit(info["lapor_terakhir"])}
+
+
+def _wifi_utama(wlan: list[dict]) -> list[dict]:
+    """Satu WiFi utama per band: yang menyala dengan nomor terkecil, atau nomor terkecil bila semua di band itu mati
+    (slot SSID tambahan/bawaan seperti 'Netsphere_...' tidak ikut diganti namanya)."""
+    hasil = []
+    for band in ("2,4 GHz", "5 GHz"):
+        calon = sorted((w for w in wlan if w["band"] == band), key=lambda w: (not w["aktif"], w["index"]))
+        if calon:
+            hasil.append(calon[0])
+    return hasil
 
 
 class WifiBaruIn(BaseModel):
@@ -11099,7 +11141,7 @@ def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
     if not doc:
         raise HTTPException(status_code=409, detail="ONU belum lapor ke server ACS. Kirim TR-069 dari OLT dulu.")
     wlan = _ringkas_perangkat(doc)["wifi"]
-    target = [w for w in wlan if w["aktif"]] or wlan[:1]
+    target = _wifi_utama(wlan)
     if not target:
         raise HTTPException(status_code=404, detail="ONU tidak melaporkan jaringan WiFi apa pun.")
     nilai, diatur = [], []
@@ -11107,13 +11149,16 @@ def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
         b = f"{_IGD}.LANDevice.1.WLANConfiguration.{w['index']}"
         nama = ssid + akhir if w["band"] == "5 GHz" and akhir else ssid
         nilai.append([f"{b}.SSID", nama, "xsd:string"])
+        if not w["aktif"] and _ada(doc, f"{b}.Enable"):
+            # ONU baru (mis. Huawei) bisa memancar mati: nyalakan juga, bukan hanya ganti nama.
+            nilai.append([f"{b}.Enable", True, _param(doc, f"{b}.Enable").get("_type") or "xsd:boolean"])
         kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
         if kunci:
             nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
         diatur.append(f"{nama} ({w['band']}{'' if kunci else ', password tidak bisa diatur lewat TR-069'})")
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
-    _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"))
+    _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=ssid)
     catat_aktivitas(_oleh(request), "onu_wifi", f"ONU baru {sn.upper()} ({doc['_id']}) WiFi: {', '.join(diatur)}"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
     return dict(hasil, diatur=diatur)

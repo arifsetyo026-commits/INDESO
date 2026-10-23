@@ -2456,8 +2456,23 @@ def test_onu_baru_deteksi_dan_aktivasi(siap, monkeypatch):
                      "5.SSID": "DWI-5G", "5.KeyPassphrase": "rahasia123"}
     log = o.get("/api/aktivitas")
     assert log.status_code == 200 and "DWI-5G" in log.text and "rahasia123" not in log.text   # password tidak dicatat
+    # WiFi baru dianggap beres bila ONU benar-benar melaporkan SSID itu menyala (bukan sekadar perintah diterima)
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["langkah"]["wifi"] is None and "Atur WiFi" in x["saran"]
+    wl = doc["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    baru = (datetime.now(main.timezone.utc) + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    wl["1"]["SSID"] = {"_value": "RUMAH_LAMA", "_timestamp": baru}         # dibaca ulang, tapi SSID tidak berubah
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["langkah"]["wifi"] is False and "belum memancar" in x["saran"]
+    wl["1"]["SSID"] = {"_value": "DWI", "_timestamp": baru}
     x = k.get("/api/onu-baru").json()["onu"][0]
     assert all(x["langkah"].values()) and "selesai" in x["saran"].lower()
+    # ONU yang WiFi 2,4 GHz-nya mati (mis. Huawei baru): Atur WiFi juga menyalakannya; slot tambahan tidak ikut
+    wl["1"]["Enable"] = {"_value": False, "_type": "xsd:boolean"}
+    wl["6"] = {"SSID": {"_value": "Netsphere_X"}, "Enable": {"_value": True}, "Channel": {"_value": 149}}
+    k.post("/api/onu-baru/ZTEGD08EDD99/wifi", json={"ssid": "DWI", "password": "rahasia123"})
+    nilai = {p[0].rsplit("WLANConfiguration.", 1)[1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert nilai["1.Enable"] is True and nilai["1.SSID"] == "DWI" and "6.SSID" not in nilai and nilai["5.SSID"] == "DWI-5G"
 
     # selesai → pindah ke riwayat; buka → kembali
     assert k.post("/api/onu-baru/ZTEGD08EDD99/selesai").status_code == 200
