@@ -31,6 +31,9 @@ declare("VirtualParameters.pppoeUsername", {value: sekarang - 24 * jam});
 // ZTE menolak ping dari luar (MikroTik tidak bisa ping ONU). INDESO tidak memakai VOIP, jadi samakan dengan
 // WAN buatan web: INTERNET_TR069. Diperiksa tiap jam; OLT bisa mengembalikannya setelah ONU restart.
 if (/zte/i.test(String((declare("DeviceID.Manufacturer", {value: 1}).value || [""])[0]))) {
+  // Lebar kanal WiFi (pilihan di Diagnosa → Ganti nama / password).
+  declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.X_ZTE-COM_OperatingChannelBandwidth", {path: sekarang - 24 * jam, value: sekarang - 24 * jam});
+  declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.BandWidth", {path: sekarang - 24 * jam, value: sekarang - 24 * jam});
   const layanan = declare("InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.X_ZTE-COM_ServiceList", {path: sekarang - 24 * jam, value: sekarang - jam});
   const namaWan = {};
   for (const n of declare("InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.Name", {path: sekarang - 24 * jam, value: sekarang - 24 * jam})) {

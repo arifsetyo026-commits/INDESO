@@ -2829,3 +2829,27 @@ def test_reset_isi_ulang_onu_lama(siap):
     main.CONFIG["OLT_TELNET_PORT"] = olt2.port
     d = k.post(url, json=dict(dasar, konfirmasi="dwi")).json()
     assert not d["pppoe"] and not d["reset"]["ok"] and not any(c.startswith("ont restore-factory") for c in olt2.perintah)
+
+
+def test_lebar_kanal_wifi(siap, monkeypatch):
+    """Lebar kanal WiFi (ZTE: X_ZTE-COM_OperatingChannelBandwidth + BandWidth) bisa diubah dari Diagnosa;
+    80 MHz hanya untuk 5 GHz; ONU tanpa parameter itu tidak menampilkan pilihan."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    wl = acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    lebar = lambda v: {"X_ZTE-COM_OperatingChannelBandwidth": {"_value": v, "_writable": True},
+                       "BandWidth": {"_value": v, "_writable": True}}
+    wl["5"].update(lebar("80MHz"))
+    w = {x["index"]: x for x in k.get("/api/acs/budi").json()["perangkat"]["wifi"]}
+    assert w[5]["lebar"] == "80MHz" and w[5]["pilihan_lebar"] == ["20MHz", "40MHz", "80MHz"]
+    assert w[1]["lebar"] is None and w[1]["pilihan_lebar"] == []
+    assert "tidak membuka pengaturan lebar" in k.post("/api/acs/budi/wifi", json={"index": 1, "lebar": "20MHz"}).json()["detail"]
+    wl["1"].update(lebar("20MHz"))
+    assert k.post("/api/acs/budi/wifi", json={"index": 1, "lebar": "80MHz"}).status_code == 400
+    assert k.post("/api/acs/budi/wifi", json={"index": 5, "lebar": "40MHz"}).json()["status"] == "selesai"
+    b = "InternetGatewayDevice.LANDevice.1.WLANConfiguration.5."
+    assert acs.tugas[-1]["parameterValues"] == [[b + "X_ZTE-COM_OperatingChannelBandwidth", "40MHz", "xsd:string"],
+                                               [b + "BandWidth", "40MHz", "xsd:string"]]
+    assert "lebar kanal → 40MHz" in o.get("/api/aktivitas").text

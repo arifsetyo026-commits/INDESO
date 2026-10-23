@@ -8803,9 +8803,11 @@ def _ringkas_perangkat(doc: dict) -> dict:
                         if -100 <= dbm < 0:
                             sinyal[mac] = dbm
                             break
+        par_lebar, lebar = _lebar_kanal(doc, b)
         wlan.append({"index": int(i), "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
                      "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
-                     "band": band, "klien": klien, "bisa_ganti_password": kunci is not None})
+                     "band": band, "klien": klien, "bisa_ganti_password": kunci is not None,
+                     "lebar": lebar, "pilihan_lebar": list(_PILIHAN_LEBAR.get(band, ())) if par_lebar else []})
     host = []
     for i in _anak(doc, f"{_IGD}.LANDevice.1.Hosts.Host"):
         b = f"{_IGD}.LANDevice.1.Hosts.Host.{i}"
@@ -8948,6 +8950,19 @@ class WifiIn(BaseModel):
     index: int
     ssid: Optional[str] = None
     password: Optional[str] = None
+    lebar: Optional[str] = None      # lebar kanal: 20MHz / 40MHz / 80MHz (80 hanya 5 GHz)
+
+
+# Lebar kanal WiFi per merek. ZTE F670L punya dua parameter dengan nilai sama ("20MHz"/"40MHz"/"80MHz"):
+# keduanya diisi supaya tidak bertentangan.
+_LEBAR_KANAL = ("X_ZTE-COM_OperatingChannelBandwidth", "BandWidth")
+_PILIHAN_LEBAR = {"2,4 GHz": ("20MHz", "40MHz"), "5 GHz": ("20MHz", "40MHz", "80MHz")}
+
+
+def _lebar_kanal(doc: dict, b: str) -> tuple[list[str], Optional[str]]:
+    """(parameter lebar kanal yang bisa diubah, nilai sekarang) untuk WLANConfiguration `b`."""
+    par = [k for k in _LEBAR_KANAL if _ada(doc, f"{b}.{k}") and _param(doc, f"{b}.{k}").get("_writable") is not False]
+    return par, (_nilai(doc, f"{b}.{par[0]}") if par else None)
 
 
 @app.post("/api/acs/{username}/wifi")
@@ -8955,8 +8970,9 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     _wajib_admin(request)
     ssid = (d.ssid or "").strip()
     pw = d.password or ""
-    if not ssid and not pw:
-        raise HTTPException(status_code=400, detail="Isi nama WiFi baru dan/atau password baru.")
+    lebar = (d.lebar or "").strip() or None
+    if not ssid and not pw and not lebar:
+        raise HTTPException(status_code=400, detail="Isi nama WiFi baru, password baru, atau lebar kanal.")
     if ssid and not (1 <= len(ssid) <= 32 and ssid.isprintable()):
         raise HTTPException(status_code=400, detail="Nama WiFi 1–32 karakter.")
     if pw and not (8 <= len(pw) <= 63 and all(32 <= ord(c) < 127 for c in pw)):
@@ -8975,9 +8991,18 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
         if not kunci:
             raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
         nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
+    if lebar:
+        par, _ = _lebar_kanal(doc, b)
+        band = _band_wifi(doc, b, _nilai(doc, f"{b}.SSID"))
+        if not par:
+            raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan lebar kanal lewat TR-069.")
+        if lebar not in _PILIHAN_LEBAR.get(band, ("20MHz", "40MHz")):
+            raise HTTPException(status_code=400, detail=f"Lebar kanal {lebar} tidak tersedia untuk WiFi {band}.")
+        nilai += [[f"{b}.{k}", lebar, "xsd:string"] for k in par]
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
-    ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else [])
+    ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else []) \
+        + ([f"lebar kanal → {lebar}"] if lebar else [])
     catat_aktivitas(_oleh(request), "onu_wifi",
                     f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
