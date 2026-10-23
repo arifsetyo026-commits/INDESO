@@ -1930,9 +1930,9 @@ function bukaAktivasiOlt(sn,i,reset){
   ${reset?`<div class="kuPanel" style="margin:0 0 8px;border-color:#f3b4ab;background:#fff6f5;font-size:var(--fs-xs)"><b style="color:#b42318">Reset pabrik ONU pelanggan</b><br>Urutan: PPPoE, WiFi, dan TR-069 disimpan di OLT → bila PPPoE diterima &amp; tersimpan, ONU direset pabrik → ONU menyala dan menerima semuanya dari OLT. Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, nama WiFi tambahan, sandi admin) hilang.<br><b>Isi nama &amp; password WiFi yang dipakai pelanggan sekarang</b> supaya HP di rumah tersambung sendiri. Bila ONU tidak menerima pengaturan dari OLT, perlu kunjungan.</div>`
    :`<div class="plSub">Dikirim lewat OLT ke ONU ini: PPPoE (cara <code>ont ipconfig</code>, teruji di ZTE F670L), WiFi, dan TR-069. Tidak perlu web ONU atau kunjungan.</div>`}
   <label>Akun PPPoE (secret MikroTik)</label><input id="obUser${i}" list="obUserL${i}" autocapitalize="off" value="${esc(o.pppoe_username||o.untuk||'')}" placeholder="username PPPoE"><datalist id="obUserL${i}">${daftar.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join('')}</datalist>
-  <label>Password PPPoE <span class="plSub">(kosongkan = diambil otomatis dari MikroTik)</span></label><input id="obPass${i}" autocomplete="off">
+  <label>Password PPPoE <span class="plSub">(kosongkan = diambil otomatis dari MikroTik)</span></label><input id="obPass${i}" autocomplete="new-password" placeholder="kosongkan">
   <label>Nama WiFi <span class="plSub">(kosongkan bila WiFi tidak diubah; tanpa spasi)</span></label><input id="obOSsid${i}" maxlength="32" autocapitalize="off">
-  <label>Password WiFi (8–63 karakter, tanpa spasi)</label><input id="obOPw${i}" maxlength="63" autocomplete="off">
+  <label>Password WiFi (8–63 karakter, tanpa spasi)</label><input id="obOPw${i}" maxlength="63" autocomplete="new-password">
   <label>Akhiran nama WiFi 5 GHz</label><input id="obOAkhir${i}" maxlength="8" value="-5G">
   <label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="obOTr${i}" checked> Kirim juga pengaturan TR-069 (lapor ke ACS)</label>
   ${reset?`<label>Ketik ulang username PPPoE untuk konfirmasi reset</label><input id="obOKonf${i}" autocapitalize="off" autocomplete="off">`:''}
@@ -1951,11 +1951,14 @@ async function kirimAktivasiOlt(sn,i,btn,reset){
  const body={username:$('obUser'+i).value.trim(),password:$('obPass'+i).value||null,ssid:$('obOSsid'+i).value.trim()||null,
   wifi_password:$('obOPw'+i).value||null,akhiran_5g:$('obOAkhir'+i).value.trim(),tr069:$('obOTr'+i).checked,
   reset:!!reset,konfirmasi:reset?$('obOKonf'+i).value.trim():null};
- if(!body.username){ obPesan('Isi akun PPPoE.'); return; }
- if(reset&&(!body.ssid||!body.wifi_password)){ obPesan('Reset pabrik menghapus WiFi ONU: isi nama & password WiFi pelanggan yang sekarang.'); return; }
- if(reset&&body.konfirmasi.toLowerCase()!==body.username.toLowerCase()){ obPesan('Ketik ulang username PPPoE dengan benar untuk konfirmasi reset.'); return; }
- if(body.ssid&&/\s/.test(body.ssid)){ obPesan('Nama WiFi lewat OLT tidak boleh berisi spasi.'); return; }
- if(body.ssid&&(!body.wifi_password||body.wifi_password.length<8)){ obPesan('Password WiFi minimal 8 karakter.'); return; }
+ // Pesan salah isian tampil tepat di bawah tombol (pesan di atas jendela tidak terlihat saat form digulir).
+ const salah=t=>{ const el=$('obOHasil'+i); el.innerHTML='<div style="margin-top:8px;color:#b42318;font-size:var(--fs-xs);font-weight:700">✖ '+esc(t)+'</div>'; el.scrollIntoView({block:'nearest'}); };
+ if(!body.username){ salah('Isi akun PPPoE.'); return; }
+ if(reset&&(!body.ssid||!body.wifi_password)){ salah('Reset pabrik menghapus WiFi ONU: isi nama & password WiFi pelanggan yang sekarang.'); return; }
+ if(reset&&body.konfirmasi.toLowerCase()!==body.username.toLowerCase()){ salah('Ketik ulang username PPPoE dengan benar untuk konfirmasi reset.'); return; }
+ if(body.ssid&&/\s/.test(body.ssid)){ salah('Nama WiFi lewat OLT tidak boleh berisi spasi.'); return; }
+ if(body.ssid&&(!body.wifi_password||body.wifi_password.length<8)){ salah('Password WiFi minimal 8 karakter.'); return; }
+ if(reset&&body.password&&!confirm('Password PPPoE diisi manual. Pastikan itu password akun '+body.username+' (bukan isian otomatis browser). Salah password = pelanggan offline setelah reset.\n\nKosongkan kolom itu supaya INDESO mengambil password yang benar dari MikroTik. Lanjut dengan password yang diisi?')) return;
  if(!confirm((reset?'RESET PABRIK ONU '+sn+' setelah pengaturan tersimpan di OLT?\n':'Kirim ke ONU '+sn+' lewat OLT?\n')+'PPPoE: '+body.username+(body.ssid?'\nWiFi: '+body.ssid+(body.akhiran_5g?' / '+body.ssid+body.akhiran_5g:''):'')+(body.tr069?'\n+ pengaturan TR-069':''))) return;
  btn.disabled=true; btn.textContent='Mengirim ke OLT…'; const out=$('obOHasil'+i);
  try{ const d=await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/aktivasi-olt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
