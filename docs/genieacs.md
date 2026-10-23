@@ -126,7 +126,7 @@ sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --kiri
 
 **ZTE F609 (dan ONU lain yang punya WAN bawaan "TR-069" yang tidak bisa dihapus)** menerima pengaturan dari OLT,
 tapi baru melapor ke ACS setelah restart. Sebelum restart, ONU melapor lewat WAN "TR-069" yang kosong.
-Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `ont reboot <port> <onu>`, lalu `save`, dengan jeda 5 detik antartahap (`OLT_JEDA_DETIK`). Tanpa jeda, `unbind` tiba sebelum ONU menerima ikatannya dan tidak ada yang berubah. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. Internet pelanggan putus ±1–2 menit:
+Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `ont reboot <port> <onu>`, lalu `save`, dengan jeda 5 detik antartahap (`OLT_JEDA_DETIK`). Tanpa jeda, `unbind` tiba sebelum ONU menerima ikatannya dan tidak ada yang berubah. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. ONU yang WAN-nya disimpan OLT (`show ont ipconfig` berisi PPPoE, mis. hasil aktivasi ONU Baru) dilewati dari `unbind`, karena ONU seperti Huawei hanya melapor lewat WAN itu. Internet pelanggan putus ±1–2 menit:
 - **Diagnosa**: tombol *Kirim TR-069 dari OLT + restart ONU*.
 - **Pengaturan → Sistem → TR-069 ONU lewat OLT**: centang *Restart ONU setelah dikirim*.
 - **Terminal**, untuk ONU yang sudah pernah dikirimi tapi belum muncul di ACS:
@@ -179,9 +179,13 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 - VLAN bisa diubah lewat `OLT_PPPOE_VLAN` di `.env` (bawaan 1, untuk jaringan tanpa tag).
 - **Huawei HG8145V5** (uji 23 Okt 2026, PON 0/0/2, ONU 5):
   - PPPoE dari OLT berhasil, dan internet jalan;
-  - TR-069 dari OLT: unit ini dua kali lapor ke ACS (16:03 saat baru, 16:40), keduanya sesi gagal. Setelah itu tidak
-    lapor lagi, juga setelah restart, kirim ulang TR-069, dan reset pabrik. Penyebabnya **masih diselidiki**. Menu WAN
-    dan TR-069 di web-nya tersembunyi, termasuk untuk super admin;
+  - **TR-069 wajib diikat ke WAN PPPoE dari OLT** (`ont tr069 P O ip-index 0`). Dengan `TR069 IP index : unbind`
+    (lihat `show ont tr069 P O`), Huawei tidak mengirim laporan sama sekali: penghitung MikroTik dan tcpdump di VPS
+    sama-sama nol, walau internetnya jalan. ZTE yang WAN-nya dibuat di web ONU justru butuh `unbind`. Karena itu
+    INDESO kini memeriksa `show ont ipconfig P O`: bila OLT menyimpan WAN untuk ONU itu, ikatan `ip-index 0`
+    dibiarkan. Aktivasi di ONU Baru juga langsung mengikat TR-069 ke WAN PPPoE yang dibuatnya;
+  - menu WAN dan TR-069 di web Huawei firmware operator tersembunyi, termasuk untuk super admin, jadi pengaturan ini
+    hanya bisa lewat OLT;
   - Huawei melapor ke ACS dengan SN versi angka: `4857544398B2DFBA` (`48575443` = "HWTC") untuk SN OLT `HWTC98B2DFBA`.
     INDESO menyamakan kedua bentuk ini otomatis. Di log ACS, cari dengan bentuk angkanya:
     `sudo grep -i "4857544398B2DFBA" /var/log/genieacs/genieacs-cwmp-access.log | tail`;

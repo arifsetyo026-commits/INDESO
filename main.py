@@ -10242,7 +10242,9 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
     urutan yang terbukti manual di ONU Gunawan (1/23) & Endah (1/9): `ip-index 0`, `ip-index unbind`,
     `ont reboot`, dengan jeda antarperintah seperti saat diketik tangan. Tanpa jeda, unbind tiba
     sebelum ONU menerima ikatannya lewat OMCI dan tidak ada yang berubah. Dikerjakan per tahap untuk
-    semua ONU sekaligus supaya jeda tidak dikalikan jumlah ONU. Konfigurasi akhir tanpa ip-index."""
+    semua ONU sekaligus supaya jeda tidak dikalikan jumlah ONU. Konfigurasi akhir tanpa ip-index, kecuali ONU
+    yang WAN-nya dibuat OLT (`show ont ipconfig` berisi PPPoE/DHCP/static): ONU itu (mis. Huawei HG8145V5) hanya
+    melapor lewat WAN tersebut, jadi ikatan `ip-index 0` dibiarkan. Tanpa ikatan itu Huawei diam sama sekali."""
     if not onus:
         return
     jeda = max(0.0, float(CONFIG.get("OLT_JEDA_DETIK", 5)))
@@ -10263,8 +10265,17 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
 
     time.sleep(jeda)
     tahap(lambda p, o: f"ont tr069 {p} {o} ip-index 0", "ip-index 0")
+    lepas = [x for x in onus if not _wan_dari_olt(t, x[0], x[1])]
     time.sleep(jeda)
-    tahap(lambda p, o: f"ont tr069 {p} {o} ip-index unbind", "unbind")
+    for h in hasil:
+        if any(h["pon"] == pon and h["onu_id"] == onu_id for _, onu_id, pon in onus) and \
+                not any(h["pon"] == pon and h["onu_id"] == onu_id for _, onu_id, pon in lepas):
+            h["pesan"] += " TR-069 diikat ke WAN PPPoE dari OLT (ip-index 0)."
+    for port, onu_id, pon in lepas:
+        out = t.kirim(f"ont tr069 {port} {onu_id} ip-index unbind")
+        galat = _galat_cli(out)
+        if galat:
+            catatan.setdefault((pon, onu_id), []).append(f"unbind: {galat}")
     time.sleep(jeda)
     # Selalu satu ONU (port & nomor dari angka tervalidasi), tidak pernah "all".
     tahap(lambda p, o: f"ont reboot {p} {o}", "restart")
@@ -10274,6 +10285,12 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
         cat = catatan.get((h["pon"], h["onu_id"]))
         h["pesan"] += (" ONU di-restart, internet pelanggan kembali ±2 menit." if h["reboot"]
                        else " Restart ONU gagal.") + (f" Catatan OLT: {'; '.join(cat)}" if cat else "")
+
+
+def _wan_dari_olt(t: "_TelnetOLT", port: int, onu_id: int) -> bool:
+    """True bila OLT menyimpan WAN (ont ipconfig ip-index 0) untuk ONU ini."""
+    out = t.kirim(f"show ont ipconfig {port} {onu_id}")
+    return bool(re.search(r"(?i)config type\s*:\s*(pppoe|dhcp|static)", out))
 
 
 def _olt_masuk(t: "_TelnetOLT") -> None:
@@ -10427,7 +10444,10 @@ def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, ss
             interval = max(60, min(int(CONFIG["ACS_ONU_INTERVAL"]), 86400))
             langkah += [("TR-069", f"ont tr069 {port} {onu} tr069-management enable", False),
                         ("TR-069: alamat ACS", f"ont tr069 {port} {onu} acs-url {url} acs-username {user} acs-password {sandi}", False),
-                        ("TR-069: lapor rutin", f"ont tr069 {port} {onu} inform enable interval {interval}", False)]
+                        ("TR-069: lapor rutin", f"ont tr069 {port} {onu} inform enable interval {interval}", False),
+                        # Lapor lewat WAN PPPoE yang baru dibuat. Tanpa ikatan ini Huawei HG8145V5 tidak pernah
+                        # melapor (`TR069 IP index: unbind`), walau internetnya jalan.
+                        ("TR-069: lewat WAN PPPoE", f"ont tr069 {port} {onu} ip-index 0", False)]
     hasil, tersimpan = [], None
     try:
         t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
