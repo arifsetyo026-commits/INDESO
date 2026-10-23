@@ -1848,7 +1848,7 @@ async function rebootOnuOlt(btn){
 }
 async function hapusWan(path,nama,btn){
  if(!confirm('Hapus WAN "'+(nama||'tanpa username')+'" dari ONU '+dg.user+'?\nWAN ini tidak tersambung; internet pelanggan lewat WAN lain tidak terganggu. Penghapusan tidak bisa dibatalkan dari INDESO.')) return;
- btn.disabled=true; btn.textContent='Menghapus…';
+ btn.disabled=true; btn.textContent='Menghapus…'; dgPesan('⏳ Menunggu ONU menjalankan perintah hapus (paling lama ±40 detik)…',true);
  try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/wan-hapus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})}));
   if(r.status==='antre') pantauTugas(r.tugas_id,'Hapus WAN','WAN sisa sudah dihapus dari ONU.');
   else { dgPesan('✅ WAN "'+(nama||'-')+'" dihapus dari ONU.',true); setTimeout(()=>segarkanOnu(true),1500); }

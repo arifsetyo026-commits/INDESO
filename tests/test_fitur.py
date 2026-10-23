@@ -875,6 +875,8 @@ class FakeACS:
             q = js.loads((params or {}).get("query", "{}"))
             return FakeResp(True, [d for d in self.dev.values() if self._cocok(d, q)])
         if "/tasks" in url and method == "POST":
+            # Seperti GenieACS asli: path berakhiran titik membuat tugas gagal ("Invalid parameter path").
+            assert not str((json or {}).get("objectName") or "x").endswith("."), f"path tidak valid: {json}"
             self.tugas.append(json)
             tid = f"{len(self.tugas):024x}"
             if self.antre:
@@ -2236,7 +2238,7 @@ def test_ping_onu_baca_tipe_dulu_bila_belum_diketahui(siap, monkeypatch):
     k.post("/api/acs/budi/ping", json={"minimal": True})
     nama = [t["name"] for t in acs.tugas]
     assert nama[-2:] == ["refreshObject", "setParameterValues"]
-    assert acs.tugas[-2]["objectName"] == "InternetGatewayDevice.IPPingDiagnostics."
+    assert acs.tugas[-2]["objectName"] == "InternetGatewayDevice.IPPingDiagnostics"   # tanpa titik akhir (GenieACS menolak)
     tipe = {p[0].rsplit(".", 1)[-1]: p[2] for p in acs.tugas[-1]["parameterValues"]}
     assert tipe["NumberOfRepetitions"] == "xsd:int"
     # tipe sudah diketahui: tidak perlu membaca dulu
@@ -2607,7 +2609,7 @@ def test_hapus_wan_sisa_lewat_acs(siap, monkeypatch):
     assert hapus(jalur(1)).status_code == 409                       # sedang tersambung
     assert "akun PPPoE pelanggan" in hapus(jalur(3)).json()["detail"]  # username pelanggan sendiri
     r = hapus(jalur(2)).json()
-    assert r["status"] == "selesai" and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur(2) + "."}
+    assert r["status"] == "selesai" and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur(2)}
     # tanpa WAN lain yang tersambung: ditolak
     wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "0.0.0.0"
     assert "Tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
@@ -2693,9 +2695,9 @@ def test_perangkat_terhubung_segar_dan_sinyal(siap, monkeypatch):
     r = k.get("/api/acs/budi?segarkan=true").json()
     assert r["segarkan"]["status"] == "selesai"
     nama = [(t["name"], t.get("objectName")) for t in acs.tugas]
-    assert nama[0][0] == "getParameterValues" and nama[-1] == ("refreshObject", "InternetGatewayDevice.LANDevice.1.Hosts.")
+    assert nama[0][0] == "getParameterValues" and nama[-1] == ("refreshObject", "InternetGatewayDevice.LANDevice.1.Hosts")
     obj = {n for _, n in nama if n}
     W = "InternetGatewayDevice.LANDevice.1.WLANConfiguration"
-    assert {f"{W}.1.AssociatedDevice.", f"{W}.5.AssociatedDevice."} <= obj
-    assert f"{W}.2.AssociatedDevice." not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
+    assert {f"{W}.1.AssociatedDevice", f"{W}.5.AssociatedDevice"} <= obj
+    assert f"{W}.2.AssociatedDevice" not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
     assert f"{W}.1.SSID" in acs.tugas[0]["parameterNames"]
