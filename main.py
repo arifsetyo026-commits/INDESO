@@ -8761,6 +8761,9 @@ def _boleh_hapus_wan(wan: list[dict], w: dict, username: str) -> tuple[bool, str
     return True, ""
 
 
+_POLA_BACKHAUL = re.compile(r"(?i)^backhaul")
+
+
 def _ringkas_perangkat(doc: dict) -> dict:
     di = doc.get("_deviceId", {})
     wlan = []
@@ -8770,8 +8773,8 @@ def _ringkas_perangkat(doc: dict) -> dict:
     for i in _anak(doc, f"{_IGD}.LANDevice.1.WLANConfiguration"):
         b = f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"
         ssid = _nilai(doc, f"{b}.SSID")
-        if ssid is None:
-            continue
+        if ssid is None or _POLA_BACKHAUL.match(str(ssid)):
+            continue      # backhaul mesh (Huawei "BackhaulSSID…"): bukan WiFi pelanggan, jangan diganti
         kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
         # Sebagian ONU (mis. Fiberhome) tidak mengisi TotalAssociations; pakai yang terbesar.
         total = _nilai(doc, f"{b}.TotalAssociations")

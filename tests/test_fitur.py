@@ -2753,3 +2753,14 @@ def test_perangkat_terhubung_segar_dan_sinyal(siap, monkeypatch):
     assert f"{W}.2.AssociatedDevice" not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
     assert f"{W}.1.SSID" in acs.tugas[0]["parameterNames"]
     assert "InternetGatewayDevice.WANDevice.1.WANConnectionDevice" in obj          # WAN ikut dibaca ulang
+
+
+def test_backhaul_mesh_disembunyikan(siap):
+    """Huawei melaporkan SSID backhaul mesh ('BackhaulSSID…'): bukan WiFi pelanggan, tidak tampil & tidak diganti."""
+    main, o, k, m = siap
+    w = lambda ssid, ch: {"SSID": {"_value": ssid}, "Enable": {"_value": True}, "Channel": {"_value": ch},
+                          "TotalAssociations": {"_value": 0}}
+    doc = {"_id": "x", "_deviceId": {}, "InternetGatewayDevice": {"LANDevice": {"1": {"WLANConfiguration": {
+        "1": w("HUAWEI-2.4G-3mJ9", 6), "5": w("HUAWEI-5G-3mJ9", 161), "6": w("BackhaulSSIDcb9ee7ec", 161)}}}}}
+    ssid = [x["ssid"] for x in main._ringkas_perangkat(doc)["wifi"]]
+    assert ssid == ["HUAWEI-2.4G-3mJ9", "HUAWEI-5G-3mJ9"]
