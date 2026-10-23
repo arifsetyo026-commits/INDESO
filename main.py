@@ -8569,6 +8569,9 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     """Kirim tugas + connection request. 200 = langsung dijalankan ONU, 202 = antre
     (ONU belum bisa dihubungi; dijalankan saat ONU lapor berikutnya)."""
     from urllib.parse import quote
+    if "objectName" in tugas:
+        # GenieACS menolak path berakhiran titik ("Invalid parameter path", fault script.Error).
+        tugas = dict(tugas, objectName=str(tugas["objectName"]).rstrip("."))
     r = _acs("POST", f"/devices/{quote(acs_id, safe='')}/tasks",
              params={"connection_request": "", "timeout": str(tunggu * 1000)}, json=tugas, timeout=tunggu + 10)
     try:
@@ -8818,8 +8821,8 @@ def _segarkan_perangkat(doc: dict) -> dict:
     wlan = f"{_IGD}.LANDevice.1.WLANConfiguration"
     idx = _anak(doc, wlan)
     nyala = [i for i in idx if _nilai(doc, f"{wlan}.{i}.Enable") in (True, "true", "1", 1)] or idx[:1]
-    tugas = [{"name": "refreshObject", "objectName": f"{wlan}.{i}.AssociatedDevice."} for i in nyala]
-    tugas.append({"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.Hosts."})
+    tugas = [{"name": "refreshObject", "objectName": f"{wlan}.{i}.AssociatedDevice"} for i in nyala]
+    tugas.append({"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.Hosts"})
     params = [f"{wlan}.{i}.{k}" for i in idx for k in ("SSID", "Enable", "Channel", "TotalAssociations")
               if _ada(doc, f"{wlan}.{i}.{k}")]
     if params:
@@ -8936,7 +8939,7 @@ def acs_hapus_wan(username: str, d: HapusWanIn, request: Request):
         raise HTTPException(status_code=409, detail="Tidak ada WAN lain yang tersambung. Menghapus WAN ini berisiko "
                                                     "membuat ONU tidak terjangkau; hapus lewat web ONU di lokasi.")
     _bersihkan_tertahan(doc["_id"])
-    hasil = _tugas_acs(doc["_id"], {"name": "deleteObject", "objectName": d.path + "."}, tunggu=25)
+    hasil = _tugas_acs(doc["_id"], {"name": "deleteObject", "objectName": d.path}, tunggu=25)
     catat_aktivitas(_oleh(request), "onu_hapus_wan",
                     f"{username} ({doc['_id']}) hapus WAN {d.path} (username {w['username'] or '-'})"
                     + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
@@ -9106,7 +9109,7 @@ def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: boo
     # Minta ONU melaporkan isi IPPingDiagnostics dulu.
     if any(not str(_param(doc, v[0]).get("_type") or "").startswith("xsd:") for v in nilai):
         try:
-            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _PING_ONU + "."}, tunggu=20)
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _PING_ONU}, tunggu=20)
             doc = _cari_perangkat(username) or doc
         except HTTPException as e:
             logger.warning(f"Gagal membaca tipe IPPingDiagnostics {doc['_id']}: {e.detail}")
@@ -9303,7 +9306,7 @@ def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
     if not _ada(doc, _UNDUH_ONU) and not _ada(doc, _UNDUH_ONU + ".DiagnosticsState"):
         # Belum pernah terbaca: minta ONU melaporkan objeknya dulu (sekalian tahu didukung atau tidak).
         try:
-            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU + "."}, tunggu=20)
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU}, tunggu=20)
             doc = _cari_perangkat(username) or doc
         except HTTPException as e:
             logger.warning(f"Gagal membaca DownloadDiagnostics {doc['_id']}: {e.detail}")
