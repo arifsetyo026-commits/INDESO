@@ -8843,16 +8843,31 @@ def _ringkas_perangkat(doc: dict) -> dict:
         waktu.append(str(_param(doc, f"{_IGD}.LANDevice.1.WLANConfiguration.{w['index']}.TotalAssociations").get("_timestamp") or ""))
     perangkat_waktu = max(waktu) if any(waktu) else None
     uptime = _nilai(doc, f"{_IGD}.DeviceInfo.UpTime")
+    uptime = int(uptime) if str(uptime or "").isdigit() else None
+    if uptime is not None:
+        # UpTime hanya benar saat dibaca; tambahkan waktu sejak dibaca supaya tidak "berhenti" di angka lama.
+        lalu = _lapor_terakhir_detik(_param(doc, f"{_IGD}.DeviceInfo.UpTime").get("_timestamp"))
+        uptime += max(0, lalu or 0)
     return {
         "id": doc.get("_id"), "pabrikan": di.get("_Manufacturer"), "model": di.get("_ProductClass"),
         "serial": di.get("_SerialNumber"), "firmware": _nilai(doc, f"{_IGD}.DeviceInfo.SoftwareVersion"),
-        "uptime_detik": int(uptime) if str(uptime or "").isdigit() else None,
+        "uptime_detik": uptime,
         "lapor_terakhir": doc.get("_lastInform"), "wan_ip": wan_ip,
         "wifi": wlan, "perangkat": host, "perangkat_aktif": sum(1 for h in host if h["aktif"]),
         "perangkat_wifi": host_wifi,
         "perangkat_menit_lalu": _lapor_terakhir_menit(perangkat_waktu),
         "wan": _daftar_wan_ppp(doc),
     }
+
+
+def _lapor_terakhir_detik(teks: Optional[str]) -> Optional[int]:
+    if not teks:
+        return None
+    try:
+        t = datetime.fromisoformat(str(teks).replace("Z", "+00:00"))
+        return int((datetime.now(t.tzinfo) - t).total_seconds())
+    except ValueError:
+        return None
 
 
 def _lapor_terakhir_menit(teks: Optional[str]) -> Optional[int]:
@@ -8878,6 +8893,8 @@ def _segarkan_perangkat(doc: dict) -> dict:
     tugas.append({"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.Hosts"})
     params = [f"{wlan}.{i}.{k}" for i in idx for k in ("SSID", "Enable", "Channel", "TotalAssociations")
               if _ada(doc, f"{wlan}.{i}.{k}")]
+    if _ada(doc, f"{_IGD}.DeviceInfo.UpTime"):
+        params.append(f"{_IGD}.DeviceInfo.UpTime")
     if params:
         tugas.insert(0, {"name": "getParameterValues", "parameterNames": params})
     _bersihkan_tertahan(doc["_id"])
