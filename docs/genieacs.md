@@ -228,6 +228,12 @@ Hasil tes mencakup jalur sampai VPS. Kalau VPS jauh atau kecepatannya terbatas, 
 speedtest** dengan file HTTP 10–50 MB di server yang dekat, misalnya mirror di Indonesia. ONU tidak bisa memakai HTTPS.
 Tidak semua ONU mendukung tes ini. Kalau ONU tidak mendukung, INDESO menampilkan pesan yang jelas.
 
+Hasil tes diambil di sesi yang sama saat ONU melapor `8 DIAGNOSTICS COMPLETE`, oleh provision `indeso-diagnostik`
+(`deploy/genieacs/provision-diagnostik.js`). Tanpa itu hasil baru terbaca saat INDESO memanggil ONU lagi (Huawei:
+±47 detik). Setelah file itu berubah, pasang ulang di VPS:
+`curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-diagnostik.js http://127.0.0.1:7557/provisions/indeso-diagnostik`
+
+
 ## 6. Isi `.env` INDESO (di HP Termux)
 
 ```
