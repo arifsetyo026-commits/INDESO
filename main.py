@@ -9988,6 +9988,8 @@ CONFIG.update({
     "OLT_TELNET_PASS": _env("OLT_TELNET_PASS", ""),
     "OLT_SIMPAN_PERINTAH": _env("OLT_SIMPAN_PERINTAH", "save"),   # simpan permanen setelah berubah
     "OLT_JEDA_DETIK": float(_env("OLT_JEDA_DETIK", "5")),          # jeda antartahap ip-index/restart (OMCI butuh waktu)
+    # VLAN PPPoE yang dikirim OLT ke ONU (ont ipconfig ... vlan N). Jaringan tanpa tag: 1 (teruji di ZTE F670L).
+    "OLT_PPPOE_VLAN": int(_env("OLT_PPPOE_VLAN", "1")),
     "ACS_ONU_URL": _env("ACS_ONU_URL", "http://10.99.0.1:7547"),
     "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
     "ACS_ONU_PASS": _env("ACS_ONU_PASS", ""),
@@ -10258,6 +10260,81 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     finally:
         t.tutup()
     return {"hasil": hasil, "tersimpan": tersimpan}
+
+
+_POLA_SSID_OLT = re.compile(r"^[A-Za-z0-9._@+-]{1,32}$")       # tanpa spasi: CLI OLT memisah kata di spasi
+_POLA_SANDI_OLT = re.compile(r"^[A-Za-z0-9._@+!#$%&*=?~^-]{4,63}$")
+
+
+def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, ssid: Optional[str] = None,
+                     wifi_pass: Optional[str] = None, akhiran_5g: str = "-5G", tr069: bool = True) -> dict:
+    """Satu sesi telnet: PPPoE (ont ipconfig ip-index 0, route + NAT, internet-config), WiFi 2,4/5 GHz
+    (ont wifi), TR-069, lalu save. Urutan ini teruji di ZTE F670L V9 (ONU uji 0/0/2/4): PPPoE login dari
+    OLT, ONU lapor ke ACS, SSID muncul. `ont wan ...` (perintah WAN khusus C-Data) diabaikan ONU ZTE.
+    Langkah PPPoE wajib berhasil; WiFi 5 GHz boleh ditolak (ONU satu band)."""
+    m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
+    if not m or not 1 <= int(onu_id) <= 256:
+        raise HTTPException(status_code=400, detail=f"Alamat ONU tidak valid: {pon} {onu_id}")
+    if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
+        raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,40}", pppoe_user or "") or not _POLA_SANDI_OLT.match(pppoe_pass or ""):
+        raise HTTPException(status_code=400, detail="Username/password PPPoE berisi spasi atau tanda yang tidak bisa "
+                                                    "dikirim lewat OLT. Isi PPPoE lewat web ONU untuk akun ini.")
+    if ssid is not None and (not _POLA_SSID_OLT.match(ssid) or not _POLA_SSID_OLT.match(ssid + akhiran_5g)):
+        raise HTTPException(status_code=400, detail="Nama WiFi lewat OLT: 1–32 huruf/angka/. _ - tanpa spasi.")
+    if ssid is not None and not (wifi_pass and 8 <= len(wifi_pass) and _POLA_SANDI_OLT.match(wifi_pass)):
+        raise HTTPException(status_code=400, detail="Password WiFi 8–63 karakter tanpa spasi atau tanda kutip.")
+    port, onu, vlan = int(m.group(2)), int(onu_id), int(CONFIG.get("OLT_PPPOE_VLAN") or 1)
+    rahasia = [x for x in (pppoe_pass, wifi_pass) if x]
+
+    def samar(teks: str) -> str:
+        for r in rahasia:
+            teks = teks.replace(r, "***")
+        return _samarkan(teks)
+
+    langkah = [("PPPoE", f"ont ipconfig {port} {onu} ip-index 0 pppoe username {pppoe_user} password {pppoe_pass} "
+                         f"vlan {vlan} priority 0", True),
+               ("PPPoE: mode route", f"ont ipconfig {port} {onu} ip-index 0 connection-type route", True),
+               ("PPPoE: NAT", f"ont ipconfig {port} {onu} ip-index 0 nat enable", True),
+               ("PPPoE: jalur internet", f"ont internet-config {port} {onu} ip-index 0", True)]
+    if ssid is not None:
+        langkah += [("WiFi 2,4 GHz", f"ont wifi {port} {onu} 2.4g 1 enable username {ssid} password {wifi_pass} "
+                                     "authentication wpa2-psk encryption aes", False),
+                    ("WiFi 5 GHz", f"ont wifi {port} {onu} 5g 1 enable username {ssid + akhiran_5g} password {wifi_pass} "
+                                   "authentication wpa2-psk encryption aes", False)]
+    if tr069 and _olt_telnet_aktif():
+        url, user, sandi = CONFIG["ACS_ONU_URL"], CONFIG["ACS_ONU_USER"], CONFIG["ACS_ONU_PASS"]
+        if all(_POLA_AMAN.match(x) for x in (url, user, sandi)):
+            interval = max(60, min(int(CONFIG["ACS_ONU_INTERVAL"]), 86400))
+            langkah += [("TR-069", f"ont tr069 {port} {onu} tr069-management enable", False),
+                        ("TR-069: alamat ACS", f"ont tr069 {port} {onu} acs-url {url} acs-username {user} acs-password {sandi}", False),
+                        ("TR-069: lapor rutin", f"ont tr069 {port} {onu} inform enable interval {interval}", False)]
+    hasil, tersimpan = [], None
+    try:
+        t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
+    except OSError as e:
+        raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
+    try:
+        _olt_masuk(t)
+        galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
+        if galat:
+            raise HTTPException(status_code=502, detail=f"OLT menolak masuk ke port {m.group(1)}: {galat}")
+        for nama, perintah, wajib in langkah:
+            galat = _galat_cli(t.kirim(perintah))
+            hasil.append({"langkah": nama, "ok": galat is None, "pesan": samar(galat) if galat else "diterima OLT"})
+            if galat and wajib:
+                break
+        t.kirim("exit")
+        if any(h["ok"] for h in hasil):
+            tersimpan = _simpan_olt(t)
+        t.kirim("end")
+    except (OSError, TimeoutError, ConnectionError) as e:
+        raise HTTPException(status_code=502, detail=samar(f"Sesi telnet OLT terputus: {e}"))
+    finally:
+        t.tutup()
+    pppoe_ok = all(h["ok"] for h in hasil if h["langkah"].startswith("PPPoE")) and \
+        sum(1 for h in hasil if h["langkah"].startswith("PPPoE")) == 4
+    return {"pppoe": pppoe_ok, "langkah": hasil, "tersimpan": tersimpan}
 
 
 def _sn_terdaftar_acs() -> Optional[set]:
@@ -10748,8 +10825,8 @@ def _saran_onu_baru(o: Optional[ONUStatus], langkah: dict, r: sqlite3.Row) -> st
     if not langkah["sinyal"]:
         return "Redaman buruk: periksa konektor / sambungan fiber sebelum aktivasi."
     if not langkah["internet"]:
-        return ("Isi PPPoE di ONU (username & password dari MikroTik) lewat web ONU 192.168.1.1, "
-                "lalu tunggu ±1 menit sampai PPPoE tersambung.")
+        return ("Isi PPPoE dari OLT (tombol 'Isi PPPoE & WiFi dari OLT' di bawah) atau lewat web ONU 192.168.1.1, "
+                "lalu tunggu ±1–2 menit sampai PPPoE tersambung.")
     if not langkah["pelanggan"]:
         return "PPPoE sudah tersambung tapi belum ada di data pelanggan: Impor dari MikroTik / Pasang baru."
     if langkah["acs"] is False:
@@ -10831,6 +10908,60 @@ def onu_baru_restart(sn: str, request: Request):
     olt_reboot_onu(o.pon, o.onu_id)
     catat_aktivitas(_oleh(request), "onu_reboot", f"ONU baru {sn.upper()} ({o.pon} onu {o.onu_id}) lewat OLT")
     return {"ok": True}
+
+
+class AktivasiOltIn(BaseModel):
+    username: str                      # akun PPPoE (secret MikroTik)
+    password: Optional[str] = None     # kosong = diambil dari secret MikroTik (tidak pernah dikirim ke browser)
+    ssid: Optional[str] = None         # kosong = WiFi tidak diubah
+    wifi_password: Optional[str] = None
+    akhiran_5g: str = "-5G"
+    tr069: bool = True
+
+
+@app.post("/api/onu-baru/{sn}/aktivasi-olt")
+def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
+    """Isi PPPoE (+ WiFi, + TR-069) ONU baru langsung dari OLT, tanpa web ONU / kunjungan."""
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    o = _alamat_onu_baru(sn)
+    user = (d.username or "").strip()
+    sandi = d.password or None
+    try:
+        pool = _mikrotik_pool()
+        try:
+            api = pool.get_api()
+            secret = api.get_resource("/ppp/secret").get(name=user)
+            aktif = api.get_resource("/ppp/active").get(name=user)
+        finally:
+            pool.disconnect()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"MikroTik tidak terbaca: {e}")
+    if not secret:
+        raise HTTPException(status_code=404, detail=f"Akun PPPoE {user} tidak ada di MikroTik. Buat dulu (mis. lewat Pasang baru).")
+    if str(secret[0].get("disabled", "no")).lower() in ("yes", "true"):
+        raise HTTPException(status_code=409, detail=f"Akun PPPoE {user} sedang nonaktif di MikroTik.")
+    if aktif and (o.pppoe_username or "").lower() != user.lower():      # sesi aktif milik ONU lain
+        raise HTTPException(status_code=409, detail=(
+            f"Akun {user} sedang dipakai perangkat lain ({aktif[0].get('caller-id') or '?'}). Profil paket memakai "
+            "only-one, jadi kedua perangkat akan saling memutus. Lepas dulu dari perangkat lama."))
+    sandi = sandi or secret[0].get("password")
+    if not sandi:
+        raise HTTPException(status_code=400, detail="Password PPPoE tidak terbaca dari MikroTik; isi password-nya di formulir.")
+    ssid = (d.ssid or "").strip() or None
+    hasil = olt_aktivasi_onu(o.pon, o.onu_id, user, sandi, ssid, d.wifi_password, (d.akhiran_5g or "").strip(), d.tr069)
+    sekarang = datetime.now().isoformat(timespec="seconds")
+    kolom = {"untuk": user}
+    if any(h["ok"] and h["langkah"].startswith("TR-069") for h in hasil["langkah"]):
+        kolom["tr069"] = sekarang
+    if any(h["ok"] and h["langkah"].startswith("WiFi") for h in hasil["langkah"]):
+        kolom["wifi"] = sekarang
+    _ubah_onu_baru(sn, **kolom)
+    ringkas = ", ".join(f"{h['langkah']} {'ok' if h['ok'] else 'GAGAL'}" for h in hasil["langkah"])
+    catat_aktivitas(_oleh(request), "onu_aktivasi_olt",
+                    f"ONU baru {sn.upper()} ({o.pon} onu {o.onu_id}) akun {user}" + (f", WiFi {ssid}" if ssid else "")
+                    + f": {ringkas}" + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
+    return hasil
 
 
 @app.get("/api/onu-baru/{sn}/wifi")

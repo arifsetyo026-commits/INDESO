@@ -1886,13 +1886,14 @@ function kartuOnuBaru(o,i){
  const pilihUntuk=(aktif&&!o.pppoe_username&&ob.pelanggan)?`<div style="margin-top:8px"><label class="plSub" for="obUntuk${i}">Dipasang untuk pelanggan</label><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><select id="obUntuk${i}" class="btnS" style="flex:1;min-width:0" onchange="untukOnuBaru('${sn}',this.value)"><option value="">— pilih —</option>${ob.pelanggan.filter(p=>p.status!=='berhenti').map(p=>`<option value="${esc(p.username)}"${p.username===o.untuk?' selected':''}>${esc(p.nama||p.username)} (${esc(p.username)})</option>`).join('')}</select><button class="btnS" onclick="closeModal('onuBaruModal');openPelanggan().then(()=>bukaPasangBaru())">+ Pasang baru</button></div></div>`
   :(o.untuk&&!o.pppoe_username?`<div class="plSub" style="margin-top:6px">Dipasang untuk: <b>${esc(o.nama_untuk||o.untuk)}</b></div>`:'');
  const tombol=aktif?`<div class="blAksi" style="justify-content:flex-start;margin-top:10px">
-   <button class="btnS go" onclick="tr069OnuBaru('${sn}',true,this)"${olt}>Kirim TR-069 + restart ONU</button>
+   ${!o.pppoe_username?`<button class="btnS go" onclick="bukaAktivasiOlt('${sn}',${i})"${olt}>⚙ Isi PPPoE &amp; WiFi dari OLT</button>`:''}
+   <button class="btnS${o.pppoe_username?' go':''}" onclick="tr069OnuBaru('${sn}',true,this)"${olt}>Kirim TR-069 + restart ONU</button>
    <button class="btnS" onclick="tr069OnuBaru('${sn}',false,this)"${olt}>Kirim TR-069 saja</button>
    <button class="btnS" onclick="restartOnuBaru('${sn}',this)"${o.terbaca&&D.olt_telnet?'':' disabled'}>Restart ONU</button>
    <button class="btnS" onclick="bukaWifiOnuBaru('${sn}',${i})"${D.acs_aktif?'':' disabled'}>Atur WiFi</button>
    <button class="btnS" onclick="tandaiOnuBaru('${sn}','selesai')">✓ Tandai selesai</button>
    <button class="btnS" onclick="tandaiOnuBaru('${sn}','abaikan')">Abaikan</button></div>
-   <div id="obWifi${i}"></div>`
+   <div id="obOlt${i}"></div><div id="obWifi${i}"></div>`
   :`<div class="plSub" style="margin-top:6px">${o.status==='abaikan'?'Diabaikan':'Selesai'} ${esc(obWaktu(o.selesai))}${o.oleh?' oleh '+esc(o.oleh):''} · <a href="#" onclick="tandaiOnuBaru('${sn}','buka');return false">kembalikan ke daftar</a></div>`;
  return `<div class="kuPanel" style="margin-bottom:10px">
   <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="min-width:0"><div class="plName">${esc([o.vendor,o.model].filter(Boolean).join(' ')||'ONU')} <span class="plSub" style="font-weight:700">${sn}</span></div>
@@ -1901,6 +1902,34 @@ function kartuOnuBaru(o,i){
   <div style="margin-top:8px">${ceklis}</div>
   ${aktif?`<div style="margin-top:8px;background:#f7faf8;border-radius:9px;padding:8px 10px;font-size:var(--fs-xs)"><b>Langkah berikutnya:</b> ${esc(o.saran)}</div>`:''}
   ${pilihUntuk}${tombol}</div>`;
+}
+function bukaAktivasiOlt(sn,i){
+ const el=$('obOlt'+i); if(el.innerHTML){ el.innerHTML=''; return; }
+ const o=ob.data.onu[i], daftar=(ob.pelanggan||[]).filter(p=>p.status!=='berhenti');
+ el.innerHTML=`<div class="plForm" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+  <div class="plSub">Dikirim lewat OLT ke ONU ini: PPPoE (cara <code>ont ipconfig</code>, teruji di ZTE F670L), WiFi, dan TR-069. Tidak perlu web ONU atau kunjungan.</div>
+  <label>Akun PPPoE (secret MikroTik)</label><input id="obUser${i}" list="obUserL${i}" autocapitalize="off" value="${esc(o.untuk||'')}" placeholder="username PPPoE"><datalist id="obUserL${i}">${daftar.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join('')}</datalist>
+  <label>Password PPPoE <span class="plSub">(kosongkan = diambil otomatis dari MikroTik)</span></label><input id="obPass${i}" autocomplete="off">
+  <label>Nama WiFi <span class="plSub">(kosongkan bila WiFi tidak diubah; tanpa spasi)</span></label><input id="obOSsid${i}" maxlength="32" autocapitalize="off">
+  <label>Password WiFi (8–63 karakter, tanpa spasi)</label><input id="obOPw${i}" maxlength="63" autocomplete="off">
+  <label>Akhiran nama WiFi 5 GHz</label><input id="obOAkhir${i}" maxlength="8" value="-5G">
+  <label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="obOTr${i}" checked> Kirim juga pengaturan TR-069 (lapor ke ACS)</label>
+  <div class="plBtns"><button class="plSave" onclick="kirimAktivasiOlt('${esc(sn)}',${i},this)">Kirim ke ONU lewat OLT</button></div><div id="obOHasil${i}"></div></div>`;
+}
+async function kirimAktivasiOlt(sn,i,btn){
+ const body={username:$('obUser'+i).value.trim(),password:$('obPass'+i).value||null,ssid:$('obOSsid'+i).value.trim()||null,
+  wifi_password:$('obOPw'+i).value||null,akhiran_5g:$('obOAkhir'+i).value.trim(),tr069:$('obOTr'+i).checked};
+ if(!body.username){ obPesan('Isi akun PPPoE.'); return; }
+ if(body.ssid&&/\s/.test(body.ssid)){ obPesan('Nama WiFi lewat OLT tidak boleh berisi spasi.'); return; }
+ if(body.ssid&&(!body.wifi_password||body.wifi_password.length<8)){ obPesan('Password WiFi minimal 8 karakter.'); return; }
+ if(!confirm('Kirim ke ONU '+sn+' lewat OLT?\nPPPoE: '+body.username+(body.ssid?'\nWiFi: '+body.ssid+(body.akhiran_5g?' / '+body.ssid+body.akhiran_5g:''):'')+(body.tr069?'\n+ pengaturan TR-069':''))) return;
+ btn.disabled=true; btn.textContent='Mengirim ke OLT…'; const out=$('obOHasil'+i);
+ try{ const d=await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/aktivasi-olt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  out.innerHTML='<div style="margin-top:8px;font-size:var(--fs-xs)">'+d.langkah.map(h=>`<div>${h.ok?'<b style="color:#0b7a3b">✓</b>':'<b style="color:#b42318">✗</b>'} ${esc(h.langkah)}${h.ok?'':' — '+esc(h.pesan)}</div>`).join('')
+   +(d.tersimpan===false?'<div style="color:#b45309">⚠ Konfigurasi OLT belum tersimpan permanen.</div>':'')+'</div>';
+  obPesan(d.pppoe?'✅ PPPoE terkirim. Tunggu ±1–2 menit lalu Muat ulang; bila belum tersambung, tekan Restart ONU sekali.':'⚠ PPPoE ditolak OLT. Lihat rincian di bawah.',d.pppoe);
+  btn.textContent=d.pppoe?'✓ Terkirim':'Kirim ke ONU lewat OLT'; if(!d.pppoe) btn.disabled=false;
+ }catch(e){ obPesan('Gagal: '+e.message); btn.disabled=false; btn.textContent='Kirim ke ONU lewat OLT'; }
 }
 async function untukOnuBaru(sn,u){
  try{ await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/untuk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u||null})})); obPesan(u?'Dicatat: ONU '+sn+' untuk '+u+'.':'Catatan pelanggan dihapus.',true); }
