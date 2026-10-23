@@ -1578,7 +1578,7 @@ class FakeOLTTelnet:
             elif self.tolak_awalan and b.startswith(self.tolak_awalan): out = "% Unknown command.\r\n"
             elif b.startswith("show ont ipconfig "):
                 out = ("-" * 40 + "\r\n  ONT IP host index        : 0\r\n  ONT config type          : PPPOE\r\n"
-                       if b[len("show ont ipconfig "):] in self.wan_olt else "% The ONT IP-host does not exist.\r\n")
+                       if b[len("show ont ipconfig "):] in self.wan_olt else "  Error: The ONT does not configure IP information\r\n")
             elif b.startswith("ont reboot"):
                 kirim("\r\nAre you sure to reboot the ONT? (y/n):")
                 self.perintah.append(baris())
