@@ -2510,6 +2510,8 @@ def test_speedtest_dari_onu(siap, monkeypatch):
         [U(username="budi", ip_address="10.0.0.2", uptime="1h", rx_mbps=1.5, tx_mbps=0.2)],
         None, [main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, serial_number="ZTEGC1234567", olt_rx_dbm=-20.0,
                               online=True, status="OK", pppoe_username="budi")])
+    main._mt.profil_detail = {"paket-10mbps": {"rate-limit": "4M/8M 12M/12M 6M/6M 38/38"}}
+    main._speed_mulai_terakhir.clear()
     dev = acs.dev["ZTEGC1234567"]
     assert k.post("/api/acs/budi/speedtest", json={}).status_code == 409          # ONU tanpa DownloadDiagnostics
     dd = {"DiagnosticsState": {"_value": "None", "_type": "xsd:string", "_timestamp": "2020-01-01T00:00:00.000Z"},
@@ -2538,6 +2540,8 @@ def test_speedtest_dari_onu(siap, monkeypatch):
     rw = k.get("/api/speedtest-onu/budi").json()["riwayat"]
     assert [x["status"] for x in rw] == ["error", "berhasil"]
     assert rw[1]["mbps"] == 18.82 and rw[1]["paket_mbps"] == 10 and rw[1]["pakai_mbps"] == 1.5
+    assert rw[1]["tetap_mbps"] == 8          # dari rate-limit profil "4M/8M 12M/12M ..." (download = sisi kedua)
+    assert rw[0]["pakai_mbps"] is None       # tes kedua < 3 menit setelah tes pertama: pemakaian tidak dipakai
     assert m.post("/api/acs/budi/speedtest", json={}).status_code == 403
     # pengaturan URL: hanya http
     assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "https://a.test/x"}}).status_code == 400
@@ -2665,3 +2669,33 @@ def test_aktivasi_onu_baru_dari_olt(siap):
     d = k.post(url, json={"username": "dwi"}).json()
     assert not d["pppoe"] and len(d["langkah"]) == 1 and not any(x.startswith("ont tr069") for x in olt2.perintah)
     assert m.post(url, json={"username": "dwi"}).status_code == 403
+
+
+def test_perangkat_terhubung_segar_dan_sinyal(siap, monkeypatch):
+    """Segarkan perangkat hanya mengambil yang berubah cepat (host, klien WiFi aktif, status SSID), bukan seluruh
+    LANDevice; sinyal WiFi per perangkat (parameter RSSI vendor) & waktu data ditampilkan."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    lan = dev["InternetGatewayDevice"]["LANDevice"]["1"]
+    lan["WLANConfiguration"]["2"] = {"SSID": {"_value": "SLOT2"}, "Enable": {"_value": False}}
+    lan["WLANConfiguration"]["1"]["AssociatedDevice"] = {"1": {
+        "AssociatedDeviceMACAddress": {"_value": "AA:BB:CC:00:00:01"}, "X_ZTE-COM_RSSI": {"_value": "-78"}}}
+    lan["WLANConfiguration"]["1"]["TotalAssociations"]["_timestamp"] = "2026-10-23T05:50:00.000Z"
+    lan["Hosts"]["Host"]["1"].update(MACAddress={"_value": "aa:bb:cc:00:00:01"}, InterfaceType={"_value": "802.11"})
+    p = k.get("/api/acs/budi").json()["perangkat"]
+    h = next(x for x in p["perangkat"] if x["mac"] == "aa:bb:cc:00:00:01")
+    assert h["wifi"] == "RUMAH_BUDI" and h["band"] == "2,4 GHz" and h["sinyal_dbm"] == -78
+    assert p["perangkat_menit_lalu"] is not None
+    acs.tugas.clear()
+    r = k.get("/api/acs/budi?segarkan=true").json()
+    assert r["segarkan"]["status"] == "selesai"
+    nama = [(t["name"], t.get("objectName")) for t in acs.tugas]
+    assert nama[0][0] == "getParameterValues" and nama[-1] == ("refreshObject", "InternetGatewayDevice.LANDevice.1.Hosts.")
+    obj = {n for _, n in nama if n}
+    W = "InternetGatewayDevice.LANDevice.1.WLANConfiguration"
+    assert {f"{W}.1.AssociatedDevice.", f"{W}.5.AssociatedDevice."} <= obj
+    assert f"{W}.2.AssociatedDevice." not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
+    assert f"{W}.1.SSID" in acs.tugas[0]["parameterNames"]
