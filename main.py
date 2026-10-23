@@ -10336,9 +10336,11 @@ def _olt_masuk(t: "_TelnetOLT") -> None:
     t.kirim("config")
 
 
-def olt_reboot_onu(pon: str, onu_id: int) -> None:
+def olt_reboot_onu(pon: str, onu_id: int, pabrik: bool = False) -> None:
     """Restart satu ONU lewat OLT (`ont reboot P O`), tidak bergantung pada ACS. Tidak ada konfigurasi
-    yang berubah, jadi tidak perlu save. Tidak pernah 'all'."""
+    yang berubah, jadi tidak perlu save. Tidak pernah 'all'.
+    pabrik=True: `ont restore-factory P O` (reset pabrik: pengaturan di dalam ONU hilang; yang disimpan OLT,
+    seperti `ont ipconfig`/`ont wifi`/`ont tr069`, dikirim ulang ke ONU saat menyala)."""
     if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
         raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
     m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
@@ -10352,7 +10354,8 @@ def olt_reboot_onu(pon: str, onu_id: int) -> None:
         _olt_masuk(t)
         galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
         if not galat:
-            out = t.kirim(f"ont reboot {int(m.group(2))} {int(onu_id)}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            perintah = "restore-factory" if pabrik else "reboot"
+            out = t.kirim(f"ont {perintah} {int(m.group(2))} {int(onu_id)}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
             if re.search(_POLA_KONFIRMASI, out):
                 out = t.kirim("y")
             galat = _galat_cli(out)
@@ -10363,7 +10366,7 @@ def olt_reboot_onu(pon: str, onu_id: int) -> None:
     finally:
         t.tutup()
     if galat:
-        raise HTTPException(status_code=502, detail=f"OLT menolak restart ONU: {galat}")
+        raise HTTPException(status_code=502, detail=f"OLT menolak {'reset pabrik' if pabrik else 'restart'} ONU: {galat}")
 
 
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
@@ -11113,6 +11116,8 @@ class AktivasiOltIn(BaseModel):
     wifi_password: Optional[str] = None
     akhiran_5g: str = "-5G"
     tr069: bool = True
+    reset: bool = False                # ONU pelanggan lama: reset pabrik setelah pengaturan OLT tersimpan
+    konfirmasi: Optional[str] = None   # wajib = username saat reset
 
 
 @app.post("/api/onu-baru/{sn}/aktivasi-olt")
@@ -11123,6 +11128,14 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
     o = _alamat_onu_baru(sn)
     user = (d.username or "").strip()
     sandi = d.password or None
+    if d.reset:
+        # Reset pabrik menghapus WiFi di ONU: nama & password lama wajib dikirim ulang supaya HP pelanggan
+        # tersambung sendiri. Ketik ulang username sebagai pengaman salah ONU.
+        if (d.konfirmasi or "").strip().lower() != user.lower():
+            raise HTTPException(status_code=400, detail="Ketik ulang username PPPoE untuk memastikan reset ONU yang benar.")
+        if not (d.ssid or "").strip() or not d.wifi_password:
+            raise HTTPException(status_code=400, detail="Reset pabrik menghapus WiFi ONU: isi nama & password WiFi "
+                                                        "yang dipakai pelanggan sekarang.")
     try:
         pool = _mikrotik_pool()
         try:
@@ -11146,6 +11159,19 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
         raise HTTPException(status_code=400, detail="Password PPPoE tidak terbaca dari MikroTik; isi password-nya di formulir.")
     ssid = (d.ssid or "").strip() or None
     hasil = olt_aktivasi_onu(o.pon, o.onu_id, user, sandi, ssid, d.wifi_password, (d.akhiran_5g or "").strip(), d.tr069)
+    if d.reset:
+        # Hanya bila PPPoE diterima dan konfigurasi OLT tersimpan: setelah reset, ONU hanya punya apa yang disimpan OLT.
+        if not hasil["pppoe"] or hasil["tersimpan"] is not True:
+            hasil["reset"] = {"ok": False, "pesan": "Reset pabrik dibatalkan: PPPoE ditolak OLT atau konfigurasi belum "
+                                                    "tersimpan. ONU tidak diubah, internet pelanggan tetap lewat WAN lama."}
+        else:
+            try:
+                olt_reboot_onu(o.pon, o.onu_id, pabrik=True)
+                hasil["reset"] = {"ok": True, "pesan": "ONU direset pabrik. Internet pelanggan kembali ±2–3 menit lewat "
+                                                       "WAN dari OLT."}
+            except HTTPException as e:
+                hasil["reset"] = {"ok": False, "pesan": f"{e.detail}. Pengaturan OLT sudah tersimpan; tekan Restart ONU "
+                                                        "atau reset ulang."}
     sekarang = datetime.now().isoformat(timespec="seconds")
     kolom = {"untuk": user}
     if any(h["ok"] and h["langkah"].startswith("TR-069") for h in hasil["langkah"]):
@@ -11156,8 +11182,41 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
     ringkas = ", ".join(f"{h['langkah']} {'ok' if h['ok'] else 'GAGAL'}" for h in hasil["langkah"])
     catat_aktivitas(_oleh(request), "onu_aktivasi_olt",
                     f"ONU baru {sn.upper()} ({o.pon} onu {o.onu_id}) akun {user}" + (f", WiFi {ssid}" if ssid else "")
-                    + f": {ringkas}" + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
+                    + f": {ringkas}" + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)")
+                    + (f"; reset pabrik {'ok' if hasil['reset']['ok'] else 'TIDAK'}" if d.reset else ""))
     return hasil
+
+
+class AmbilOnuIn(BaseModel):
+    cari: str      # username PPPoE atau nomor seri ONU
+
+
+@app.post("/api/onu-baru/ambil")
+def onu_baru_ambil(d: AmbilOnuIn, request: Request):
+    """Masukkan ONU pelanggan lama (mis. PPPoE diisi di web ONU, belum lapor ACS) ke daftar ONU Baru supaya
+    bisa diisi ulang dari OLT."""
+    _wajib_admin(request)
+    cari = (d.cari or "").strip().lower()
+    o = next((x for x in (_latest_data.onu_list if _latest_data else [])
+              if cari and cari in ((x.pppoe_username or "").lower(), (x.serial_number or "").lower())), None)
+    if not o or not o.serial_number:
+        raise HTTPException(status_code=404, detail="ONU dengan username / nomor seri itu tidak terbaca di OLT saat ini.")
+    sn, sekarang = o.serial_number.upper(), datetime.now().isoformat(timespec="seconds")
+    conn = _history_conn()
+    try:
+        if conn.execute("SELECT 1 FROM onu_baru WHERE sn=?", (sn,)).fetchone():
+            conn.execute("UPDATE onu_baru SET status='baru', selesai=NULL, oleh=NULL, untuk=COALESCE(?, untuk), "
+                         "terakhir=?, pon=?, onu_id=? WHERE sn=?", (o.pppoe_username, sekarang, o.pon, o.onu_id, sn))
+        else:
+            conn.execute("INSERT INTO onu_baru (sn, pertama, terakhir, pon, onu_id, vendor, model, status, untuk) "
+                         "VALUES (?,?,?,?,?,?,?,'baru',?)",
+                         (sn, sekarang, sekarang, o.pon, o.onu_id, o.vendor, o.model, o.pppoe_username))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "onu_baru_ambil", f"ONU {sn} ({o.pon} onu {o.onu_id}"
+                    + (f", {o.pppoe_username}" if o.pppoe_username else "") + ") dimasukkan ke ONU Baru untuk diisi ulang")
+    return {"sn": sn, "username": o.pppoe_username}
 
 
 @app.get("/api/onu-baru/{sn}/wifi")

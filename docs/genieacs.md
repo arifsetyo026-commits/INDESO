@@ -206,6 +206,22 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 - Model lain (mis. F609, FiberHome) belum diuji. Bila PPPoE belum tersambung 2 menit setelah dikirim, tekan
   **Restart ONU** sekali. Bila tetap belum, isi lewat web ONU.
 
+### ONU pelanggan lama yang belum lapor ACS: reset & isi ulang dari OLT
+
+Untuk ONU yang PPPoE-nya diisi di web ONU dengan WAN bertipe INTERNET saja (mis. F670L), sehingga urutan
+`ip-index 0` → `unbind` → restart tidak membuatnya melapor:
+
+1. Buka **ONU Baru → ♻ Isi ulang ONU pelanggan lama**, ketik username PPPoE atau SN, lalu tekan **Masukkan ke daftar**.
+2. Pada kartunya, tekan **♻ Reset & isi ulang dari OLT**. Isi nama dan password WiFi **yang dipakai pelanggan
+   sekarang** (tanpa spasi), supaya HP di rumah tersambung sendiri, lalu ketik ulang username sebagai konfirmasi.
+3. INDESO mengirim PPPoE, binding, WiFi, dan TR-069 (`ip-index 0`) lewat OLT, lalu `save`. **Hanya bila PPPoE
+   diterima dan tersimpan**, INDESO menjalankan `ont restore-factory P O` (tidak pernah `all`). ONU menyala dalam
+   kondisi pabrik dan menerima semuanya dari OLT. WAN lama dari web ikut terhapus, jadi tidak ada akun ganda.
+4. Tunggu ±3 menit lalu **Muat ulang**: PPPoE, ACS, dan WiFi harus tercentang.
+
+Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, SSID tambahan, sandi admin) hilang.
+Kerjakan saat sepi dan pada ONU yang mudah dikunjungi bila gagal.
+
 ### Tes kecepatan dari ONU (Diagnosa → ⚡ Tes kecepatan dari ONU)
 
 Ping hanya mengirim paket kecil, jadi keluhan "lemot tapi ping normal" tidak bisa dibuktikan dengan ping. Tombol

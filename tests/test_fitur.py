@@ -1579,6 +1579,9 @@ class FakeOLTTelnet:
             elif b.startswith("show ont ipconfig "):
                 out = ("-" * 40 + "\r\n  ONT IP host index        : 0\r\n  ONT config type          : PPPOE\r\n"
                        if b[len("show ont ipconfig "):] in self.wan_olt else "  Error: The ONT does not configure IP information\r\n")
+            elif b.startswith("ont restore-factory"):
+                kirim("\r\nAre you sure to restore the ONT factory configuration? (y/n):")
+                self.perintah.append(baris())
             elif b.startswith("ont reboot"):
                 kirim("\r\nAre you sure to reboot the ONT? (y/n):")
                 self.perintah.append(baris())
@@ -2786,3 +2789,43 @@ def test_uptime_onu_berjalan(siap):
     doc = {"_id": "x", "_deviceId": {}, "InternetGatewayDevice": {"DeviceInfo": {
         "UpTime": {"_value": 1140, "_timestamp": ts}}}}
     assert 1140 + 595 <= main._ringkas_perangkat(doc)["uptime_detik"] <= 1140 + 610
+
+
+def test_reset_isi_ulang_onu_lama(siap):
+    """ONU pelanggan lama (PPPoE di web ONU) dimasukkan ke ONU Baru, lalu PPPoE/WiFi/TR-069 disimpan di OLT dan
+    ONU direset pabrik (`ont restore-factory P O`, tidak pernah 'all'), hanya setelah PPPoE diterima & tersimpan."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.secret["dwi"]["password"] = "Rahasia26"
+    O = main.ONUStatus
+    lama = O(pon="0/0/1", onu_id=1, snmp_index=1, serial_number="ZTEGD33C6275", model="F670LV9.0",
+             olt_rx_dbm=-19.8, online=True, status="OK", pppoe_username="dwi")
+    main.catat_onu_baru([lama])                                   # tercatat 'awal' (sudah ada sejak dulu)
+    main._latest_data = main._build_dashboard([], None, [lama])
+    assert k.get("/api/onu-baru").json()["onu"] == []
+    assert k.post("/api/onu-baru/ambil", json={"cari": "hantu"}).status_code == 404
+    r = k.post("/api/onu-baru/ambil", json={"cari": "DWI"}).json()
+    assert r["sn"] == "ZTEGD33C6275" and r["username"] == "dwi"
+    x = k.get("/api/onu-baru").json()["onu"]
+    assert len(x) == 1 and x[0]["sn"] == "ZTEGD33C6275"
+    olt = FakeOLTTelnet()
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26")
+    mt.active = {"dwi": [{"id": "*x", "caller-id": "AA:BB:CC:DD:EE:FF"}]}      # sesi aktif milik ONU ini sendiri
+    url = "/api/onu-baru/ZTEGD33C6275/aktivasi-olt"
+    dasar = {"username": "dwi", "ssid": "RUMAH-DWI", "wifi_password": "wifi12345", "reset": True}
+    assert "Ketik ulang" in k.post(url, json=dict(dasar, konfirmasi="dw")).json()["detail"]
+    assert "nama & password WiFi" in k.post(url, json=dict(dasar, ssid=None, konfirmasi="dwi")).json()["detail"]
+    assert olt.perintah == []                                     # belum ada yang dikirim ke OLT
+    d = k.post(url, json=dict(dasar, konfirmasi="DWI")).json()
+    assert d["pppoe"] and d["tersimpan"] is True and d["reset"]["ok"]
+    p = olt.perintah
+    assert p.index("ont ipconfig 1 1 ip-index 0 binding eth 1-4 wlan 1,5") < p.index("save") < p.index("ont restore-factory 1 1")
+    assert p[p.index("ont restore-factory 1 1") + 1] == "y" and "ont tr069 1 1 ip-index 0" in p
+    assert not any("all" in c for c in p if c.startswith("ont restore-factory") or c.startswith("ont reboot"))
+    assert "reset pabrik ok" in o.get("/api/aktivitas").text and "Rahasia26" not in o.get("/api/aktivitas").text
+    # PPPoE ditolak OLT: tidak ada reset
+    olt2 = FakeOLTTelnet(tolak_awalan=("ont ipconfig 1 1 ip-index 0 pppoe",))
+    main.CONFIG["OLT_TELNET_PORT"] = olt2.port
+    d = k.post(url, json=dict(dasar, konfirmasi="dwi")).json()
+    assert not d["pppoe"] and not d["reset"]["ok"] and not any(c.startswith("ont restore-factory") for c in olt2.perintah)
