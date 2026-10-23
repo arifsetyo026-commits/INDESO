@@ -10296,11 +10296,10 @@ def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, ss
                          f"vlan {vlan} priority 0", True),
                ("PPPoE: mode route", f"ont ipconfig {port} {onu} ip-index 0 connection-type route", True),
                ("PPPoE: NAT", f"ont ipconfig {port} {onu} ip-index 0 nat enable", True),
-               # Ikat port LAN & semua SSID ke WAN ini supaya perangkat pelanggan dapat internet (bukan hanya ONU).
-               # ONU dengan port/SSID lebih sedikit menolak daftar penuh: dicoba versi lebih kecil.
-               ("Port LAN & WiFi ke WAN", [f"ont ipconfig {port} {onu} ip-index 0 binding eth 1-4 wlan 1-8",
-                                           f"ont ipconfig {port} {onu} ip-index 0 binding eth 1-4 wlan 1-4",
-                                           f"ont ipconfig {port} {onu} ip-index 0 binding eth 1 wlan 1"], False),
+               # Ikat port LAN & SSID utama (WLAN 1 = 2,4 GHz, WLAN 5 = 5 GHz) ke WAN ini supaya perangkat pelanggan
+               # dapat internet, bukan hanya ONU. ONU satu band (mis. F609) tidak punya WLAN 5: cukup WLAN 1.
+               ("Port LAN & WiFi ke WAN", [f"ont ipconfig {port} {onu} ip-index 0 binding eth 1-4 wlan 1,5",
+                                           f"ont ipconfig {port} {onu} ip-index 0 binding eth 1-4 wlan 1"], False),
                ("PPPoE: jalur internet", f"ont internet-config {port} {onu} ip-index 0", True)]
     if ssid is not None:
         langkah += [("WiFi 2,4 GHz", f"ont wifi {port} {onu} 2.4g 1 enable username {ssid} password {wifi_pass} "
