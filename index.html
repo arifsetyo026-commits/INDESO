@@ -1652,6 +1652,8 @@ function renderDiagnosa(){
   +(d.tunggakan.jumlah?kotak('Tagihan belum dibayar',d.tunggakan.jumlah+' bulan · '+rp(d.tunggakan.total)):'')+'</div>';
  h+='<div id="dgAcs">'+htmlAcs(d.acs)+'</div>';
  $('dgIsi').innerHTML=h;
+ // Data perangkat dari laporan rutin bisa berumur beberapa menit: ambil yang terbaru di latar belakang.
+ if(d.acs&&d.acs.terhubung&&!d.acs.perangkat.diam) segarkanOnu(true);
 }
 function htmlAcs(a){
  if(a==null) return '<div class="kuPanel" style="border-style:dashed"><b style="font-size:var(--fs-sm)">Kendali ONU dari pusat belum aktif</b><div class="plSub">Hubungkan server ACS (GenieACS) untuk melihat perangkat terhubung, mengganti nama/password WiFi, dan reboot ONU dari sini. Panduan: <code>docs/genieacs.md</code>.</div></div>';
@@ -1660,7 +1662,7 @@ function htmlAcs(a){
  const lapor=p.lapor_menit_lalu==null?'—':(p.lapor_menit_lalu<2?'baru saja':p.lapor_menit_lalu<120?p.lapor_menit_lalu+' menit lalu':p.lapor_menit_lalu<2880?Math.round(p.lapor_menit_lalu/60)+' jam lalu':Math.round(p.lapor_menit_lalu/1440)+' hari lalu')+(p.lapor_menit_lalu!=null&&p.lapor_menit_lalu>60?' <span style="color:#b45309">(ONU mungkin mati / tidak terhubung)</span>':'');
  let h=`<div class="plSub" style="font-weight:800;margin-bottom:4px">Perangkat ONU (TR-069)</div><div class="detailGrid" style="margin-bottom:8px">`
   +kotak('Model',esc((p.pabrikan||'')+' '+(p.model||'')))+kotak('Firmware',esc(p.firmware||'—'))+kotak('ONU menyala',dgDurasi(p.uptime_detik))
-  +kotak('Lapor ke ACS',lapor)+kotak('Perangkat terhubung',p.perangkat_aktif+' aktif')+'</div>';
+  +kotak('Lapor ke ACS',lapor)+kotak('Perangkat terhubung',p.perangkat_aktif+' aktif'+(dg.segarPerangkat?' <span class="plSub" style="font-weight:400">· memperbarui…</span>':p.perangkat_menit_lalu!=null?' <span class="plSub" style="font-weight:400">· data '+(p.perangkat_menit_lalu<1?'baru saja':p.perangkat_menit_lalu<120?p.perangkat_menit_lalu+' menit lalu':Math.round(p.perangkat_menit_lalu/60)+' jam lalu')+'</span>':''))+'</div>';
  if(p.diam) h+=`<div class="kuPanel" style="margin:0 0 10px;border-color:#f3d48a;background:#fffaf0"><b style="font-size:var(--fs-xs);color:#8a5a00">⚠ ONU berhenti lapor ke ACS sejak ${esc(lapor.replace(/ <span.*$/,''))}</b><div class="plSub">Data di bawah (nama WiFi, perangkat) adalah laporan <b>terakhir</b>, bukan keadaan sekarang. Biasanya karena ONU di-reset pabrik (pengaturan TR-069 terhapus), diganti, atau mati. Bila ONU online, kirim ulang pengaturan TR-069 dari OLT.</div><div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" onclick="oltTr069Pelanggan(this,true)">Kirim TR-069 dari OLT + restart ONU</button><button class="btnS" onclick="oltTr069Pelanggan(this,false)">Kirim saja (tanpa restart)</button></div></div>`;
  h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button><button class="btnS go" onclick="speedOnu(this)">⚡ Tes kecepatan dari ONU</button></div><div id="dgPingOnu"></div><div id="dgSpeed"></div>';
  const wan=p.wan||[], adaTersambung=w=>wan.some(x=>x.path!==w.path&&x.tersambung);
@@ -1675,7 +1677,7 @@ function htmlAcs(a){
  h+=wifiAktif.map(kartuWifi).join('')||'<div class="muted">Tidak ada WiFi yang aktif di ONU ini.</div>';
  if(p.perangkat_wifi&&wifiAktif.every(w=>w.klien==null)) h+=`<div class="plSub" style="margin:-2px 0 8px">${p.perangkat_wifi} perangkat tersambung lewat WiFi (ONU tidak melaporkan jumlah per jaringan).</div>`;
  if(wifiMati.length) h+=`<details style="margin-bottom:8px"><summary class="plSub" style="cursor:pointer;font-weight:800">${wifiMati.length} WiFi nonaktif (slot bawaan ONU)</summary>${wifiMati.map(kartuWifi).join('')}</details>`;
- if(p.perangkat.length) h+=`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer;font-weight:800">Daftar perangkat di rumah pelanggan (${p.perangkat.length})</summary>`+p.perangkat.map(x=>`<div class="blRow"><div><div class="plName" style="font-size:var(--fs-xs)">${esc(x.nama)}</div><div class="plSub">${esc(x.ip||'')} · ${esc(x.mac||'')}${x.wifi?' · WiFi '+esc(x.wifi):(x.antarmuka?' · '+esc(x.antarmuka):'')}${x.catatan?'<br>'+esc(x.catatan):''}</div></div>${x.aktif?'<span class="chip ok">tersambung</span>':'<span class="chip off">tidak tersambung</span>'}</div>`).join('')+'</details>';
+ if(p.perangkat.length) h+=`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer;font-weight:800">Daftar perangkat di rumah pelanggan (${p.perangkat.length})</summary>`+p.perangkat.map(x=>`<div class="blRow"><div><div class="plName" style="font-size:var(--fs-xs)">${esc(x.nama)}</div><div class="plSub">${esc(x.ip||'')} · ${esc(x.mac||'')}${x.wifi?' · WiFi '+esc(x.wifi)+(x.band?' ('+esc(x.band)+')':''):(x.antarmuka?' · '+esc(x.antarmuka):'')}${x.sinyal_dbm!=null?` · sinyal <b style="color:${x.sinyal_dbm>=-65?'#0b7a3b':x.sinyal_dbm>=-75?'#b45309':'#b42318'}">${x.sinyal_dbm} dBm ${x.sinyal_dbm>=-65?'(bagus)':x.sinyal_dbm>=-75?'(cukup)':'(lemah: jauh/terhalang tembok)'}</b>`:''}${x.catatan?'<br>'+esc(x.catatan):''}</div></div>${x.aktif?'<span class="chip ok" style="align-self:flex-start">tersambung</span>':'<span class="chip off" style="align-self:flex-start">tidak tersambung</span>'}</div>`).join('')+'</details>';
  return h;
 }
 // Pantau perintah yang antre di GenieACS sampai ONU menjalankannya (atau menolaknya),
@@ -1809,11 +1811,25 @@ async function tesPing(){
   $('dgPing').innerHTML=`<div class="kuPanel" style="margin:-4px 0 12px;${buruk?'border-color:#f3b4ab;background:#fff6f5':''}"><b style="font-size:var(--fs-xs)">Ping ${esc(r.ip)}: ${r.diterima}/${r.terkirim} balas · hilang ${r.hilang_persen}% · rata-rata ${r.rata_ms??'—'} ms (min ${r.min_ms??'—'}, maks ${r.maks_ms??'—'})</b><div class="plSub">${buruk?'Jalur ke pelanggan tidak stabil (paket hilang / respons lambat). Cek redaman dan kabel.':'Jalur dari server ke perangkat pelanggan normal.'}</div></div>`; }
  catch(e){ $('dgPing').innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; }
 }
+// Gambar ulang panel ONU tanpa menghapus hasil ping / tes kecepatan yang sedang berjalan atau sudah tampil.
+function gambarAcs(a){
+ const ping=$('dgPingOnu')?$('dgPingOnu').innerHTML:'', speed=$('dgSpeed')?$('dgSpeed').innerHTML:'';
+ $('dgAcs').innerHTML=htmlAcs(a);
+ if($('dgPingOnu')) $('dgPingOnu').innerHTML=ping; if($('dgSpeed')) $('dgSpeed').innerHTML=speed;
+}
 async function segarkanOnu(diam){
- if(!diam) $('dgAcs').innerHTML='<div class="muted">Meminta data terbaru dari ONU… (bisa sampai 30 detik)</div>';
- try{ const a=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'?segarkan=true',{cache:'no-store'})); dg.data.acs=a; $('dgAcs').innerHTML=htmlAcs(a);
+ const user=dg.user;
+ if(!diam) $('dgAcs').innerHTML='<div class="muted">Meminta data perangkat terbaru dari ONU… (±10 detik)</div>';
+ else { dg.segarPerangkat=true; if(dg.data&&dg.data.acs&&dg.data.acs.terhubung) gambarAcs(dg.data.acs); }
+ try{ const a=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'?segarkan=true',{cache:'no-store'}));
+  if(dg.user!==user) return;
+  dg.segarPerangkat=false; dg.data.acs=a;
+  // Pembaruan otomatis tidak menggambar ulang selama admin sedang mengisi formulir (ganti WiFi dsb.).
+  const el=$('dgAcs'), sibuk=diam&&el&&(el.contains(document.activeElement)&&document.activeElement.tagName!=='BUTTON'
+   ||[...el.querySelectorAll('.plForm')].some(f=>f.style.display!=='none'&&[...f.querySelectorAll('input')].some(i=>i.value)));
+  if(!sibuk) gambarAcs(a);
   if(!diam) dgPesan(a.segarkan&&a.segarkan.status==='antre'?a.segarkan.pesan:'Data ONU diperbarui.',!(a.segarkan&&a.segarkan.status==='antre')); }
- catch(e){ if(!diam) dgPesan('Gagal: '+e.message); $('dgAcs').innerHTML=htmlAcs(dg.data.acs); }
+ catch(e){ dg.segarPerangkat=false; if(dg.user!==user) return; if(!diam) dgPesan('Gagal: '+e.message); gambarAcs(dg.data.acs); }
 }
 async function rebootOnu(){
  if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;

@@ -8722,6 +8722,8 @@ def _ringkas_perangkat(doc: dict) -> dict:
     di = doc.get("_deviceId", {})
     wlan = []
     mac_wifi = {}      # MAC perangkat yang sedang tersambung ke pemancar WiFi -> nama WiFi
+    sinyal = {}        # MAC -> sinyal WiFi (dBm) bila ONU melaporkan (nama parameter beda per vendor)
+    band_mac = {}
     for i in _anak(doc, f"{_IGD}.LANDevice.1.WLANConfiguration"):
         b = f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"
         ssid = _nilai(doc, f"{b}.SSID")
@@ -8731,13 +8733,24 @@ def _ringkas_perangkat(doc: dict) -> dict:
         # Sebagian ONU (mis. Fiberhome) tidak mengisi TotalAssociations; pakai yang terbesar.
         total = _nilai(doc, f"{b}.TotalAssociations")
         klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
+        band = _band_wifi(doc, b, ssid)
         for j in _anak(doc, f"{b}.AssociatedDevice"):
             mac = str(_nilai(doc, f"{b}.AssociatedDevice.{j}.AssociatedDeviceMACAddress") or "").upper()
             if mac:
                 mac_wifi[mac] = ssid
+                band_mac[mac] = band
+                for k, v in _param(doc, f"{b}.AssociatedDevice.{j}").items():
+                    if isinstance(v, dict) and re.search(r"rssi|signalstrength", k, re.I):
+                        try:
+                            dbm = float(v.get("_value"))
+                        except (TypeError, ValueError):
+                            continue
+                        if -100 <= dbm < 0:
+                            sinyal[mac] = dbm
+                            break
         wlan.append({"index": int(i), "ssid": ssid, "aktif": _nilai(doc, f"{b}.Enable") in (True, "true", "1", 1),
                      "channel": _nilai(doc, f"{b}.Channel"), "standar": _nilai(doc, f"{b}.Standard"),
-                     "band": _band_wifi(doc, b, ssid), "klien": klien, "bisa_ganti_password": kunci is not None})
+                     "band": band, "klien": klien, "bisa_ganti_password": kunci is not None})
     host = []
     for i in _anak(doc, f"{_IGD}.LANDevice.1.Hosts.Host"):
         b = f"{_IGD}.LANDevice.1.Hosts.Host.{i}"
@@ -8751,6 +8764,8 @@ def _ringkas_perangkat(doc: dict) -> dict:
         mac = str(h["mac"] or "").upper()
         if mac in mac_wifi:
             h["wifi"] = mac_wifi[mac]
+            h["band"] = band_mac.get(mac)
+            h["sinyal_dbm"] = sinyal.get(mac)
             h["aktif"] = True
         elif mac_wifi and "802.11" in str(h["antarmuka"] or "") and h["aktif"]:
             h["aktif"] = False
@@ -8765,6 +8780,13 @@ def _ringkas_perangkat(doc: dict) -> dict:
             ip = _nilai(doc, f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.ExternalIPAddress")
             if ip and ip != "0.0.0.0":       # WAN sisa lama yang tidak tersambung melapor 0.0.0.0
                 wan_ip = wan_ip or ip
+    # Waktu data perangkat terakhir dibaca dari ONU (cap waktu terbaru di tabel host / daftar klien WiFi).
+    waktu = []
+    for h_i in _anak(doc, f"{_IGD}.LANDevice.1.Hosts.Host"):
+        waktu.append(str(_param(doc, f"{_IGD}.LANDevice.1.Hosts.Host.{h_i}.Active").get("_timestamp") or ""))
+    for w in wlan:
+        waktu.append(str(_param(doc, f"{_IGD}.LANDevice.1.WLANConfiguration.{w['index']}.TotalAssociations").get("_timestamp") or ""))
+    perangkat_waktu = max(waktu) if any(waktu) else None
     uptime = _nilai(doc, f"{_IGD}.DeviceInfo.UpTime")
     return {
         "id": doc.get("_id"), "pabrikan": di.get("_Manufacturer"), "model": di.get("_ProductClass"),
@@ -8773,6 +8795,7 @@ def _ringkas_perangkat(doc: dict) -> dict:
         "lapor_terakhir": doc.get("_lastInform"), "wan_ip": wan_ip,
         "wifi": wlan, "perangkat": host, "perangkat_aktif": sum(1 for h in host if h["aktif"]),
         "perangkat_wifi": host_wifi,
+        "perangkat_menit_lalu": _lapor_terakhir_menit(perangkat_waktu),
         "wan": _daftar_wan_ppp(doc),
     }
 
@@ -8785,6 +8808,26 @@ def _lapor_terakhir_menit(teks: Optional[str]) -> Optional[int]:
         return int((datetime.now(t.tzinfo) - t).total_seconds() // 60)
     except ValueError:
         return None
+
+
+def _segarkan_perangkat(doc: dict) -> dict:
+    """Ambil ulang hanya yang berubah cepat: tabel host, klien tiap WiFi yang menyala, dan status SSID.
+    Jauh lebih kecil dari refreshObject seluruh LANDevice (ZTE: 8 slot WLAN + host, bisa ±30 detik).
+    Tugas kecil diantrekan dulu, lalu satu ketukan ONU menjalankan semuanya dalam satu sesi."""
+    from urllib.parse import quote
+    wlan = f"{_IGD}.LANDevice.1.WLANConfiguration"
+    idx = _anak(doc, wlan)
+    nyala = [i for i in idx if _nilai(doc, f"{wlan}.{i}.Enable") in (True, "true", "1", 1)] or idx[:1]
+    tugas = [{"name": "refreshObject", "objectName": f"{wlan}.{i}.AssociatedDevice."} for i in nyala]
+    tugas.append({"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.Hosts."})
+    params = [f"{wlan}.{i}.{k}" for i in idx for k in ("SSID", "Enable", "Channel", "TotalAssociations")
+              if _ada(doc, f"{wlan}.{i}.{k}")]
+    if params:
+        tugas.insert(0, {"name": "getParameterValues", "parameterNames": params})
+    _bersihkan_tertahan(doc["_id"])
+    for t in tugas[:-1]:
+        _acs("POST", f"/devices/{quote(doc['_id'], safe='')}/tasks", json=t, timeout=15)
+    return _tugas_acs(doc["_id"], tugas[-1], tunggu=25)
 
 
 def _info_acs(username: str, segarkan: bool = False) -> dict:
@@ -8800,7 +8843,7 @@ def _info_acs(username: str, segarkan: bool = False) -> dict:
                                               "diarahkan ke server ACS (lihat docs/genieacs.md)."}
     hasil_segar = None
     if segarkan:
-        hasil_segar = _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1"}, tunggu=25)
+        hasil_segar = _segarkan_perangkat(doc)
         doc = _cari_perangkat(username) or doc
     info = _ringkas_perangkat(doc)
     info["lapor_menit_lalu"] = _lapor_terakhir_menit(info["lapor_terakhir"])
