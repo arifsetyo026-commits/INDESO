@@ -220,6 +220,12 @@ Untuk ONU yang PPPoE-nya diisi di web ONU dengan WAN bertipe INTERNET saja (mis.
 4. Tunggu ±3 menit lalu **Muat ulang**: PPPoE, ACS, dan WiFi harus tercentang.
 
 Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, SSID tambahan, sandi admin) hilang.
+
+ZTE memberi WAN buatan OLT (nama `omci_ipv4_pppoe_1`) jenis layanan `INTERNET_TR069_VOIP`, dan dengan VOIP ZTE
+menolak ping dari luar (Tes ping dari MikroTik gagal, padahal internet normal). Provision `indeso-default`
+(`deploy/genieacs/provision-indeso.js`) mengubahnya menjadi `INTERNET_TR069` setiap kali ONU ZTE lapor (dicek tiap jam).
+Terbukti di Astri (F670L V9): ping dari MikroTik kembali normal. Setelah file itu berubah, pasang ulang di VPS:
+`curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-indeso.js http://127.0.0.1:7557/provisions/indeso-default`
 Kerjakan saat sepi dan pada ONU yang mudah dikunjungi bila gagal.
 
 ### Tes kecepatan dari ONU (Diagnosa → ⚡ Tes kecepatan dari ONU)
