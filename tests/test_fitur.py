@@ -1522,9 +1522,10 @@ def test_abaikan_peringatan_kas_minus(siap):
 
 class FakeOLTTelnet:
     """Server telnet tiruan mirip CLI C-Data FD1602S-B1: catat perintah yang diterima."""
-    def __init__(self, tolak_onu=None, save_di_enable=False):
+    def __init__(self, tolak_onu=None, save_di_enable=False, tolak_awalan=()):
         import socket, threading
         self.perintah, self.tolak_onu, self.save_di_enable = [], tolak_onu, save_di_enable
+        self.tolak_awalan = tuple(tolak_awalan)
         self.srv = socket.socket(); self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", 0)); self.srv.listen(1); self.port = self.srv.getsockname()[1]
         threading.Thread(target=self._layani, daemon=True).start()
@@ -1571,6 +1572,7 @@ class FakeOLTTelnet:
                 kirim("\r\nAre you sure to save the configuration? (y/n):")
                 self.perintah.append(baris()); out = "Saving current configuration...\r\n--More ( Press 'Q' to quit )--"
             elif self.tolak_onu and b.startswith(f"ont tr069 {self.tolak_onu}"): out = "% ONT does not exist.\r\n"
+            elif self.tolak_awalan and b.startswith(self.tolak_awalan): out = "% Unknown command.\r\n"
             elif b.startswith("ont reboot"):
                 kirim("\r\nAre you sure to reboot the ONT? (y/n):")
                 self.perintah.append(baris())
@@ -2578,3 +2580,81 @@ def test_acs_cocok_lewat_wan_pppoe_index_tinggi(siap, monkeypatch):
     d = k.get("/api/acs/dwi").json()
     assert d["terhubung"] and d["perangkat"]["id"] == "74B57E-F609-ZTEAQFGH4P10867"
     assert d["perangkat"]["wan_ip"] == "172.20.52.212"
+
+
+def test_hapus_wan_sisa_lewat_acs(siap, monkeypatch):
+    """Hanya WAN yang tidak tersambung, bukan akun pelanggan sendiri, dan selama ada WAN lain yang tersambung."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    wcd = dev["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]
+    wcd["2"] = {"WANPPPConnection": {"1": {"Username": {"_value": "Gagal"}, "ExternalIPAddress": {"_value": "0.0.0.0"},
+                                           "ConnectionStatus": {"_value": "Disconnected"}}}}
+    wcd["3"] = {"WANPPPConnection": {"1": {"Username": {"_value": "budi"}, "ExternalIPAddress": {"_value": ""}}}}
+    jalur = lambda n: f"InternetGatewayDevice.WANDevice.1.WANConnectionDevice.{n}.WANPPPConnection.1"
+    wan = {w["path"]: w for w in k.get("/api/acs/budi").json()["perangkat"]["wan"]}
+    assert wan[jalur(1)]["tersambung"] and not wan[jalur(2)]["tersambung"] and not wan[jalur(3)]["tersambung"]
+    assert wan[jalur(2)]["username"] == "Gagal" and wan[jalur(2)]["status"] == "Disconnected"
+    hapus = lambda pth: k.post("/api/acs/budi/wan-hapus", json={"path": pth})
+    assert hapus("InternetGatewayDevice.X; reboot").status_code == 400
+    assert hapus(jalur(9)).status_code == 404
+    assert hapus(jalur(1)).status_code == 409                       # sedang tersambung
+    assert "akun PPPoE pelanggan" in hapus(jalur(3)).json()["detail"]  # username pelanggan sendiri
+    r = hapus(jalur(2)).json()
+    assert r["status"] == "selesai" and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur(2) + "."}
+    # tanpa WAN lain yang tersambung: ditolak
+    wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "0.0.0.0"
+    assert "Tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
+    assert m.post("/api/acs/budi/wan-hapus", json={"path": jalur(2)}).status_code == 403
+    assert "hapus WAN" in o.get("/api/aktivitas").text
+
+
+
+def test_aktivasi_onu_baru_dari_olt(siap):
+    """PPPoE + WiFi + TR-069 dikirim dari OLT (urutan teruji di F670L): password diambil dari secret MikroTik,
+    tidak pernah dikembalikan / dicatat; akun yang dipakai ONU lain ditolak; 5 GHz boleh ditolak (ONU satu band)."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.secret["dwi"]["password"] = "Rahasia26"
+    O = main.ONUStatus
+    main.catat_onu_baru([O(pon="0/0/1", onu_id=1, snmp_index=1, serial_number="ZTEGC1234567", olt_rx_dbm=-20.0,
+                           online=True, status="OK")])
+    baru = O(pon="0/0/2", onu_id=4, snmp_index=99, serial_number="ZTEGD0525891", model="F670LV9.0",
+             olt_rx_dbm=-23.2, online=True, status="OK")
+    main.catat_onu_baru([baru])
+    main._latest_data = main._build_dashboard([], None, [baru])
+    olt = FakeOLTTelnet(tolak_awalan=("ont wifi 2 4 5g",))
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26")
+    url = "/api/onu-baru/ZTEGD0525891/aktivasi-olt"
+    assert k.post(url, json={"username": "hantu"}).status_code == 404
+    mt.active = {"dwi": [{"id": "*x", "caller-id": "AA:BB:CC:DD:EE:FF"}]}          # dipakai ONU lain
+    assert "dipakai perangkat lain" in k.post(url, json={"username": "dwi"}).json()["detail"]
+    mt.active = {}
+    assert k.post(url, json={"username": "dwi", "ssid": "Rumah Dwi", "wifi_password": "wifi12345"}).status_code == 400
+    r = k.post(url, json={"username": "dwi", "ssid": "RUMAH-DWI", "wifi_password": "wifi12345"})
+    d = r.json()
+    assert r.status_code == 200 and d["pppoe"] and d["tersimpan"] is not False
+    p = olt.perintah
+    assert "interface gpon 0/0" in p
+    assert ("ont ipconfig 2 4 ip-index 0 pppoe username dwi password Rahasia26 vlan 1 priority 0" in p
+            and p.index("ont ipconfig 2 4 ip-index 0 connection-type route") < p.index("ont internet-config 2 4 ip-index 0"))
+    assert "ont ipconfig 2 4 ip-index 0 nat enable" in p
+    assert any(x.startswith("ont wifi 2 4 2.4g 1 enable username RUMAH-DWI password wifi12345") for x in p)
+    assert any(x.startswith("ont tr069 2 4 acs-url") for x in p) and "save" in p
+    assert not any(x.startswith("ont wan") or x.startswith("ont reboot") for x in p)
+    st = {h["langkah"]: h["ok"] for h in d["langkah"]}
+    assert st["WiFi 2,4 GHz"] and st["WiFi 5 GHz"] is False and st["TR-069"]
+    assert "Rahasia26" not in r.text and "wifi12345" not in r.text
+    log = o.get("/api/aktivitas").text
+    assert "Rahasia26" not in log and "wifi12345" not in log and "RUMAH-DWI" in log
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["untuk"] == "dwi" and x["tr069"] and x["wifi"]
+    # PPPoE ditolak OLT → berhenti, tidak lanjut WiFi/TR-069
+    olt2 = FakeOLTTelnet(tolak_awalan=("ont ipconfig 2 4 ip-index 0 pppoe",))
+    main.CONFIG["OLT_TELNET_PORT"] = olt2.port
+    d = k.post(url, json={"username": "dwi"}).json()
+    assert not d["pppoe"] and len(d["langkah"]) == 1 and not any(x.startswith("ont tr069") for x in olt2.perintah)
+    assert m.post(url, json={"username": "dwi"}).status_code == 403

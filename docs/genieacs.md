@@ -154,7 +154,30 @@ lapor ke ACS → WiFi diatur. Tombol yang tersedia:
 - **Dipasang untuk pelanggan**: catatan sebelum PPPoE ONU tersambung. **Tandai selesai** / **Abaikan** memindahkan
   ONU ke Riwayat 30 hari.
 
-PPPoE ONU baru masih diisi di web ONU. Pengisian PPPoE dari OLT menunggu perintah CLI C-Data yang sudah dipastikan.
+**Isi PPPoE & WiFi dari OLT** (tanpa web ONU atau kunjungan) mengirim dalam satu sesi telnet:
+```
+ont ipconfig P O ip-index 0 pppoe username U password P vlan 1 priority 0
+ont ipconfig P O ip-index 0 connection-type route
+ont ipconfig P O ip-index 0 nat enable
+ont internet-config P O ip-index 0
+ont wifi P O 2.4g 1 enable username NAMA password SANDI authentication wpa2-psk encryption aes
+ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk encryption aes
+(+ pengaturan TR-069, lalu save)
+```
+
+**Hasil uji di ONU uji ZTE F670L V9 (PON 0/0/2, ONU 4):**
+- PPPoE login dari OLT;
+- ONU lapor ke ACS tanpa perlu mengikat `ip-index`;
+- WiFi muncul.
+
+**Catatan:**
+- Perintah WAN khusus C-Data (`ont wan …`) **diabaikan** ONU ZTE, jadi tidak dipakai.
+- Password PPPoE diambil dari secret MikroTik. Password tidak pernah dikirim ke browser dan tidak dicatat di log.
+- Akun yang sedang dipakai ONU lain ditolak, karena profil memakai `only-one`.
+- Nama dan password WiFi lewat OLT tidak boleh berisi spasi.
+- VLAN bisa diubah lewat `OLT_PPPOE_VLAN` di `.env` (bawaan 1, untuk jaringan tanpa tag).
+- Model selain F670L (mis. F609, FiberHome) belum diuji. Bila PPPoE belum tersambung 2 menit setelah dikirim, tekan
+  **Restart ONU** sekali. Bila tetap belum, isi lewat web ONU.
 
 ### Tes kecepatan dari ONU (Diagnosa → ⚡ Tes kecepatan dari ONU)
 
