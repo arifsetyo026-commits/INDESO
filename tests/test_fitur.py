@@ -2070,6 +2070,25 @@ def test_acs_onu_diganti_belum_lapor(siap, monkeypatch):
         main._latest_data = None
 
 
+def test_sn_huawei_heksadesimal(siap, monkeypatch):
+    """Huawei melapor ke ACS dengan SN '4857544398B2DFBA' (HWTC dalam hex); INDESO harus menyamakannya dengan 'HWTC98B2DFBA'."""
+    main, o, k, m = siap
+    assert main._sn_gpon("4857544398B2DFBA") == "HWTC98B2DFBA"
+    assert main._sn_gpon("hwtc98b2dfba") == "HWTC98B2DFBA"
+    assert main._sn_gpon("ZTEEQJNQ1F19726") == "ZTEEQJNQ1F19726"
+    assert main._sn_gpon("0000000000000001") == "0000000000000001"
+    assert {"_deviceId._SerialNumber": "4857544398B2DFBA"} in main._query_sn("HWTC98B2DFBA")["$or"]
+    huawei = {"_deviceId": {"_Manufacturer": "Huawei Technologies Co., Ltd", "_SerialNumber": "4857544398B2DFBA"}}
+    assert main._onu_lama(huawei, "HWTC98B2DFBA") is False
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["_deviceId"].update(_Manufacturer="Huawei", _ProductClass="HG8145V5",
+                                                _SerialNumber="4857544398B2DFBA")
+    assert "HWTC98B2DFBA" in main._sn_terdaftar_acs()
+    assert main._doc_acs_onu("HWTC98B2DFBA", None) is not None
+
+
 def test_olt_kirim_tr069_dengan_reboot(siap):
     """reboot=True: setelah tersimpan, hanya ONU yang berhasil dikirimi yang di-restart (satu per satu, dijawab y)."""
     main, o, k, m = siap
@@ -2456,8 +2475,23 @@ def test_onu_baru_deteksi_dan_aktivasi(siap, monkeypatch):
                      "5.SSID": "DWI-5G", "5.KeyPassphrase": "rahasia123"}
     log = o.get("/api/aktivitas")
     assert log.status_code == 200 and "DWI-5G" in log.text and "rahasia123" not in log.text   # password tidak dicatat
+    # WiFi baru dianggap beres bila ONU benar-benar melaporkan SSID itu menyala (bukan sekadar perintah diterima)
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["langkah"]["wifi"] is None and "Atur WiFi" in x["saran"]
+    wl = doc["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    baru = (datetime.now(main.timezone.utc) + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    wl["1"]["SSID"] = {"_value": "RUMAH_LAMA", "_timestamp": baru}         # dibaca ulang, tapi SSID tidak berubah
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["langkah"]["wifi"] is False and "belum memancar" in x["saran"]
+    wl["1"]["SSID"] = {"_value": "DWI", "_timestamp": baru}
     x = k.get("/api/onu-baru").json()["onu"][0]
     assert all(x["langkah"].values()) and "selesai" in x["saran"].lower()
+    # ONU yang WiFi 2,4 GHz-nya mati (mis. Huawei baru): Atur WiFi juga menyalakannya; slot tambahan tidak ikut
+    wl["1"]["Enable"] = {"_value": False, "_type": "xsd:boolean"}
+    wl["6"] = {"SSID": {"_value": "Netsphere_X"}, "Enable": {"_value": True}, "Channel": {"_value": 149}}
+    k.post("/api/onu-baru/ZTEGD08EDD99/wifi", json={"ssid": "DWI", "password": "rahasia123"})
+    nilai = {p[0].rsplit("WLANConfiguration.", 1)[1]: p[1] for p in acs.tugas[-1]["parameterValues"]}
+    assert nilai["1.Enable"] is True and nilai["1.SSID"] == "DWI" and "6.SSID" not in nilai and nilai["5.SSID"] == "DWI-5G"
 
     # selesai → pindah ke riwayat; buka → kembali
     assert k.post("/api/onu-baru/ZTEGD08EDD99/selesai").status_code == 200
@@ -2612,8 +2646,17 @@ def test_hapus_wan_sisa_lewat_acs(siap, monkeypatch):
     assert r["status"] == "selesai" and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur(2)}
     # tanpa WAN lain yang tersambung: ditolak
     wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "0.0.0.0"
-    assert "Tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
+    assert "tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
     assert m.post("/api/acs/budi/wan-hapus", json={"path": jalur(2)}).status_code == 403
+    # WAN IP/bridge ikut ditampilkan (dengan alasan) tapi tidak bisa dihapus dari INDESO
+    wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "10.0.0.2"
+    wcd["4"] = {"WANIPConnection": {"1": {"ConnectionType": {"_value": "IP_Bridged"}, "ExternalIPAddress": {"_value": ""}}}}
+    wan = {w["path"]: w for w in k.get("/api/acs/budi").json()["perangkat"]["wan"]}
+    ipw = wan["InternetGatewayDevice.WANDevice.1.WANConnectionDevice.4.WANIPConnection.1"]
+    assert ipw["jenis"] == "ip" and ipw["tipe"] == "IP_Bridged" and not ipw["hapus"] and "bridge" in ipw["alasan"]
+    assert wan[jalur(2)]["hapus"] and not wan[jalur(1)]["hapus"] and wan[jalur(3)]["alasan"].startswith("memakai akun")
+    assert k.post("/api/acs/budi/wan-hapus", json={
+        "path": "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.4.WANIPConnection.1"}).status_code == 400
     assert "hapus WAN" in o.get("/api/aktivitas").text
 
 
@@ -2701,3 +2744,4 @@ def test_perangkat_terhubung_segar_dan_sinyal(siap, monkeypatch):
     assert {f"{W}.1.AssociatedDevice", f"{W}.5.AssociatedDevice"} <= obj
     assert f"{W}.2.AssociatedDevice" not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
     assert f"{W}.1.SSID" in acs.tugas[0]["parameterNames"]
+    assert "InternetGatewayDevice.WANDevice.1.WANConnectionDevice" in obj          # WAN ikut dibaca ulang
