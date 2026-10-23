@@ -177,8 +177,13 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 - Akun yang sedang dipakai ONU lain ditolak, karena profil memakai `only-one`.
 - Nama dan password WiFi lewat OLT tidak boleh berisi spasi.
 - VLAN bisa diubah lewat `OLT_PPPOE_VLAN` di `.env` (bawaan 1, untuk jaringan tanpa tag).
-- **Huawei HG8145V5** (uji 23 Okt 2026, PON 0/0/2, ONU 5):
-  - PPPoE dari OLT berhasil, dan ONU lapor ke ACS;
+- **Huawei HG8145V5 firmware operator** (uji 23 Okt 2026, PON 0/0/2, ONU 5). Cukup dipasang untuk **internet saja**:
+  - PPPoE dari OLT berhasil, dan internet jalan;
+  - **TR-069 dari OLT tidak bertahan.** Unit ini dua kali lapor ke ACS (sesi gagal), lalu berhenti sama sekali, juga
+    setelah restart, kirim ulang TR-069 dengan restart, dan reset pabrik. Penghitung di MikroTik membuktikan tidak
+    ada satu paket pun dari IP PPPoE-nya ke `10.99.0.1`. Menu WAN dan TR-069 di web-nya tersembunyi, termasuk untuk
+    super admin. Kesimpulan: firmware operator mengunci pengaturan ACS dan WiFi, sedangkan PPPoE masuk lewat OMCI yang
+    wajib dituruti. Atur WiFi di lokasi lewat web ONU. Pengelolaan jarak jauh hanya bisa dengan firmware umum;
   - Huawei melapor ke ACS dengan SN versi angka: `4857544398B2DFBA` (`48575443` = "HWTC") untuk SN OLT `HWTC98B2DFBA`.
     INDESO menyamakan kedua bentuk ini otomatis. Di log ACS, cari dengan bentuk angkanya:
     `sudo grep -i "4857544398B2DFBA" /var/log/genieacs/genieacs-cwmp-access.log | tail`;

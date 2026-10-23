@@ -89,10 +89,23 @@ Jalan darurat di lokasi: **Winbox lewat MAC address** tidak terpengaruh pembatas
 - `INDESO`: owner, juga dipakai aplikasi INDESO.
 - `vicka`: NOC, tetap aktif.
 
-## 3. Sisa konfigurasi lama
+## 3. Ukuran paket ke ACS (MSS)
+
+Jalur laporan ONU ke ACS melewati WireGuard, yang hanya muat paket ±1420 byte. ONU yang memblokir ICMP dari WAN
+(mis. Huawei) tidak menerima pesan "paket kebesaran", sehingga paket besarnya bisa hilang di jalan. Dua aturan ini
+mengecilkan ukuran segmen TCP **khusus ke/dari 10.99.0.1**. Internet pelanggan tidak tersentuh:
+
+```
+/ip firewall mangle add chain=forward protocol=tcp tcp-flags=syn dst-address=10.99.0.1 tcp-mss=1361-65535 action=change-mss new-mss=1360 passthrough=yes comment="ACS MSS ke VPS"
+/ip firewall mangle add chain=forward protocol=tcp tcp-flags=syn src-address=10.99.0.1 tcp-mss=1361-65535 action=change-mss new-mss=1360 passthrough=yes comment="ACS MSS dari VPS"
+```
+
+Batalkan: `/ip firewall mangle remove [find comment~"ACS MSS"]`.
+
+## 4. Sisa konfigurasi lama
 
 Tabel rute `TO_STARLINK` (rute `BCKUP`) dan `to-LINKBIT-GAME` adalah sisa percobaan pemisahan jalur. Keduanya tidak
-dipakai, karena mangle kosong, dan boleh dihapus.
+dipakai (tidak ada mangle yang menandai rute ke sana) dan boleh dihapus.
 
 Bila ide jalur per paket (gaming lewat Linkbit, rumahan lewat Starlink) dikerjakan lagi, rancangannya ada di commit
 `d030daf`.
