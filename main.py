@@ -8490,6 +8490,29 @@ def _query_pppoe(username: str) -> dict:
 
 
 _POLA_SN_GPON = re.compile(r"^[A-Z]{4}[0-9A-F]{8}$")
+
+
+def _sn_gpon(sn) -> str:
+    """Samakan bentuk nomor seri: sebagian ONU (mis. Huawei) melapor ke ACS dengan 4 huruf vendor dalam heksadesimal,
+    '4857544398B2DFBA' = 'HWTC' + '98B2DFBA' = SN di OLT 'HWTC98B2DFBA'."""
+    s = str(sn or "").strip().upper()
+    if re.fullmatch(r"[0-9A-F]{16}", s):
+        try:
+            vendor = bytes.fromhex(s[:8]).decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            return s
+        if re.fullmatch(r"[A-Z]{4}", vendor):
+            return vendor + s[8:]
+    return s
+
+
+def _query_sn(sn: str) -> dict:
+    """Query GenieACS untuk SN GPON dalam dua bentuk: 'HWTC98B2DFBA' dan '4857544398B2DFBA'."""
+    s = _sn_gpon(sn)
+    bentuk = [s] + ([s[:4].encode().hex().upper() + s[4:]] if _POLA_SN_GPON.match(s) else [])
+    if str(sn) not in bentuk:
+        bentuk.append(str(sn))
+    return {"$or": [{"_deviceId._SerialNumber": b} for b in bentuk]}
 _MEREK_SN = {"ZTEG": "zte", "FHTT": "fiberhome", "HWTC": "huawei", "ALCL": "nokia", "GPON": None}
 
 
@@ -8508,8 +8531,8 @@ def _onu_lama(doc: dict, sn_olt: Optional[str]) -> bool:
     if not sn_olt:
         return False
     di = doc.get("_deviceId") or {}
-    sn_acs = str(di.get("_SerialNumber") or "").upper()
-    sn_olt = sn_olt.upper()
+    sn_acs = _sn_gpon(di.get("_SerialNumber"))
+    sn_olt = _sn_gpon(sn_olt)
     if sn_acs == sn_olt:
         return False
     # Nomor seri ACS berformat SN GPON tapi berbeda → ONU lain. Format lain (sebagian ZTE melapor
@@ -8539,9 +8562,7 @@ def _cari_perangkat(username: str) -> Optional[dict]:
     queries = []
     sn = _sn_onu(username)
     if sn:
-        queries.append({"_deviceId._SerialNumber": sn})
-        if sn.upper() != sn:
-            queries.append({"_deviceId._SerialNumber": sn.upper()})
+        queries.append(_query_sn(sn))
     if r["acs_id"]:
         queries.append({"_id": r["acs_id"]})
     queries.append(_query_pppoe(username))
@@ -10450,7 +10471,7 @@ def _sn_terdaftar_acs() -> Optional[set]:
         return None
     if not r.ok:
         return None
-    return {str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper() for d in r.json()}
+    return {_sn_gpon((d.get("_deviceId") or {}).get("_SerialNumber")) for d in r.json()}
 
 
 def _onu_di_acs() -> Optional[dict]:
@@ -10471,7 +10492,7 @@ def _onu_di_acs() -> Optional[dict]:
     sn, user, ids = set(), {}, {}
     for d in r.json():
         ids[d.get("_id")] = d
-        sn.add(str((d.get("_deviceId") or {}).get("_SerialNumber") or "").upper())
+        sn.add(_sn_gpon((d.get("_deviceId") or {}).get("_SerialNumber")))
         for j in ["VirtualParameters.pppoeUsername"] + jalur:
             u = _nilai(d, j)
             if u:
@@ -10880,7 +10901,7 @@ def _ubah_onu_baru(sn: str, **kolom) -> None:
 def _doc_acs_onu(sn: str, username: Optional[str]) -> Optional[dict]:
     """Dokumen GenieACS ONU ini: lewat nomor seri, lalu lewat username PPPoE (sebagian ZTE melapor
     ke ACS dengan nomor seri yang berbeda dari SN GPON). Dokumen milik ONU lain tidak dipakai."""
-    queries = [{"_deviceId._SerialNumber": sn.upper()}]
+    queries = [_query_sn(sn)]
     if username:
         queries.append(_query_pppoe(username))
     for q in queries:

@@ -2070,6 +2070,25 @@ def test_acs_onu_diganti_belum_lapor(siap, monkeypatch):
         main._latest_data = None
 
 
+def test_sn_huawei_heksadesimal(siap, monkeypatch):
+    """Huawei melapor ke ACS dengan SN '4857544398B2DFBA' (HWTC dalam hex); INDESO harus menyamakannya dengan 'HWTC98B2DFBA'."""
+    main, o, k, m = siap
+    assert main._sn_gpon("4857544398B2DFBA") == "HWTC98B2DFBA"
+    assert main._sn_gpon("hwtc98b2dfba") == "HWTC98B2DFBA"
+    assert main._sn_gpon("ZTEEQJNQ1F19726") == "ZTEEQJNQ1F19726"
+    assert main._sn_gpon("0000000000000001") == "0000000000000001"
+    assert {"_deviceId._SerialNumber": "4857544398B2DFBA"} in main._query_sn("HWTC98B2DFBA")["$or"]
+    huawei = {"_deviceId": {"_Manufacturer": "Huawei Technologies Co., Ltd", "_SerialNumber": "4857544398B2DFBA"}}
+    assert main._onu_lama(huawei, "HWTC98B2DFBA") is False
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.dev["ZTEGC1234567"]["_deviceId"].update(_Manufacturer="Huawei", _ProductClass="HG8145V5",
+                                                _SerialNumber="4857544398B2DFBA")
+    assert "HWTC98B2DFBA" in main._sn_terdaftar_acs()
+    assert main._doc_acs_onu("HWTC98B2DFBA", None) is not None
+
+
 def test_olt_kirim_tr069_dengan_reboot(siap):
     """reboot=True: setelah tersimpan, hanya ONU yang berhasil dikirimi yang di-restart (satu per satu, dijawab y)."""
     main, o, k, m = siap
