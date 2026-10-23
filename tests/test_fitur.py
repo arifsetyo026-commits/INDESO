@@ -2776,3 +2776,13 @@ def test_password_wifi_huawei(siap):
                           "InternetGatewayDevice": {"LANDevice": {"1": {"WLANConfiguration": {"1": wl}}}}}
     assert main._kunci_wifi(doc("Huawei Technologies Co., Ltd"), b) == "PreSharedKey.1.PreSharedKey"
     assert main._kunci_wifi(doc("ZTE"), b) == "KeyPassphrase"
+
+
+def test_uptime_onu_berjalan(siap):
+    """UpTime ONU ditambah waktu sejak terakhir dibaca, supaya tidak berhenti di angka lama."""
+    main, o, k, m = siap
+    from datetime import datetime, timedelta, timezone
+    ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+    doc = {"_id": "x", "_deviceId": {}, "InternetGatewayDevice": {"DeviceInfo": {
+        "UpTime": {"_value": 1140, "_timestamp": ts}}}}
+    assert 1140 + 595 <= main._ringkas_perangkat(doc)["uptime_detik"] <= 1140 + 610
