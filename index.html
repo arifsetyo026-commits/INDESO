@@ -1753,7 +1753,8 @@ async function pingOnu(host,catatan,tahap,lanjut){
 // ===== Speedtest dari ONU (TR-143): kecepatan unduh sebenarnya sampai rumah pelanggan =====
 let _pantauSpeed=null;
 function nilaiSpeed(x){
- const paket=x.paket_mbps, pakai=x.pakai_mbps, pct=paket?x.mbps/paket:null;
+ // Acuan = kecepatan TETAP bila profil memakai burst (paket "15 Mbps" = 10 tetap + burst 15), bukan angka burst.
+ const paket=x.tetap_mbps&&x.paket_mbps&&x.tetap_mbps<x.paket_mbps?x.tetap_mbps:x.paket_mbps, pakai=x.pakai_mbps, pct=paket?x.mbps/paket:null;
  if(pct==null) return ['#1669aa','ℹ','Paket pelanggan belum diisi, jadi hasil tidak bisa dibandingkan.'];
  if(pct>=0.8) return ['#0b7a3b','✅','Jaringan sampai ONU sehat. Bila pelanggan tetap merasa lemot, masalahnya di WiFi rumah, HP, atau aplikasinya: cek Kesehatan WiFi, minta coba di dekat ONU / WiFi 5 GHz.'];
  const ramai=pakai!=null&&paket&&pakai>=paket*0.5;
@@ -1765,7 +1766,7 @@ async function riwayatSpeed(user,box,teratas){
  try{ const d=await jsonAtauError(await fetch('/api/speedtest-onu/'+encodeURIComponent(user),{cache:'no-store'}));
   const ok=d.riwayat.filter(x=>x.status==='berhasil'); let h='';
   if(teratas&&ok[0]){ const x=ok[0], [w,ik,saran]=nilaiSpeed(x);
-   h+=`<div class="kuPanel" style="margin:0 0 10px"><b style="color:${w};font-size:var(--fs-sm)">${ik} ${x.mbps.toFixed(1)} Mbps</b>${x.paket_mbps?` <span class="plSub">dari paket ${x.paket_mbps} Mbps (${Math.round(x.mbps*100/x.paket_mbps)}%)</span>`:''}
+   h+=`<div class="kuPanel" style="margin:0 0 10px"><b style="color:${w};font-size:var(--fs-sm)">${ik} ${x.mbps.toFixed(1)} Mbps</b>${x.paket_mbps?` <span class="plSub">dari paket ${x.paket_mbps} Mbps${x.tetap_mbps&&x.tetap_mbps<x.paket_mbps?' (kecepatan tetap '+x.tetap_mbps+' Mbps, '+Math.round(x.mbps*100/x.tetap_mbps)+'%)':' ('+Math.round(x.mbps*100/x.paket_mbps)+'%)'}</span>`:''}
     <div class="plSub">Unduh ${x.detik} detik${x.pakai_mbps!=null?' · pemakaian pelanggan sesaat sebelum tes '+x.pakai_mbps.toFixed(1)+' Mbps':''}</div><div style="font-size:var(--fs-xs);margin-top:6px">${esc(saran)}</div>
     <div class="plSub" style="margin-top:6px">Diukur dari ONU ke ${esc(d.url)} (termasuk jalur ISP sampai server itu).</div></div>`; }
   if(d.riwayat.length>(teratas?1:0)) h+='<div class="plSub" style="margin-bottom:10px"><b>Riwayat tes:</b><br>'+d.riwayat.slice(teratas?1:0,8).map(x=>esc(khWaktu(String(x.ts).replace('T',' ')))+' · '+(x.status==='berhasil'?x.mbps.toFixed(1)+' Mbps'+(x.paket_mbps?' / '+x.paket_mbps:''):'gagal: '+esc(String(x.pesan||'').slice(0,80)))).join('<br>')+'</div>';

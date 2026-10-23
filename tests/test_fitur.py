@@ -2510,6 +2510,8 @@ def test_speedtest_dari_onu(siap, monkeypatch):
         [U(username="budi", ip_address="10.0.0.2", uptime="1h", rx_mbps=1.5, tx_mbps=0.2)],
         None, [main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, serial_number="ZTEGC1234567", olt_rx_dbm=-20.0,
                               online=True, status="OK", pppoe_username="budi")])
+    main._mt.profil_detail = {"paket-10mbps": {"rate-limit": "4M/8M 12M/12M 6M/6M 38/38"}}
+    main._speed_mulai_terakhir.clear()
     dev = acs.dev["ZTEGC1234567"]
     assert k.post("/api/acs/budi/speedtest", json={}).status_code == 409          # ONU tanpa DownloadDiagnostics
     dd = {"DiagnosticsState": {"_value": "None", "_type": "xsd:string", "_timestamp": "2020-01-01T00:00:00.000Z"},
@@ -2538,6 +2540,8 @@ def test_speedtest_dari_onu(siap, monkeypatch):
     rw = k.get("/api/speedtest-onu/budi").json()["riwayat"]
     assert [x["status"] for x in rw] == ["error", "berhasil"]
     assert rw[1]["mbps"] == 18.82 and rw[1]["paket_mbps"] == 10 and rw[1]["pakai_mbps"] == 1.5
+    assert rw[1]["tetap_mbps"] == 8          # dari rate-limit profil "4M/8M 12M/12M ..." (download = sisi kedua)
+    assert rw[0]["pakai_mbps"] is None       # tes kedua < 3 menit setelah tes pertama: pemakaian tidak dipakai
     assert m.post("/api/acs/budi/speedtest", json={}).status_code == 403
     # pengaturan URL: hanya http
     assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "https://a.test/x"}}).status_code == 400

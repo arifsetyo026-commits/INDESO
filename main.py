@@ -1419,6 +1419,9 @@ def init_history_db() -> None:
         # Speedtest dari ONU (TR-143 DownloadDiagnostics): kecepatan unduh sebenarnya sampai rumah pelanggan.
         conn.execute("CREATE TABLE IF NOT EXISTS speedtest_onu (ts TEXT NOT NULL, username TEXT, model TEXT, url TEXT, "
                      "status TEXT NOT NULL, mbps REAL, bytes INTEGER, detik REAL, paket_mbps REAL, pakai_mbps REAL, pesan TEXT)")
+        # tetap_mbps: kecepatan download TETAP dari rate-limit profil PPP (paket "15 Mbps" bisa 10M tetap + burst 15M).
+        if "tetap_mbps" not in [r[1] for r in conn.execute("PRAGMA table_info(speedtest_onu)").fetchall()]:
+            conn.execute("ALTER TABLE speedtest_onu ADD COLUMN tetap_mbps REAL")
         # ONU yang pertama kali terlihat di OLT (OLT memakai authmode auto: ONU baru langsung terdaftar).
         # status: awal = sudah ada saat fitur ini pertama jalan (tidak ditampilkan), baru, selesai, abaikan.
         conn.execute("""
@@ -9152,7 +9155,8 @@ def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool =
 # ---- Speedtest dari ONU (TR-143 DownloadDiagnostics) ----
 # Ping hanya paket kecil; keluhan "lemot tapi ping normal" butuh ukuran unduhan sungguhan dari rumah pelanggan.
 _UNDUH_ONU = f"{_IGD}.DownloadDiagnostics"
-_speed_tugas: dict = {}          # tugas_id -> (acs_id, username, model, url, lewat_wan, pemakaian Mbps sebelum tes)
+_speed_tugas: dict = {}          # tugas_id -> (acs_id, username, model, url, lewat_wan, pemakaian sebelum tes, kecepatan tetap)
+_speed_mulai_terakhir: dict = {}  # username -> waktu tes terakhir dimulai (tes beruntun mengotori angka pemakaian)
 _speed_tanpa_wan: set = set()    # ONU yang menolak kolom Interface
 _KEADAAN_UNDUH = {
     "Error_InitConnectionFailed": "ONU tidak bisa menghubungi server file uji (alamat salah / server mati / terblokir).",
@@ -9193,7 +9197,7 @@ def _waktu_iso(teks) -> Optional[datetime]:
 
 
 def _catat_speedtest(asal, status: str, pesan: str, mbps=None, nbytes=None, detik=None) -> None:
-    acs_id, username, model, url, _wan, pakai = asal
+    acs_id, username, model, url, _wan, pakai, tetap = asal
     paket = None
     try:
         conn = _billing_conn()
@@ -9208,14 +9212,35 @@ def _catat_speedtest(asal, status: str, pesan: str, mbps=None, nbytes=None, deti
     try:
         conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
         try:
-            conn.execute("INSERT INTO speedtest_onu VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO speedtest_onu (ts, username, model, url, status, mbps, bytes, detik, paket_mbps, "
+                         "pakai_mbps, pesan, tetap_mbps) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          (datetime.now().isoformat(timespec="seconds"), username, model, url, status,
-                          mbps, nbytes, detik, paket, pakai, (pesan or "")[:300]))
+                          mbps, nbytes, detik, paket, pakai, (pesan or "")[:300], tetap))
             conn.commit()
         finally:
             conn.close()
     except sqlite3.Error as e:
         logger.warning(f"Gagal mencatat speedtest ONU: {e}")
+
+
+def _kecepatan_tetap(username: str) -> Optional[float]:
+    """Download tetap dari rate-limit profil PPP pelanggan: token pertama 'rx/tx' (sisi router), tx = download
+    pelanggan. Mis. '10M/10M 15M/15M 9M/9M 38/38' → 10 (15 hanya burst sesaat). None bila tak terbaca."""
+    try:
+        pool = _mikrotik_pool()
+        try:
+            api = pool.get_api()
+            s = api.get_resource("/ppp/secret").get(name=username)
+            prof = api.get_resource("/ppp/profile").get(name=s[0].get("profile")) if s else []
+        finally:
+            pool.disconnect()
+    except Exception:
+        return None
+    rl = str((prof[0].get("rate-limit") if prof else "") or "").split()
+    if not rl:
+        return None
+    sisi = rl[0].split("/")
+    return _parse_rate_token_to_mbps(sisi[1] if len(sisi) > 1 else sisi[0])
 
 
 class SpeedtestIn(BaseModel):
@@ -9255,9 +9280,14 @@ def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=25)
     if hasil.get("tugas_id"):
         # Pemakaian dicatat SEBELUM tes (data monitor terakhir), supaya unduhan tes sendiri tidak ikut terhitung.
+        # Data monitor diperbarui ±2 menit sekali: bila ada tes lain dimulai < 3 menit lalu, angkanya bisa berisi
+        # unduhan tes itu, jadi tidak dipakai (bukan bukti "kuota terbagi").
         u = next((x for x in (_latest_data.pppoe_users if _latest_data else []) if x.username == username), None)
-        _speed_tugas[str(hasil["tugas_id"])] = (doc["_id"], username, _model_onu(doc), url, bool(wan),
-                                               u.rx_mbps if u is not None else None)
+        lalu = _speed_mulai_terakhir.get(username)
+        pakai = None if u is None or (lalu and time.monotonic() - lalu < 180) else u.rx_mbps
+        _speed_tugas[str(hasil["tugas_id"])] = (doc["_id"], username, _model_onu(doc), url, bool(wan), pakai,
+                                               _kecepatan_tetap(username))
+        _speed_mulai_terakhir[username] = time.monotonic()
         while len(_speed_tugas) > 200:
             _speed_tugas.pop(next(iter(_speed_tugas)))
     catat_aktivitas(_oleh(request), "onu_speedtest", f"{username} ({doc['_id']}) unduh {url}")
@@ -9324,7 +9354,7 @@ def speedtest_riwayat(username: str, request: Request):
     conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute("SELECT ts, status, mbps, detik, paket_mbps, pakai_mbps, pesan, model FROM speedtest_onu "
+        rows = conn.execute("SELECT ts, status, mbps, detik, paket_mbps, tetap_mbps, pakai_mbps, pesan, model FROM speedtest_onu "
                             "WHERE username=? ORDER BY ts DESC, rowid DESC LIMIT 10", (username,)).fetchall()
     finally:
         conn.close()
