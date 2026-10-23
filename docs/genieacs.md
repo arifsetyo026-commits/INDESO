@@ -184,6 +184,8 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
     sama-sama nol, walau internetnya jalan. ZTE yang WAN-nya dibuat di web ONU justru butuh `unbind`. Karena itu
     INDESO kini memeriksa `show ont ipconfig P O`: bila OLT menyimpan WAN untuk ONU itu, ikatan `ip-index 0`
     dibiarkan. Aktivasi di ONU Baru juga langsung mengikat TR-069 ke WAN PPPoE yang dibuatnya;
+  - password WiFi lewat ACS: Huawei menolak `KeyPassphrase` (`9007 Invalid parameter value`), jadi INDESO mengisi
+    `PreSharedKey.1.PreSharedKey` untuk ONU Huawei. SSID `BackhaulSSID…` (jalur mesh) disembunyikan dari daftar WiFi;
   - menu WAN dan TR-069 di web Huawei firmware operator tersembunyi, termasuk untuk super admin, jadi pengaturan ini
     hanya bisa lewat OLT;
   - Huawei melapor ke ACS dengan SN versi angka: `4857544398B2DFBA` (`48575443` = "HWTC") untuk SN OLT `HWTC98B2DFBA`.

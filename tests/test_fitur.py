@@ -2764,3 +2764,15 @@ def test_backhaul_mesh_disembunyikan(siap):
         "1": w("HUAWEI-2.4G-3mJ9", 6), "5": w("HUAWEI-5G-3mJ9", 161), "6": w("BackhaulSSIDcb9ee7ec", 161)}}}}}
     ssid = [x["ssid"] for x in main._ringkas_perangkat(doc)["wifi"]]
     assert ssid == ["HUAWEI-2.4G-3mJ9", "HUAWEI-5G-3mJ9"]
+
+
+def test_password_wifi_huawei(siap):
+    """Huawei menolak KeyPassphrase (9007); password WiFi-nya lewat PreSharedKey.1.PreSharedKey. ZTE tetap KeyPassphrase."""
+    main, o, k, m = siap
+    b = "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
+    wl = {"SSID": {"_value": "X"}, "KeyPassphrase": {"_value": ""},
+          "PreSharedKey": {"1": {"PreSharedKey": {"_value": ""}, "KeyPassphrase": {"_value": ""}}}}
+    doc = lambda pabrik: {"_deviceId": {"_Manufacturer": pabrik},
+                          "InternetGatewayDevice": {"LANDevice": {"1": {"WLANConfiguration": {"1": wl}}}}}
+    assert main._kunci_wifi(doc("Huawei Technologies Co., Ltd"), b) == "PreSharedKey.1.PreSharedKey"
+    assert main._kunci_wifi(doc("ZTE"), b) == "KeyPassphrase"

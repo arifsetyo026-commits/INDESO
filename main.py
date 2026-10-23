@@ -8427,6 +8427,15 @@ CONFIG.update({
 
 _IGD = "InternetGatewayDevice"
 _KUNCI_WIFI = ("KeyPassphrase", "PreSharedKey.1.KeyPassphrase", "PreSharedKey.1.PreSharedKey")
+# Huawei (HG8145V5) melaporkan KeyPassphrase tapi menolak diisi (9007 Invalid parameter value); password WPA-nya
+# diterima di PreSharedKey.1.PreSharedKey.
+_KUNCI_WIFI_HUAWEI = ("PreSharedKey.1.PreSharedKey", "PreSharedKey.1.KeyPassphrase", "KeyPassphrase")
+
+
+def _kunci_wifi(doc: dict, b: str) -> Optional[str]:
+    """Parameter password WiFi untuk WLANConfiguration `b`, sesuai urutan yang diterima pabrikan ONU."""
+    huawei = "huawei" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
+    return next((k for k in (_KUNCI_WIFI_HUAWEI if huawei else _KUNCI_WIFI) if _ada(doc, f"{b}.{k}")), None)
 
 
 def _acs_aktif() -> bool:
@@ -8775,7 +8784,7 @@ def _ringkas_perangkat(doc: dict) -> dict:
         ssid = _nilai(doc, f"{b}.SSID")
         if ssid is None or _POLA_BACKHAUL.match(str(ssid)):
             continue      # backhaul mesh (Huawei "BackhaulSSID…"): bukan WiFi pelanggan, jangan diganti
-        kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
+        kunci = _kunci_wifi(doc, b)
         # Sebagian ONU (mis. Fiberhome) tidak mengisi TotalAssociations; pakai yang terbesar.
         total = _nilai(doc, f"{b}.TotalAssociations")
         klien = max(int(total) if str(total or "").isdigit() else 0, len(_anak(doc, f"{b}.AssociatedDevice")))
@@ -8945,7 +8954,7 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     if ssid:
         nilai.append([f"{b}.SSID", ssid, "xsd:string"])
     if pw:
-        kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
+        kunci = _kunci_wifi(doc, b)
         if not kunci:
             raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
         nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
@@ -11196,7 +11205,7 @@ def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
         if not w["aktif"] and _ada(doc, f"{b}.Enable"):
             # ONU baru (mis. Huawei) bisa memancar mati: nyalakan juga, bukan hanya ganti nama.
             nilai.append([f"{b}.Enable", True, _param(doc, f"{b}.Enable").get("_type") or "xsd:boolean"])
-        kunci = next((k for k in _KUNCI_WIFI if _ada(doc, f"{b}.{k}")), None)
+        kunci = _kunci_wifi(doc, b)
         if kunci:
             nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
         diatur.append(f"{nama} ({w['band']}{'' if kunci else ', password tidak bisa diatur lewat TR-069'})")
