@@ -2612,8 +2612,17 @@ def test_hapus_wan_sisa_lewat_acs(siap, monkeypatch):
     assert r["status"] == "selesai" and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur(2)}
     # tanpa WAN lain yang tersambung: ditolak
     wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "0.0.0.0"
-    assert "Tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
+    assert "tidak ada WAN lain" in hapus(jalur(2)).json()["detail"]
     assert m.post("/api/acs/budi/wan-hapus", json={"path": jalur(2)}).status_code == 403
+    # WAN IP/bridge ikut ditampilkan (dengan alasan) tapi tidak bisa dihapus dari INDESO
+    wcd["1"]["WANPPPConnection"]["1"]["ExternalIPAddress"]["_value"] = "10.0.0.2"
+    wcd["4"] = {"WANIPConnection": {"1": {"ConnectionType": {"_value": "IP_Bridged"}, "ExternalIPAddress": {"_value": ""}}}}
+    wan = {w["path"]: w for w in k.get("/api/acs/budi").json()["perangkat"]["wan"]}
+    ipw = wan["InternetGatewayDevice.WANDevice.1.WANConnectionDevice.4.WANIPConnection.1"]
+    assert ipw["jenis"] == "ip" and ipw["tipe"] == "IP_Bridged" and not ipw["hapus"] and "bridge" in ipw["alasan"]
+    assert wan[jalur(2)]["hapus"] and not wan[jalur(1)]["hapus"] and wan[jalur(3)]["alasan"].startswith("memakai akun")
+    assert k.post("/api/acs/budi/wan-hapus", json={
+        "path": "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.4.WANIPConnection.1"}).status_code == 400
     assert "hapus WAN" in o.get("/api/aktivitas").text
 
 
@@ -2701,3 +2710,4 @@ def test_perangkat_terhubung_segar_dan_sinyal(siap, monkeypatch):
     assert {f"{W}.1.AssociatedDevice", f"{W}.5.AssociatedDevice"} <= obj
     assert f"{W}.2.AssociatedDevice" not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
     assert f"{W}.1.SSID" in acs.tugas[0]["parameterNames"]
+    assert "InternetGatewayDevice.WANDevice.1.WANConnectionDevice" in obj          # WAN ikut dibaca ulang

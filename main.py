@@ -8705,20 +8705,36 @@ _POLA_WAN_PPP = re.compile(rf"^{_IGD}\.WANDevice\.\d+\.WANConnectionDevice\.\d+\
 
 
 def _daftar_wan_ppp(doc: dict) -> list[dict]:
-    """Semua WAN PPPoE di ONU: username, IP, status, jenis layanan (bila dilaporkan)."""
+    """Semua WAN di ONU: PPPoE (WANPPPConnection) dan IP/bridge (WANIPConnection), dengan username, IP, status,
+    jenis layanan (bila dilaporkan)."""
     hasil = []
     for d in _anak(doc, f"{_IGD}.WANDevice"):
         for w in _anak(doc, f"{_IGD}.WANDevice.{d}.WANConnectionDevice"):
-            for p in _anak(doc, f"{_IGD}.WANDevice.{d}.WANConnectionDevice.{w}.WANPPPConnection"):
-                b = f"{_IGD}.WANDevice.{d}.WANConnectionDevice.{w}.WANPPPConnection.{p}"
-                ip = str(_nilai(doc, f"{b}.ExternalIPAddress") or "")
-                status = str(_nilai(doc, f"{b}.ConnectionStatus") or "")
-                layanan = next((str(v.get("_value")) for k, v in _param(doc, b).items()
-                                if "ServiceList" in k and isinstance(v, dict) and v.get("_value")), None)
-                hasil.append({"path": b, "username": _nilai(doc, f"{b}.Username"), "ip": ip or None,
-                              "status": status or None, "layanan": layanan, "nama": _nilai(doc, f"{b}.Name"),
-                              "tersambung": bool(ip and ip != "0.0.0.0") or status.lower() == "connected"})
+            for jenis, obj in (("pppoe", "WANPPPConnection"), ("ip", "WANIPConnection")):
+                for p in _anak(doc, f"{_IGD}.WANDevice.{d}.WANConnectionDevice.{w}.{obj}"):
+                    b = f"{_IGD}.WANDevice.{d}.WANConnectionDevice.{w}.{obj}.{p}"
+                    ip = str(_nilai(doc, f"{b}.ExternalIPAddress") or "")
+                    status = str(_nilai(doc, f"{b}.ConnectionStatus") or "")
+                    layanan = next((str(v.get("_value")) for k, v in _param(doc, b).items()
+                                    if "ServiceList" in k and isinstance(v, dict) and v.get("_value")), None)
+                    hasil.append({"path": b, "jenis": jenis, "username": _nilai(doc, f"{b}.Username"),
+                                  "ip": ip or None, "status": status or None, "layanan": layanan,
+                                  "tipe": _nilai(doc, f"{b}.ConnectionType"), "nama": _nilai(doc, f"{b}.Name"),
+                                  "tersambung": bool(ip and ip != "0.0.0.0") or status.lower() == "connected"})
     return hasil
+
+
+def _boleh_hapus_wan(wan: list[dict], w: dict, username: str) -> tuple[bool, str]:
+    """Aturan hapus WAN dari INDESO (sama untuk tombol & endpoint), beserta alasan bila tidak boleh."""
+    if w.get("jenis") != "pppoe":
+        return False, "WAN jenis IP/bridge (bisa untuk TR-069/IPTV): hapus lewat web ONU bila memang tidak dipakai"
+    if w["tersambung"]:
+        return False, "sedang tersambung"
+    if str(w["username"] or "").lower() == username.lower():
+        return False, "memakai akun PPPoE pelanggan ini"
+    if not any(x["tersambung"] for x in wan if x["path"] != w["path"]):
+        return False, "tidak ada WAN lain yang tersambung; hapus lewat web ONU supaya ONU tetap terjangkau"
+    return True, ""
 
 
 def _ringkas_perangkat(doc: dict) -> dict:
@@ -8822,6 +8838,7 @@ def _segarkan_perangkat(doc: dict) -> dict:
     idx = _anak(doc, wlan)
     nyala = [i for i in idx if _nilai(doc, f"{wlan}.{i}.Enable") in (True, "true", "1", 1)] or idx[:1]
     tugas = [{"name": "refreshObject", "objectName": f"{wlan}.{i}.AssociatedDevice"} for i in nyala]
+    tugas.append({"name": "refreshObject", "objectName": f"{_IGD}.WANDevice.1.WANConnectionDevice"})
     tugas.append({"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.Hosts"})
     params = [f"{wlan}.{i}.{k}" for i in idx for k in ("SSID", "Enable", "Channel", "TotalAssociations")
               if _ada(doc, f"{wlan}.{i}.{k}")]
@@ -8850,6 +8867,8 @@ def _info_acs(username: str, segarkan: bool = False) -> dict:
         doc = _cari_perangkat(username) or doc
     info = _ringkas_perangkat(doc)
     info["lapor_menit_lalu"] = _lapor_terakhir_menit(info["lapor_terakhir"])
+    for w in info["wan"]:
+        w["hapus"], w["alasan"] = _boleh_hapus_wan(info["wan"], w, username)
     # ONU lapor rutin tiap ACS_ONU_INTERVAL. Lewat dari 3x itu (min. 15 menit) berarti ONU berhenti lapor,
     # mis. di-reset pabrik (pengaturan TR-069 hilang): data di bawahnya adalah laporan TERAKHIR, bukan keadaan sekarang.
     batas = max(15, 3 * int(CONFIG.get("ACS_ONU_INTERVAL") or 300) // 60)
@@ -8931,13 +8950,9 @@ def acs_hapus_wan(username: str, d: HapusWanIn, request: Request):
     w = next((x for x in wan if x["path"] == d.path), None)
     if not w:
         raise HTTPException(status_code=404, detail="WAN itu tidak ada di ONU (mungkin sudah terhapus). Ambil data terbaru dulu.")
-    if w["tersambung"]:
-        raise HTTPException(status_code=409, detail="WAN ini sedang tersambung; tidak boleh dihapus dari sini.")
-    if str(w["username"] or "").lower() == username.lower():
-        raise HTTPException(status_code=409, detail="WAN ini memakai akun PPPoE pelanggan sendiri; tidak dihapus.")
-    if not any(x["tersambung"] for x in wan if x["path"] != d.path):
-        raise HTTPException(status_code=409, detail="Tidak ada WAN lain yang tersambung. Menghapus WAN ini berisiko "
-                                                    "membuat ONU tidak terjangkau; hapus lewat web ONU di lokasi.")
+    boleh, alasan = _boleh_hapus_wan(wan, w, username)
+    if not boleh:
+        raise HTTPException(status_code=409, detail=f"WAN ini tidak dihapus: {alasan}.")
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "deleteObject", "objectName": d.path}, tunggu=25)
     catat_aktivitas(_oleh(request), "onu_hapus_wan",
