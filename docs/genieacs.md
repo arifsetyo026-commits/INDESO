@@ -182,8 +182,12 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
   - Huawei melapor ke ACS dengan SN versi angka: `4857544398B2DFBA` (`48575443` = "HWTC") untuk SN OLT `HWTC98B2DFBA`.
     INDESO menyamakan kedua bentuk ini otomatis. Di log ACS, cari dengan bentuk angkanya:
     `sudo grep -i "4857544398B2DFBA" /var/log/genieacs/genieacs-cwmp-access.log | tail`;
-  - sesi pertama Huawei bisa berakhir `Session timeout` saat ACS membaca seluruh parameternya. Itu wajar; sesi
-    berikutnya (Inform berkala atau setelah restart ONU) melanjutkan;
+  - Huawei lambat menjawab `GetParameterNames` saat ACS membaca seluruh parameternya. Dengan batas bawaan GenieACS
+    (`cwmp.sessionTimeout` = 30 detik) sesi pertamanya berakhir `Session timeout` tepat 30 detik setelah permintaan
+    terakhir, sehingga data ONU tidak pernah lengkap. Naikkan batasnya sekali (berlaku untuk semua ONU, tidak perlu
+    restart GenieACS):
+    `sudo mongosh --quiet genieacs --eval 'db.config.updateOne({_id: "cwmp.sessionTimeout"}, {$set: {value: "120"}}, {upsert: true})'`
+    lalu picu sesi baru (tombol **Restart ONU**, atau `POST /devices/<id>/tasks?connection_request` lewat NBI);
   - **WiFi dari OLT diabaikan** (SSID tidak muncul). Atur WiFi lewat **Atur WiFi** (jalur ACS), yang juga menyalakan WiFi
     bila mati;
   - Huawei menolak ping dari arah WAN secara bawaan, jadi ping dari MikroTik ke IP PPPoE-nya selalu "loss". Itu bukan
