@@ -1524,9 +1524,10 @@ def test_abaikan_peringatan_kas_minus(siap):
 
 class FakeOLTTelnet:
     """Server telnet tiruan mirip CLI C-Data FD1602S-B1: catat perintah yang diterima."""
-    def __init__(self, tolak_onu=None, save_di_enable=False, tolak_awalan=()):
+    def __init__(self, tolak_onu=None, save_di_enable=False, tolak_awalan=(), wan_olt=()):
         import socket, threading
         self.perintah, self.tolak_onu, self.save_di_enable = [], tolak_onu, save_di_enable
+        self.wan_olt = set(wan_olt)          # {"2 5", ...}: ONU yang WAN PPPoE-nya disimpan OLT
         self.tolak_awalan = tuple(tolak_awalan)
         self.srv = socket.socket(); self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.srv.bind(("127.0.0.1", 0)); self.srv.listen(1); self.port = self.srv.getsockname()[1]
@@ -1575,6 +1576,9 @@ class FakeOLTTelnet:
                 self.perintah.append(baris()); out = "Saving current configuration...\r\n--More ( Press 'Q' to quit )--"
             elif self.tolak_onu and b.startswith(f"ont tr069 {self.tolak_onu}"): out = "% ONT does not exist.\r\n"
             elif self.tolak_awalan and b.startswith(self.tolak_awalan): out = "% Unknown command.\r\n"
+            elif b.startswith("show ont ipconfig "):
+                out = ("-" * 40 + "\r\n  ONT IP host index        : 0\r\n  ONT config type          : PPPOE\r\n"
+                       if b[len("show ont ipconfig "):] in self.wan_olt else "  Error: The ONT does not configure IP information\r\n")
             elif b.startswith("ont reboot"):
                 kirim("\r\nAre you sure to reboot the ONT? (y/n):")
                 self.perintah.append(baris())
@@ -2092,13 +2096,13 @@ def test_sn_huawei_heksadesimal(siap, monkeypatch):
 def test_olt_kirim_tr069_dengan_reboot(siap):
     """reboot=True: setelah tersimpan, hanya ONU yang berhasil dikirimi yang di-restart (satu per satu, dijawab y)."""
     main, o, k, m = siap
-    olt = FakeOLTTelnet(tolak_onu="1 5")
+    olt = FakeOLTTelnet(tolak_onu="1 5", wan_olt={"1 7"})
     main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
                        ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26", OLT_JEDA_DETIK=0.3)
     import time as _t
     mulai = _t.monotonic()
-    d = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}, {"pon": "0/0/1", "onu_id": 5}],
-                                       "reboot": True}).json()
+    d = k.post("/api/olt/tr069", json={"onu": [{"pon": "0/0/1", "onu_id": 23}, {"pon": "0/0/1", "onu_id": 5},
+                                               {"pon": "0/0/1", "onu_id": 7}], "reboot": True}).json()
     assert _t.monotonic() - mulai >= 0.9                            # ada jeda antartahap (seperti diketik tangan)
     hasil = {h["onu_id"]: h for h in d["hasil"]}
     assert hasil[23]["ok"] and hasil[23]["reboot"] is True and "di-restart" in hasil[23]["pesan"]
@@ -2109,6 +2113,9 @@ def test_olt_kirim_tr069_dengan_reboot(siap):
     # urutan uji manual yang berhasil (Endah 1/9): ip-index 0 → unbind → reboot, lalu save
     assert (p.index("ont tr069 1 23 inform enable interval 300") < p.index("ont tr069 1 23 ip-index 0")
             < p.index("ont tr069 1 23 ip-index unbind") < p.index("ont reboot 1 23") < p.index("save"))
+    # WAN PPPoE dibuat OLT (Huawei HG8145V5): ikatan ip-index 0 dibiarkan, tanpa unbind
+    assert "ont tr069 1 7 ip-index 0" in p and "ont tr069 1 7 ip-index unbind" not in p and "ont reboot 1 7" in p
+    assert "diikat ke WAN PPPoE" in hasil[7]["pesan"] and "diikat" not in hasil[23]["pesan"]
     assert not any(x.startswith("ont tr069 1 5 ip-index") for x in p)   # ONU yang ditolak tidak disentuh
     # tanpa reboot: tidak ada perintah restart
     olt.perintah.clear()
@@ -2694,6 +2701,7 @@ def test_aktivasi_onu_baru_dari_olt(siap):
     assert p.index("ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1,5") < p.index("ont internet-config 2 4 ip-index 0")
     assert any(x.startswith("ont wifi 2 4 2.4g 1 enable username RUMAH-DWI password wifi12345") for x in p)
     assert any(x.startswith("ont tr069 2 4 acs-url") for x in p) and "save" in p
+    assert p.index("ont tr069 2 4 inform enable interval 300") < p.index("ont tr069 2 4 ip-index 0") < p.index("save")
     assert not any(x.startswith("ont wan") or x.startswith("ont reboot") for x in p)
     st = {h["langkah"]: h["ok"] for h in d["langkah"]}
     assert st["WiFi 2,4 GHz"] and st["WiFi 5 GHz"] is False and st["TR-069"]
@@ -2745,3 +2753,26 @@ def test_perangkat_terhubung_segar_dan_sinyal(siap, monkeypatch):
     assert f"{W}.2.AssociatedDevice" not in obj and "InternetGatewayDevice.LANDevice.1" not in obj
     assert f"{W}.1.SSID" in acs.tugas[0]["parameterNames"]
     assert "InternetGatewayDevice.WANDevice.1.WANConnectionDevice" in obj          # WAN ikut dibaca ulang
+
+
+def test_backhaul_mesh_disembunyikan(siap):
+    """Huawei melaporkan SSID backhaul mesh ('BackhaulSSID…'): bukan WiFi pelanggan, tidak tampil & tidak diganti."""
+    main, o, k, m = siap
+    w = lambda ssid, ch: {"SSID": {"_value": ssid}, "Enable": {"_value": True}, "Channel": {"_value": ch},
+                          "TotalAssociations": {"_value": 0}}
+    doc = {"_id": "x", "_deviceId": {}, "InternetGatewayDevice": {"LANDevice": {"1": {"WLANConfiguration": {
+        "1": w("HUAWEI-2.4G-3mJ9", 6), "5": w("HUAWEI-5G-3mJ9", 161), "6": w("BackhaulSSIDcb9ee7ec", 161)}}}}}
+    ssid = [x["ssid"] for x in main._ringkas_perangkat(doc)["wifi"]]
+    assert ssid == ["HUAWEI-2.4G-3mJ9", "HUAWEI-5G-3mJ9"]
+
+
+def test_password_wifi_huawei(siap):
+    """Huawei menolak KeyPassphrase (9007); password WiFi-nya lewat PreSharedKey.1.PreSharedKey. ZTE tetap KeyPassphrase."""
+    main, o, k, m = siap
+    b = "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
+    wl = {"SSID": {"_value": "X"}, "KeyPassphrase": {"_value": ""},
+          "PreSharedKey": {"1": {"PreSharedKey": {"_value": ""}, "KeyPassphrase": {"_value": ""}}}}
+    doc = lambda pabrik: {"_deviceId": {"_Manufacturer": pabrik},
+                          "InternetGatewayDevice": {"LANDevice": {"1": {"WLANConfiguration": {"1": wl}}}}}
+    assert main._kunci_wifi(doc("Huawei Technologies Co., Ltd"), b) == "PreSharedKey.1.PreSharedKey"
+    assert main._kunci_wifi(doc("ZTE"), b) == "KeyPassphrase"

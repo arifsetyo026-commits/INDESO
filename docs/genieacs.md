@@ -126,7 +126,7 @@ sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --kiri
 
 **ZTE F609 (dan ONU lain yang punya WAN bawaan "TR-069" yang tidak bisa dihapus)** menerima pengaturan dari OLT,
 tapi baru melapor ke ACS setelah restart. Sebelum restart, ONU melapor lewat WAN "TR-069" yang kosong.
-Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `ont reboot <port> <onu>`, lalu `save`, dengan jeda 5 detik antartahap (`OLT_JEDA_DETIK`). Tanpa jeda, `unbind` tiba sebelum ONU menerima ikatannya dan tidak ada yang berubah. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. Internet pelanggan putus ±1–2 menit:
+Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `ont reboot <port> <onu>`, lalu `save`, dengan jeda 5 detik antartahap (`OLT_JEDA_DETIK`). Tanpa jeda, `unbind` tiba sebelum ONU menerima ikatannya dan tidak ada yang berubah. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. ONU yang WAN-nya disimpan OLT (`show ont ipconfig` berisi PPPoE, mis. hasil aktivasi ONU Baru) dilewati dari `unbind`, karena ONU seperti Huawei hanya melapor lewat WAN itu. Internet pelanggan putus ±1–2 menit:
 - **Diagnosa**: tombol *Kirim TR-069 dari OLT + restart ONU*.
 - **Pengaturan → Sistem → TR-069 ONU lewat OLT**: centang *Restart ONU setelah dikirim*.
 - **Terminal**, untuk ONU yang sudah pernah dikirimi tapi belum muncul di ACS:
@@ -178,12 +178,25 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 - Nama dan password WiFi lewat OLT tidak boleh berisi spasi.
 - VLAN bisa diubah lewat `OLT_PPPOE_VLAN` di `.env` (bawaan 1, untuk jaringan tanpa tag).
 - **Huawei HG8145V5** (uji 23 Okt 2026, PON 0/0/2, ONU 5):
-  - PPPoE dari OLT berhasil, dan ONU lapor ke ACS;
+  - PPPoE dari OLT berhasil, dan internet jalan;
+  - **TR-069 wajib diikat ke WAN PPPoE dari OLT** (`ont tr069 P O ip-index 0`). Dengan `TR069 IP index : unbind`
+    (lihat `show ont tr069 P O`), Huawei tidak mengirim laporan sama sekali: penghitung MikroTik dan tcpdump di VPS
+    sama-sama nol, walau internetnya jalan. ZTE yang WAN-nya dibuat di web ONU justru butuh `unbind`. Karena itu
+    INDESO kini memeriksa `show ont ipconfig P O`: bila OLT menyimpan WAN untuk ONU itu, ikatan `ip-index 0`
+    dibiarkan. Aktivasi di ONU Baru juga langsung mengikat TR-069 ke WAN PPPoE yang dibuatnya;
+  - password WiFi lewat ACS: Huawei menolak `KeyPassphrase` (`9007 Invalid parameter value`), jadi INDESO mengisi
+    `PreSharedKey.1.PreSharedKey` untuk ONU Huawei. SSID `BackhaulSSID…` (jalur mesh) disembunyikan dari daftar WiFi;
+  - menu WAN dan TR-069 di web Huawei firmware operator tersembunyi, termasuk untuk super admin, jadi pengaturan ini
+    hanya bisa lewat OLT;
   - Huawei melapor ke ACS dengan SN versi angka: `4857544398B2DFBA` (`48575443` = "HWTC") untuk SN OLT `HWTC98B2DFBA`.
     INDESO menyamakan kedua bentuk ini otomatis. Di log ACS, cari dengan bentuk angkanya:
     `sudo grep -i "4857544398B2DFBA" /var/log/genieacs/genieacs-cwmp-access.log | tail`;
-  - sesi pertama Huawei bisa berakhir `Session timeout` saat ACS membaca seluruh parameternya. Itu wajar; sesi
-    berikutnya (Inform berkala atau setelah restart ONU) melanjutkan;
+  - Huawei lambat menjawab `GetParameterNames` saat ACS membaca seluruh parameternya. Dengan batas bawaan GenieACS
+    (`cwmp.sessionTimeout` = 30 detik) sesi pertamanya berakhir `Session timeout` tepat 30 detik setelah permintaan
+    terakhir, sehingga data ONU tidak pernah lengkap. Naikkan batasnya sekali (berlaku untuk semua ONU, tidak perlu
+    restart GenieACS):
+    `sudo mongosh --quiet genieacs --eval 'db.config.updateOne({_id: "cwmp.sessionTimeout"}, {$set: {value: "120"}}, {upsert: true})'`
+    lalu picu sesi baru (tombol **Restart ONU**, atau `POST /devices/<id>/tasks?connection_request` lewat NBI);
   - **WiFi dari OLT diabaikan** (SSID tidak muncul). Atur WiFi lewat **Atur WiFi** (jalur ACS), yang juga menyalakan WiFi
     bila mati;
   - Huawei menolak ping dari arah WAN secara bawaan, jadi ping dari MikroTik ke IP PPPoE-nya selalu "loss". Itu bukan
@@ -216,6 +229,12 @@ Baris terakhir harus menampilkan `ukuran: 20000000 byte`.
 Hasil tes mencakup jalur sampai VPS. Kalau VPS jauh atau kecepatannya terbatas, isi **Pengaturan → File uji
 speedtest** dengan file HTTP 10–50 MB di server yang dekat, misalnya mirror di Indonesia. ONU tidak bisa memakai HTTPS.
 Tidak semua ONU mendukung tes ini. Kalau ONU tidak mendukung, INDESO menampilkan pesan yang jelas.
+
+Hasil tes diambil di sesi yang sama saat ONU melapor `8 DIAGNOSTICS COMPLETE`, oleh provision `indeso-diagnostik`
+(`deploy/genieacs/provision-diagnostik.js`). Tanpa itu hasil baru terbaca saat INDESO memanggil ONU lagi (Huawei:
+±47 detik). Setelah file itu berubah, pasang ulang di VPS:
+`curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-diagnostik.js http://127.0.0.1:7557/provisions/indeso-diagnostik`
+
 
 ## 6. Isi `.env` INDESO (di HP Termux)
 
