@@ -2786,13 +2786,3 @@ def test_uptime_onu_berjalan(siap):
     doc = {"_id": "x", "_deviceId": {}, "InternetGatewayDevice": {"DeviceInfo": {
         "UpTime": {"_value": 1140, "_timestamp": ts}}}}
     assert 1140 + 595 <= main._ringkas_perangkat(doc)["uptime_detik"] <= 1140 + 610
-
-
-def test_wan_manajemen_acs_tidak_bisa_dihapus(siap):
-    """WAN akun acs-… (jalur TR-069 tanpa port pelanggan) tidak pernah boleh dihapus dari INDESO."""
-    main, o, k, m = siap
-    wan = [{"path": "a", "jenis": "pppoe", "tersambung": True, "username": "astri"},
-           {"path": "b", "jenis": "pppoe", "tersambung": False, "username": "acs-astri"},
-           {"path": "c", "jenis": "pppoe", "tersambung": False, "username": "lama"}]
-    assert main._boleh_hapus_wan(wan, wan[1], "astri")[0] is False
-    assert main._boleh_hapus_wan(wan, wan[2], "astri")[0] is True

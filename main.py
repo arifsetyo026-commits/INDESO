@@ -8763,8 +8763,6 @@ def _boleh_hapus_wan(wan: list[dict], w: dict, username: str) -> tuple[bool, str
         return False, "WAN jenis IP/bridge (bisa untuk TR-069/IPTV): hapus lewat web ONU bila memang tidak dipakai"
     if w["tersambung"]:
         return False, "sedang tersambung"
-    if str(w["username"] or "").lower().startswith("acs-"):
-        return False, "WAN manajemen TR-069 (akun acs-…): tanpa WAN ini ONU tidak bisa dihubungi ACS"
     if str(w["username"] or "").lower() == username.lower():
         return False, "memakai akun PPPoE pelanggan ini"
     if not any(x["tersambung"] for x in wan if x["path"] != w["path"]):
