@@ -10296,6 +10296,11 @@ def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, ss
                          f"vlan {vlan} priority 0", True),
                ("PPPoE: mode route", f"ont ipconfig {port} {onu} ip-index 0 connection-type route", True),
                ("PPPoE: NAT", f"ont ipconfig {port} {onu} ip-index 0 nat enable", True),
+               # Ikat port LAN & semua SSID ke WAN ini supaya perangkat pelanggan dapat internet (bukan hanya ONU).
+               # ONU dengan port/SSID lebih sedikit menolak daftar penuh: dicoba versi lebih kecil.
+               ("Port LAN & WiFi ke WAN", [f"ont ipconfig {port} {onu} ip-index 0 binding eth 1-4 wlan 1-8",
+                                           f"ont ipconfig {port} {onu} ip-index 0 binding eth 1-4 wlan 1-4",
+                                           f"ont ipconfig {port} {onu} ip-index 0 binding eth 1 wlan 1"], False),
                ("PPPoE: jalur internet", f"ont internet-config {port} {onu} ip-index 0", True)]
     if ssid is not None:
         langkah += [("WiFi 2,4 GHz", f"ont wifi {port} {onu} 2.4g 1 enable username {ssid} password {wifi_pass} "
@@ -10320,7 +10325,10 @@ def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, ss
         if galat:
             raise HTTPException(status_code=502, detail=f"OLT menolak masuk ke port {m.group(1)}: {galat}")
         for nama, perintah, wajib in langkah:
-            galat = _galat_cli(t.kirim(perintah))
+            for coba in ([perintah] if isinstance(perintah, str) else perintah):
+                galat = _galat_cli(t.kirim(coba))
+                if galat is None:
+                    break
             hasil.append({"langkah": nama, "ok": galat is None, "pesan": samar(galat) if galat else "diterima OLT"})
             if galat and wajib:
                 break
@@ -10334,6 +10342,9 @@ def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, ss
         t.tutup()
     pppoe_ok = all(h["ok"] for h in hasil if h["langkah"].startswith("PPPoE")) and \
         sum(1 for h in hasil if h["langkah"].startswith("PPPoE")) == 4
+    binding = next((h for h in hasil if h["langkah"] == "Port LAN & WiFi ke WAN"), None)
+    if binding and not binding["ok"]:
+        binding["pesan"] += " — perangkat pelanggan mungkin belum dapat internet; atur binding WAN di web ONU."
     return {"pppoe": pppoe_ok, "langkah": hasil, "tersimpan": tersimpan}
 
 
