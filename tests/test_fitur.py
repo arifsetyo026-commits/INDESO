@@ -51,6 +51,8 @@ class FakeRes:
             rows = list(self.mt.log)
         elif self.path == "/system/resource":
             rows = [dict(self.mt.resource)]
+        elif self.path == "/queue/simple":
+            rows = list(getattr(self.mt, "queue", []))
         else:
             rows = []
         if "name" in kw:
@@ -3147,3 +3149,15 @@ def test_diagnosa_baca_onu_langsung(siap, monkeypatch):
     assert o.put("/api/pengaturan", json={"nilai": {"POLL_INTERVAL_SECONDS": 10}}).status_code == 400
     assert o.put("/api/pengaturan", json={"nilai": {"POLL_INTERVAL_SECONDS": 45}}).status_code == 200
     assert main.CONFIG["POLL_INTERVAL_SECONDS"] == 45
+
+
+def test_batas_paket_dari_antrean(app):
+    main = app
+    main._mt.queue = [{"name": "<pppoe-budi>", "max-limit": "10000000/10000000"},
+                      {"name": "manual", "max-limit": "1000000/1000000"}]
+    users, err = main.fetch_pppoe_active()
+    assert err is None
+    budi = [u for u in users if u.username == "budi"][0]
+    assert budi.rate_limit_raw == "10M/10M" and budi.rate_limit_mbps == 10.0
+    assert main._ringkas_limit("1500000/512k") == "1.5M/512k"
+    main._mt.queue = []

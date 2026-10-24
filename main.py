@@ -361,6 +361,22 @@ def _parse_rate_limit(raw: Optional[str]) -> tuple[Optional[str], Optional[float
     return raw, max(values)
 
 
+def _ringkas_limit(raw: str) -> str:
+    """API mengembalikan max-limit dalam bit ("10000000/10000000") — jadikan
+    "10M/10M" biar sama dengan tampilan Winbox."""
+    def satu(v: str) -> str:
+        v = v.strip()
+        if not v.isdigit():
+            return v
+        n = int(v)
+        if n >= 1_000_000_000 and n % 1_000_000_000 == 0:
+            return f"{n // 1_000_000_000}G"
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:g}M"
+        return f"{n / 1_000:g}k" if n >= 1_000 else v
+    return "/".join(satu(p) for p in raw.split("/"))
+
+
 def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
     """Ambil daftar PPPoE active dari MikroTik via RouterOS API, sekalian
     bandwidth sesaat (monitor-traffic, satu kali panggil buat semua interface
@@ -395,11 +411,22 @@ def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
             except Exception as e:
                 logger.warning(f"Gagal ambil bandwidth (monitor-traffic): {e}")
 
+        # /ppp/active tidak membawa rate-limit — batas paket yang benar-benar
+        # berlaku ada di antrean dinamis "<pppoe-NAMA>" (max-limit).
+        limit_by_username: dict[str, str] = {}
+        try:
+            for q in api.get_resource("/queue/simple").get():
+                nama = q.get("name") or ""
+                if nama.startswith("<pppoe-") and nama.endswith(">") and q.get("max-limit"):
+                    limit_by_username[nama[len("<pppoe-"):-1]] = _ringkas_limit(q["max-limit"])
+        except Exception as e:
+            logger.warning(f"Gagal ambil antrean (queue simple): {e}")
+
         users = []
         for item in active_list:
             username = item.get("name", "-")
             rx_mbps, tx_mbps = bw_by_username.get(username, (None, None))
-            rate_raw, rate_mbps = _parse_rate_limit(item.get("rate-limit"))
+            rate_raw, rate_mbps = _parse_rate_limit(item.get("rate-limit") or limit_by_username.get(username))
             uptime = item.get("uptime", "-")
             users.append(
                 PPPoEUser(
