@@ -1482,6 +1482,7 @@ async function loadPengaturan(){
   $('setForm').innerHTML=d.pengaturan.map((p,i)=>'<label>'+esc(p.label)+(p.owner?' <span class="chip info">owner</span>':'')+'</label>'+(p.tipe==='pilihan'
    ?'<select id="set'+i+'"'+kunci(p)+'>'+p.pilihan.map(o=>`<option value="${esc(o)}" ${o===p.nilai?'selected':''}>${esc(o)}</option>`).join('')+'</select>'
    :p.tipe==='interface'?`<select id="set${i}" data-iface="1"${kunci(p)}><option value="">Otomatis</option>${p.nilai?`<option value="${esc(p.nilai)}" selected>${esc(p.nilai)}</option>`:''}</select>`
+   :p.tipe==='rahasia'?`<input id="set${i}" type="password" autocomplete="new-password" value="" placeholder="${p.terisi?'•••••••• sudah diisi — kosongkan bila tidak diubah':'belum diisi'}"${kunci(p)}>`
    :p.tipe==='teks'?`<input id="set${i}" value="${esc(p.nilai)}" inputmode="numeric" placeholder="mis. ${esc(p.contoh||'123456789')}"${kunci(p)}>`
    :p.tipe==='teksbebas'?`<textarea id="set${i}" rows="${p.baris||1}" maxlength="${p.maks}" style="width:100%;font:inherit;border:1px solid var(--line);border-radius:10px;padding:8px 10px;resize:vertical"${kunci(p)}>${esc(p.nilai)}</textarea>`
    :`<input id="set${i}" type="number" min="${p.min}" max="${p.max}" value="${esc(p.nilai)}" inputmode="numeric"${kunci(p)}>`)
@@ -1739,7 +1740,7 @@ function htmlAcs(a){
   +kotak('Model',esc((p.pabrikan||'')+' '+(p.model||'')))+kotak('Firmware',esc(p.firmware||'—'))+kotak('ONU menyala',dgDurasi(p.uptime_detik))
   +kotak('Lapor ke ACS',lapor)+kotak('Perangkat terhubung',p.perangkat_aktif+' aktif'+(dg.segarPerangkat?' <span class="plSub" style="font-weight:400">· memperbarui…</span>':p.perangkat_menit_lalu!=null?' <span class="plSub" style="font-weight:400">· data '+(p.perangkat_menit_lalu<1?'baru saja':p.perangkat_menit_lalu<120?p.perangkat_menit_lalu+' menit lalu':Math.round(p.perangkat_menit_lalu/60)+' jam lalu')+'</span>':''))+'</div>';
  if(p.diam) h+=`<div class="kuPanel" style="margin:0 0 10px;border-color:#f3d48a;background:#fffaf0"><b style="font-size:var(--fs-xs);color:#8a5a00">⚠ ONU berhenti lapor ke ACS sejak ${esc(lapor.replace(/ <span.*$/,''))}</b><div class="plSub">Data di bawah (nama WiFi, perangkat) adalah laporan <b>terakhir</b>, bukan keadaan sekarang. Biasanya karena ONU di-reset pabrik (pengaturan TR-069 terhapus), diganti, atau mati. Bila ONU online, kirim ulang pengaturan TR-069 dari OLT.</div><div class="blAksi" style="justify-content:flex-start;margin-top:8px"><button class="btnS go" onclick="oltTr069Pelanggan(this,true)">Kirim TR-069 dari OLT + restart ONU</button><button class="btnS" onclick="oltTr069Pelanggan(this,false)">Kirim saja (tanpa restart)</button></div></div>`;
- h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button><button class="btnS go" onclick="speedOnu(this)">⚡ Tes kecepatan dari ONU</button></div><div id="dgPingOnu"></div><div id="dgSpeed"></div>';
+ h+='<div class="tkAksi" style="margin:0 0 10px"><button class="btnS" onclick="segarkanOnu()">Ambil data terbaru dari ONU</button><button class="btnS" onclick="rebootOnu()">Reboot ONU</button><button class="btnS" onclick="rebootOnuOlt(this)">Restart lewat OLT</button><button class="btnS go" onclick="pingOnu()">Ping dari ONU ke Google</button><button class="btnS go" onclick="speedOnu(this)">⚡ Tes kecepatan dari ONU</button>'+(saya.peran==='owner'&&/zte/i.test(p.pabrikan||'')?'<button class="btnS" onclick="amankanOnu(this)">🔒 Amankan ONU</button>':'')+'</div><div id="dgPingOnu"></div><div id="dgSpeed"></div>';
  const wan=p.wan||[], bisaHapus=w=>!!w.hapus;
  if(wan.length>1||wan.some(bisaHapus)) h+=`<details style="margin-bottom:10px"${wan.some(bisaHapus)?' open':''}><summary class="plSub" style="cursor:pointer;font-weight:800">Koneksi WAN di ONU (${wan.length})${wan.some(bisaHapus)?' · ada WAN sisa yang tidak tersambung':''}</summary>`
   +wan.map(w=>`<div class="blRow akRow"><div><div class="plName" style="font-size:var(--fs-xs)">${esc(w.username||'(tanpa username)')}${w.nama?' <span class="plSub">· '+esc(w.nama)+'</span>':''}</div><div class="plSub">${w.jenis==='ip'?'WAN IP/bridge'+(w.tipe?' ('+esc(w.tipe)+')':'')+' · ':''}${w.tersambung?'IP '+esc(w.ip||'-'):'tidak tersambung'}${w.status?' · '+esc(w.status):''}${w.layanan?' · '+esc(w.layanan):''}${!w.hapus&&w.alasan&&!w.tersambung?'<br><i>Tidak bisa dihapus dari INDESO: '+esc(w.alasan)+'</i>':''}</div></div><div class="blKanan"><div class="blAksi">${w.tersambung?'<span class="chip ok">tersambung</span>':'<span class="chip off">mati</span>'}${bisaHapus(w)?`<button class="btnS" onclick="hapusWan(${jsq(w.path)},${jsq(w.username||'')},this)">Hapus WAN ini</button>`:''}</div></div></div>`).join('')+'</details>';
@@ -1905,6 +1906,15 @@ async function segarkanOnu(diam){
   if(!sibuk) gambarAcs(a);
   if(!diam) dgPesan(a.segarkan&&a.segarkan.status==='antre'?a.segarkan.pesan:'Data ONU diperbarui.',!(a.segarkan&&a.segarkan.status==='antre')); }
  catch(e){ dg.segarPerangkat=false; if(dg.user!==user) return; if(!diam) dgPesan('Gagal: '+e.message); gambarAcs(dg.data.acs); }
+}
+async function amankanOnu(btn){
+ if(!confirm('Amankan ONU '+dg.user+'?\n\n• Password web akun admin diganti dengan password dari Pengaturan\n• Telnet & FTP dimatikan\n• Akses tamu berbagi file (Samba) dimatikan\n\nInternet & WiFi pelanggan tidak terganggu. Akun "user" pelanggan tidak diubah.')) return;
+ btn.disabled=true;
+ try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/amankan',{method:'POST'}));
+  if(r.status==='antre') pantauTugas(r.tugas_id,'Amankan ONU','ONU sudah diamankan: '+r.langkah.join(', ')+'.');
+  else dgPesan('✅ ONU diamankan: '+r.langkah.join(', ')+'.',true); }
+ catch(e){ dgPesan('Gagal: '+e.message); }
+ btn.disabled=false;
 }
 async function rebootOnu(){
  if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;
@@ -3078,7 +3088,7 @@ async function gdBatal(id){
 // Lencana "menipis" di menu Warehouse (dicek berkala, ringan).
 async function gdCekBadge(){ try{ gdBadge((await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'}))).menipis); }catch(e){} }
 setTimeout(gdCekBadge,4000); setInterval(()=>{ if(!$('gudangModal').classList.contains('show')) gdCekBadge(); },300000);
-AKSI_LABEL.gudang_barang='Warehouse: barang'; AKSI_LABEL.gudang_masuk='Warehouse: barang masuk'; AKSI_LABEL.gudang_keluar='Warehouse: pemakaian';
+AKSI_LABEL.onu_amankan='Amankan ONU'; AKSI_LABEL.gudang_barang='Warehouse: barang'; AKSI_LABEL.gudang_masuk='Warehouse: barang masuk'; AKSI_LABEL.gudang_keluar='Warehouse: pemakaian';
 AKSI_LABEL.gudang_opname='Warehouse: hitung fisik'; AKSI_LABEL.gudang_batal='Warehouse: batal catatan';
 AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.komisi_kunci='Kunci komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});

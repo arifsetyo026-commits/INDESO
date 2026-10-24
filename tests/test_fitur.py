@@ -3058,3 +3058,38 @@ def test_gudang(siap):
     assert k.post("/api/gudang/pakai", json={"item": [{"barang_id": onu, "jumlah": 1}]}).status_code == 404
     log = o.get("/api/aktivitas").text
     assert "Pakai ONU F670L 1 unit, Kabel dropcore 75.5 meter untuk budi" in log and "Hitung fisik Kabel dropcore" in log
+
+
+def test_amankan_onu(siap, monkeypatch):
+    """Amankan ONU ZTE (owner): password admin web dari pengaturan rahasia (tidak pernah dikirim ke browser/log),
+    telnet, FTP, dan akses tamu Samba dimatikan; akun 'user' pelanggan tidak diubah."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    igd = acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]
+    igd["User"] = {"1": {"Username": {"_value": "admin"}, "Password": {"_value": ""}},
+                   "2": {"Username": {"_value": "user"}, "Password": {"_value": ""}}}
+    igd["X_ZTE-COM_Telnet"] = {"Enable": {"_value": False}}
+    igd["X_ZTE-COM_FTP"] = {"Enable": {"_value": False}}
+    igd["X_ZTE-COM_Samba"] = {"AnonymousEnable": {"_value": True}}
+    assert k.post("/api/acs/budi/amankan").status_code == 403                     # admin bukan owner
+    assert "Pengaturan" in o.post("/api/acs/budi/amankan").json()["detail"]        # password belum diisi
+    # pengaturan rahasia: hanya owner, divalidasi, tidak pernah dikirim balik, tidak tercatat
+    assert k.put("/api/pengaturan", json={"nilai": {"ONU_SANDI_ADMIN": "Rahasia#2026"}}).status_code == 403
+    assert o.put("/api/pengaturan", json={"nilai": {"ONU_SANDI_ADMIN": "pendek"}}).status_code == 400
+    assert o.put("/api/pengaturan", json={"nilai": {"ONU_SANDI_ADMIN": "Rahasia#2026"}}).status_code == 200
+    st = next(p for p in o.get("/api/pengaturan").json()["pengaturan"] if p["kunci"] == "ONU_SANDI_ADMIN")
+    assert st["nilai"] == "" and st["terisi"] is True and "Rahasia#2026" not in o.get("/api/pengaturan").text
+    assert o.put("/api/pengaturan", json={"nilai": {"ONU_SANDI_ADMIN": ""}}).json()["berubah"] == 0   # kosong = tetap
+    r = o.post("/api/acs/budi/amankan").json()
+    assert r["status"] == "selesai" and "password admin web diganti" in r["langkah"]
+    b = "InternetGatewayDevice."
+    assert acs.tugas[-1]["parameterValues"] == [[b + "User.1.Password", "Rahasia#2026", "xsd:string"],
+                                               [b + "X_ZTE-COM_Telnet.Enable", False, "xsd:boolean"],
+                                               [b + "X_ZTE-COM_FTP.Enable", False, "xsd:boolean"],
+                                               [b + "X_ZTE-COM_Samba.AnonymousEnable", False, "xsd:boolean"]]
+    log = o.get("/api/aktivitas").text
+    assert "Rahasia#2026" not in log and "Password admin web ONU" in log and "akses tamu Samba dimatikan" in log
+    acs.dev["ZTEGC1234567"]["_deviceId"]["_Manufacturer"] = "Huawei"
+    assert o.post("/api/acs/budi/amankan").status_code == 400
