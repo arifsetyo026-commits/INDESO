@@ -799,6 +799,19 @@ async function bukaOnuMati(){
   ${d.onu.some(o=>o.boleh)?`<div class="plBtns"><button class="plSave" onclick="hapusOnuMati(this)"${d.olt_telnet?'':' disabled'}>Hapus terpilih dari OLT</button></div>`:''}<div id="omHasil"></div></div>`;
  box._data=d.onu;
 }
+// Tombol Hapus di samping ONU offline & belum terpetakan (owner): hapus pendaftarannya dari OLT.
+async function hapusOnuManual(pon,onu_id,sn,btn){
+ let info=null; try{ info=(await jsonAtauError(await fetch('/api/olt/onu-mati',{cache:'no-store'}))).onu.find(x=>x.pon===pon&&x.onu_id===onu_id&&x.sn===sn); }catch(e){}
+ if(!info){ alert('ONU ini tidak lagi offline atau datanya berubah. Muat ulang daftar.'); return; }
+ const peringatan=info.pengguna?'\n\n⚠ Pemakai terakhir: '+info.pengguna+'\n'+info.alasan:'';
+ if(!confirm('Hapus pendaftaran ONU '+pon+' · ONU '+onu_id+' ('+sn+') dari OLT?'+peringatan+'\n\nPengaturan ONU ini di OLT (PPPoE, WiFi, TR-069) ikut terhapus. Bila ONU menyala lagi, ia muncul di ONU Baru.')) return;
+ btn.disabled=true; btn.textContent='Menghapus…';
+ try{ const r=await jsonAtauError(await fetch('/api/olt/onu-mati/hapus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({onu:[{pon,onu_id,sn}],paksa:true})}));
+  const h=r.hasil[0];
+  if(h.ok){ btn.textContent='✓ Dihapus'; btn.style.color='#0b7a3b'; if(r.tersimpan===false) alert('ONU dihapus, tapi konfigurasi OLT belum tersimpan permanen.'); }
+  else { alert('Gagal: '+h.pesan); btn.disabled=false; btn.textContent='🗑 Hapus'; }
+ }catch(e){ alert('Gagal: '+e.message); btn.disabled=false; btn.textContent='🗑 Hapus'; }
+}
 async function hapusOnuMati(btn){
  const data=$('onuMatiBox')._data||[], pilih=[...document.querySelectorAll('.omPilih:checked')].map(c=>data[+c.dataset.i]);
  if(!pilih.length){ $('omHasil').innerHTML='<div style="margin-top:8px;color:#b42318;font-size:var(--fs-xs);font-weight:700">✖ Centang ONU yang akan dihapus.</div>'; return; }
@@ -839,7 +852,7 @@ function searchCustomers(){
   if(onuFilter!=='trafik'&&o.pon!==pon){ pon=o.pon; const semua=(d.onu_list||[]).filter(x=>x.pon===pon);
    h+=`<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online · ${jumlahPon(pon)}</span></div>`; }
   const u=o.pppoe_username, n=nama.get(u);
-  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:o.serial_number&&o.online?`onclick="aktivasiOnuTakTerpetakan(${jsq(o.serial_number)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'+(o.serial_number&&o.online?' <span class="plSub">· ketuk untuk aktivasi</span>':'')}</div><div class="plSub">${onuFilter==='trafik'?'PON '+esc(o.pon)+' · ':''}${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div>${baris(o)}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
+  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:o.serial_number&&o.online?`onclick="aktivasiOnuTakTerpetakan(${jsq(o.serial_number)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'+(o.serial_number&&o.online?' <span class="plSub">· ketuk untuk aktivasi</span>':'')}</div><div class="plSub">${onuFilter==='trafik'?'PON '+esc(o.pon)+' · ':''}${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div>${baris(o)}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}${!u&&!o.online&&o.serial_number&&saya.peran==='owner'?`<button class="btnS" style="color:#b42318" onclick="event.stopPropagation();hapusOnuManual(${jsq(o.pon)},${Number(o.onu_id)},${jsq(o.serial_number)},this)">🗑 Hapus</button>`:''}</div></div>`;
  }
  const jam=d.timestamp?String(d.timestamp).slice(11,16):'';
  $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · trafik sesaat dari MikroTik${jam?' pukul '+esc(jam):''}, diperbarui otomatis · ketuk ONU yang terpetakan untuk membuka Diagnosa (rata-rata &amp; puncak 24 jam)</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');

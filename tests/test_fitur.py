@@ -2977,3 +2977,11 @@ def test_bersihkan_onu_mati(siap):
     assert p[p.index("ont delete 1 7") + 1] == "y" and p.index("ont delete 1 10") < p.index("save")
     assert main._history_conn().execute("SELECT 1 FROM onu_baru WHERE sn='ZTEGCAGUS0001'").fetchone() is None
     assert "Hapus ONU mati dari OLT: 0/0/1/7 ZTEGCAGUS0001, 0/0/1/10 ZTEGCLAMA0001" in o.get("/api/aktivitas").text
+    # tombol Hapus manual (paksa): ONU baru offline tanpa pemakai bisa dihapus; ONU online tetap ditolak
+    r = o.post("/api/olt/onu-mati/hapus", json={"paksa": True, "onu": [
+        {"pon": "0/0/1", "onu_id": 11, "sn": "ZTEGCBARU0001"}, {"pon": "0/0/1", "onu_id": 8, "sn": "ZTEGCAGUS0002"}]}).json()
+    h = {x["onu_id"]: x for x in r["hasil"]}
+    assert h[11]["ok"] and not h[8]["ok"] and "ont delete 1 11" in olt.perintah and "ont delete 1 8" not in olt.perintah
+    assert "Hapus ONU mati dari OLT (manual): 0/0/1/11 ZTEGCBARU0001" in o.get("/api/aktivitas").text
+    assert k.post("/api/olt/onu-mati/hapus", json={"paksa": True, "onu": [
+        {"pon": "0/0/1", "onu_id": 9, "sn": "ZTEGCBUDI0001"}]}).status_code == 403
