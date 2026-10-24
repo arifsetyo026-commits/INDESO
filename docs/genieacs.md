@@ -206,6 +206,22 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 - Model lain (mis. F609, FiberHome) belum diuji. Bila PPPoE belum tersambung 2 menit setelah dikirim, tekan
   **Restart ONU** sekali. Bila tetap belum, isi lewat web ONU.
 
+### ONU bekas & pelanggan ganti ONU
+
+INDESO mencatat akun PPPoE terakhir yang terlihat lewat setiap SN. Bila akun itu kini tersambung lewat SN lain dan SN
+lamanya offline, SN lama **dilepas** dari catatan (tercatat di Aktivitas: "ganti ONU"). Bila ONU lama itu kelak menyala
+lagi, misalnya sudah direset dan dipasang di rumah lain, ia muncul di **ONU Baru** sebagai ONU baru dan dikabarkan lewat
+Telegram. SN asing yang offline tidak dicatat sampai benar-benar online.
+
+Pendaftaran ONU mati di OLT dibersihkan lewat **ONU / PON → 🧹 Bersihkan ONU mati** (hanya owner). INDESO menghapusnya
+satu per satu dengan `ont delete P O` lalu `save`; `ont delete P all` dan `ont delete P offline-list` tidak pernah dipakai,
+karena ONU pelanggan yang mati listrik juga offline. Yang boleh dihapus hanya ONU offline yang:
+- pemakai terakhirnya kini online lewat ONU lain (ganti ONU), atau
+- pelanggannya sudah berhenti, atau
+- tanpa pemakai yang diketahui dan sudah offline minimal 3 hari (atau tidak pernah terlihat online).
+
+Bila ONU yang dihapus menyala lagi, OLT mendaftarkannya ulang (authmode auto) dan INDESO menampilkannya di ONU Baru.
+
 ### ONU pelanggan lama yang belum lapor ACS: reset & isi ulang dari OLT
 
 Untuk ONU yang PPPoE-nya diisi di web ONU dengan WAN bertipe INTERNET saja (mis. F670L), sehingga urutan
