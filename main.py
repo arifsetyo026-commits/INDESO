@@ -9393,16 +9393,27 @@ class WifiIn(BaseModel):
     lebar: Optional[str] = None      # lebar kanal: 20MHz / 40MHz / 80MHz (80 hanya 5 GHz)
 
 
-# Lebar kanal WiFi per merek. ZTE F670L punya dua parameter dengan nilai sama ("20MHz"/"40MHz"/"80MHz"):
-# keduanya diisi supaya tidak bertentangan.
-_LEBAR_KANAL = ("X_ZTE-COM_OperatingChannelBandwidth", "BandWidth")
+# Lebar kanal WiFi per merek: parameter -> kode per pilihan (None = nilainya ditulis apa adanya).
+# ZTE F670L punya dua parameter bernilai teks ("20MHz"/"40MHz"/"80MHz"): keduanya diisi supaya tidak bertentangan.
+# FiberHome HG6145D2 memakai kode angka (urutan pilihan di web ONU: Auto, 20, 40, 80; 3 = 80 MHz dicocokkan
+# owner dengan web ONU SERVER).
+_KODE_LEBAR_FH = {"20MHz": "1", "40MHz": "2", "80MHz": "3"}
+_LEBAR_KANAL = (("X_ZTE-COM_OperatingChannelBandwidth", None), ("BandWidth", None), ("X_FH_ChannelWidth", _KODE_LEBAR_FH))
 _PILIHAN_LEBAR = {"2,4 GHz": ("20MHz", "40MHz"), "5 GHz": ("20MHz", "40MHz", "80MHz")}
 
 
-def _lebar_kanal(doc: dict, b: str) -> tuple[list[str], Optional[str]]:
-    """(parameter lebar kanal yang bisa diubah, nilai sekarang) untuk WLANConfiguration `b`."""
-    par = [k for k in _LEBAR_KANAL if _ada(doc, f"{b}.{k}") and _param(doc, f"{b}.{k}").get("_writable") is not False]
-    return par, (_nilai(doc, f"{b}.{par[0]}") if par else None)
+def _lebar_kanal(doc: dict, b: str) -> tuple[list[tuple[str, Optional[dict]]], Optional[str]]:
+    """([(parameter lebar kanal yang bisa diubah, kode)], nilai sekarang dalam bentuk "20MHz"/"Auto") untuk `b`."""
+    par = [(k, kode) for k, kode in _LEBAR_KANAL
+           if _ada(doc, f"{b}.{k}") and _param(doc, f"{b}.{k}").get("_writable") is not False]
+    if not par:
+        return [], None
+    k, kode = par[0]
+    v = _nilai(doc, f"{b}.{k}")
+    if kode:
+        balik = {str(x): t for t, x in kode.items()}
+        v = balik.get(str(v), "Auto" if str(v) == "0" else v)
+    return par, v
 
 
 @app.post("/api/acs/{username}/wifi")
@@ -9438,7 +9449,10 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
             raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan lebar kanal lewat TR-069.")
         if lebar not in _PILIHAN_LEBAR.get(band, ("20MHz", "40MHz")):
             raise HTTPException(status_code=400, detail=f"Lebar kanal {lebar} tidak tersedia untuk WiFi {band}.")
-        nilai += [[f"{b}.{k}", lebar, "xsd:string"] for k in par]
+        for k, kode in par:
+            tipe = _param(doc, f"{b}.{k}").get("_type") or "xsd:string"
+            v = kode[lebar] if kode else lebar
+            nilai.append([f"{b}.{k}", int(v) if kode and tipe in ("xsd:int", "xsd:unsignedInt") else v, tipe])
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else []) \
@@ -9972,8 +9986,8 @@ def acs_ping_ringkasan(request: Request, hari: int = 30):
     return {"hari": hari, "model": sorted(hasil, key=lambda x: -(x["ditolak"] + x["tanpa_balasan"]))}
 
 
-# Pengamanan ONU ZTE lewat ACS: password admin web, telnet, FTP, dan akses tamu Samba (nama parameter dari
-# F670L V9 milik Agus). Akun "user" (login biasa pelanggan) sengaja tidak diubah.
+# Pengamanan ONU lewat ACS. ZTE (F670L V9 milik Agus): password admin web, telnet, FTP, akses tamu Samba.
+# FiberHome (HG6145D2): password super admin web, akses dari internet. Akun "user" pelanggan tidak diubah.
 _AMANKAN_ZTE = (("X_ZTE-COM_Telnet.Enable", "telnet dimatikan"), ("X_ZTE-COM_FTP.Enable", "FTP dimatikan"),
                 ("X_ZTE-COM_Samba.AnonymousEnable", "akses tamu Samba dimatikan"))
 
@@ -9987,24 +10001,40 @@ def acs_amankan(username: str, request: Request):
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
-    if "zte" not in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower():
-        raise HTTPException(status_code=400, detail="Saat ini baru tersedia untuk ONU ZTE.")
+    pabrik = str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
+    if "zte" in pabrik:
+        bagian = ("User", "X_ZTE-COM_Telnet", "X_ZTE-COM_FTP", "X_ZTE-COM_Samba")
+    elif "fiberhome" in pabrik:
+        bagian = ("DeviceInfo.X_FH_Account", "X_FH_FireWall")
+    else:
+        raise HTTPException(status_code=400, detail="Saat ini tersedia untuk ONU ZTE dan FiberHome.")
     # Bagian ini tidak dibaca rutin oleh provision: minta ONU melaporkannya dulu bila belum ada.
-    kurang = [o for o in ("User", "X_ZTE-COM_Telnet", "X_ZTE-COM_FTP", "X_ZTE-COM_Samba") if not _ada(doc, f"{_IGD}.{o}")]
+    kurang = [o for o in bagian if not _ada(doc, f"{_IGD}.{o}")]
     for o in kurang:
         _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.{o}"}, tunggu=20)
     if kurang:
         doc = _cari_perangkat(username) or doc
     nilai, langkah = [], []
-    admin = next((i for i in _anak(doc, f"{_IGD}.User")
-                  if str(_nilai(doc, f"{_IGD}.User.{i}.Username") or "").lower() == "admin"), None)
-    if admin and _ada(doc, f"{_IGD}.User.{admin}.Password"):
-        nilai.append([f"{_IGD}.User.{admin}.Password", sandi, "xsd:string"])
-        langkah.append("password admin web diganti")
-    for par, ket in _AMANKAN_ZTE:
-        if _ada(doc, f"{_IGD}.{par}"):
-            nilai.append([f"{_IGD}.{par}", False, "xsd:boolean"])
-            langkah.append(ket)
+    if "zte" in pabrik:
+        admin = next((i for i in _anak(doc, f"{_IGD}.User")
+                      if str(_nilai(doc, f"{_IGD}.User.{i}.Username") or "").lower() == "admin"), None)
+        if admin and _ada(doc, f"{_IGD}.User.{admin}.Password"):
+            nilai.append([f"{_IGD}.User.{admin}.Password", sandi, "xsd:string"])
+            langkah.append("password admin web diganti")
+        for par, ket in _AMANKAN_ZTE:
+            if _ada(doc, f"{_IGD}.{par}"):
+                nilai.append([f"{_IGD}.{par}", False, "xsd:boolean"])
+                langkah.append(ket)
+    else:
+        # FiberHome HG6145D2 (RP4437): super admin web + akses dari arah internet. Telnet/SSH tidak dibuka lewat
+        # TR-069 di firmware ini. Password akun "user" (WebPassword) sengaja tidak diubah.
+        akun = f"{_IGD}.DeviceInfo.X_FH_Account.X_FH_WebUserInfo"
+        if _ada(doc, f"{akun}.WebSuperPassword"):
+            nilai.append([f"{akun}.WebSuperPassword", sandi, "xsd:string"])
+            langkah.append(f"password super admin web ({_nilai(doc, f'{akun}.WebSuperUsername') or 'admin'}) diganti")
+        if _ada(doc, f"{_IGD}.X_FH_FireWall.REMOTEACCEnable"):
+            nilai.append([f"{_IGD}.X_FH_FireWall.REMOTEACCEnable", False, "xsd:boolean"])
+            langkah.append("akses dari internet dimatikan")
     if not nilai:
         raise HTTPException(status_code=409, detail="ONU tidak melaporkan pengaturan akun/layanan yang bisa diamankan.")
     _bersihkan_tertahan(doc["_id"])
