@@ -1688,7 +1688,7 @@ function htmlAcs(a){
 let _pantau=null;
 function pantauTugas(tid,judul,teksSelesai,ekstra){
  clearInterval(_pantau); const user=dg.user, mulai=Date.now();
- const tampil=(html,warna)=>{ const m=$('dgMsg'); m.style.color=warna; m.innerHTML=html+(ekstra?' '+ekstra:''); };
+ const tampil=(html,warna)=>{ const m=$('dgMsg'); m.style.color=warna; m.innerHTML=html+(ekstra||''); };
  tampil(`⏳ ${esc(judul)}: menunggu ONU menjalankan perintah… (biasanya beberapa detik, paling lama ±5 menit — halaman ini akan memberi kabar)`,'#8a5a00');
  if(!tid) return;
  const cek=async()=>{
@@ -1837,7 +1837,7 @@ async function segarkanOnu(diam){
 async function rebootOnu(){
  if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;
  try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/reboot',{method:'POST'}));
-  if(r.status==='antre') pantauTugas(r.tugas_id,'Reboot ONU','ONU sedang reboot, internet pelanggan menyala lagi dalam ±2 menit.','<span class="plSub">Bila tidak jalan dalam 2 menit, pakai <b>Restart lewat OLT</b>.</span>');
+  if(r.status==='antre') pantauTugas(r.tugas_id,'Reboot ONU','ONU sedang reboot, internet pelanggan menyala lagi dalam ±2 menit.',' <span class="plSub">Bila tidak jalan dalam 2 menit, pakai <b>Restart lewat OLT</b>.</span>');
   else dgPesan('✅ Perintah reboot diterima ONU. Internet pelanggan menyala lagi dalam ±2 menit.',true); }
  catch(e){ dgPesan('Gagal: '+e.message); }
 }
@@ -1865,8 +1865,9 @@ async function simpanWifi(i){
  try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:i,ssid:ssid||null,password:password||null,lebar:lebar||null})}));
   const P=dg.data.pelanggan, w=dg.data.acs.perangkat.wifi.find(x=>x.index===i), wa=nomorWA(P.no_hp);
   const pesan='Yth. '+(P.nama||'')+', WiFi Internet Desa Anda sudah diperbarui.\nNama WiFi: '+(ssid||w.ssid)+(password?'\nPassword: '+password:'')+'\n\nSilakan sambungkan ulang perangkat Anda. Terima kasih.';
-  const tombolWA=wa?`<a class="btnS go" href="https://wa.me/${wa}?text=${encodeURIComponent(pesan)}" target="_blank" rel="noopener">Kirim ke WA pelanggan</a>`:'';
-  if(r.status==='antre') pantauTugas(r.tugas_id,'Ganti WiFi','WiFi di ONU sudah diperbarui. Perangkat pelanggan perlu tersambung ulang.',tombolWA);
+  // Tombol WA di baris sendiri (sejajar teks, tombol menimpa pesan); hanya bila nama/password berubah.
+  const tombolWA=wa&&(ssid||password)?`<div style="margin-top:8px"><a class="btnS go" href="https://wa.me/${wa}?text=${encodeURIComponent(pesan)}" target="_blank" rel="noopener">Kirim ke WA pelanggan</a></div>`:'';
+  if(r.status==='antre') pantauTugas(r.tugas_id,'Ganti WiFi',ssid||password?'WiFi di ONU sudah diperbarui. Perangkat pelanggan perlu tersambung ulang.':'Lebar kanal di ONU sudah diperbarui.',tombolWA);
   else { dgPesan('✅ Sudah diterapkan di ONU. ',true); $('dgMsg').innerHTML+=tombolWA; setTimeout(()=>segarkanOnu(true),1500); }
  }catch(e){ dgPesan('Gagal: '+e.message); }
 }
