@@ -9972,8 +9972,8 @@ def acs_ping_ringkasan(request: Request, hari: int = 30):
     return {"hari": hari, "model": sorted(hasil, key=lambda x: -(x["ditolak"] + x["tanpa_balasan"]))}
 
 
-# Pengamanan ONU ZTE lewat ACS: password admin web, telnet, FTP, dan akses tamu Samba (nama parameter dari
-# F670L V9 milik Agus). Akun "user" (login biasa pelanggan) sengaja tidak diubah.
+# Pengamanan ONU lewat ACS. ZTE (F670L V9 milik Agus): password admin web, telnet, FTP, akses tamu Samba.
+# FiberHome (HG6145D2): password super admin web, akses dari internet. Akun "user" pelanggan tidak diubah.
 _AMANKAN_ZTE = (("X_ZTE-COM_Telnet.Enable", "telnet dimatikan"), ("X_ZTE-COM_FTP.Enable", "FTP dimatikan"),
                 ("X_ZTE-COM_Samba.AnonymousEnable", "akses tamu Samba dimatikan"))
 
@@ -9987,24 +9987,40 @@ def acs_amankan(username: str, request: Request):
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
-    if "zte" not in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower():
-        raise HTTPException(status_code=400, detail="Saat ini baru tersedia untuk ONU ZTE.")
+    pabrik = str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
+    if "zte" in pabrik:
+        bagian = ("User", "X_ZTE-COM_Telnet", "X_ZTE-COM_FTP", "X_ZTE-COM_Samba")
+    elif "fiberhome" in pabrik:
+        bagian = ("DeviceInfo.X_FH_Account", "X_FH_FireWall")
+    else:
+        raise HTTPException(status_code=400, detail="Saat ini tersedia untuk ONU ZTE dan FiberHome.")
     # Bagian ini tidak dibaca rutin oleh provision: minta ONU melaporkannya dulu bila belum ada.
-    kurang = [o for o in ("User", "X_ZTE-COM_Telnet", "X_ZTE-COM_FTP", "X_ZTE-COM_Samba") if not _ada(doc, f"{_IGD}.{o}")]
+    kurang = [o for o in bagian if not _ada(doc, f"{_IGD}.{o}")]
     for o in kurang:
         _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.{o}"}, tunggu=20)
     if kurang:
         doc = _cari_perangkat(username) or doc
     nilai, langkah = [], []
-    admin = next((i for i in _anak(doc, f"{_IGD}.User")
-                  if str(_nilai(doc, f"{_IGD}.User.{i}.Username") or "").lower() == "admin"), None)
-    if admin and _ada(doc, f"{_IGD}.User.{admin}.Password"):
-        nilai.append([f"{_IGD}.User.{admin}.Password", sandi, "xsd:string"])
-        langkah.append("password admin web diganti")
-    for par, ket in _AMANKAN_ZTE:
-        if _ada(doc, f"{_IGD}.{par}"):
-            nilai.append([f"{_IGD}.{par}", False, "xsd:boolean"])
-            langkah.append(ket)
+    if "zte" in pabrik:
+        admin = next((i for i in _anak(doc, f"{_IGD}.User")
+                      if str(_nilai(doc, f"{_IGD}.User.{i}.Username") or "").lower() == "admin"), None)
+        if admin and _ada(doc, f"{_IGD}.User.{admin}.Password"):
+            nilai.append([f"{_IGD}.User.{admin}.Password", sandi, "xsd:string"])
+            langkah.append("password admin web diganti")
+        for par, ket in _AMANKAN_ZTE:
+            if _ada(doc, f"{_IGD}.{par}"):
+                nilai.append([f"{_IGD}.{par}", False, "xsd:boolean"])
+                langkah.append(ket)
+    else:
+        # FiberHome HG6145D2 (RP4437): super admin web + akses dari arah internet. Telnet/SSH tidak dibuka lewat
+        # TR-069 di firmware ini. Password akun "user" (WebPassword) sengaja tidak diubah.
+        akun = f"{_IGD}.DeviceInfo.X_FH_Account.X_FH_WebUserInfo"
+        if _ada(doc, f"{akun}.WebSuperPassword"):
+            nilai.append([f"{akun}.WebSuperPassword", sandi, "xsd:string"])
+            langkah.append(f"password super admin web ({_nilai(doc, f'{akun}.WebSuperUsername') or 'admin'}) diganti")
+        if _ada(doc, f"{_IGD}.X_FH_FireWall.REMOTEACCEnable"):
+            nilai.append([f"{_IGD}.X_FH_FireWall.REMOTEACCEnable", False, "xsd:boolean"])
+            langkah.append("akses dari internet dimatikan")
     if not nilai:
         raise HTTPException(status_code=409, detail="ONU tidak melaporkan pengaturan akun/layanan yang bisa diamankan.")
     _bersihkan_tertahan(doc["_id"])

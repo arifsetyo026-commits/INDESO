@@ -3091,5 +3091,15 @@ def test_amankan_onu(siap, monkeypatch):
                                                [b + "X_ZTE-COM_Samba.AnonymousEnable", False, "xsd:boolean"]]
     log = o.get("/api/aktivitas").text
     assert "Rahasia#2026" not in log and "Password admin web ONU" in log and "akses tamu Samba dimatikan" in log
+    # FiberHome HG6145D2: super admin web + akses dari internet; akun user tidak diubah
+    acs.dev["ZTEGC1234567"]["_deviceId"]["_Manufacturer"] = "FiberHome"
+    igd["DeviceInfo"]["X_FH_Account"] = {"X_FH_WebUserInfo": {"WebSuperUsername": {"_value": "admin"},
+                                                              "WebSuperPassword": {"_value": "lama"}, "WebPassword": {"_value": "x"}}}
+    igd["X_FH_FireWall"] = {"REMOTEACCEnable": {"_value": False}}
+    r = o.post("/api/acs/budi/amankan").json()
+    assert r["langkah"] == ["password super admin web (admin) diganti", "akses dari internet dimatikan"]
+    assert acs.tugas[-1]["parameterValues"] == [
+        [b + "DeviceInfo.X_FH_Account.X_FH_WebUserInfo.WebSuperPassword", "Rahasia#2026", "xsd:string"],
+        [b + "X_FH_FireWall.REMOTEACCEnable", False, "xsd:boolean"]]
     acs.dev["ZTEGC1234567"]["_deviceId"]["_Manufacturer"] = "Huawei"
     assert o.post("/api/acs/budi/amankan").status_code == 400
