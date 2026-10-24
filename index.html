@@ -219,7 +219,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  </div>
  <div class="footer"><div><b>Internet Desa</b> &nbsp; v3.1 &nbsp; | &nbsp; Monitoring &nbsp; • &nbsp; Pelanggan &nbsp; • &nbsp; Jaringan &nbsp; • &nbsp; Masa Depan Desa</div><div class="footerRight">Internet untuk Semua 🌿 <span id="updated"></span></div></div>
 </div></main></div>
-<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div id="customerResults"></div></div></div></div>
+<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div class="blAksi" id="onuMatiAksi" style="justify-content:flex-start;margin:0 0 8px;display:none"><button class="btnS" onclick="bukaOnuMati()">🧹 Bersihkan ONU mati</button></div><div id="onuMatiBox"></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
 <div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
@@ -785,7 +785,33 @@ async function load(force=false){
 var onuFilter='semua';
 // Daftar semua ONU dari data monitoring terakhir, dikelompokkan per PON. Ketuk ONU yang sudah
 // terpetakan ke pelanggan untuk membuka Diagnosa.
+// ===== Bersihkan ONU mati (owner): hapus pendaftaran ONU offline yang tidak dipakai dari OLT =====
+async function bukaOnuMati(){
+ const box=$('onuMatiBox'); if(box.innerHTML){ box.innerHTML=''; return; }
+ box.innerHTML='<div class="muted">Memuat ONU offline…</div>';
+ let d; try{ d=await jsonAtauError(await fetch('/api/olt/onu-mati',{cache:'no-store'})); }
+ catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; }
+ const waktu=t=>t?esc(String(t).replace('T',' ').slice(0,16)):'tidak pernah';
+ box.innerHTML=`<div class="kuPanel" style="margin-bottom:10px">
+  <div class="plSub">Pendaftaran ONU yang offline dan tidak dipakai lagi dihapus dari OLT satu per satu (<code>ont delete</code>, lalu save). ONU pelanggan yang hanya mati listrik <b>tidak bisa</b> dipilih. Bila ONU yang dihapus menyala lagi, OLT mendaftarkannya ulang dan INDESO menampilkannya di <b>ONU Baru</b>.</div>
+  ${d.onu.length?d.onu.map((o,i)=>`<label class="blRow" style="gap:8px;align-items:flex-start;${o.boleh?'':'opacity:.6'}"><input type="checkbox" class="omPilih" data-i="${i}" ${o.boleh?'':'disabled'} style="margin-top:4px"><div style="min-width:0;flex:1"><div class="plName" style="font-size:var(--fs-xs)">${esc(o.pon)} · ONU ${esc(o.onu_id)} · ${esc(o.sn)} <span class="plSub">${esc(o.model||'')}</span></div><div class="plSub">Terakhir online: ${waktu(o.terakhir_online)}${o.pengguna?' · pemakai terakhir: <b>'+esc(o.pengguna)+'</b>':''}<br>${o.boleh?'✓ ':'✖ '}${esc(o.alasan)}</div></div></label>`).join('')
+   :'<div class="muted" style="margin-top:8px">Tidak ada ONU offline di OLT.</div>'}
+  ${d.onu.some(o=>o.boleh)?`<div class="plBtns"><button class="plSave" onclick="hapusOnuMati(this)"${d.olt_telnet?'':' disabled'}>Hapus terpilih dari OLT</button></div>`:''}<div id="omHasil"></div></div>`;
+ box._data=d.onu;
+}
+async function hapusOnuMati(btn){
+ const data=$('onuMatiBox')._data||[], pilih=[...document.querySelectorAll('.omPilih:checked')].map(c=>data[+c.dataset.i]);
+ if(!pilih.length){ $('omHasil').innerHTML='<div style="margin-top:8px;color:#b42318;font-size:var(--fs-xs);font-weight:700">✖ Centang ONU yang akan dihapus.</div>'; return; }
+ if(!confirm('Hapus '+pilih.length+' ONU dari OLT?\n\n'+pilih.map(o=>o.pon+' ONU '+o.onu_id+' · '+o.sn).join('\n')+'\n\nPengaturan ONU itu di OLT (PPPoE, WiFi, TR-069) ikut terhapus.')) return;
+ btn.disabled=true; btn.textContent='Menghapus…';
+ try{ const r=await jsonAtauError(await fetch('/api/olt/onu-mati/hapus',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({onu:pilih.map(o=>({pon:o.pon,onu_id:o.onu_id,sn:o.sn}))})}));
+  $('omHasil').innerHTML='<div style="margin-top:8px;font-size:var(--fs-xs)">'+r.hasil.map(h=>`<div>${h.ok?'<b style="color:#0b7a3b">✓</b>':'<b style="color:#b42318">✗</b>'} ${esc(h.pon)} ONU ${esc(h.onu_id)} · ${esc(h.sn)} — ${esc(h.pesan)}</div>`).join('')
+   +(r.tersimpan===false?'<div style="color:#b45309">⚠ Konfigurasi OLT belum tersimpan permanen.</div>':'')+'<div class="plSub">Daftar PON &amp; ONU ikut bersih setelah data OLT berikutnya terbaca (±1 menit).</div></div>';
+ }catch(e){ $('omHasil').innerHTML='<div style="margin-top:8px;color:#b42318;font-size:var(--fs-xs);font-weight:700">✖ '+esc(e.message)+'</div>'; }
+ btn.textContent='Hapus terpilih dari OLT'; btn.disabled=false;
+}
 function searchCustomers(){
+ $('onuMatiAksi').style.display=saya.peran==='owner'?'':'none';
  document.querySelectorAll('.onuFilter button').forEach(b=>b.classList.toggle('on',b.dataset.v===onuFilter));
  const d=state.last; if(!d){ $('customerResults').innerHTML='<div class="muted">Memuat data OLT… coba lagi beberapa detik.</div>'; return; }
  const q=$('customerSearch').value.trim().toLowerCase();

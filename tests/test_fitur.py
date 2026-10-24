@@ -1580,6 +1580,9 @@ class FakeOLTTelnet:
             elif b.startswith("show ont ipconfig "):
                 out = ("-" * 40 + "\r\n  ONT IP host index        : 0\r\n  ONT config type          : PPPOE\r\n"
                        if b[len("show ont ipconfig "):] in self.wan_olt else "  Error: The ONT does not configure IP information\r\n")
+            elif b.startswith("ont delete"):
+                kirim("\r\nAre you sure to delete the ONT? (y/n):")
+                self.perintah.append(baris())
             elif b.startswith("ont restore-factory"):
                 kirim("\r\nAre you sure to restore the ONT factory configuration? (y/n):")
                 self.perintah.append(baris())
@@ -2929,3 +2932,48 @@ def test_ganti_onu_sn_lama_dilepas(siap):
     # ONU lama direset & dipasang lagi: online → ONU baru
     baru = main.catat_onu_baru([onu("ZTEGCAGUS0001", True, None, 7), onu("ZTEGCAGUS0002", True, "agus", 8)])
     assert [b["sn"] for b in baru] == ["ZTEGCAGUS0001"] and status("ZTEGCAGUS0001") == "baru"
+
+
+def test_bersihkan_onu_mati(siap):
+    """Hapus pendaftaran ONU mati dari OLT: hanya owner; ONU pelanggan yang mungkin hanya mati listrik tidak boleh;
+    satu per satu (`ont delete P O`, tidak pernah all/offline-list), lalu save; catatan ONU Baru ikut dilepas."""
+    main, o, k, m = siap
+    from datetime import datetime, timedelta
+    O = main.ONUStatus
+    onu = lambda sn, i, online, user=None: O(pon="0/0/1", onu_id=i, snmp_index=i, serial_number=sn,
+                                            olt_rx_dbm=-20.0 if online else None, online=online,
+                                            status="OK" if online else "OFFLINE", pppoe_username=user)
+    main.catat_onu_baru([onu("ZTEGCAGUS0001", 7, True, "agus")])
+    main.catat_onu_baru([onu("ZTEGCAGUS0001", 7, True, "agus")])            # pengguna SN lama = agus
+    daftar = [onu("ZTEGCAGUS0002", 8, True, "agus"),                      # agus ganti ONU
+              onu("ZTEGCAGUS0001", 7, False),                             # ONU lama agus: boleh
+              onu("ZTEGCBUDI0001", 9, False),                             # budi mati listrik: tidak boleh
+              onu("ZTEGCLAMA0001", 10, False),                            # tanpa pemakai, 10 hari: boleh
+              onu("ZTEGCBARU0001", 11, False)]                            # tanpa pemakai, baru offline: tidak boleh
+    main._latest_data = main._build_dashboard([], None, daftar)
+    conn = main._history_conn()
+    t = lambda **kw: (datetime.now() - timedelta(**kw)).isoformat(timespec="seconds")
+    conn.executemany("INSERT INTO onu_history (ts, pon, onu_id, pppoe_username, olt_rx_dbm, onu_rx_dbm, status) "
+                     "VALUES (?,?,?,?,?,?,?)", [(t(hours=2), "0/0/1", 9, "budi", -20.0, -18.0, "OK"),
+                                               (t(days=10), "0/0/1", 10, None, -21.0, -18.0, "OK"),
+                                               (t(hours=1), "0/0/1", 11, None, -21.0, -18.0, "OK")])
+    conn.commit(); conn.close()
+    assert k.get("/api/olt/onu-mati").status_code == 403                  # admin bukan owner
+    d = {x["onu_id"]: x for x in o.get("/api/olt/onu-mati").json()["onu"]}
+    assert set(d) == {7, 9, 10, 11}
+    assert d[7]["boleh"] and "ganti ONU" in d[7]["alasan"] and d[10]["boleh"]
+    assert not d[9]["boleh"] and "mati listrik" in d[9]["alasan"] and not d[11]["boleh"]
+    olt = FakeOLTTelnet()
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT")
+    r = o.post("/api/olt/onu-mati/hapus", json={"onu": [
+        {"pon": "0/0/1", "onu_id": 7, "sn": "ZTEGCAGUS0001"}, {"pon": "0/0/1", "onu_id": 9, "sn": "ZTEGCBUDI0001"},
+        {"pon": "0/0/1", "onu_id": 10, "sn": "ZTEGCLAMA0001"}, {"pon": "0/0/1", "onu_id": 8, "sn": "ZTEGCAGUS0002"},
+        {"pon": "0/0/1", "onu_id": 10, "sn": "ZTEGCSALAH01"}]}).json()
+    h = {(x["onu_id"], x["sn"]): x for x in r["hasil"]}
+    assert h[(7, "ZTEGCAGUS0001")]["ok"] and h[(10, "ZTEGCLAMA0001")]["ok"] and r["tersimpan"] is True
+    assert not h[(9, "ZTEGCBUDI0001")]["ok"] and not h[(8, "ZTEGCAGUS0002")]["ok"] and not h[(10, "ZTEGCSALAH01")]["ok"]
+    p = olt.perintah
+    assert [c for c in p if c.startswith("ont delete")] == ["ont delete 1 7", "ont delete 1 10"]
+    assert p[p.index("ont delete 1 7") + 1] == "y" and p.index("ont delete 1 10") < p.index("save")
+    assert main._history_conn().execute("SELECT 1 FROM onu_baru WHERE sn='ZTEGCAGUS0001'").fetchone() is None
+    assert "Hapus ONU mati dari OLT: 0/0/1/7 ZTEGCAGUS0001, 0/0/1/10 ZTEGCLAMA0001" in o.get("/api/aktivitas").text

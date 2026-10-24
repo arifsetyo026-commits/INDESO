@@ -10742,6 +10742,145 @@ def olt_reboot_pelanggan(username: str, request: Request):
     return {"ok": True, "pon": onu.pon, "onu_id": onu.onu_id}
 
 
+# ============================================================
+# BERSIHKAN ONU MATI — hapus pendaftaran ONU offline yang sudah tidak dipakai dari OLT (`ont delete P O`)
+# ============================================================
+
+ONU_MATI_HARI = 3     # ONU tanpa pemakai yang diketahui baru boleh dihapus setelah offline selama ini
+
+
+def _kandidat_onu_mati() -> list[dict]:
+    """ONU offline di OLT beserta alasan boleh/tidak dihapus. Pengaman utama: ONU pelanggan yang hanya
+    mati listrik juga offline. ONU itu baru boleh dihapus bila pemakai terakhirnya kini online lewat ONU lain
+    (ganti ONU), pelanggannya berhenti, atau tanpa pemakai yang diketahui dan sudah offline >= ONU_MATI_HARI."""
+    onus = _latest_data.onu_list if _latest_data else []
+    online_user = {str(o.pppoe_username).lower(): o for o in onus if o.online and o.pppoe_username}
+    conn = _history_conn()
+    try:
+        pengguna_sn = {r[0]: r[1] for r in conn.execute("SELECT sn, pengguna FROM onu_baru WHERE pengguna IS NOT NULL")}
+        hasil = []
+        for o in onus:
+            if o.online or not o.serial_number:
+                continue
+            sn = o.serial_number.upper()
+            r = conn.execute("SELECT MAX(ts) FROM onu_history WHERE pon=? AND onu_id=? AND olt_rx_dbm IS NOT NULL",
+                             (o.pon, o.onu_id)).fetchone()
+            terakhir = r[0] if r else None
+            u = pengguna_sn.get(sn)
+            if not u:
+                r = conn.execute("SELECT pppoe_username FROM onu_history WHERE pon=? AND onu_id=? AND pppoe_username "
+                                 "IS NOT NULL ORDER BY ts DESC LIMIT 1", (o.pon, o.onu_id)).fetchone()
+                u = r[0] if r else None
+            hasil.append({"pon": o.pon, "onu_id": o.onu_id, "sn": sn, "model": o.model, "pengguna": u,
+                          "terakhir_online": terakhir})
+    finally:
+        conn.close()
+    berhenti = set()
+    c2 = _billing_conn()
+    try:
+        berhenti = {str(r[0]).lower() for r in c2.execute("SELECT username FROM pelanggan WHERE status='berhenti'")}
+    finally:
+        c2.close()
+    batas = (datetime.now() - timedelta(days=ONU_MATI_HARI)).isoformat(timespec="seconds")
+    for x in hasil:
+        u = (x["pengguna"] or "").lower()
+        if u and u in online_user:
+            lain = online_user[u]
+            x["boleh"], x["alasan"] = True, f"{x['pengguna']} kini online lewat ONU {lain.pon}/{lain.onu_id} (ganti ONU)"
+        elif u and u in berhenti:
+            x["boleh"], x["alasan"] = True, f"pelanggan {x['pengguna']} sudah berhenti"
+        elif u:
+            x["boleh"], x["alasan"] = False, (f"terakhir dipakai {x['pengguna']} yang belum online lewat ONU lain: "
+                                              "mungkin hanya mati listrik")
+        elif x["terakhir_online"] and x["terakhir_online"] > batas:
+            x["boleh"], x["alasan"] = False, f"baru offline (< {ONU_MATI_HARI} hari)"
+        else:
+            x["boleh"], x["alasan"] = True, (f"tanpa pemakai, offline ≥ {ONU_MATI_HARI} hari" if x["terakhir_online"]
+                                             else "tanpa pemakai, tidak pernah terlihat online")
+    return sorted(hasil, key=lambda x: (not x["boleh"], x["pon"], x["onu_id"]))
+
+
+@app.get("/api/olt/onu-mati")
+def olt_onu_mati(request: Request):
+    _wajib_owner(request, "Membersihkan ONU dari OLT hanya bisa dilakukan owner.")
+    return {"onu": _kandidat_onu_mati(), "hari": ONU_MATI_HARI,
+            "olt_telnet": bool(CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS"))}
+
+
+class HapusOnuItem(BaseModel):
+    pon: str
+    onu_id: int
+    sn: str
+
+
+class HapusOnuIn(BaseModel):
+    onu: list[HapusOnuItem]
+
+
+@app.post("/api/olt/onu-mati/hapus")
+def olt_onu_mati_hapus(d: HapusOnuIn, request: Request):
+    """Hapus pendaftaran ONU mati dari OLT, satu per satu (`ont delete P O`, tidak pernah all/offline-list),
+    lalu save. Setiap ONU dicek ulang terhadap data OLT terbaru: alamat & SN harus cocok dan masih boleh dihapus."""
+    _wajib_owner(request, "Membersihkan ONU dari OLT hanya bisa dilakukan owner.")
+    if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
+        raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
+    if not d.onu or len(d.onu) > 50:
+        raise HTTPException(status_code=400, detail="Pilih 1–50 ONU.")
+    kandidat = {(x["pon"], x["onu_id"], x["sn"]): x for x in _kandidat_onu_mati()}
+    hasil, per_if = [], {}
+    for it in d.onu:
+        x = kandidat.get((it.pon, int(it.onu_id), it.sn.upper()))
+        m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", it.pon)
+        if not x or not m or not 1 <= int(it.onu_id) <= 128:
+            hasil.append({"pon": it.pon, "onu_id": it.onu_id, "sn": it.sn, "ok": False,
+                          "pesan": "Tidak lagi offline / alamat atau SN berubah. Muat ulang daftar."})
+        elif not x["boleh"]:
+            hasil.append({"pon": it.pon, "onu_id": it.onu_id, "sn": it.sn, "ok": False, "pesan": x["alasan"]})
+        else:
+            per_if.setdefault(m.group(1), []).append((int(m.group(2)), int(it.onu_id), x))
+    tersimpan = None
+    if per_if:
+        try:
+            t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
+        except OSError as e:
+            raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
+        try:
+            _olt_masuk(t)
+            for antarmuka, daftar in per_if.items():
+                galat_if = _galat_cli(t.kirim(f"interface gpon {antarmuka}"))
+                for port, onu_id, x in daftar:
+                    galat = galat_if
+                    if not galat:
+                        # Selalu satu ONU (angka tervalidasi), tidak pernah "all" / "offline-list".
+                        out = t.kirim(f"ont delete {port} {onu_id}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+                        if re.search(_POLA_KONFIRMASI, out):
+                            out = t.kirim("y")
+                        galat = _galat_cli(out)
+                    hasil.append({"pon": x["pon"], "onu_id": onu_id, "sn": x["sn"], "ok": galat is None,
+                                  "pesan": galat or "dihapus dari OLT"})
+                if not galat_if:
+                    t.kirim("exit")
+            if any(h["ok"] for h in hasil):
+                tersimpan = _simpan_olt(t)
+            t.kirim("end")
+        except (OSError, TimeoutError, ConnectionError) as e:
+            raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
+        finally:
+            t.tutup()
+    terhapus = [h for h in hasil if h["ok"]]
+    if terhapus:
+        conn = _history_conn()
+        try:
+            # Bila ONU itu menyala lagi, OLT mendaftarkannya ulang dan INDESO mencatatnya sebagai ONU baru.
+            conn.executemany("DELETE FROM onu_baru WHERE sn=?", [(h["sn"],) for h in terhapus])
+            conn.commit()
+        finally:
+            conn.close()
+        catat_aktivitas(_oleh(request), "olt_hapus_onu", "Hapus ONU mati dari OLT: " + ", ".join(
+            f"{h['pon']}/{h['onu_id']} {h['sn']}" for h in terhapus) + ("" if tersimpan is not False else " (belum tersimpan)"))
+    return {"hasil": hasil, "tersimpan": tersimpan}
+
+
 @app.post("/api/olt/tr069/pelanggan/{username}")
 def olt_tr069_pelanggan(username: str, request: Request, reboot: bool = False):
     _wajib_admin(request)
