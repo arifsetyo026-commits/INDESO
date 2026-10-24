@@ -242,9 +242,11 @@ karena mengabaikan WiFi dari OLT. Bila INDESO restart sebelum terkirim, atur lew
 
 Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, SSID tambahan, sandi admin) hilang.
 
-ZTE memberi WAN buatan OLT (nama `omci_ipv4_pppoe_1`) jenis layanan `INTERNET_TR069_VOIP`, dan dengan VOIP ZTE
+ZTE memberi WAN buatan OLT (nama `omci_ipv4_pppoe_1`) jenis layanan bertambah VoIP (F670L `INTERNET_TR069_VOIP`,
+F609 V7 `INTERNET_VoIP_TR069`), dan dengan VoIP ZTE
 menolak ping dari luar (Tes ping dari MikroTik gagal, padahal internet normal). Provision `indeso-default`
-(`deploy/genieacs/provision-indeso.js`) mengubahnya menjadi `INTERNET_TR069` setiap kali ONU ZTE lapor (dicek tiap jam).
+(`deploy/genieacs/provision-indeso.js`) membuang kata VoIP dari jenis layanan itu (hasilnya `INTERNET_TR069`) setiap kali ONU
+ZTE lapor (dicek tiap jam).
 Terbukti di Astri (F670L V9): ping dari MikroTik kembali normal. Setelah file itu berubah, pasang ulang di VPS:
 `curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-indeso.js http://127.0.0.1:7557/provisions/indeso-default`
 Kerjakan saat sepi dan pada ONU yang mudah dikunjungi bila gagal.
