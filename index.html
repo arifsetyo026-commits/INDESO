@@ -172,6 +172,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Peringatan &amp; Log <span id="alertBadge" class="badge">0</span></a>
    <a href="#" onclick="openDiagnosa();return false"><span class="ico">⌁</span>Diagnosa Perangkat</a>
    <a href="#" onclick="openTiket();return false"><span class="ico">⚒</span>Tiket Gangguan <span id="tiketBadge" class="badge" style="display:none">0</span></a>
+   <a href="#" onclick="openGudang();return false"><span class="ico">▤</span>Gudang <span id="gudangBadge" class="badge" style="display:none" title="barang menipis">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan Jaringan</a>
   <a href="#" onclick="openBilling();return false"><span class="ico">₨</span>Penagihan</a>
@@ -239,6 +240,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label class="plCek"><input type="checkbox" id="pbSecret" onchange="$('pbSecretBox').style.display=this.checked?'block':'none';if(this.checked)muatProfilPasang()"> Buat akun PPPoE di MikroTik sekalian</label>
 <div id="pbSecretBox" style="display:none"><label>Password PPPoE</label><input id="pbSandi" autocomplete="new-password">
 <label>Profil PPPoE MikroTik</label><select id="pbProfil"><option value="">— dicocokkan otomatis dari kecepatan paket —</option></select></div>
+<label>Pemakaian barang gudang <span class="plSub">(stok langsung berkurang atas nama pelanggan ini)</span></label><div id="pbBarang"></div><button type="button" class="btnS" style="margin:2px 0 8px" onclick="pbTambahBarang()">+ Tambah barang</button>
 <label>Biaya pasang yang diterima (Rp) <span class="plSub">(dicatat otomatis di Keuangan; 0 = tidak ada)</span></label><input id="pbBiaya" type="number" min="0" step="1000" value="0" inputmode="numeric">
 <label>Metode bayar biaya pasang</label><select id="pbMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
 <div class="plBtns"><button class="plSave" id="pbSimpan" onclick="simpanPasangBaru()">Simpan pelanggan baru</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
@@ -420,6 +422,13 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="plSub" style="margin-top:6px">Untuk ONU yang PPPoE-nya diisi di web ONU dan tidak bisa lapor ke ACS. ONU dimasukkan ke daftar ini, lalu pakai <b>Reset &amp; isi ulang dari OLT</b>: PPPoE, WiFi, dan TR-069 disimpan di OLT, kemudian ONU direset pabrik dan menerima semuanya dari OLT.</div>
 <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><input id="obAmbil" class="btnS" style="flex:1;min-width:0;text-align:left" autocapitalize="off" placeholder="username PPPoE atau SN ONU"><button class="btnS go" onclick="ambilOnuLama(this)">Masukkan ke daftar</button></div></details>
 <div id="obList"><div class="muted">Memuat…</div></div>
+</div></div></div>
+<div class="overlay" id="gudangModal"><div class="modal"><div class="modalHead"><h3>Gudang</h3><button class="close" onclick="closeModal('gudangModal')">Tutup</button></div><div class="modalBody">
+<div class="khSum" id="gdSum"></div>
+<div class="plSub" id="gdLive" style="margin:-2px 0 8px"></div>
+<div class="blFilters gdTabs"><button data-v="stok" class="on" onclick="gdTab('stok')">Stok</button><button data-v="pakai" onclick="gdTab('pakai')">Pakai untuk pelanggan</button><button data-v="riwayat" onclick="gdTab('riwayat')">Riwayat</button><button data-v="baru" onclick="gdTab('baru')">+ Barang baru</button></div>
+<div class="plMsg" id="gdMsg"></div>
+<div id="gdIsi"><div class="muted">Memuat…</div></div>
 </div></div></div>
 <div class="overlay" id="wifiKhModal"><div class="modal"><div class="modalHead"><h3>Kesehatan WiFi</h3><button class="close" onclick="closeModal('wifiKhModal')">Tutup</button></div><div class="modalBody">
 <div class="khSum"><div class="blBox khBtn" onclick="wk.filter='kritis';renderWifiKh()"><small>Kritis</small><b id="wkKritis" style="color:#b42318">—</b></div><div class="blBox khBtn" onclick="wk.filter='perhatian';renderWifiKh()"><small>Perlu perhatian</small><b id="wkPerhatian" style="color:#b45309">—</b></div><div class="blBox khBtn" onclick="wk.filter='sehat';renderWifiKh()"><small>Sehat</small><b id="wkSehat" style="color:#0b7a3b">—</b></div></div>
@@ -1281,6 +1290,18 @@ function bukaPasangBaru(){
  const hari=new Date().toLocaleDateString('sv-SE'); $('pbTgl').value=hari; $('pbTgl').max=hari;
  $('pbPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}">${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
  $('pbMsg').textContent=''; pratinjauPasang(); tampilkanView('baru'); $('pbUser').focus();
+ $('pbBarang').innerHTML=''; gdMuatData(true).then(()=>{ if(!$('pbBarang').children.length) pbTambahBarang(); });
+}
+// Baris pemakaian barang di Pasang baru (pilihan dari Gudang, dengan sisa stok).
+function pbTambahBarang(){
+ const aktif=(gd.data?gd.data.barang:[]).filter(b=>b.aktif);
+ if(!aktif.length){ $('pbBarang').innerHTML='<div class="plSub" style="margin-bottom:6px">Belum ada barang di Gudang.</div>'; return; }
+ const d=document.createElement('div'); d.className='pbBrg'; d.style.cssText='display:flex;gap:6px;margin-bottom:6px';
+ d.innerHTML=`<select class="pbBrgId" style="flex:1;min-width:0"><option value="">— tidak ada —</option>${aktif.map(b=>`<option value="${b.id}">${esc(b.nama)} (sisa ${b.stok} ${esc(b.satuan)})</option>`).join('')}</select><input class="pbBrgJml" type="number" min="0" step="any" inputmode="decimal" placeholder="jumlah" style="width:90px"><button type="button" class="btnS" onclick="this.parentNode.remove()" aria-label="Hapus baris">✕</button>`;
+ $('pbBarang').appendChild(d);
+}
+function pbAmbilBarang(){
+ return [...document.querySelectorAll('#pbBarang .pbBrg')].map(r=>({barang_id:Number(r.querySelector('.pbBrgId').value),jumlah:Number(r.querySelector('.pbBrgJml').value)})).filter(x=>x.barang_id&&x.jumlah>0);
 }
 function pratinjauPasang(){
  const k=pl.paket.find(x=>x.id===Number($('pbPaket').value)), tgl=$('pbTgl').value, dis=Number($('pbDiskon').value||0), el=$('pbPratinjau');
@@ -1303,7 +1324,8 @@ function pilihProfilPasang(){
 async function simpanPasangBaru(){
  const body={username:$('pbUser').value.trim(),nama:$('pbNama').value.trim(),alamat:$('pbAlamat').value.trim()||null,no_hp:$('pbHp').value.trim()||null,
   paket_id:Number($('pbPaket').value||0),tgl_pasang:$('pbTgl').value,diskon:Number($('pbDiskon').value||0),tagih_bulan_ini:$('pbTagih').checked,
-  buat_secret:$('pbSecret').checked,password_pppoe:$('pbSandi').value,profil:$('pbProfil').value||null,biaya_pasang:Number($('pbBiaya').value||0),metode_bayar:$('pbMetode').value};
+  buat_secret:$('pbSecret').checked,password_pppoe:$('pbSandi').value,profil:$('pbProfil').value||null,biaya_pasang:Number($('pbBiaya').value||0),metode_bayar:$('pbMetode').value,
+  barang:pbAmbilBarang()};
  const msg=$('pbMsg'); msg.style.color='#b42318';
  if(!body.username||!body.nama||!body.paket_id||!body.tgl_pasang){ msg.textContent='Isi username, nama, paket, dan tanggal pasang.'; return; }
  if(body.buat_secret&&body.password_pppoe.length<4){ msg.textContent='Isi password PPPoE (minimal 4 karakter).'; return; }
@@ -1316,6 +1338,8 @@ async function simpanPasangBaru(){
   if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
   if(d.transaksi&&d.transaksi.nomor) t.push('biaya pasang tercatat di Keuangan ('+d.transaksi.nomor+')');
   if(d.transaksi&&d.transaksi.galat) t.push('⚠️ biaya pasang belum tercatat: '+d.transaksi.galat);
+  if(d.gudang&&d.gudang.length) t.push('stok gudang dikurangi: '+d.gudang.map(g=>g.nama+' '+g.jumlah+' '+g.satuan).join(', '));
+  if(d.gudang_galat) t.push('⚠️ pemakaian gudang belum tercatat ('+d.gudang_galat+'): catat lewat Gudang → Pakai untuk pelanggan');
   $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
  }catch(e){ msg.textContent='Gagal: '+e.message; }
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
@@ -2920,6 +2944,133 @@ async function batalBayarInsentif(id){
  try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
+// ===== Gudang: stok bersama owner & admin, diperbarui otomatis selama jendela terbuka =====
+const gd={tab:'stok',data:null,versi:null,cari:'',filter:'semua',form:null,perlu:false,timer:null,diperbarui:null};
+async function openGudang(){ $('gudangModal').classList.add('show'); gdPesan(''); gd.form=null; await gdMuatData(); gdTab(gd.tab);
+ clearInterval(gd.timer); gd.timer=setInterval(gdCekVersi,8000); }
+async function gdMuatData(diam){
+ try{ gd.data=await jsonAtauError(await fetch('/api/gudang?riwayat=150',{cache:'no-store'})); gd.versi=gd.data.versi; gd.diperbarui=new Date(); gd.perlu=false; gdBadge(gd.data.barang.filter(b=>b.menipis).length); }
+ catch(e){ if(!diam) $('gdIsi').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function gdBadge(n){ const b=$('gudangBadge'); if(b){ b.textContent=n; b.style.display=n?'':'none'; } }
+// Cek perubahan dari pengguna lain. Selama ada isian yang sedang diketik, tampilan tidak ditimpa: angka baru
+// dimuat begitu isian ditutup/disimpan.
+async function gdCekVersi(){
+ if(!$('gudangModal').classList.contains('show')){ clearInterval(gd.timer); return; }
+ let v; try{ v=await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'})); }catch(e){ return; }
+ gdBadge(v.menipis);
+ if(v.versi===gd.versi){ gdLive(); return; }
+ if(gd.form||(gd.tab==='pakai'||gd.tab==='baru')){ gd.perlu=true; gdLive(); return; }
+ await gdMuatData(true); gdRender();
+}
+function gdLive(){ $('gdLive').innerHTML=`<span style="color:#0b7a3b">●</span> Tersambung langsung — perubahan dari owner/admin lain tampil otomatis${gd.diperbarui?' · diperbarui '+gd.diperbarui.toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):''}${gd.perlu?' · <b style="color:#b45309">ada perubahan baru</b> <a href="#" onclick="gd.form=null;gdMuatData().then(gdRender);return false">muat sekarang</a>':''}`; }
+function gdPesan(t,ok){ const m=$('gdMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+function gdTab(t){ gd.tab=t; gd.form=null; document.querySelectorAll('.gdTabs button').forEach(b=>b.classList.toggle('on',b.dataset.v===t)); gdRender(); }
+function gdAngka(x){ return Number(x).toLocaleString('id-ID',{maximumFractionDigits:2}); }
+function gdRender(){
+ const d=gd.data; if(!d) return; gdLive();
+ const aktif=d.barang.filter(b=>b.aktif), tipis=aktif.filter(b=>b.menipis);
+ $('gdSum').innerHTML=`<div class="blBox"><small>Jenis barang</small><b>${aktif.length}</b></div><div class="blBox khBtn" onclick="gd.filter='menipis';gdTab('stok')"><small>Menipis</small><b style="color:${tipis.length?'#b42318':'#0b7a3b'}">${tipis.length}</b></div><div class="blBox"><small>Dicatat hari ini</small><b>${d.mutasi.filter(m=>m.dicatat_pada.slice(0,10)===new Date().toLocaleDateString('sv-SE')&&m.status==='aktif').length}</b></div>`;
+ const el=$('gdIsi');
+ if(gd.tab==='stok'){
+  const q=gd.cari.toLowerCase(), list=d.barang.filter(b=>(gd.filter==='nonaktif'?!b.aktif:b.aktif)&&(gd.filter!=='menipis'||b.menipis)&&(!q||(b.nama+' '+(b.kategori||'')).toLowerCase().includes(q)));
+  el.innerHTML=`<div class="search"><input id="gdCari" placeholder="Cari barang…" value="${esc(gd.cari)}" oninput="gd.cari=this.value;gdRender();$('gdCari').focus();$('gdCari').setSelectionRange(99,99)"></div>
+   <div class="blFilters">${[['semua','Semua'],['menipis','Menipis'],['nonaktif','Nonaktif']].map(([v,t])=>`<button class="${gd.filter===v?'on':''}" onclick="gd.filter='${v}';gdRender()">${t}</button>`).join('')}</div>`
+   +(list.map(b=>`<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div class="plName">${esc(b.nama)}</div><div class="plSub">${esc(b.kategori||'tanpa kategori')}${b.stok_min?' · minimum '+gdAngka(b.stok_min)+' '+esc(b.satuan):''}${b.terakhir?' · terakhir '+esc(khWaktu(b.terakhir)):''}</div></div>
+     <div style="text-align:right;flex:none"><div class="blAmt" style="color:${b.menipis?'#b42318':b.stok<=0?'#8a5a00':'inherit'}">${gdAngka(b.stok)} <span class="plSub">${esc(b.satuan)}</span></div>${b.menipis?'<span class="chip bad">Menipis</span>':''}</div></div>
+     <div class="blAksi" style="justify-content:flex-start">${b.aktif?`<button class="btnS go" onclick="gdBukaForm(${b.id},'masuk')">+ Masuk</button><button class="btnS" onclick="gdBukaForm(${b.id},'keluar')">− Pakai</button><button class="btnS" onclick="gdBukaForm(${b.id},'opname')">Hitung fisik</button>`:''}<button class="btnS" onclick="gdBukaForm(${b.id},'ubah')">✎ Ubah</button><button class="btnS" onclick="gdRiwayatBarang(${b.id})">Riwayat</button></div>
+     <div id="gdF${b.id}">${gd.form&&gd.form.id===b.id?gdHtmlForm(b,gd.form.jenis):''}</div></div>`).join('')
+    ||`<div class="muted">${d.barang.length?'Tidak ada barang yang cocok.':'Gudang masih kosong. Tambahkan barang lewat <b>+ Barang baru</b>.'}</div>`);
+ } else if(gd.tab==='riwayat'){
+  const m=gd.riwayatId?d.mutasi.filter(x=>x.barang_id===gd.riwayatId):d.mutasi, nama=gd.riwayatId&&(d.barang.find(b=>b.id===gd.riwayatId)||{}).nama;
+  const JN={masuk:['ok','Masuk','+'],keluar:['warn','Pakai','−'],koreksi:['off','Hitung fisik','']};
+  el.innerHTML=(nama?`<div class="plSub" style="margin-bottom:6px">Riwayat <b>${esc(nama)}</b> · <a href="#" onclick="gd.riwayatId=null;gdRender();return false">semua barang</a></div>`:'')
+   +(m.map(x=>{ const j=JN[x.jenis], bisa=x.status==='aktif'&&(d.peran==='owner'||(x.oleh===d.saya&&(Date.now()-new Date(x.dicatat_pada.replace(' ','T')).getTime())<24*3600e3));
+    const jml=x.jenis==='koreksi'?(x.jumlah>0?'+':'')+gdAngka(x.jumlah):j[2]+gdAngka(x.jumlah);
+    return `<div class="blRow"${x.status!=='aktif'?' style="opacity:.55"':''}><div style="min-width:0"><div class="plName" style="font-size:var(--fs-xs)"><span class="chip ${j[0]}">${j[1]}</span> ${esc(x.nama)} <b>${jml} ${esc(x.satuan)}</b></div>
+     <div class="plSub">${esc(tglPendek(x.tanggal))}${x.username?' · untuk <b>'+esc(x.nama_pelanggan||x.username)+'</b>':''}${x.keterangan?' · '+esc(x.keterangan):''} · ${esc(x.oleh)}${x.status!=='aktif'?' · <b>dibatalkan</b> oleh '+esc(x.batal_oleh||'')+': '+esc(x.batal_alasan||''):''}</div></div>
+     ${bisa?`<button class="btnS" style="align-self:flex-start" onclick="gdBatal(${x.id})">Batalkan</button>`:''}</div>`; }).join('')||'<div class="muted">Belum ada catatan.</div>');
+ } else if(gd.tab==='pakai'){
+  const pel=(dg.pelanggan||[]);
+  el.innerHTML=`<div class="plForm"><div class="plSub">Catat barang yang dipakai untuk satu pelanggan (ganti ONU, perbaikan, tarik kabel). Semua baris tersimpan sekaligus, atau tidak sama sekali bila ada stok yang kurang.</div>
+   <label>Pelanggan <span class="plSub">(kosongkan bila bukan untuk pelanggan tertentu)</span></label><input id="gdUser" list="gdUserL" autocapitalize="off" placeholder="username"><datalist id="gdUserL">${pel.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join('')}</datalist>
+   <label>Barang</label><div id="gdBaris"></div><button type="button" class="btnS" onclick="gdTambahBaris()">+ Tambah barang</button>
+   <label>Tanggal</label><input id="gdTgl" type="date" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}">
+   <label>Keterangan</label><input id="gdKet" maxlength="200" placeholder="mis. ganti ONU rusak">
+   <div class="plBtns"><button class="plSave" onclick="gdSimpanPakai(this)">Simpan pemakaian</button></div></div>`;
+  gdTambahBaris();
+  if(!dg.pelanggan) fetch('/api/data-pelanggan').then(r=>r.json()).then(x=>{ dg.pelanggan=(x.pelanggan||[]).filter(p=>p.status!=='berhenti'); const l=$('gdUserL'); if(l) l.innerHTML=dg.pelanggan.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join(''); }).catch(()=>{});
+ } else {
+  el.innerHTML=`<div class="plForm"><label>Nama barang</label><input id="gbNama" maxlength="80" placeholder="mis. ONU ZTE F670L">
+   <label>Satuan</label><input id="gbSatuan" maxlength="20" value="pcs" list="gbSatuanL"><datalist id="gbSatuanL"><option value="pcs"><option value="unit"><option value="meter"><option value="roll"><option value="buah"></datalist>
+   <label>Kategori <span class="plSub">(opsional)</span></label><input id="gbKat" maxlength="40" list="gbKatL" placeholder="mis. ONU, Kabel, Aksesoris"><datalist id="gbKatL">${[...new Set(d.barang.map(b=>b.kategori).filter(Boolean))].map(k=>`<option value="${esc(k)}">`).join('')}</datalist>
+   <label>Stok sekarang</label><input id="gbAwal" type="number" min="0" step="any" inputmode="decimal" value="0">
+   <label>Stok minimum <span class="plSub">(di bawah ini ditandai menipis & dikabarkan lewat Telegram; 0 = tidak dipantau)</span></label><input id="gbMin" type="number" min="0" step="any" inputmode="decimal" value="0">
+   <div class="plBtns"><button class="plSave" onclick="gdSimpanBarang(this)">Simpan barang</button></div></div>`;
+ }
+}
+function gdRiwayatBarang(id){ gd.riwayatId=id; gdTab('riwayat'); }
+function gdBukaForm(id,jenis){ gd.form=(gd.form&&gd.form.id===id&&gd.form.jenis===jenis)?null:{id,jenis}; gdPesan(''); gdRender(); if(gd.form){ const i=document.querySelector('#gdF'+id+' input'); if(i) i.focus(); } }
+function gdHtmlForm(b,jenis){
+ const hari=new Date().toLocaleDateString('sv-SE');
+ if(jenis==='ubah') return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><label>Nama</label><input id="guNama" value="${esc(b.nama)}" maxlength="80"><label>Satuan</label><input id="guSatuan" value="${esc(b.satuan)}" maxlength="20"><label>Kategori</label><input id="guKat" value="${esc(b.kategori||'')}" maxlength="40"><label>Stok minimum</label><input id="guMin" type="number" min="0" step="any" value="${b.stok_min}"><label class="plCek"><input type="checkbox" id="guAktif" ${b.aktif?'checked':''}> Masih dipakai (hilangkan centang untuk menyembunyikan barang ini)</label><div class="plBtns"><button class="plSave" onclick="gdSimpanUbah(${b.id},this)">Simpan</button><button class="plCancel" onclick="gdBukaForm(${b.id},'ubah')">Batal</button></div></div>`;
+ if(jenis==='opname') return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><div class="plSub">Hitung barangnya di gudang, lalu isi jumlah sebenarnya. Selisih dengan catatan (${gdAngka(b.stok)} ${esc(b.satuan)}) dicatat sebagai koreksi.</div><label>Jumlah hasil hitung (${esc(b.satuan)})</label><input id="goFisik" type="number" min="0" step="any" inputmode="decimal" value="${b.stok}"><label>Keterangan</label><input id="goKet" maxlength="150"><div class="plBtns"><button class="plSave" onclick="gdSimpanOpname(${b.id},this)">Simpan hasil hitung</button><button class="plCancel" onclick="gdBukaForm(${b.id},'opname')">Batal</button></div></div>`;
+ const masuk=jenis==='masuk';
+ return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><label>Jumlah ${masuk?'masuk':'dipakai'} (${esc(b.satuan)})${masuk?'':' · sisa '+gdAngka(b.stok)}</label><input id="gmJml" type="number" min="0" step="any" inputmode="decimal">
+  ${masuk?'':`<label>Untuk pelanggan <span class="plSub">(opsional)</span></label><input id="gmUser" list="gdUserL2" autocapitalize="off" placeholder="username"><datalist id="gdUserL2">${(dg.pelanggan||[]).map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join('')}</datalist>`}
+  <label>Tanggal</label><input id="gmTgl" type="date" value="${hari}" max="${hari}"><label>Keterangan</label><input id="gmKet" maxlength="200" placeholder="${masuk?'mis. beli dari toko X':'mis. rusak / dipakai perbaikan'}">
+  <div class="plBtns"><button class="plSave" onclick="gdSimpanMutasi(${b.id},'${jenis}',this)">Simpan</button><button class="plCancel" onclick="gdBukaForm(${b.id},'${jenis}')">Batal</button></div></div>`;
+}
+async function gdKirim(url,body,btn,pesanOk){
+ btn.disabled=true;
+ try{ const r=await jsonAtauError(await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  gd.form=null; await gdMuatData(); if(gd.tab==='pakai'||gd.tab==='baru') gdTab('stok'); else gdRender(); gdPesan(typeof pesanOk==='function'?pesanOk(r):pesanOk,true); return r; }
+ catch(e){ gdPesan('Gagal: '+e.message); btn.disabled=false; }
+}
+function gdSimpanMutasi(id,jenis,btn){
+ const b=gd.data.barang.find(x=>x.id===id), jumlah=Number($('gmJml').value), user=$('gmUser')?$('gmUser').value.trim():'';
+ if(!(jumlah>0)){ gdPesan('Isi jumlah.'); return; }
+ gdKirim('/api/gudang/mutasi',{barang_id:id,jenis,jumlah,tanggal:$('gmTgl').value,username:user||null,keterangan:$('gmKet').value.trim()||null},btn,
+  r=>`✅ ${b.nama} ${jenis==='masuk'?'+':'−'}${gdAngka(jumlah)} ${b.satuan}. Stok sekarang ${gdAngka(r.stok)} ${b.satuan}.`);
+}
+function gdSimpanOpname(id,btn){
+ const b=gd.data.barang.find(x=>x.id===id), fisik=Number($('goFisik').value);
+ if(!(fisik>=0)){ gdPesan('Isi jumlah hasil hitung.'); return; }
+ gdKirim('/api/gudang/opname',{barang_id:id,stok_fisik:fisik,keterangan:$('goKet').value.trim()||null},btn,
+  r=>r.selisih?`✅ ${b.nama} disesuaikan menjadi ${gdAngka(r.stok)} ${b.satuan} (selisih ${r.selisih>0?'+':''}${gdAngka(r.selisih)}).`:`✅ Hitungan ${b.nama} sudah cocok dengan catatan.`);
+}
+async function gdSimpanUbah(id,btn){
+ btn.disabled=true;
+ try{ await jsonAtauError(await fetch('/api/gudang/barang/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nama:$('guNama').value.trim(),satuan:$('guSatuan').value.trim(),kategori:$('guKat').value.trim()||null,stok_min:Number($('guMin').value||0),aktif:$('guAktif').checked})}));
+  gd.form=null; await gdMuatData(); gdRender(); gdPesan('✅ Barang diperbarui.',true); }
+ catch(e){ gdPesan('Gagal: '+e.message); btn.disabled=false; }
+}
+function gdSimpanBarang(btn){
+ const nama=$('gbNama').value.trim(); if(nama.length<2){ gdPesan('Isi nama barang.'); return; }
+ gdKirim('/api/gudang/barang',{nama,satuan:$('gbSatuan').value.trim()||'pcs',kategori:$('gbKat').value.trim()||null,stok_awal:Number($('gbAwal').value||0),stok_min:Number($('gbMin').value||0)},btn,'✅ Barang '+nama+' ditambahkan.');
+}
+function gdTambahBaris(){
+ const aktif=gd.data.barang.filter(b=>b.aktif), d=document.createElement('div'); d.className='gdBrs'; d.style.cssText='display:flex;gap:6px;margin-bottom:6px';
+ d.innerHTML=`<select class="gdBrsId" style="flex:1;min-width:0"><option value="">— pilih barang —</option>${aktif.map(b=>`<option value="${b.id}">${esc(b.nama)} (sisa ${gdAngka(b.stok)} ${esc(b.satuan)})</option>`).join('')}</select><input class="gdBrsJml" type="number" min="0" step="any" inputmode="decimal" placeholder="jumlah" style="width:90px"><button type="button" class="btnS" onclick="this.parentNode.remove()" aria-label="Hapus baris">✕</button>`;
+ $('gdBaris').appendChild(d);
+}
+function gdSimpanPakai(btn){
+ const item=[...document.querySelectorAll('#gdBaris .gdBrs')].map(r=>({barang_id:Number(r.querySelector('.gdBrsId').value),jumlah:Number(r.querySelector('.gdBrsJml').value)})).filter(x=>x.barang_id&&x.jumlah>0);
+ if(!item.length){ gdPesan('Pilih barang dan isi jumlahnya.'); return; }
+ const user=$('gdUser').value.trim();
+ gdKirim('/api/gudang/pakai',{username:user||null,item,tanggal:$('gdTgl').value,keterangan:$('gdKet').value.trim()||null},btn,
+  r=>'✅ Tercatat'+(user?' untuk '+user:'')+': '+r.hasil.map(h=>h.nama+' −'+gdAngka(h.jumlah)+' '+h.satuan+' (sisa '+gdAngka(h.stok)+')').join(', '));
+}
+async function gdBatal(id){
+ const alasan=prompt('Alasan membatalkan catatan ini?'); if(!alasan) return;
+ try{ await jsonAtauError(await fetch('/api/gudang/mutasi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await gdMuatData(); gdRender(); gdPesan('✅ Catatan dibatalkan, stok disesuaikan.',true); }
+ catch(e){ gdPesan('Gagal: '+e.message); }
+}
+// Lencana "menipis" di menu Gudang (dicek berkala, ringan).
+async function gdCekBadge(){ try{ gdBadge((await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'}))).menipis); }catch(e){} }
+setTimeout(gdCekBadge,4000); setInterval(()=>{ if(!$('gudangModal').classList.contains('show')) gdCekBadge(); },300000);
+AKSI_LABEL.gudang_barang='Gudang: barang'; AKSI_LABEL.gudang_masuk='Gudang: barang masuk'; AKSI_LABEL.gudang_keluar='Gudang: pemakaian';
+AKSI_LABEL.gudang_opname='Gudang: hitung fisik'; AKSI_LABEL.gudang_batal='Gudang: batal catatan';
 AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.komisi_kunci='Kunci komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
 pulihkanModal();
@@ -2939,7 +3090,7 @@ function bukaMenuHp(){ const sb=document.querySelector('.sidebar'), buka=!sb.cla
 function tutupMenuHp(){ const sb=document.querySelector('.sidebar'); sb.classList.remove('buka'); document.querySelector('.menuBtn').setAttribute('aria-expanded','false'); }
 document.querySelectorAll('#navUtama a').forEach(a=>a.addEventListener('click',tutupMenuHp));
 // Jumlah peringatan + tiket ikut tampil di tombol Menu
-setInterval(()=>{ let n=0; for(const id of ['alertBadge','tiketBadge','onuBaruBadge']){ const b=document.getElementById(id); if(b&&b.style.display!=='none') n+=parseInt(b.textContent)||0; }
+setInterval(()=>{ let n=0; for(const id of ['alertBadge','tiketBadge','onuBaruBadge','gudangBadge']){ const b=document.getElementById(id); if(b&&b.style.display!=='none') n+=parseInt(b.textContent)||0; }
  for(const id of ['menuBadge','menuBadge2']){ const m=document.getElementById(id); if(m){ m.textContent=n?String(n):''; m.style.display=n?'':'none'; } } },1500);
 </script>
 <script>
