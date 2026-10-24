@@ -2692,7 +2692,11 @@ def test_aktivasi_onu_baru_dari_olt(siap):
     mt.active = {"dwi": [{"id": "*x", "caller-id": "AA:BB:CC:DD:EE:FF"}]}          # dipakai ONU lain
     assert "dipakai perangkat lain" in k.post(url, json={"username": "dwi"}).json()["detail"]
     mt.active = {}
-    assert k.post(url, json={"username": "dwi", "ssid": "Rumah Dwi", "wifi_password": "wifi12345"}).status_code == 400
+    # nama berspasi: tidak lewat CLI OLT, ditunda untuk dikirim lewat ACS
+    r = k.post(url, json={"username": "dwi", "ssid": "Rumah Dwi", "wifi_password": "wifi12345"}).json()
+    assert "lewat ACS" in r["wifi_acs"] and not any(c.startswith("ont wifi") for c in olt.perintah)
+    main._wifi_tertunda.clear()
+    olt.perintah.clear()
     r = k.post(url, json={"username": "dwi", "ssid": "RUMAH-DWI", "wifi_password": "wifi12345"})
     d = r.json()
     assert r.status_code == 200 and d["pppoe"] and d["tersimpan"] is not False
@@ -2853,3 +2857,47 @@ def test_lebar_kanal_wifi(siap, monkeypatch):
     assert acs.tugas[-1]["parameterValues"] == [[b + "X_ZTE-COM_OperatingChannelBandwidth", "40MHz", "xsd:string"],
                                                [b + "BandWidth", "40MHz", "xsd:string"]]
     assert "lebar kanal → 40MHz" in o.get("/api/aktivitas").text
+
+
+def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):
+    """Nama WiFi berspasi tidak bisa lewat CLI OLT: tidak dikirim ke OLT, ditunda, lalu dikirim lewat ACS begitu
+    ONU lapor SETELAH perintah. Password tidak pernah dicatat."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.secret["dwi"]["password"] = "Rahasia26"
+    O = main.ONUStatus
+    onu = O(pon="0/0/1", onu_id=2, snmp_index=2, serial_number="ZTEGD5D276C6", model="F670LV9.0",
+            olt_rx_dbm=-20.4, online=True, status="OK", pppoe_username="dwi")
+    main.catat_onu_baru([onu])
+    main._latest_data = main._build_dashboard([], None, [onu])
+    k.post("/api/onu-baru/ambil", json={"cari": "dwi"})
+    olt = FakeOLTTelnet()
+    main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
+                       ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26")
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    dev = acs.dev["ZTEGC1234567"]
+    dev["_deviceId"]["_SerialNumber"], dev["_lastInform"] = "ZTEGD5D276C6", "2020-01-01T00:00:00.000Z"
+    url = "/api/onu-baru/ZTEGD5D276C6/aktivasi-olt"
+    dasar = {"username": "dwi", "ssid": "Rumah Dimas", "wifi_password": "sandi rahasia!", "akhiran_5g": " 5G",
+             "reset": True, "konfirmasi": "dwi"}
+    assert "centang juga" in k.post(url, json=dict(dasar, tr069=False)).json()["detail"]
+    d = k.post(url, json=dasar).json()
+    assert d["pppoe"] and d["reset"]["ok"] and "lewat ACS" in d["wifi_acs"]
+    assert not any(c.startswith("ont wifi") for c in olt.perintah) and "ont restore-factory 1 2" in olt.perintah
+    assert "ZTEGD5D276C6" in main._wifi_tertunda
+    n = len(acs.tugas)
+    main.terapkan_wifi_tertunda()                       # laporan ACS masih yang lama (sebelum reset): belum dikirim
+    assert len(acs.tugas) == n and "ZTEGD5D276C6" in main._wifi_tertunda
+    dev["_lastInform"] = "2099-01-01T00:00:00.000Z"     # ONU lapor setelah reset
+    main.terapkan_wifi_tertunda()
+    nilai = {p.rsplit(".", 1)[-1] if "PreSharedKey" not in p else "psk": v for p, v, _ in acs.tugas[-1]["parameterValues"]
+             if p.endswith("SSID") and "WLANConfiguration.1." in p or "WLANConfiguration.1.PreSharedKey" in p}
+    assert nilai == {"SSID": "Rumah Dimas", "psk": "sandi rahasia!"}
+    assert any(p.endswith("WLANConfiguration.5.SSID") and v == "Rumah Dimas 5G" for p, v, _ in acs.tugas[-1]["parameterValues"])
+    assert "ZTEGD5D276C6" not in main._wifi_tertunda
+    x = k.get("/api/onu-baru").json()["onu"][0]
+    assert x["wifi"]
+    log = o.get("/api/aktivitas").text
+    assert "WiFi lewat ACS" in log and "sandi rahasia" not in log and "Rahasia26" not in log

@@ -1224,6 +1224,10 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat deteksi ONU baru: {e}")
         try:
+            await asyncio.to_thread(terapkan_wifi_tertunda)
+        except Exception as e:
+            logger.error(f"Error saat mengirim WiFi tertunda: {e}")
+        try:
             await asyncio.to_thread(proses_tagihan_harian)
         except Exception as e:
             logger.error(f"Error saat proses tagihan harian: {e}")
@@ -11182,8 +11186,26 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
     sandi = sandi or secret[0].get("password")
     if not sandi:
         raise HTTPException(status_code=400, detail="Password PPPoE tidak terbaca dari MikroTik; isi password-nya di formulir.")
-    ssid = (d.ssid or "").strip() or None
-    hasil = olt_aktivasi_onu(o.pon, o.onu_id, user, sandi, ssid, d.wifi_password, (d.akhiran_5g or "").strip(), d.tr069)
+    ssid, akhir = (d.ssid or "").strip() or None, (d.akhiran_5g or "").rstrip()   # spasi depan akhiran dipertahankan: "Rumah" + " 5G"
+    # WiFi lewat OLT hanya bila CLI OLT bisa membawanya (tanpa spasi/tanda khusus). Selain itu, atau ONU Huawei
+    # (mengabaikan WiFi dari OLT), WiFi dikirim lewat ACS begitu ONU lapor setelah perintah ini.
+    lewat_acs = False
+    if ssid:
+        _cek_wifi_acs(ssid, d.wifi_password or "", akhir)
+        bisa_olt = bool(_POLA_SSID_OLT.match(ssid) and _POLA_SSID_OLT.match(ssid + akhir)
+                        and _POLA_SANDI_OLT.match(d.wifi_password or ""))
+        lewat_acs = not bisa_olt or sn.upper().startswith("HWTC")
+        if lewat_acs and not d.tr069:
+            raise HTTPException(status_code=400, detail="Nama/password WiFi ini (spasi atau tanda khusus) dikirim lewat ACS: "
+                                                        "centang juga pengaturan TR-069.")
+    sejak = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+    hasil = olt_aktivasi_onu(o.pon, o.onu_id, user, sandi, ssid if ssid and not (lewat_acs and not bisa_olt) else None,
+                             d.wifi_password, akhir, d.tr069)
+    if lewat_acs and hasil["pppoe"]:
+        _wifi_tertunda[sn.upper()] = {"ssid": ssid, "pw": d.wifi_password, "akhir": akhir, "sejak": sejak,
+                                      "mulai": time.monotonic(), "oleh": _oleh(request)}
+        hasil["wifi_acs"] = (f"WiFi {ssid} dikirim lewat ACS otomatis begitu ONU lapor (±3–5 menit; maks. "
+                             f"{WIFI_TERTUNDA_MENIT} menit).")
     if d.reset:
         # Hanya bila PPPoE diterima dan konfigurasi OLT tersimpan: setelah reset, ONU hanya punya apa yang disimpan OLT.
         if not hasil["pppoe"] or hasil["tersimpan"] is not True:
@@ -11201,7 +11223,7 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
     kolom = {"untuk": user}
     if any(h["ok"] and h["langkah"].startswith("TR-069") for h in hasil["langkah"]):
         kolom["tr069"] = sekarang
-    if any(h["ok"] and h["langkah"].startswith("WiFi") for h in hasil["langkah"]):
+    if any(h["ok"] and h["langkah"].startswith("WiFi") for h in hasil["langkah"]) and not hasil.get("wifi_acs"):
         kolom["wifi"], kolom["wifi_ssid"] = sekarang, ssid
     _ubah_onu_baru(sn, **kolom)
     ringkas = ", ".join(f"{h['langkah']} {'ok' if h['ok'] else 'GAGAL'}" for h in hasil["langkah"])
@@ -11280,20 +11302,16 @@ class WifiBaruIn(BaseModel):
     akhiran_5g: str = "-5G"     # nama WiFi 5 GHz = nama + akhiran (kosong = sama persis)
 
 
-@app.post("/api/onu-baru/{sn}/wifi")
-def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
-    """Atur nama & password semua WiFi yang aktif di ONU sekaligus (2,4 GHz dan 5 GHz)."""
-    _wajib_admin(request)
-    _baris_onu_baru(sn)
-    ssid, pw, akhir = (d.ssid or "").strip(), d.password or "", (d.akhiran_5g or "").strip()
+def _cek_wifi_acs(ssid: str, pw: str, akhir: str) -> None:
+    """Batas WiFi lewat ACS (lebih longgar dari OLT: spasi & simbol boleh)."""
     if not (1 <= len(ssid) <= 32 and ssid.isprintable()) or len(ssid + akhir) > 32 or not akhir.isprintable():
         raise HTTPException(status_code=400, detail="Nama WiFi 1–32 karakter (termasuk akhiran 5 GHz).")
     if not (8 <= len(pw) <= 63 and all(32 <= ord(c) < 127 for c in pw)):
         raise HTTPException(status_code=400, detail="Password WiFi 8–63 karakter, huruf/angka/simbol biasa (tanpa emoji).")
-    o = _onu_live(sn)
-    doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
-    if not doc:
-        raise HTTPException(status_code=409, detail="ONU belum lapor ke server ACS. Kirim TR-069 dari OLT dulu.")
+
+
+def _nilai_wifi_utama(doc: dict, ssid: str, pw: str, akhir: str) -> tuple[list, list]:
+    """Parameter setParameterValues untuk WiFi utama tiap band (nama, nyalakan bila mati, password)."""
     wlan = _ringkas_perangkat(doc)["wifi"]
     target = _wifi_utama(wlan)
     if not target:
@@ -11310,8 +11328,59 @@ def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
         if kunci:
             nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
         diatur.append(f"{nama} ({w['band']}{'' if kunci else ', password tidak bisa diatur lewat TR-069'})")
+    return nilai, diatur
+
+
+# WiFi yang menunggu ONU lapor ke ACS (nama berspasi/bertanda khusus tidak bisa lewat CLI OLT, atau ONU Huawei
+# yang mengabaikan WiFi dari OLT). Hanya di memori: password tidak pernah ditulis ke disk. Hilang bila INDESO
+# restart; ceklis "WiFi diatur" lalu tetap ✗ dan WiFi bisa diatur lewat tombol Atur WiFi.
+_wifi_tertunda: dict = {}
+WIFI_TERTUNDA_MENIT = 60
+
+
+def terapkan_wifi_tertunda() -> None:
+    """Dipanggil loop pemantau: kirim WiFi tertunda begitu ONU lapor ke ACS setelah perintah dari OLT."""
+    if not _wifi_tertunda or not _acs_aktif():
+        return
+    for sn, t in list(_wifi_tertunda.items()):
+        if time.monotonic() - t["mulai"] > WIFI_TERTUNDA_MENIT * 60:
+            _wifi_tertunda.pop(sn, None)
+            catat_aktivitas(t["oleh"], "onu_wifi", f"ONU {sn}: WiFi {t['ssid']} tidak terkirim — ONU belum lapor ke ACS "
+                                                   f"dalam {WIFI_TERTUNDA_MENIT} menit. Atur lewat tombol Atur WiFi.")
+            continue
+        try:
+            o = _onu_live(sn)
+            doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
+            # Hanya laporan SETELAH perintah dikirim (ONU yang direset melapor ulang dengan WiFi bawaan pabrik).
+            if not doc or str(doc.get("_lastInform") or "") < t["sejak"]:
+                continue
+            nilai, diatur = _nilai_wifi_utama(doc, t["ssid"], t["pw"], t["akhir"])
+            _bersihkan_tertahan(doc["_id"])
+            hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=15)
+        except HTTPException as e:
+            logger.warning(f"WiFi tertunda {sn} belum terkirim: {e.detail}")
+            continue
+        _wifi_tertunda.pop(sn, None)
+        _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=t["ssid"])
+        catat_aktivitas(t["oleh"], "onu_wifi", f"ONU baru {sn} ({doc['_id']}) WiFi lewat ACS: {', '.join(diatur)}"
+                        + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
+
+
+@app.post("/api/onu-baru/{sn}/wifi")
+def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
+    """Atur nama & password semua WiFi yang aktif di ONU sekaligus (2,4 GHz dan 5 GHz)."""
+    _wajib_admin(request)
+    _baris_onu_baru(sn)
+    ssid, pw, akhir = (d.ssid or "").strip(), d.password or "", (d.akhiran_5g or "").rstrip()
+    _cek_wifi_acs(ssid, pw, akhir)
+    o = _onu_live(sn)
+    doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
+    if not doc:
+        raise HTTPException(status_code=409, detail="ONU belum lapor ke server ACS. Kirim TR-069 dari OLT dulu.")
+    nilai, diatur = _nilai_wifi_utama(doc, ssid, pw, akhir)
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    _wifi_tertunda.pop(sn.upper(), None)
     _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=ssid)
     catat_aktivitas(_oleh(request), "onu_wifi", f"ONU baru {sn.upper()} ({doc['_id']}) WiFi: {', '.join(diatur)}"
                     + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
