@@ -2995,3 +2995,66 @@ def test_bersihkan_onu_mati(siap):
     assert "Hapus ONU mati dari OLT (manual): 0/0/1/11 ZTEGCBARU0001" in o.get("/api/aktivitas").text
     assert k.post("/api/olt/onu-mati/hapus", json={"paksa": True, "onu": [
         {"pon": "0/0/1", "onu_id": 9, "sn": "ZTEGCBUDI0001"}]}).status_code == 403
+
+
+def test_gudang(siap):
+    """Gudang: stok dari riwayat mutasi; owner & admin berbagi data; stok tidak bisa minus; pakai beberapa barang
+    sekaligus (semua atau tidak sama sekali); pasang baru mengurangi stok; opname; batal; mitra tidak boleh."""
+    main, o, k, m = siap
+    from datetime import datetime
+    hari = datetime.now().strftime("%Y-%m-%d")
+    assert m.get("/api/gudang").status_code == 403
+    v0 = k.get("/api/gudang/versi").json()["versi"]
+    onu = k.post("/api/gudang/barang", json={"nama": "ONU F670L", "satuan": "unit", "kategori": "ONU", "stok_min": 2,
+                                             "stok_awal": 3}).json()["id"]
+    kabel = o.post("/api/gudang/barang", json={"nama": "Kabel dropcore", "satuan": "meter", "stok_awal": 500}).json()["id"]
+    assert k.post("/api/gudang/barang", json={"nama": "onu f670l"}).status_code == 409        # nama tidak boleh ganda
+    assert k.get("/api/gudang/versi").json()["versi"] != v0                                  # layar lain tahu ada perubahan
+    stok = lambda: {b["nama"]: b["stok"] for b in o.get("/api/gudang").json()["barang"]}
+    assert stok() == {"ONU F670L": 3, "Kabel dropcore": 500}
+    # pakai beberapa barang sekaligus; stok kurang = tidak ada yang tercatat
+    r = k.post("/api/gudang/pakai", json={"item": [{"barang_id": onu, "jumlah": 1}, {"barang_id": kabel, "jumlah": 600}]})
+    assert r.status_code == 409 and "Kabel dropcore" in r.json()["detail"] and stok()["ONU F670L"] == 3
+    assert k.post("/api/gudang/pakai", json={"username": "hantu", "item": [{"barang_id": onu, "jumlah": 1}]}).status_code == 404
+    r = k.post("/api/gudang/pakai", json={"username": "budi", "keterangan": "ganti ONU rusak",
+                                         "item": [{"barang_id": onu, "jumlah": 1}, {"barang_id": kabel, "jumlah": 75.5}]})
+    assert r.status_code == 200 and stok() == {"ONU F670L": 2, "Kabel dropcore": 424.5}
+    assert k.post("/api/gudang/mutasi", json={"barang_id": onu, "jenis": "keluar", "jumlah": 5}).status_code == 409
+    assert k.post("/api/gudang/mutasi", json={"barang_id": onu, "jenis": "masuk", "jumlah": 0}).status_code == 400
+    assert k.post("/api/gudang/mutasi", json={"barang_id": onu, "jenis": "masuk", "jumlah": 4, "tanggal": "2999-01-01"}).status_code == 400
+    assert o.post("/api/gudang/mutasi", json={"barang_id": onu, "jenis": "masuk", "jumlah": 4,
+                                              "keterangan": "beli 4"}).json()["stok"] == 6
+    # pasang baru langsung mengurangi stok atas nama pelanggan baru
+    r = k.post("/api/pasang-baru", json={"username": "gita", "nama": "Gita", "paket_id": 1, "tgl_pasang": hari,
+                                         "barang": [{"barang_id": onu, "jumlah": 1}, {"barang_id": kabel, "jumlah": 120}]})
+    assert r.status_code == 200 and [g["nama"] for g in r.json()["gudang"]] == ["ONU F670L", "Kabel dropcore"]
+    assert stok() == {"ONU F670L": 5, "Kabel dropcore": 304.5}
+    riw = o.get("/api/gudang?username=gita").json()["mutasi"]
+    assert {(x["nama"], x["jumlah"], x["keterangan"]) for x in riw} == {("ONU F670L", 1, "Pasang baru"), ("Kabel dropcore", 120, "Pasang baru")}
+    # stok kurang saat pasang baru: ditolak sebelum apa pun tersimpan
+    r = k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": hari,
+                                         "barang": [{"barang_id": onu, "jumlah": 50}]})
+    assert r.status_code == 409 and not any(p["username"] == "hadi" for p in o.get("/api/data-pelanggan").json()["pelanggan"])
+    assert k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": hari,
+                                            "barang": [{"jumlah": 1}]}).status_code == 400
+    # hitung fisik: selisih dicatat sebagai koreksi
+    assert o.post("/api/gudang/opname", json={"barang_id": kabel, "stok_fisik": 300, "keterangan": "gulungan"}).json()["selisih"] == -4.5
+    assert stok()["Kabel dropcore"] == 300
+    # batal: admin hanya catatannya sendiri; owner boleh; batal yang membuat stok minus ditolak
+    mut = o.get("/api/gudang").json()["mutasi"]
+    beli = next(x for x in mut if x["keterangan"] == "beli 4")                     # dicatat owner
+    assert k.post(f"/api/gudang/mutasi/{beli['id']}/batal", json={"alasan": "salah"}).status_code == 403
+    assert o.post(f"/api/gudang/mutasi/{beli['id']}/batal", json={"alasan": "x"}).status_code == 400
+    assert o.post(f"/api/gudang/mutasi/{beli['id']}/batal", json={"alasan": "salah input"}).status_code == 200
+    assert stok()["ONU F670L"] == 1
+    awal = next(x for x in mut if x["nama"] == "ONU F670L" and x["keterangan"] == "Stok awal")
+    assert "terpakai" in o.post(f"/api/gudang/mutasi/{awal['id']}/batal", json={"alasan": "uji"}).json()["detail"]
+    pakai_budi = next(x for x in mut if x["username"] == "budi" and x["nama"] == "ONU F670L")
+    assert k.post(f"/api/gudang/mutasi/{pakai_budi['id']}/batal", json={"alasan": "tidak jadi"}).status_code == 200
+    assert stok()["ONU F670L"] == 2
+    # ubah & nonaktifkan barang; barang nonaktif tidak bisa dipakai
+    assert k.put(f"/api/gudang/barang/{onu}", json={"nama": "ONU ZTE F670L", "satuan": "unit", "stok_min": 1,
+                                                    "aktif": False}).status_code == 200
+    assert k.post("/api/gudang/pakai", json={"item": [{"barang_id": onu, "jumlah": 1}]}).status_code == 404
+    log = o.get("/api/aktivitas").text
+    assert "Pakai ONU F670L 1 unit, Kabel dropcore 75.5 meter untuk budi" in log and "Hitung fisik Kabel dropcore" in log

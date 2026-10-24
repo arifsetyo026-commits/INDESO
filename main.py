@@ -3280,6 +3280,7 @@ class PasangBaruIn(BaseModel):
     biaya_pasang: int = 0              # uang pemasangan yang diterima (0 = tidak ada / belum dibayar)
     metode_bayar: str = "tunai"
     tagih_bulan_ini: bool = True       # langsung buat tagihan prorata bulan pasang
+    barang: list[dict] = []            # pemakaian gudang: [{"barang_id": 1, "jumlah": 1}, ...]
 
 
 @app.post("/api/pasang-baru")
@@ -3308,6 +3309,14 @@ def pasang_baru(d: PasangBaruIn, request: Request):
             raise HTTPException(status_code=400, detail="Paket tidak ditemukan.")
         if conn.execute("SELECT 1 FROM pelanggan WHERE username = ?", (username,)).fetchone():
             raise HTTPException(status_code=409, detail=f"Username {username} sudah terdaftar di INDESO.")
+        if d.barang:
+            # Cek stok dulu, sebelum apa pun dibuat (MikroTik/data pelanggan): stok kurang = tidak ada yang tersimpan.
+            _siapkan_gudang(conn)
+            conn.execute("BEGIN")
+            try:
+                _gudang_keluar(conn, d.barang, None, "cek", tgl, None)
+            finally:
+                conn.rollback()
     finally:
         conn.close()
 
@@ -3341,10 +3350,12 @@ def pasang_baru(d: PasangBaruIn, request: Request):
             except Exception:
                 pass
 
-    # 2. Data pelanggan + tagihan bulan pertama
+    # 2. Data pelanggan + tagihan bulan pertama + pemakaian gudang (satu transaksi)
     periode = tgl[:7]
+    pakai, pakai_galat = [], None
     conn = _billing_conn()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("INSERT INTO pelanggan (username, nama, alamat, no_hp, paket_id, tgl_pasang, diskon) VALUES (?,?,?,?,?,?,?)",
                      (username, nama, (d.alamat or "").strip() or None, (d.no_hp or "").strip() or None,
                       d.paket_id, tgl, diskon))
@@ -3352,6 +3363,16 @@ def pasang_baru(d: PasangBaruIn, request: Request):
         if d.tagih_bulan_ini and _buat_tagihan_satu(conn, username, periode):
             tagihan = dict(conn.execute("SELECT id, periode, jumlah, jatuh_tempo, catatan FROM tagihan "
                                         "WHERE username = ? AND periode = ?", (username, periode)).fetchone())
+        if d.barang:
+            conn.execute("SAVEPOINT gudang")
+            try:
+                pakai = _gudang_keluar(conn, d.barang, username, _oleh(request), tgl, "Pasang baru")
+                conn.execute("RELEASE gudang")
+            except HTTPException as e:
+                # Stok habis dipakai orang lain di sela pengecekan: pelanggan tetap tersimpan, pemakaian dicatat manual.
+                conn.execute("ROLLBACK TO gudang")
+                conn.execute("RELEASE gudang")
+                pakai_galat = e.detail
         conn.commit()
     finally:
         conn.close()
@@ -3378,8 +3399,382 @@ def pasang_baru(d: PasangBaruIn, request: Request):
                     + (f", diskon {_rp(diskon)}/bln" if diskon else "")
                     + (f", akun PPPoE dibuat (profil {profil})" if profil else "")
                     + (f", tagihan {periode} {_rp(tagihan['jumlah'])}" if tagihan else "")
-                    + (f", biaya pasang {_rp(d.biaya_pasang)}" if d.biaya_pasang else ""))
-    return {"ok": True, "username": username, "profil": profil, "tagihan": tagihan, "transaksi": transaksi}
+                    + (f", biaya pasang {_rp(d.biaya_pasang)}" if d.biaya_pasang else "")
+                    + (", pakai " + ", ".join(f"{h['nama']} {_angka_stok(h['jumlah'])} {h['satuan']}" for h in pakai) if pakai else "")
+                    + (f" (pemakaian warehouse GAGAL: {pakai_galat})" if pakai_galat else ""))
+    if pakai:
+        _kabar_stok_menipis(pakai)
+    return {"ok": True, "username": username, "profil": profil, "tagihan": tagihan, "transaksi": transaksi,
+            "gudang": pakai, "gudang_galat": pakai_galat}
+
+
+# ============================================================
+# WAREHOUSE (gudang) — stok barang bersama owner & admin; pemakaian saat pasang baru langsung mengurangi stok
+# ============================================================
+# Stok tidak disimpan sebagai angka yang bisa ditimpa: dihitung dari riwayat mutasi yang tidak bisa diubah
+# (hanya dibatalkan dengan alasan), jadi setiap perubahan stok jelas siapa, kapan, dan untuk apa.
+
+def _siapkan_gudang(conn) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS gudang_barang (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, nama TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        satuan TEXT NOT NULL DEFAULT 'pcs', kategori TEXT, stok_min REAL NOT NULL DEFAULT 0,
+        aktif INTEGER NOT NULL DEFAULT 1, catatan TEXT, dibuat_oleh TEXT, diubah_pada TEXT NOT NULL)""")
+    # jenis: masuk (+), keluar (−, dipakai/rusak), koreksi (± hasil hitung fisik / opname)
+    conn.execute("""CREATE TABLE IF NOT EXISTS gudang_mutasi (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, barang_id INTEGER NOT NULL REFERENCES gudang_barang(id),
+        tanggal TEXT NOT NULL, jenis TEXT NOT NULL CHECK (jenis IN ('masuk','keluar','koreksi')),
+        jumlah REAL NOT NULL, username TEXT, keterangan TEXT, oleh TEXT NOT NULL, dicatat_pada TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'aktif', batal_alasan TEXT, batal_oleh TEXT, batal_pada TEXT)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gudang_mutasi_barang ON gudang_mutasi(barang_id, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gudang_mutasi_user ON gudang_mutasi(username)")
+
+
+_SQL_STOK = ("COALESCE((SELECT SUM(CASE m.jenis WHEN 'keluar' THEN -m.jumlah ELSE m.jumlah END) FROM gudang_mutasi m "
+             "WHERE m.barang_id = b.id AND m.status = 'aktif'), 0)")
+
+
+def _stok_barang(conn, barang_id: int) -> float:
+    r = conn.execute(f"SELECT {_SQL_STOK} FROM gudang_barang b WHERE b.id = ?", (barang_id,)).fetchone()
+    return float(r[0]) if r else 0.0
+
+
+def _angka_stok(x: float) -> str:
+    return f"{x:g}"
+
+
+def _cek_jumlah_gudang(x) -> float:
+    try:
+        v = round(float(x), 2)
+    except (TypeError, ValueError):
+        v = 0
+    if not 0 < v <= 1_000_000:
+        raise HTTPException(status_code=400, detail="Jumlah harus lebih dari 0.")
+    return v
+
+
+def _cek_tanggal_gudang(t: Optional[str]) -> str:
+    hari = datetime.now().strftime("%Y-%m-%d")
+    t = (t or "").strip() or hari
+    try:
+        datetime.strptime(t, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Tanggal tidak valid.")
+    if t > hari:
+        raise HTTPException(status_code=400, detail="Tanggal tidak boleh di masa depan.")
+    return t
+
+
+def _gudang_keluar(conn, item: list, username: Optional[str], oleh: str, tanggal: str, keterangan: str) -> list[dict]:
+    """Catat pemakaian beberapa barang sekaligus (dipanggil di dalam transaksi BEGIN IMMEDIATE, supaya dua orang
+    yang mengurangi stok bersamaan tidak membuat stok minus). Semua atau tidak sama sekali."""
+    jumlah: dict[int, float] = {}
+    for it in item:
+        try:
+            bid = int(it["barang_id"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Data barang tidak valid.")
+        jumlah[bid] = jumlah.get(bid, 0) + _cek_jumlah_gudang(it.get("jumlah"))
+    hasil, sekarang = [], datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for bid, j in jumlah.items():
+        b = conn.execute("SELECT * FROM gudang_barang WHERE id = ?", (bid,)).fetchone()
+        if not b or not b["aktif"]:
+            raise HTTPException(status_code=404, detail="Barang tidak ditemukan atau sudah tidak dipakai.")
+        stok = _stok_barang(conn, bid)
+        if j > stok + 1e-9:
+            raise HTTPException(status_code=409, detail=f"Stok {b['nama']} tidak cukup: tersisa {_angka_stok(stok)} "
+                                                        f"{b['satuan']}, diminta {_angka_stok(j)}.")
+        hasil.append({"barang_id": bid, "nama": b["nama"], "satuan": b["satuan"], "jumlah": j,
+                      "stok_sebelum": stok, "stok": round(stok - j, 2), "stok_min": b["stok_min"]})
+    for h in hasil:
+        conn.execute("INSERT INTO gudang_mutasi (barang_id, tanggal, jenis, jumlah, username, keterangan, oleh, dicatat_pada) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (h["barang_id"], tanggal, "keluar", h["jumlah"], username, keterangan,
+                                                  oleh, sekarang))
+    return hasil
+
+
+def _kabar_stok_menipis(hasil: list[dict]) -> None:
+    """Kabari Telegram sekali saat stok melewati batas minimum (bukan setiap kali dipakai)."""
+    turun = [h for h in hasil if h["stok_min"] and h["stok"] <= h["stok_min"] < h["stok_sebelum"]]
+    if turun:
+        send_telegram_message("📦 <b>Stok warehouse menipis</b>\n\n" + "\n".join(
+            f"• {_esc(h['nama'])}: sisa {_angka_stok(h['stok'])} {_esc(h['satuan'])} (minimum {_angka_stok(h['stok_min'])})"
+            for h in turun) + "\n\nCatat barang masuk lewat dashboard → Warehouse.")
+
+
+def _versi_gudang(conn) -> str:
+    r = conn.execute("SELECT (SELECT COALESCE(MAX(id),0) FROM gudang_mutasi), "
+                     "(SELECT COUNT(*) FROM gudang_mutasi WHERE status <> 'aktif'), "
+                     "(SELECT COALESCE(MAX(diubah_pada),'') FROM gudang_barang), (SELECT COUNT(*) FROM gudang_barang)").fetchone()
+    return ":".join(str(x) for x in r)
+
+
+@app.get("/api/gudang/versi")
+def gudang_versi(request: Request):
+    """Penanda perubahan untuk tampilan real time: layar Warehouse yang terbuka mengecek ini tiap beberapa detik."""
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        menipis = conn.execute(f"SELECT COUNT(*) FROM gudang_barang b WHERE b.aktif = 1 AND b.stok_min > 0 "
+                               f"AND {_SQL_STOK} <= b.stok_min").fetchone()[0]
+        return {"versi": _versi_gudang(conn), "menipis": menipis}
+    finally:
+        conn.close()
+
+
+@app.get("/api/gudang")
+def gudang_daftar(request: Request, riwayat: int = 60, barang_id: Optional[int] = None, username: Optional[str] = None):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        barang = [dict(r) for r in conn.execute(
+            f"SELECT b.*, {_SQL_STOK} AS stok, (SELECT MAX(m.dicatat_pada) FROM gudang_mutasi m WHERE m.barang_id = b.id) "
+            "AS terakhir FROM gudang_barang b ORDER BY b.aktif DESC, b.kategori IS NULL, b.kategori COLLATE NOCASE, "
+            "b.nama COLLATE NOCASE")]
+        for b in barang:
+            b["stok"] = round(b["stok"], 2)
+            b["menipis"] = bool(b["aktif"] and b["stok_min"] and b["stok"] <= b["stok_min"])
+        syarat, nilai = ["1=1"], []
+        if barang_id:
+            syarat.append("m.barang_id = ?"); nilai.append(barang_id)
+        if username:
+            syarat.append("m.username = ? COLLATE NOCASE"); nilai.append(username)
+        mutasi = [dict(r) for r in conn.execute(
+            "SELECT m.*, b.nama, b.satuan, p.nama AS nama_pelanggan FROM gudang_mutasi m "
+            "JOIN gudang_barang b ON b.id = m.barang_id LEFT JOIN pelanggan p ON p.username = m.username "
+            f"WHERE {' AND '.join(syarat)} ORDER BY m.id DESC LIMIT ?", (*nilai, max(1, min(riwayat, 500))))]
+        return {"barang": barang, "mutasi": mutasi, "versi": _versi_gudang(conn), "saya": _oleh(request),
+                "peran": request.state.peran}
+    finally:
+        conn.close()
+
+
+class BarangIn(BaseModel):
+    nama: str
+    satuan: str = "pcs"
+    kategori: Optional[str] = None
+    stok_min: float = 0
+    catatan: Optional[str] = None
+    aktif: bool = True
+    stok_awal: float = 0          # hanya saat menambah barang baru
+
+
+def _cek_barang(d: BarangIn) -> tuple:
+    nama, satuan = d.nama.strip()[:80], (d.satuan or "").strip()[:20] or "pcs"
+    if len(nama) < 2:
+        raise HTTPException(status_code=400, detail="Nama barang minimal 2 huruf.")
+    if not 0 <= d.stok_min <= 1_000_000:
+        raise HTTPException(status_code=400, detail="Stok minimum tidak valid.")
+    return nama, satuan, (d.kategori or "").strip()[:40] or None, round(d.stok_min, 2), (d.catatan or "").strip()[:300] or None
+
+
+@app.post("/api/gudang/barang")
+def gudang_tambah_barang(d: BarangIn, request: Request):
+    _wajib_admin(request)
+    nama, satuan, kategori, stok_min, catatan = _cek_barang(d)
+    if not 0 <= d.stok_awal <= 1_000_000:
+        raise HTTPException(status_code=400, detail="Stok awal tidak valid.")
+    sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM gudang_barang WHERE nama = ? COLLATE NOCASE", (nama,)).fetchone():
+            raise HTTPException(status_code=409, detail=f"Barang {nama} sudah ada.")
+        bid = conn.execute("INSERT INTO gudang_barang (nama, satuan, kategori, stok_min, catatan, dibuat_oleh, diubah_pada) "
+                           "VALUES (?,?,?,?,?,?,?)", (nama, satuan, kategori, stok_min, catatan, _oleh(request), sekarang)).lastrowid
+        if d.stok_awal:
+            conn.execute("INSERT INTO gudang_mutasi (barang_id, tanggal, jenis, jumlah, keterangan, oleh, dicatat_pada) "
+                         "VALUES (?,?,?,?,?,?,?)", (bid, sekarang[:10], "masuk", round(d.stok_awal, 2), "Stok awal",
+                                                    _oleh(request), sekarang))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "gudang_barang", f"Barang baru {nama} ({satuan})"
+                    + (f", stok awal {_angka_stok(d.stok_awal)}" if d.stok_awal else ""))
+    return {"ok": True, "id": bid}
+
+
+@app.put("/api/gudang/barang/{bid}")
+def gudang_ubah_barang(bid: int, d: BarangIn, request: Request):
+    _wajib_admin(request)
+    nama, satuan, kategori, stok_min, catatan = _cek_barang(d)
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        lama = conn.execute("SELECT * FROM gudang_barang WHERE id = ?", (bid,)).fetchone()
+        if not lama:
+            raise HTTPException(status_code=404, detail="Barang tidak ditemukan.")
+        if conn.execute("SELECT 1 FROM gudang_barang WHERE nama = ? COLLATE NOCASE AND id <> ?", (nama, bid)).fetchone():
+            raise HTTPException(status_code=409, detail=f"Barang {nama} sudah ada.")
+        conn.execute("UPDATE gudang_barang SET nama=?, satuan=?, kategori=?, stok_min=?, catatan=?, aktif=?, diubah_pada=? "
+                     "WHERE id=?", (nama, satuan, kategori, stok_min, catatan, int(d.aktif),
+                                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"), bid))
+        conn.commit()
+    finally:
+        conn.close()
+    ubah = [f"{k} {a} → {b}" for k, a, b in (("nama", lama["nama"], nama), ("satuan", lama["satuan"], satuan),
+                                             ("kategori", lama["kategori"], kategori), ("stok minimum", lama["stok_min"], stok_min),
+                                             ("aktif", bool(lama["aktif"]), d.aktif)) if a != b]
+    catat_aktivitas(_oleh(request), "gudang_barang", f"Ubah barang {lama['nama']}: " + (", ".join(ubah) or "catatan"))
+    return {"ok": True}
+
+
+class MutasiIn(BaseModel):
+    barang_id: int
+    jenis: str                       # masuk / keluar
+    jumlah: float
+    tanggal: Optional[str] = None
+    username: Optional[str] = None   # pemakaian untuk pelanggan
+    keterangan: Optional[str] = None
+
+
+@app.post("/api/gudang/mutasi")
+def gudang_mutasi(d: MutasiIn, request: Request):
+    _wajib_admin(request)
+    if d.jenis not in ("masuk", "keluar"):
+        raise HTTPException(status_code=400, detail="Jenis harus masuk atau keluar.")
+    jumlah, tanggal = _cek_jumlah_gudang(d.jumlah), _cek_tanggal_gudang(d.tanggal)
+    ket, user = (d.keterangan or "").strip()[:200] or None, (d.username or "").strip() or None
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        if user and not conn.execute("SELECT 1 FROM pelanggan WHERE username = ? COLLATE NOCASE", (user,)).fetchone():
+            raise HTTPException(status_code=404, detail=f"Pelanggan {user} tidak ditemukan.")
+        conn.execute("BEGIN IMMEDIATE")
+        if d.jenis == "keluar":
+            hasil = _gudang_keluar(conn, [{"barang_id": d.barang_id, "jumlah": jumlah}], user, _oleh(request), tanggal, ket)[0]
+        else:
+            b = conn.execute("SELECT * FROM gudang_barang WHERE id = ?", (d.barang_id,)).fetchone()
+            if not b:
+                raise HTTPException(status_code=404, detail="Barang tidak ditemukan.")
+            stok = _stok_barang(conn, d.barang_id)
+            conn.execute("INSERT INTO gudang_mutasi (barang_id, tanggal, jenis, jumlah, username, keterangan, oleh, dicatat_pada) "
+                         "VALUES (?,?,?,?,?,?,?,?)", (d.barang_id, tanggal, "masuk", jumlah, user, ket, _oleh(request),
+                                                      datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            hasil = {"barang_id": d.barang_id, "nama": b["nama"], "satuan": b["satuan"], "jumlah": jumlah,
+                     "stok_sebelum": stok, "stok": round(stok + jumlah, 2), "stok_min": b["stok_min"]}
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "gudang_" + d.jenis,
+                    f"{'Masuk' if d.jenis == 'masuk' else 'Pakai'} {hasil['nama']} {_angka_stok(jumlah)} {hasil['satuan']}"
+                    + (f" untuk {user}" if user else "") + (f" · {ket}" if ket else "")
+                    + f" (stok {_angka_stok(hasil['stok'])})")
+    if d.jenis == "keluar":
+        _kabar_stok_menipis([hasil])
+    return {"ok": True, "stok": hasil["stok"]}
+
+
+class PakaiItem(BaseModel):
+    barang_id: int
+    jumlah: float
+
+
+class PakaiIn(BaseModel):
+    username: Optional[str] = None
+    item: list[PakaiItem]
+    tanggal: Optional[str] = None
+    keterangan: Optional[str] = None
+
+
+@app.post("/api/gudang/pakai")
+def gudang_pakai(d: PakaiIn, request: Request):
+    """Pemakaian beberapa barang sekaligus (mis. untuk satu pelanggan): semua tercatat atau tidak sama sekali."""
+    _wajib_admin(request)
+    if not d.item or len(d.item) > 30:
+        raise HTTPException(status_code=400, detail="Pilih 1–30 barang.")
+    tanggal, ket, user = _cek_tanggal_gudang(d.tanggal), (d.keterangan or "").strip()[:200] or None, (d.username or "").strip() or None
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        if user and not conn.execute("SELECT 1 FROM pelanggan WHERE username = ? COLLATE NOCASE", (user,)).fetchone():
+            raise HTTPException(status_code=404, detail=f"Pelanggan {user} tidak ditemukan.")
+        conn.execute("BEGIN IMMEDIATE")
+        hasil = _gudang_keluar(conn, [i.model_dump() for i in d.item], user, _oleh(request), tanggal, ket)
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "gudang_keluar", "Pakai " + ", ".join(
+        f"{h['nama']} {_angka_stok(h['jumlah'])} {h['satuan']}" for h in hasil) + (f" untuk {user}" if user else "")
+        + (f" · {ket}" if ket else ""))
+    _kabar_stok_menipis(hasil)
+    return {"ok": True, "hasil": hasil}
+
+
+class OpnameIn(BaseModel):
+    barang_id: int
+    stok_fisik: float
+    keterangan: Optional[str] = None
+
+
+@app.post("/api/gudang/opname")
+def gudang_opname(d: OpnameIn, request: Request):
+    """Hitung fisik: stok di sistem disamakan dengan hasil hitung, selisihnya dicatat sebagai koreksi."""
+    _wajib_admin(request)
+    if not 0 <= d.stok_fisik <= 1_000_000:
+        raise HTTPException(status_code=400, detail="Stok fisik tidak valid.")
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        b = conn.execute("SELECT * FROM gudang_barang WHERE id = ?", (d.barang_id,)).fetchone()
+        if not b:
+            raise HTTPException(status_code=404, detail="Barang tidak ditemukan.")
+        stok = _stok_barang(conn, d.barang_id)
+        selisih = round(d.stok_fisik - stok, 2)
+        if selisih:
+            sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("INSERT INTO gudang_mutasi (barang_id, tanggal, jenis, jumlah, keterangan, oleh, dicatat_pada) "
+                         "VALUES (?,?,?,?,?,?,?)", (d.barang_id, sekarang[:10], "koreksi", selisih,
+                                                    ("Hitung fisik" + (f": {d.keterangan.strip()[:150]}" if d.keterangan and d.keterangan.strip() else "")),
+                                                    _oleh(request), sekarang))
+        conn.commit()
+    finally:
+        conn.close()
+    if selisih:
+        catat_aktivitas(_oleh(request), "gudang_opname", f"Hitung fisik {b['nama']}: sistem {_angka_stok(stok)} → fisik "
+                        f"{_angka_stok(d.stok_fisik)} {b['satuan']} (selisih {selisih:+g})")
+    return {"ok": True, "selisih": selisih, "stok": round(d.stok_fisik, 2)}
+
+
+class GudangBatalIn(BaseModel):
+    alasan: str
+
+
+@app.post("/api/gudang/mutasi/{mid}/batal")
+def gudang_batal_mutasi(mid: int, d: GudangBatalIn, request: Request):
+    """Batalkan catatan yang salah. Owner: kapan saja; admin: catatannya sendiri dalam 24 jam."""
+    _wajib_admin(request)
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan pembatalan.")
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        m = conn.execute("SELECT m.*, b.nama, b.satuan FROM gudang_mutasi m JOIN gudang_barang b ON b.id = m.barang_id "
+                         "WHERE m.id = ?", (mid,)).fetchone()
+        if not m or m["status"] != "aktif":
+            raise HTTPException(status_code=404, detail="Catatan tidak ditemukan atau sudah dibatalkan.")
+        if request.state.peran != "owner":
+            umur = datetime.now() - datetime.strptime(m["dicatat_pada"], "%Y-%m-%d %H:%M:%S")
+            if m["oleh"] != _oleh(request) or umur > timedelta(hours=24):
+                raise HTTPException(status_code=403, detail="Admin hanya bisa membatalkan catatannya sendiri dalam 24 jam.")
+        efek = -m["jumlah"] if m["jenis"] == "masuk" else (m["jumlah"] if m["jenis"] == "keluar" else -m["jumlah"])
+        stok = _stok_barang(conn, m["barang_id"])
+        if stok + efek < -1e-9:
+            raise HTTPException(status_code=409, detail=f"Tidak bisa dibatalkan: stok {m['nama']} akan menjadi "
+                                                        f"{_angka_stok(stok + efek)} (barangnya sudah terpakai).")
+        conn.execute("UPDATE gudang_mutasi SET status='batal', batal_alasan=?, batal_oleh=?, batal_pada=? WHERE id=?",
+                     (alasan[:200], _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), mid))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "gudang_batal", f"Batal catatan warehouse #{mid} ({m['jenis']} {m['nama']} "
+                    f"{_angka_stok(abs(m['jumlah']))} {m['satuan']}): {alasan[:150]}")
+    return {"ok": True}
 
 
 @app.put("/api/data-pelanggan/{username}")
