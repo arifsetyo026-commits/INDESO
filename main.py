@@ -1436,8 +1436,12 @@ def init_history_db() -> None:
             )
         """)
         # wifi_ssid: nama WiFi 2,4 GHz yang dikirim, untuk memastikan ONU benar-benar memancarkannya (dari laporan ACS).
-        if "wifi_ssid" not in [r[1] for r in conn.execute("PRAGMA table_info(onu_baru)").fetchall()]:
+        kolom_ob = [r[1] for r in conn.execute("PRAGMA table_info(onu_baru)").fetchall()]
+        if "wifi_ssid" not in kolom_ob:
             conn.execute("ALTER TABLE onu_baru ADD COLUMN wifi_ssid TEXT")
+        # pengguna: akun PPPoE terakhir yang terlihat lewat ONU ini, untuk mengenali pelanggan yang ganti ONU.
+        if "pengguna" not in kolom_ob:
+            conn.execute("ALTER TABLE onu_baru ADD COLUMN pengguna TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -10916,31 +10920,51 @@ def _history_conn() -> sqlite3.Connection:
 def catat_onu_baru(onu_list: list[ONUStatus], sekarang: Optional[datetime] = None) -> list[dict]:
     """Catat nomor seri ONU yang belum pernah terlihat. Saat pertama kali dijalankan, semua ONU yang
     sudah ada dicatat sebagai 'awal' (bukan baru) supaya tidak membanjiri daftar & Telegram.
-    Kembalikan ONU yang baru terdeteksi pada putaran ini."""
+    Kembalikan ONU yang baru terdeteksi pada putaran ini.
+
+    Pelanggan ganti ONU: bila akun PPPoE-nya kini lewat SN lain dan SN lamanya offline, SN lama dilepas dari
+    catatan. Bila SN itu kelak online lagi (mis. ONU bekas dipasang di rumah lain), ia tercatat sebagai ONU baru,
+    bukan "ONU pelanggan lama yang offline". SN asing yang offline tidak dicatat sampai benar-benar online."""
     daftar = [o for o in onu_list if o.serial_number]
     if not daftar:
         return []           # OLT tidak terbaca: jangan simpulkan apa pun
     waktu = (sekarang or datetime.now()).isoformat(timespec="seconds")
     conn = _history_conn()
-    baru = []
+    baru, dilepas = [], []
     try:
         awal = conn.execute("SELECT COUNT(*) FROM onu_baru").fetchone()[0] == 0
+        online = {o.serial_number.upper() for o in daftar if o.online}
         for o in daftar:
             sn = o.serial_number.upper()
+            pengguna = o.pppoe_username if o.online else None
+            if pengguna:
+                lama = conn.execute("SELECT sn FROM onu_baru WHERE lower(pengguna)=lower(?) AND sn<>?",
+                                    (pengguna, sn)).fetchall()
+                for (sn_lama,) in lama:
+                    if sn_lama not in online:
+                        conn.execute("DELETE FROM onu_baru WHERE sn=?", (sn_lama,))
+                        dilepas.append((sn_lama, pengguna, sn))
             ada = conn.execute("SELECT status FROM onu_baru WHERE sn=?", (sn,)).fetchone()
             if ada:
                 conn.execute("UPDATE onu_baru SET terakhir=?, pon=?, onu_id=?, vendor=COALESCE(?,vendor), "
-                             "model=COALESCE(?,model) WHERE sn=?", (waktu, o.pon, o.onu_id, o.vendor, o.model, sn))
+                             "model=COALESCE(?,model), pengguna=COALESCE(?,pengguna) WHERE sn=?",
+                             (waktu, o.pon, o.onu_id, o.vendor, o.model, pengguna, sn))
                 continue
-            conn.execute("INSERT INTO onu_baru (sn, pertama, terakhir, pon, onu_id, vendor, model, status) "
-                         "VALUES (?,?,?,?,?,?,?,?)",
-                         (sn, waktu, waktu, o.pon, o.onu_id, o.vendor, o.model, "awal" if awal else "baru"))
+            if not awal and not o.online:
+                continue        # SN asing yang offline (mis. ONU bekas belum menyala): catat saat online
+            conn.execute("INSERT INTO onu_baru (sn, pertama, terakhir, pon, onu_id, vendor, model, status, pengguna) "
+                         "VALUES (?,?,?,?,?,?,?,?,?)",
+                         (sn, waktu, waktu, o.pon, o.onu_id, o.vendor, o.model, "awal" if awal else "baru", pengguna))
             if not awal:
                 baru.append({"sn": sn, "pon": o.pon, "onu_id": o.onu_id, "model": o.model, "vendor": o.vendor,
                              "olt_rx": o.olt_rx_dbm})
         conn.commit()
     finally:
         conn.close()
+    for sn_lama, pengguna, sn in dilepas:
+        catat_aktivitas("sistem", "onu_dilepas", f"{pengguna} ganti ONU: {sn_lama} → {sn}. SN lama dilepas; bila online "
+                                                 "lagi, tercatat sebagai ONU baru.")
+        logger.info(f"ONU {sn_lama} dilepas: {pengguna} kini lewat {sn}")
     if baru:
         baris = []
         for b in baru[:10]:

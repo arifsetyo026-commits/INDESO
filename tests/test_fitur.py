@@ -2903,3 +2903,29 @@ def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):
     assert x["wifi"] and x["langkah"]["acs"] is True
     log = o.get("/api/aktivitas").text
     assert "WiFi lewat ACS" in log and "sandi rahasia" not in log and "Rahasia26" not in log
+
+
+def test_ganti_onu_sn_lama_dilepas(siap):
+    """Pelanggan ganti ONU: SN lama (offline) dilepas; bila kelak online lagi tercatat sebagai ONU baru.
+    SN asing yang offline tidak dicatat sampai online."""
+    main, o, k, m = siap
+    O = main.ONUStatus
+    onu = lambda sn, online, user=None, i=1: O(pon="0/0/1", onu_id=i, snmp_index=i, serial_number=sn, olt_rx_dbm=-20.0,
+                                              online=online, status="OK" if online else "OFFLINE", pppoe_username=user)
+    main.catat_onu_baru([onu("ZTEGCAGUS0001", True, "agus", 7)])                         # isi awal
+    status = lambda sn: (lambda r: r[0] if r else None)(
+        main._history_conn().execute("SELECT status FROM onu_baru WHERE sn=?", (sn,)).fetchone())
+    assert status("ZTEGCAGUS0001") == "awal"
+    main.catat_onu_baru([onu("ZTEGCAGUS0001", True, "agus", 7)])                         # catat pengguna
+    # SN asing yang offline: tidak dicatat
+    assert main.catat_onu_baru([onu("ZTEGCAGUS0001", True, "agus", 7), onu("ZTEGCASING01", False, None, 9)]) == []
+    assert status("ZTEGCASING01") is None
+    # Agus ganti ONU: ONU lama offline, akun agus lewat SN baru → SN lama dilepas
+    baru = main.catat_onu_baru([onu("ZTEGCAGUS0001", False, None, 7), onu("ZTEGCAGUS0002", True, "agus", 8)])
+    assert [b["sn"] for b in baru] == ["ZTEGCAGUS0002"] and status("ZTEGCAGUS0001") is None
+    assert "agus ganti ONU: ZTEGCAGUS0001 → ZTEGCAGUS0002" in o.get("/api/aktivitas").text
+    # ONU lama tetap terdaftar di OLT (offline): tidak muncul lagi sebagai baru selama offline
+    assert main.catat_onu_baru([onu("ZTEGCAGUS0001", False, None, 7), onu("ZTEGCAGUS0002", True, "agus", 8)]) == []
+    # ONU lama direset & dipasang lagi: online → ONU baru
+    baru = main.catat_onu_baru([onu("ZTEGCAGUS0001", True, None, 7), onu("ZTEGCAGUS0002", True, "agus", 8)])
+    assert [b["sn"] for b in baru] == ["ZTEGCAGUS0001"] and status("ZTEGCAGUS0001") == "baru"
