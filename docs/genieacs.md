@@ -219,6 +219,11 @@ Untuk ONU yang PPPoE-nya diisi di web ONU dengan WAN bertipe INTERNET saja (mis.
    kondisi pabrik dan menerima semuanya dari OLT. WAN lama dari web ikut terhapus, jadi tidak ada akun ganda.
 4. Tunggu ±3 menit lalu **Muat ulang**: PPPoE, ACS, dan WiFi harus tercentang.
 
+Nama atau password WiFi yang berisi spasi atau tanda di luar `A-Z a-z 0-9 . _ @ + -` tidak bisa dibawa CLI OLT (OLT memisah
+kata di spasi). INDESO lalu tidak mengirim WiFi lewat OLT, tetapi menyimpannya **di memori** (tidak ditulis ke disk) dan
+mengirimnya lewat ACS begitu ONU lapor setelah perintah (±3–5 menit; batas 60 menit). Huawei selalu lewat jalur ini
+karena mengabaikan WiFi dari OLT. Bila INDESO restart sebelum terkirim, atur lewat tombol **Atur WiFi**.
+
 Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, SSID tambahan, sandi admin) hilang.
 
 ZTE memberi WAN buatan OLT (nama `omci_ipv4_pppoe_1`) jenis layanan `INTERNET_TR069_VOIP`, dan dengan VOIP ZTE
