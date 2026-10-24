@@ -848,7 +848,8 @@ class FakeACS:
         hosts = {str(i): {"HostName": {"_value": f"hp{i}"}, "IPAddress": {"_value": f"192.168.1.{i + 1}"},
                           "MACAddress": {"_value": "aa"}, "Active": {"_value": True}} for i in range(1, 13)}
         self.dev = {"ZTEGC1234567": {
-            "_id": "ZTE-F609-ZTEGC1234567", "_lastInform": "2026-01-01T00:00:00.000Z",
+            "_id": "ZTE-F609-ZTEGC1234567",
+            "_lastInform": __import__("datetime").datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
             "_deviceId": {"_Manufacturer": "ZTE", "_ProductClass": "F609", "_SerialNumber": "ZTEGC1234567"},
             "InternetGatewayDevice": {
                 "DeviceInfo": {"SoftwareVersion": {"_value": "V9.0"}, "UpTime": {"_value": 600}},
@@ -1200,7 +1201,7 @@ def test_acs_onu_diganti_dan_ping_lewat_wan(siap, monkeypatch):
     monkeypatch.setattr(main.requests, "request", acs.request)
     assert k.get("/api/acs/budi").json()["perangkat"]["id"] == "ZTE-F609-ZTEGC1234567"   # id tersimpan
     baru = copy.deepcopy(acs.dev["ZTEGC1234567"])
-    baru.update(_id="ZTE-F670L-ZTEGDBARU0001", _lastInform="2026-02-01T00:00:00.000Z",
+    baru.update(_id="ZTE-F670L-ZTEGDBARU0001", _lastInform=datetime.utcnow().isoformat(timespec="milliseconds") + "Z",
                 _deviceId={"_Manufacturer": "ZTE", "_ProductClass": "F670L", "_SerialNumber": "ZTEGDBARU0001"})
     acs.dev["ZTEGDBARU0001"] = baru
     # Belum ada data OLT: dua ONU sama-sama menyimpan username budi -> id tersimpan (ONU lama) dipakai
@@ -2879,6 +2880,7 @@ def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):
     monkeypatch.setattr(main.requests, "request", acs.request)
     dev = acs.dev["ZTEGC1234567"]
     dev["_deviceId"]["_SerialNumber"], dev["_lastInform"] = "ZTEGD5D276C6", "2020-01-01T00:00:00.000Z"
+    assert k.get("/api/onu-baru").json()["onu"][0]["langkah"]["acs"] is False     # dokumen lama: bukan "lapor ACS"
     url = "/api/onu-baru/ZTEGD5D276C6/aktivasi-olt"
     dasar = {"username": "dwi", "ssid": "Rumah Dimas", "wifi_password": "sandi rahasia!", "akhiran_5g": " 5G",
              "reset": True, "konfirmasi": "dwi"}
@@ -2898,6 +2900,6 @@ def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):
     assert any(p.endswith("WLANConfiguration.5.SSID") and v == "Rumah Dimas 5G" for p, v, _ in acs.tugas[-1]["parameterValues"])
     assert "ZTEGD5D276C6" not in main._wifi_tertunda
     x = k.get("/api/onu-baru").json()["onu"][0]
-    assert x["wifi"]
+    assert x["wifi"] and x["langkah"]["acs"] is True
     log = o.get("/api/aktivitas").text
     assert "WiFi lewat ACS" in log and "sandi rahasia" not in log and "Rahasia26" not in log

@@ -8930,8 +8930,7 @@ def _info_acs(username: str, segarkan: bool = False) -> dict:
         w["hapus"], w["alasan"] = _boleh_hapus_wan(info["wan"], w, username)
     # ONU lapor rutin tiap ACS_ONU_INTERVAL. Lewat dari 3x itu (min. 15 menit) berarti ONU berhenti lapor,
     # mis. di-reset pabrik (pengaturan TR-069 hilang): data di bawahnya adalah laporan TERAKHIR, bukan keadaan sekarang.
-    batas = max(15, 3 * int(CONFIG.get("ACS_ONU_INTERVAL") or 300) // 60)
-    info["diam"] = info["lapor_menit_lalu"] is not None and info["lapor_menit_lalu"] > batas
+    info["diam"] = info["lapor_menit_lalu"] is not None and info["lapor_menit_lalu"] > _batas_diam_menit()
     return {"terhubung": True, "perangkat": info, "segarkan": hasil_segar}
 
 
@@ -10555,6 +10554,11 @@ def _sn_terdaftar_acs() -> Optional[set]:
     return {_sn_gpon((d.get("_deviceId") or {}).get("_SerialNumber")) for d in r.json()}
 
 
+def _batas_diam_menit() -> int:
+    """ONU lapor rutin tiap ACS_ONU_INTERVAL; lewat 3x itu (min. 15 menit) berarti berhenti lapor."""
+    return max(15, 3 * int(CONFIG.get("ACS_ONU_INTERVAL") or 300) // 60)
+
+
 def _onu_di_acs() -> Optional[dict]:
     """Penanda ONU yang ada di GenieACS: nomor seri, username PPPoE, dan id dokumen.
     Nomor seri saja tidak cukup: sebagian ONU (ZTE/Fiberhome) melapor ke ACS dengan nomor seri
@@ -10999,7 +11003,12 @@ def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict) -> dict:
     user = o.pppoe_username if o else None
     di_acs = None
     if acs is not None:
-        di_acs = r["sn"] in acs["sn"] or bool(user and any(not _onu_lama(d, r["sn"]) for d in acs["user"].get(user, [])))
+        # Hanya laporan yang masih berjalan: ONU bekas yang direset pabrik meninggalkan dokumen lama di ACS
+        # (mis. F609 bekas Agus), padahal ONU-nya sudah tidak lapor.
+        docs = [d for d in acs["docs"] if _sn_gpon((d.get("_deviceId") or {}).get("_SerialNumber")) == r["sn"].upper()]
+        docs += [d for d in (acs["user"].get(user, []) if user else []) if not _onu_lama(d, r["sn"])]
+        menit = [_lapor_terakhir_menit(d.get("_lastInform")) for d in docs]
+        di_acs = any(m is not None and m <= _batas_diam_menit() for m in menit)
     sinyal_ok = bool(o and o.online and o.status in ("OK", "WARNING"))
     wifi_ok = bool(r["wifi"])
     if r["wifi_ssid"] and di_acs:
