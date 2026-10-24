@@ -30,6 +30,9 @@ declare("VirtualParameters.pppoeUsername", {value: sekarang - 24 * jam});
 // ZTE: WAN PPPoE yang dibuat OLT (`ont ipconfig`, nama "omci_…") ikut membawa layanan VOIP. Dengan VOIP,
 // ZTE menolak ping dari luar (MikroTik tidak bisa ping ONU). INDESO tidak memakai VOIP, jadi samakan dengan
 // WAN buatan web: INTERNET_TR069. Diperiksa tiap jam; OLT bisa mengembalikannya setelah ONU restart.
+// FiberHome: lebar kanal WiFi (kode angka X_FH_ChannelWidth) untuk pilihan di Diagnosa.
+if (/fiberhome/i.test(String((declare("DeviceID.Manufacturer", {value: 1}).value || [""])[0])))
+  declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.X_FH_ChannelWidth", {path: sekarang - 24 * jam, value: sekarang - 24 * jam});
 if (/zte/i.test(String((declare("DeviceID.Manufacturer", {value: 1}).value || [""])[0]))) {
   // Lebar kanal WiFi (pilihan di Diagnosa → Ganti nama / password).
   declare("InternetGatewayDevice.LANDevice.1.WLANConfiguration.*.X_ZTE-COM_OperatingChannelBandwidth", {path: sekarang - 24 * jam, value: sekarang - 24 * jam});

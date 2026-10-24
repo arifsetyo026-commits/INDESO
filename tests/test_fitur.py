@@ -2871,6 +2871,17 @@ def test_lebar_kanal_wifi(siap, monkeypatch):
     assert acs.tugas[-1]["parameterValues"] == [[b + "X_ZTE-COM_OperatingChannelBandwidth", "40MHz", "xsd:string"],
                                                [b + "BandWidth", "40MHz", "xsd:string"]]
     assert "lebar kanal → 40MHz" in o.get("/api/aktivitas").text
+    # FiberHome: kode angka X_FH_ChannelWidth (0 Auto, 1 = 20, 2 = 40, 3 = 80 MHz)
+    for i in ("1", "5"):
+        for kk in ("X_ZTE-COM_OperatingChannelBandwidth", "BandWidth"):
+            wl[i].pop(kk, None)
+    wl["1"]["X_FH_ChannelWidth"] = {"_value": 0, "_writable": True, "_type": "xsd:unsignedInt"}
+    wl["5"]["X_FH_ChannelWidth"] = {"_value": 3, "_writable": True, "_type": "xsd:unsignedInt"}
+    w = {x["index"]: x for x in k.get("/api/acs/budi").json()["perangkat"]["wifi"]}
+    assert w[1]["lebar"] == "Auto" and w[5]["lebar"] == "80MHz" and w[1]["pilihan_lebar"] == ["20MHz", "40MHz"]
+    assert k.post("/api/acs/budi/wifi", json={"index": 1, "lebar": "40MHz"}).json()["status"] == "selesai"
+    assert acs.tugas[-1]["parameterValues"] == [["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.X_FH_ChannelWidth",
+                                                2, "xsd:unsignedInt"]]
 
 
 def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):

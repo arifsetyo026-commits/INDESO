@@ -9393,16 +9393,27 @@ class WifiIn(BaseModel):
     lebar: Optional[str] = None      # lebar kanal: 20MHz / 40MHz / 80MHz (80 hanya 5 GHz)
 
 
-# Lebar kanal WiFi per merek. ZTE F670L punya dua parameter dengan nilai sama ("20MHz"/"40MHz"/"80MHz"):
-# keduanya diisi supaya tidak bertentangan.
-_LEBAR_KANAL = ("X_ZTE-COM_OperatingChannelBandwidth", "BandWidth")
+# Lebar kanal WiFi per merek: parameter -> kode per pilihan (None = nilainya ditulis apa adanya).
+# ZTE F670L punya dua parameter bernilai teks ("20MHz"/"40MHz"/"80MHz"): keduanya diisi supaya tidak bertentangan.
+# FiberHome HG6145D2 memakai kode angka (urutan pilihan di web ONU: Auto, 20, 40, 80; 3 = 80 MHz dicocokkan
+# owner dengan web ONU SERVER).
+_KODE_LEBAR_FH = {"20MHz": "1", "40MHz": "2", "80MHz": "3"}
+_LEBAR_KANAL = (("X_ZTE-COM_OperatingChannelBandwidth", None), ("BandWidth", None), ("X_FH_ChannelWidth", _KODE_LEBAR_FH))
 _PILIHAN_LEBAR = {"2,4 GHz": ("20MHz", "40MHz"), "5 GHz": ("20MHz", "40MHz", "80MHz")}
 
 
-def _lebar_kanal(doc: dict, b: str) -> tuple[list[str], Optional[str]]:
-    """(parameter lebar kanal yang bisa diubah, nilai sekarang) untuk WLANConfiguration `b`."""
-    par = [k for k in _LEBAR_KANAL if _ada(doc, f"{b}.{k}") and _param(doc, f"{b}.{k}").get("_writable") is not False]
-    return par, (_nilai(doc, f"{b}.{par[0]}") if par else None)
+def _lebar_kanal(doc: dict, b: str) -> tuple[list[tuple[str, Optional[dict]]], Optional[str]]:
+    """([(parameter lebar kanal yang bisa diubah, kode)], nilai sekarang dalam bentuk "20MHz"/"Auto") untuk `b`."""
+    par = [(k, kode) for k, kode in _LEBAR_KANAL
+           if _ada(doc, f"{b}.{k}") and _param(doc, f"{b}.{k}").get("_writable") is not False]
+    if not par:
+        return [], None
+    k, kode = par[0]
+    v = _nilai(doc, f"{b}.{k}")
+    if kode:
+        balik = {str(x): t for t, x in kode.items()}
+        v = balik.get(str(v), "Auto" if str(v) == "0" else v)
+    return par, v
 
 
 @app.post("/api/acs/{username}/wifi")
@@ -9438,7 +9449,10 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
             raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan lebar kanal lewat TR-069.")
         if lebar not in _PILIHAN_LEBAR.get(band, ("20MHz", "40MHz")):
             raise HTTPException(status_code=400, detail=f"Lebar kanal {lebar} tidak tersedia untuk WiFi {band}.")
-        nilai += [[f"{b}.{k}", lebar, "xsd:string"] for k in par]
+        for k, kode in par:
+            tipe = _param(doc, f"{b}.{k}").get("_type") or "xsd:string"
+            v = kode[lebar] if kode else lebar
+            nilai.append([f"{b}.{k}", int(v) if kode and tipe in ("xsd:int", "xsd:unsignedInt") else v, tipe])
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else []) \
