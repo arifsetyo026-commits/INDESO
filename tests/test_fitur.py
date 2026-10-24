@@ -1776,7 +1776,8 @@ def test_perangkat_wifi_dicocokkan_dengan_mac_tersambung(app):
 
 
 def test_kunci_komisi_mitra(siap):
-    """Komisi = hasil kerja bulan X (dibayar awal X+1); terkunci saat tutup buku X atau manual oleh owner."""
+    """Tagihan bulan X = hasil kerja bulan X-1 (pelanggan membayar di muka), dibayar awal X; terkunci saat tutup
+    buku X-1 atau manual oleh owner."""
     main, o, k, m = siap
     o.post("/api/tagihan/buat?periode=2026-09")
     tg = {t["username"]: t["id"] for t in o.get("/api/tagihan?periode=2026-09").json()["tagihan"]}
@@ -1789,19 +1790,26 @@ def test_kunci_komisi_mitra(siap):
     # pembayaran susulan tidak mengubah komisi yang sudah dikunci
     o.post(f"/api/tagihan/{tg['ani']}/lunas", json={"tanggal": "2026-09-20", "metode": "tunai"})
     d = m.get("/api/mitra/pelanggan?periode=2026-09").json()["insentif"]
-    assert d["total"] == 260000 and d["final"] is True and d["dibayar_bulan"] == "2026-10" and "pelanggan" not in d
+    assert d["total"] == 260000 and d["final"] is True and d["dibayar_bulan"] == "2026-09" and "pelanggan" not in d
+    assert d["kerja_bulan"] == "2026-08"
     rk = next(b for b in o.get("/api/keuangan/insentif?sampai=2026-10").json()["rekap"] if b["periode"] == "2026-09")
     assert rk["terhitung"] == 260000 and rk["terkunci"]["sumber"] == "manual"
     # buka kunci -> dihitung ulang (budi + ani lunas = 20.000)
     assert o.delete("/api/keuangan/insentif/2026-09/kunci").status_code == 200
     assert m.get("/api/mitra/pelanggan?periode=2026-09").json()["insentif"]["total"] == 20000
-    # tutup buku mengunci otomatis; pembayaran susulan setelahnya tidak menambah; buka buku melepas kunci otomatis
+    # tutup buku Agustus (bulan kerjanya) mengunci otomatis tagihan September; tutup buku September tidak
     assert o.post("/api/keuangan/tutup-buku/2026-09", json={"catatan": ""}).status_code == 200
+    assert m.get("/api/mitra/pelanggan?periode=2026-09").json()["insentif"]["final"] is False
+    assert o.post("/api/keuangan/tutup-buku/2026-08", json={"catatan": ""}).status_code == 200
     o.post(f"/api/tagihan/{tg['dwi']}/lunas", json={"tanggal": "2026-10-02", "metode": "tunai"})
     ins = m.get("/api/mitra/pelanggan?periode=2026-09").json()["insentif"]
     assert ins["total"] == 20000 and ins["final"]
-    assert o.post("/api/keuangan/tutup-buku/2026-09/buka", json={"alasan": "koreksi"}).status_code == 200
+    assert o.post("/api/keuangan/tutup-buku/2026-08/buka", json={"alasan": "koreksi"}).status_code == 200
     assert m.get("/api/mitra/pelanggan?periode=2026-09").json()["insentif"]["total"] == 30000
+    # akun mitra: bulan sebelum tagihan pertama (September) tidak ditampilkan
+    d = m.get("/api/mitra/pelanggan?periode=2026-07").json()
+    assert d["periode"] == "2026-09" and d["awal"] == "2026-09"
+    assert "hasil kerja Agustus 2026" in o.get("/api/aktivitas").text
 
 
 def test_komisi_bulan_sebelum_penagihan(siap):
