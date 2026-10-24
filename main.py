@@ -169,6 +169,7 @@ CONFIG = {
                            "Terima kasih."),
     "PENGINGAT_JEDA_HARI": 3,           # pengingat massal melewati pelanggan yang baru diingatkan
     "KOMISI_MULAI": "",                 # YYYY-MM: komisi mitra dihitung mulai bulan ini (kosong = sejak data pertama)
+    "ONU_SANDI_ADMIN": "",              # password admin web ONU yang dipasang tombol "Amankan ONU" (rahasia)
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     # Database (kecil) dikirim ke Telegram TIAP HARI tanpa bunyi notifikasi, supaya bila VPS
     # rusak data yang hilang paling lama 1 hari. Nota (besar) tetap mingguan.
@@ -245,7 +246,7 @@ class _SamarkanRahasia(logging.Filter):
 
 def _samarkan(teks: str) -> str:
     for rahasia in (CONFIG.get("TELEGRAM_BOT_TOKEN"), CONFIG.get("MIKROTIK_PASSWORD"), CONFIG.get("GENIEACS_PASS"),
-                    CONFIG.get("OLT_TELNET_PASS"), CONFIG.get("ACS_ONU_PASS")):
+                    CONFIG.get("OLT_TELNET_PASS"), CONFIG.get("ACS_ONU_PASS"), CONFIG.get("ONU_SANDI_ADMIN")):
         if rahasia:
             teks = teks.replace(f"bot{rahasia}", "bot***")
             if len(rahasia) >= 6:
@@ -2878,6 +2879,11 @@ _PENGATURAN = {
                                       "{total} {cara_bayar} {username}. Huruf di antara *bintang* jadi tebal di WA."},
     "PENGINGAT_JEDA_HARI": {"label": "Pengingat massal: lewati pelanggan yang sudah diingatkan dalam (hari)", "tipe": "int",
                             "min": 0, "max": 30},
+    "ONU_SANDI_ADMIN": {"label": "Password admin web ONU (dipasang tombol 🔒 Amankan ONU)", "tipe": "rahasia",
+                        "owner": True,
+                        "bantuan": "8–32 karakter tanpa spasi atau tanda kutip. Tidak pernah ditampilkan lagi setelah "
+                                   "disimpan; kosongkan kolom ini bila tidak ingin mengubahnya. Catat di tempat aman: "
+                                   "dipakai untuk masuk ke web ONU (akun admin)."},
     "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
                      "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
                      "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
@@ -2899,6 +2905,14 @@ def _validasi_pengaturan(kunci: str, nilai, periksa_mikrotik: bool = True):
             raise HTTPException(status_code=400, detail=f"{meta['label']} harus angka.")
         if not meta["min"] <= nilai <= meta["max"]:
             raise HTTPException(status_code=400, detail=f"{meta['label']} harus {meta['min']}–{meta['max']}.")
+        return nilai
+    if meta["tipe"] == "rahasia":
+        nilai = str(nilai or "")
+        if not nilai:
+            return CONFIG.get(kunci) or ""          # kolom kosong = tidak diubah (nilai lama tidak pernah dikirim ke browser)
+        if not re.fullmatch(r"[A-Za-z0-9!#$%&*+,.:;=?@^_~\-]{8,32}", nilai):
+            raise HTTPException(status_code=400, detail=f"{meta['label']}: 8–32 karakter, huruf/angka/simbol biasa "
+                                                        "tanpa spasi atau tanda kutip.")
         return nilai
     if meta["tipe"] == "teksbebas":
         nilai = str(nilai or "").replace("\r\n", "\n").strip()
@@ -2947,7 +2961,9 @@ def get_pengaturan(request: Request):
     backup = _daftar_backup(folder)
     return {
         "peran": request.state.peran,
-        "pengaturan": [{"kunci": k, **m, "nilai": CONFIG[k]} for k, m in _PENGATURAN.items()],
+        # Pengaturan rahasia tidak pernah dikirim ke browser: hanya tanda sudah terisi atau belum.
+        "pengaturan": [{"kunci": k, **m, "nilai": "" if m["tipe"] == "rahasia" else CONFIG[k],
+                        **({"terisi": bool(CONFIG.get(k))} if m["tipe"] == "rahasia" else {})} for k, m in _PENGATURAN.items()],
         "sistem": {
             "mikrotik": f"{CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']} (user {CONFIG['MIKROTIK_USER']})",
             "olt": f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']} (SNMP v{CONFIG['OLT_SNMP_VERSION']})",
@@ -2987,7 +3003,8 @@ def ubah_pengaturan(d: PengaturanIn, request: Request):
             conn.commit()
         finally:
             conn.close()
-        detail = "; ".join(f"{_PENGATURAN[k]['label']}: {CONFIG[k]} → {v}" for k, v in berubah.items())
+        detail = "; ".join(f"{_PENGATURAN[k]['label']}: " + ("diganti" if _PENGATURAN[k]["tipe"] == "rahasia"
+                                                             else f"{CONFIG[k]} → {v}") for k, v in berubah.items())
         CONFIG.update(berubah)
         catat_aktivitas(request.state.user, "pengaturan_ubah", detail)
     return {"ok": True, "berubah": len(berubah)}
@@ -9953,6 +9970,48 @@ def acs_ping_ringkasan(request: Request, hari: int = 30):
         x["jumlah_onu"] = len(onu)
         hasil.append(x)
     return {"hari": hari, "model": sorted(hasil, key=lambda x: -(x["ditolak"] + x["tanpa_balasan"]))}
+
+
+# Pengamanan ONU ZTE lewat ACS: password admin web, telnet, FTP, dan akses tamu Samba (nama parameter dari
+# F670L V9 milik Agus). Akun "user" (login biasa pelanggan) sengaja tidak diubah.
+_AMANKAN_ZTE = (("X_ZTE-COM_Telnet.Enable", "telnet dimatikan"), ("X_ZTE-COM_FTP.Enable", "FTP dimatikan"),
+                ("X_ZTE-COM_Samba.AnonymousEnable", "akses tamu Samba dimatikan"))
+
+
+@app.post("/api/acs/{username}/amankan")
+def acs_amankan(username: str, request: Request):
+    _wajib_owner(request, "Mengamankan ONU hanya bisa dilakukan owner.")
+    sandi = CONFIG.get("ONU_SANDI_ADMIN") or ""
+    if not sandi:
+        raise HTTPException(status_code=400, detail="Isi dulu Pengaturan → Password admin web ONU.")
+    doc = _cari_perangkat(username)
+    if not doc:
+        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
+    if "zte" not in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower():
+        raise HTTPException(status_code=400, detail="Saat ini baru tersedia untuk ONU ZTE.")
+    # Bagian ini tidak dibaca rutin oleh provision: minta ONU melaporkannya dulu bila belum ada.
+    kurang = [o for o in ("User", "X_ZTE-COM_Telnet", "X_ZTE-COM_FTP", "X_ZTE-COM_Samba") if not _ada(doc, f"{_IGD}.{o}")]
+    for o in kurang:
+        _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.{o}"}, tunggu=20)
+    if kurang:
+        doc = _cari_perangkat(username) or doc
+    nilai, langkah = [], []
+    admin = next((i for i in _anak(doc, f"{_IGD}.User")
+                  if str(_nilai(doc, f"{_IGD}.User.{i}.Username") or "").lower() == "admin"), None)
+    if admin and _ada(doc, f"{_IGD}.User.{admin}.Password"):
+        nilai.append([f"{_IGD}.User.{admin}.Password", sandi, "xsd:string"])
+        langkah.append("password admin web diganti")
+    for par, ket in _AMANKAN_ZTE:
+        if _ada(doc, f"{_IGD}.{par}"):
+            nilai.append([f"{_IGD}.{par}", False, "xsd:boolean"])
+            langkah.append(ket)
+    if not nilai:
+        raise HTTPException(status_code=409, detail="ONU tidak melaporkan pengaturan akun/layanan yang bisa diamankan.")
+    _bersihkan_tertahan(doc["_id"])
+    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    catat_aktivitas(_oleh(request), "onu_amankan", f"{username} ({doc['_id']}): {', '.join(langkah)}"
+                    + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
+    return dict(hasil, langkah=langkah)
 
 
 @app.post("/api/acs/{username}/reboot")

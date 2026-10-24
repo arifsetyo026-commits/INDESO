@@ -213,7 +213,7 @@ lamanya offline, SN lama **dilepas** dari catatan (tercatat di Aktivitas: "ganti
 lagi, misalnya sudah direset dan dipasang di rumah lain, ia muncul di **ONU Baru** sebagai ONU baru dan dikabarkan lewat
 Telegram. SN asing yang offline tidak dicatat sampai benar-benar online.
 
-Pendaftaran ONU mati di OLT dibersihkan lewat **ONU / PON → 🧹 Bersihkan ONU mati** (hanya owner). INDESO menghapusnya
+Pendaftaran ONU mati di OLT dibersihkan lewat **ONU & Diagnosa → 🧹 Bersihkan ONU mati** (hanya owner). INDESO menghapusnya
 satu per satu dengan `ont delete P O` lalu `save`; `ont delete P all` dan `ont delete P offline-list` tidak pernah dipakai,
 karena ONU pelanggan yang mati listrik juga offline. Yang boleh dihapus hanya ONU offline yang:
 - pemakai terakhirnya kini online lewat ONU lain (ganti ONU), atau
