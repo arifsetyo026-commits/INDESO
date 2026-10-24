@@ -166,11 +166,10 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <nav class="nav" id="navUtama">
   <a class="active" href="#"><span class="ico">⌂</span>Beranda</a>
   <a href="#" onclick="openPelanggan();return false"><span class="ico">♙</span>Pelanggan</a>
-  <a href="#" onclick="openCustomers();return false"><span class="ico">▣</span>ONU / PON</a>
+  <a href="#" onclick="openCustomers();return false"><span class="ico">▣</span>ONU &amp; Diagnosa</a>
   <a href="#" onclick="openOnuBaru();return false"><span class="ico">✦</span>ONU Baru <span id="onuBaruBadge" class="badge" style="display:none">0</span></a>
   <a href="#" onclick="scrollToSection('traffic');return false"><span class="ico">⌖</span>Peta Jaringan</a>
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Peringatan &amp; Log <span id="alertBadge" class="badge">0</span></a>
-   <a href="#" onclick="openDiagnosa();return false"><span class="ico">⌁</span>Diagnosa Perangkat</a>
    <a href="#" onclick="openTiket();return false"><span class="ico">⚒</span>Tiket Gangguan <span id="tiketBadge" class="badge" style="display:none">0</span></a>
    <a href="#" onclick="openGudang();return false"><span class="ico">▤</span>Warehouse <span id="gudangBadge" class="badge" style="display:none" title="barang menipis">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
@@ -220,7 +219,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  </div>
  <div class="footer"><div><b>Internet Desa</b> &nbsp; v3.1 &nbsp; | &nbsp; Monitoring &nbsp; • &nbsp; Pelanggan &nbsp; • &nbsp; Jaringan &nbsp; • &nbsp; Masa Depan Desa</div><div class="footerRight">Internet untuk Semua 🌿 <span id="updated"></span></div></div>
 </div></main></div>
-<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU / PON</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan, PON, nomor ONU, model, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div class="blAksi" id="onuMatiAksi" style="justify-content:flex-start;margin:0 0 8px;display:none"><button class="btnS" onclick="bukaOnuMati()">🧹 Bersihkan ONU mati</button></div><div id="onuMatiBox"></div><div id="customerResults"></div></div></div></div>
+<div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU &amp; Diagnosa</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan / username untuk diagnosa, atau PON, nomor ONU, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div class="blAksi" id="onuMatiAksi" style="justify-content:flex-start;margin:0 0 8px;display:none"><button class="btnS" onclick="bukaOnuMati()">🧹 Bersihkan ONU mati</button></div><div id="onuMatiBox"></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
 <div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
@@ -374,7 +373,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="plSub" style="margin-top:8px">Pembayaran tagihan pelanggan tercatat otomatis dari menu Penagihan, sehingga tidak perlu dicatat di sini. Catatan bisa diubah/dibatalkan oleh pencatatnya dalam 24 jam; setelah itu hanya oleh owner.</div>
 </div></div>
 </div></div></div>
-<div class="overlay" id="diagModal"><div class="modal"><div class="modalHead"><h3>Diagnosa &amp; Perangkat Pelanggan</h3><button class="close" onclick="closeModal('diagModal')">Tutup</button></div><div class="modalBody">
+<div class="overlay" id="diagModal"><div class="modal"><div class="modalHead"><h3>Diagnosa &amp; Perangkat Pelanggan</h3><div style="display:flex;gap:6px"><button class="btnS" onclick="closeModal('diagModal');openCustomers()">‹ Daftar ONU</button><button class="close" onclick="closeModal('diagModal')">Tutup</button></div></div><div class="modalBody">
  <div class="search"><input id="dgUser" list="dgUserList" placeholder="Ketik nama atau username pelanggan…" autocomplete="off" onkeydown="if(event.key==='Enter')muatDiagnosa()"><datalist id="dgUserList"></datalist><button onclick="muatDiagnosa()">Periksa</button></div>
  <div class="plMsg" id="dgMsg"></div>
  <div id="dgIsi"><div class="muted">Pilih pelanggan yang melapor lemot/gangguan untuk melihat kondisi koneksi, redaman, pemakaian, dan perangkat ONU-nya.</div></div>
@@ -716,7 +715,9 @@ async function buatTagihan(){
   $('blMsg').textContent=d.baru+' tagihan baru dibuat'+(d.tanpa_paket?(' · '+d.tanpa_paket+' pelanggan belum punya paket'):'');
  }catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
                                                                                                                                                          }
-function openCustomers(){ $('customerModal').classList.add('show'); $('customerSearch').focus(); searchCustomers(); }
+function openCustomers(){ $('customerModal').classList.add('show'); $('customerSearch').focus(); searchCustomers();
+ // Daftar pelanggan untuk pencarian diagnosa (termasuk yang ONU-nya belum terpetakan).
+ if(!dg.pelanggan) fetch('/api/data-pelanggan').then(r=>r.json()).then(x=>{ dg.pelanggan=(x.pelanggan||[]).filter(p=>p.status!=='berhenti'); searchCustomers(); }).catch(()=>{}); }
 function closeModal(id){$(id).classList.remove('show')}
 // Tutup lewat area gelap hanya bila sentuhan DIMULAI dan DIAKHIRI di area gelap. Sebelumnya
 // menggeser/menyeleksi teks di dalam jendela lalu melepas jari di luar ikut menutup jendela.
@@ -862,6 +863,14 @@ function searchCustomers(){
    h+=`<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online · ${jumlahPon(pon)}</span></div>`; }
   const u=o.pppoe_username, n=nama.get(u);
   h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:o.serial_number&&o.online?`onclick="aktivasiOnuTakTerpetakan(${jsq(o.serial_number)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'+(o.serial_number&&o.online?' <span class="plSub">· ketuk untuk aktivasi</span>':'')}</div><div class="plSub">${onuFilter==='trafik'?'PON '+esc(o.pon)+' · ':''}${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div>${baris(o)}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}${!u&&!o.online&&o.serial_number&&saya.peran==='owner'?`<button class="btnS" style="color:#b42318" onclick="event.stopPropagation();hapusOnuManual(${jsq(o.pon)},${Number(o.onu_id)},${jsq(o.serial_number)},this)">🗑 Hapus</button>`:''}</div></div>`;
+ }
+ // Pelanggan yang cocok dengan pencarian tapi tidak ada di daftar ONU (ONU belum terpetakan / offline tanpa
+ // data OLT): tetap bisa didiagnosa (PPPoE, ping, ACS) — dulu hanya lewat menu Diagnosa terpisah.
+ if(q&&onuFilter==='semua'){
+  const adaOnu=new Set((d.onu_list||[]).map(o=>String(o.pppoe_username||'').toLowerCase()).filter(Boolean));
+  const lain=(dg.pelanggan||[]).filter(p=>!adaOnu.has(String(p.username).toLowerCase())&&[p.username,p.nama].some(x=>String(x||'').toLowerCase().includes(q))).slice(0,20);
+  if(lain.length) h+=`<div style="margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">Pelanggan tanpa ONU terpetakan</b></div>`
+   +lain.map(p=>`<div class="plRow" onclick="closeModal('customerModal');openDiagnosa(${jsq(p.username)})"><div style="min-width:0"><div class="plName">${esc(p.nama||p.username)} <span class="plSub">(${esc(p.username)})</span></div><div class="plSub">ketuk untuk diagnosa (PPPoE, ping, perangkat ONU lewat ACS)</div></div></div>`).join('');
  }
  const jam=d.timestamp?String(d.timestamp).slice(11,16):'';
  $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · trafik sesaat dari MikroTik${jam?' pukul '+esc(jam):''}, diperbarui otomatis · ketuk ONU yang terpetakan untuk membuka Diagnosa (rata-rata &amp; puncak 24 jam)</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');
