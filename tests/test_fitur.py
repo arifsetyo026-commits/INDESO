@@ -3114,3 +3114,36 @@ def test_amankan_onu(siap, monkeypatch):
         [b + "X_FH_FireWall.REMOTEACCEnable", False, "xsd:boolean"]]
     acs.dev["ZTEGC1234567"]["_deviceId"]["_Manufacturer"] = "Huawei"
     assert o.post("/api/acs/budi/amankan").status_code == 400
+
+
+def test_diagnosa_baca_onu_langsung(siap, monkeypatch):
+    """Diagnosa membaca ONU pelanggan langsung dari OLT lewat SNMP (bukan data pantauan yang bisa berumur 1 siklus);
+    bila OLT tidak menjawab, tetap memakai data pantauan terakhir."""
+    main, o, k, m = siap
+    O = main.ONUStatus
+    onu = O(pon="0/0/1", onu_id=35, snmp_index=1035, serial_number="ZTEGCF052DDB", olt_rx_dbm=-20.27,
+            onu_rx_dbm=-14.96, online=True, status="OK", pppoe_username="budi")
+    main._latest_data = main._build_dashboard(main.fetch_pppoe_active()[0], None, [onu])
+    main.CONFIG["OLT_HOST"] = "10.0.0.2"
+    panggilan = []
+    def palsu(args):
+        panggilan.append(args)
+        oid = args[-1]
+        if args[0] == "snmpget":
+            return f".{oid} = INTEGER: -2911\n"                 # OLT-RX memburuk sejak data pantauan
+        nilai = {"4": "-2654", "5": "245", "6": "1200", "7": "330", "8": "4110"}[oid.split(".")[-2]]
+        return f".{oid}.0.0 = INTEGER: {nilai}\n"
+    monkeypatch.setattr(main, "_snmp_jalankan", palsu)
+    d = k.get("/api/diagnosa/budi").json()["onu"]
+    assert d["dibaca"] == "langsung" and d["olt_rx_dbm"] == -29.11 and d["onu_rx_dbm"] == -26.54
+    assert d["temperature_c"] == 41.1 and d["voltage_v"] == 3.3 and d["status"] in ("WARNING", "CRITICAL")
+    assert onu.olt_rx_dbm == -29.11                                       # daftar ONU ikut diperbarui
+    assert all(a[0] in ("snmpget", "snmpwalk") and "telnet" not in " ".join(a) for a in panggilan)
+    assert any(a[-1] == main.CONFIG["OID_OLT_RX"] + ".1035" for a in panggilan)
+    monkeypatch.setattr(main, "_snmp_jalankan", lambda args: "")         # OLT tidak menjawab
+    d = k.get("/api/diagnosa/budi").json()["onu"]
+    assert d["dibaca"] == "pantauan" and d["olt_rx_dbm"] == -29.11
+    # jeda baca semua pelanggan bisa diatur (30–600 detik)
+    assert o.put("/api/pengaturan", json={"nilai": {"POLL_INTERVAL_SECONDS": 10}}).status_code == 400
+    assert o.put("/api/pengaturan", json={"nilai": {"POLL_INTERVAL_SECONDS": 45}}).status_code == 200
+    assert main.CONFIG["POLL_INTERVAL_SECONDS"] == 45
