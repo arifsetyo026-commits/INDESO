@@ -353,6 +353,8 @@ def test_mitra_dan_insentif(siap):
     assert d["insentif"]["jumlah_lunas"] == 3 and d["insentif"]["jumlah_gratis"] == 0
     depan = m.get("/api/mitra/pelanggan?periode=2999-01").json()
     assert next(p for p in depan["pelanggan"] if p["username"] == "server")["status_bayar"] is None
+    # gratis baru dihitung komisi mulai tanggal 1 bulan tagihannya (sama dengan yang tampil di HP mitra)
+    assert depan["insentif"]["total"] == 0 and depan["insentif"]["jumlah_lunas"] == 0
     # bayar insentif, terikat ke periode walau dibayar bulan berikutnya
     hari = datetime.now().strftime("%Y-%m-%d")
     assert o.post("/api/keuangan/insentif/2026-10/bayar", json={"tanggal": hari, "jumlah": 99999999}).status_code == 400

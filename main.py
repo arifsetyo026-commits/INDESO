@@ -6397,16 +6397,20 @@ def _hitung_insentif_berjalan(conn, periode: str) -> dict:
         "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 ORDER BY p.nama COLLATE NOCASE",
         (periode,),
     ).fetchall()
-    # Pelanggan gratis dihitung untuk periode selama ia belum berhenti sebelum
-    # awal periode tersebut.
-    gratis = conn.execute(
-        "SELECT p.username, p.nama FROM pelanggan p "
-        "WHERE p.gratis = 1 AND p.insentif_gratis = 1 AND p.tampil_mitra = 1 "
-        "AND (p.status = 'aktif' OR p.berhenti_sejak >= ?) "
-        "AND p.username NOT IN (SELECT username FROM tagihan WHERE periode = ? AND status = 'lunas') "
-        "ORDER BY p.nama COLLATE NOCASE",
-        (f"{periode}-01", periode),
-    ).fetchall()
+    # Pelanggan gratis dihitung untuk periode selama ia belum berhenti sebelum awal periode tersebut, dan baru
+    # mulai tanggal 1 bulan tagihannya (aturan owner): tagihan November dibayar di muka oleh pelanggan biasa,
+    # tapi "pembayaran otomatis" pelanggan gratis baru terjadi 1 November — sama dengan yang tampil di HP mitra.
+    if periode > datetime.now().strftime("%Y-%m"):
+        gratis = []
+    else:
+        gratis = conn.execute(
+            "SELECT p.username, p.nama FROM pelanggan p "
+            "WHERE p.gratis = 1 AND p.insentif_gratis = 1 AND p.tampil_mitra = 1 "
+            "AND (p.status = 'aktif' OR p.berhenti_sejak >= ?) "
+            "AND p.username NOT IN (SELECT username FROM tagihan WHERE periode = ? AND status = 'lunas') "
+            "ORDER BY p.nama COLLATE NOCASE",
+            (f"{periode}-01", periode),
+        ).fetchall()
     tarif = CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
     jumlah = len(lunas) + len(gratis)
     return {"periode": periode, "per_pelanggan": tarif, "jumlah_lunas": len(lunas),
