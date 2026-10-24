@@ -813,7 +813,7 @@ function searchCustomers(){
   if(onuFilter!=='trafik'&&o.pon!==pon){ pon=o.pon; const semua=(d.onu_list||[]).filter(x=>x.pon===pon);
    h+=`<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">PON ${esc(pon)}</b><span class="plSub">${semua.filter(x=>x.online).length}/${semua.length} online · ${jumlahPon(pon)}</span></div>`; }
   const u=o.pppoe_username, n=nama.get(u);
-  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'}</div><div class="plSub">${onuFilter==='trafik'?'PON '+esc(o.pon)+' · ':''}${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div>${baris(o)}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
+  h+=`<div class="plRow" ${u?`onclick="closeModal('customerModal');openDiagnosa(${jsq(u)})"`:o.serial_number?`onclick="aktivasiOnuTakTerpetakan(${jsq(o.serial_number)})"`:'style="cursor:default"'}><div style="min-width:0"><div class="plName">ONU ${esc(o.onu_id)} · ${u?esc(n||u)+(n?' <span class="plSub">('+esc(u)+')</span>':''):'<i class="muted">belum terpetakan</i>'+(o.serial_number?' <span class="plSub">· ketuk untuk aktivasi</span>':'')}</div><div class="plSub">${onuFilter==='trafik'?'PON '+esc(o.pon)+' · ':''}${esc(o.model||'—')} · ${esc(o.serial_number||'—')} · ONU-RX <b>${fmt(o.onu_rx_dbm)}</b> / OLT-RX <b>${fmt(o.olt_rx_dbm)}</b> dBm</div>${baris(o)}</div><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${o.online?'':'<span class="chip bad">Offline</span>'}${CH[o.status]||'<span class="chip off">'+esc(o.status||'—')+'</span>'}</div></div>`;
  }
  const jam=d.timestamp?String(d.timestamp).slice(11,16):'';
  $('customerResults').innerHTML=(daftar.length?`<div class="plSub">${daftar.length} ONU · trafik sesaat dari MikroTik${jam?' pukul '+esc(jam):''}, diperbarui otomatis · ketuk ONU yang terpetakan untuk membuka Diagnosa (rata-rata &amp; puncak 24 jam)</div>`:'')+(h||'<div class="muted">Tidak ada ONU yang cocok.</div>');
@@ -1939,6 +1939,14 @@ function bukaAktivasiOlt(sn,i,reset){
   <label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="obOTr${i}" checked> Kirim juga pengaturan TR-069 (lapor ke ACS)</label>
   ${reset?`<label>Ketik ulang username PPPoE untuk konfirmasi reset</label><input id="obOKonf${i}" autocapitalize="off" autocomplete="off">`:''}
   <div class="plBtns"><button class="plSave" onclick="kirimAktivasiOlt('${esc(sn)}',${i},this,${reset?'true':'false'})">${reset?'Simpan di OLT lalu reset ONU':'Kirim ke ONU lewat OLT'}</button></div><div id="obOHasil${i}"></div></div>`;
+}
+// ONU tanpa pelanggan di daftar PON & ONU (mis. ONU bekas yang sudah direset): masukkan ke ONU Baru untuk aktivasi.
+async function aktivasiOnuTakTerpetakan(sn){
+ if(!confirm('Aktivasi ONU '+sn+' lewat menu ONU Baru (isi PPPoE, WiFi, dan TR-069 dari OLT)?')) return;
+ try{ await jsonAtauError(await fetch('/api/onu-baru/ambil',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cari:sn})})); }
+ catch(e){ alert('Gagal: '+e.message); return; }
+ closeModal('customerModal'); await openOnuBaru();
+ obPesan('ONU '+sn+' masuk daftar. Pilih pelanggannya, lalu ⚙ Isi PPPoE & WiFi dari OLT.',true);
 }
 async function ambilOnuLama(btn){
  const cari=$('obAmbil').value.trim(); if(!cari){ obPesan('Isi username PPPoE atau SN ONU.'); return; }
