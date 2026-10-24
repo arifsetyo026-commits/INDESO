@@ -3401,7 +3401,7 @@ def pasang_baru(d: PasangBaruIn, request: Request):
                     + (f", tagihan {periode} {_rp(tagihan['jumlah'])}" if tagihan else "")
                     + (f", biaya pasang {_rp(d.biaya_pasang)}" if d.biaya_pasang else "")
                     + (", pakai " + ", ".join(f"{h['nama']} {_angka_stok(h['jumlah'])} {h['satuan']}" for h in pakai) if pakai else "")
-                    + (f" (pemakaian gudang GAGAL: {pakai_galat})" if pakai_galat else ""))
+                    + (f" (pemakaian warehouse GAGAL: {pakai_galat})" if pakai_galat else ""))
     if pakai:
         _kabar_stok_menipis(pakai)
     return {"ok": True, "username": username, "profil": profil, "tagihan": tagihan, "transaksi": transaksi,
@@ -3409,7 +3409,7 @@ def pasang_baru(d: PasangBaruIn, request: Request):
 
 
 # ============================================================
-# GUDANG — stok barang bersama owner & admin; pemakaian saat pasang baru langsung mengurangi stok
+# WAREHOUSE (gudang) — stok barang bersama owner & admin; pemakaian saat pasang baru langsung mengurangi stok
 # ============================================================
 # Stok tidak disimpan sebagai angka yang bisa ditimpa: dihitung dari riwayat mutasi yang tidak bisa diubah
 # (hanya dibatalkan dengan alasan), jadi setiap perubahan stok jelas siapa, kapan, dan untuk apa.
@@ -3496,9 +3496,9 @@ def _kabar_stok_menipis(hasil: list[dict]) -> None:
     """Kabari Telegram sekali saat stok melewati batas minimum (bukan setiap kali dipakai)."""
     turun = [h for h in hasil if h["stok_min"] and h["stok"] <= h["stok_min"] < h["stok_sebelum"]]
     if turun:
-        send_telegram_message("📦 <b>Stok gudang menipis</b>\n\n" + "\n".join(
+        send_telegram_message("📦 <b>Stok warehouse menipis</b>\n\n" + "\n".join(
             f"• {_esc(h['nama'])}: sisa {_angka_stok(h['stok'])} {_esc(h['satuan'])} (minimum {_angka_stok(h['stok_min'])})"
-            for h in turun) + "\n\nCatat barang masuk lewat dashboard → Gudang.")
+            for h in turun) + "\n\nCatat barang masuk lewat dashboard → Warehouse.")
 
 
 def _versi_gudang(conn) -> str:
@@ -3510,7 +3510,7 @@ def _versi_gudang(conn) -> str:
 
 @app.get("/api/gudang/versi")
 def gudang_versi(request: Request):
-    """Penanda perubahan untuk tampilan real time: layar Gudang yang terbuka mengecek ini tiap beberapa detik."""
+    """Penanda perubahan untuk tampilan real time: layar Warehouse yang terbuka mengecek ini tiap beberapa detik."""
     _wajib_admin(request)
     conn = _billing_conn()
     try:
@@ -3772,7 +3772,7 @@ def gudang_batal_mutasi(mid: int, d: GudangBatalIn, request: Request):
         conn.commit()
     finally:
         conn.close()
-    catat_aktivitas(_oleh(request), "gudang_batal", f"Batal catatan gudang #{mid} ({m['jenis']} {m['nama']} "
+    catat_aktivitas(_oleh(request), "gudang_batal", f"Batal catatan warehouse #{mid} ({m['jenis']} {m['nama']} "
                     f"{_angka_stok(abs(m['jumlah']))} {m['satuan']}): {alasan[:150]}")
     return {"ok": True}
 

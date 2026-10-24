@@ -172,7 +172,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Peringatan &amp; Log <span id="alertBadge" class="badge">0</span></a>
    <a href="#" onclick="openDiagnosa();return false"><span class="ico">⌁</span>Diagnosa Perangkat</a>
    <a href="#" onclick="openTiket();return false"><span class="ico">⚒</span>Tiket Gangguan <span id="tiketBadge" class="badge" style="display:none">0</span></a>
-   <a href="#" onclick="openGudang();return false"><span class="ico">▤</span>Gudang <span id="gudangBadge" class="badge" style="display:none" title="barang menipis">0</span></a>
+   <a href="#" onclick="openGudang();return false"><span class="ico">▤</span>Warehouse <span id="gudangBadge" class="badge" style="display:none" title="barang menipis">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan Jaringan</a>
   <a href="#" onclick="openBilling();return false"><span class="ico">₨</span>Penagihan</a>
@@ -240,7 +240,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label class="plCek"><input type="checkbox" id="pbSecret" onchange="$('pbSecretBox').style.display=this.checked?'block':'none';if(this.checked)muatProfilPasang()"> Buat akun PPPoE di MikroTik sekalian</label>
 <div id="pbSecretBox" style="display:none"><label>Password PPPoE</label><input id="pbSandi" autocomplete="new-password">
 <label>Profil PPPoE MikroTik</label><select id="pbProfil"><option value="">— dicocokkan otomatis dari kecepatan paket —</option></select></div>
-<label>Pemakaian barang gudang <span class="plSub">(stok langsung berkurang atas nama pelanggan ini)</span></label><div id="pbBarang"></div><button type="button" class="btnS" style="margin:2px 0 8px" onclick="pbTambahBarang()">+ Tambah barang</button>
+<label>Pemakaian barang warehouse <span class="plSub">(stok langsung berkurang atas nama pelanggan ini)</span></label><div id="pbBarang"></div><button type="button" class="btnS" style="margin:2px 0 8px" onclick="pbTambahBarang()">+ Tambah barang</button>
 <label>Biaya pasang yang diterima (Rp) <span class="plSub">(dicatat otomatis di Keuangan; 0 = tidak ada)</span></label><input id="pbBiaya" type="number" min="0" step="1000" value="0" inputmode="numeric">
 <label>Metode bayar biaya pasang</label><select id="pbMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
 <div class="plBtns"><button class="plSave" id="pbSimpan" onclick="simpanPasangBaru()">Simpan pelanggan baru</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
@@ -423,7 +423,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px"><input id="obAmbil" class="btnS" style="flex:1;min-width:0;text-align:left" autocapitalize="off" placeholder="username PPPoE atau SN ONU"><button class="btnS go" onclick="ambilOnuLama(this)">Masukkan ke daftar</button></div></details>
 <div id="obList"><div class="muted">Memuat…</div></div>
 </div></div></div>
-<div class="overlay" id="gudangModal"><div class="modal"><div class="modalHead"><h3>Gudang</h3><button class="close" onclick="closeModal('gudangModal')">Tutup</button></div><div class="modalBody">
+<div class="overlay" id="gudangModal"><div class="modal"><div class="modalHead"><h3>Warehouse</h3><button class="close" onclick="closeModal('gudangModal')">Tutup</button></div><div class="modalBody">
 <div class="khSum" id="gdSum"></div>
 <div class="plSub" id="gdLive" style="margin:-2px 0 8px"></div>
 <div class="blFilters gdTabs"><button data-v="stok" class="on" onclick="gdTab('stok')">Stok</button><button data-v="pakai" onclick="gdTab('pakai')">Pakai untuk pelanggan</button><button data-v="riwayat" onclick="gdTab('riwayat')">Riwayat</button><button data-v="baru" onclick="gdTab('baru')">+ Barang baru</button></div>
@@ -1292,10 +1292,10 @@ function bukaPasangBaru(){
  $('pbMsg').textContent=''; pratinjauPasang(); tampilkanView('baru'); $('pbUser').focus();
  $('pbBarang').innerHTML=''; gdMuatData(true).then(()=>{ if(!$('pbBarang').children.length) pbTambahBarang(); });
 }
-// Baris pemakaian barang di Pasang baru (pilihan dari Gudang, dengan sisa stok).
+// Baris pemakaian barang di Pasang baru (pilihan dari Warehouse, dengan sisa stok).
 function pbTambahBarang(){
  const aktif=(gd.data?gd.data.barang:[]).filter(b=>b.aktif);
- if(!aktif.length){ $('pbBarang').innerHTML='<div class="plSub" style="margin-bottom:6px">Belum ada barang di Gudang.</div>'; return; }
+ if(!aktif.length){ $('pbBarang').innerHTML='<div class="plSub" style="margin-bottom:6px">Belum ada barang di Warehouse.</div>'; return; }
  const d=document.createElement('div'); d.className='pbBrg'; d.style.cssText='display:flex;gap:6px;margin-bottom:6px';
  d.innerHTML=`<select class="pbBrgId" style="flex:1;min-width:0"><option value="">— tidak ada —</option>${aktif.map(b=>`<option value="${b.id}">${esc(b.nama)} (sisa ${b.stok} ${esc(b.satuan)})</option>`).join('')}</select><input class="pbBrgJml" type="number" min="0" step="any" inputmode="decimal" placeholder="jumlah" style="width:90px"><button type="button" class="btnS" onclick="this.parentNode.remove()" aria-label="Hapus baris">✕</button>`;
  $('pbBarang').appendChild(d);
@@ -1338,8 +1338,8 @@ async function simpanPasangBaru(){
   if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
   if(d.transaksi&&d.transaksi.nomor) t.push('biaya pasang tercatat di Keuangan ('+d.transaksi.nomor+')');
   if(d.transaksi&&d.transaksi.galat) t.push('⚠️ biaya pasang belum tercatat: '+d.transaksi.galat);
-  if(d.gudang&&d.gudang.length) t.push('stok gudang dikurangi: '+d.gudang.map(g=>g.nama+' '+g.jumlah+' '+g.satuan).join(', '));
-  if(d.gudang_galat) t.push('⚠️ pemakaian gudang belum tercatat ('+d.gudang_galat+'): catat lewat Gudang → Pakai untuk pelanggan');
+  if(d.gudang&&d.gudang.length) t.push('stok warehouse dikurangi: '+d.gudang.map(g=>g.nama+' '+g.jumlah+' '+g.satuan).join(', '));
+  if(d.gudang_galat) t.push('⚠️ pemakaian warehouse belum tercatat ('+d.gudang_galat+'): catat lewat Warehouse → Pakai untuk pelanggan');
   $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
  }catch(e){ msg.textContent='Gagal: '+e.message; }
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
@@ -2944,7 +2944,7 @@ async function batalBayarInsentif(id){
  try{ await jsonAtauError(await fetch('/api/keuangan/transaksi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await muatInsentif(); kuPesan('Pembayaran dibatalkan.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
-// ===== Gudang: stok bersama owner & admin, diperbarui otomatis selama jendela terbuka =====
+// ===== Warehouse: stok bersama owner & admin, diperbarui otomatis selama jendela terbuka =====
 const gd={tab:'stok',data:null,versi:null,cari:'',filter:'semua',form:null,perlu:false,timer:null,diperbarui:null};
 async function openGudang(){ $('gudangModal').classList.add('show'); gdPesan(''); gd.form=null; await gdMuatData(); gdTab(gd.tab);
  clearInterval(gd.timer); gd.timer=setInterval(gdCekVersi,8000); }
@@ -2980,7 +2980,7 @@ function gdRender(){
      <div style="text-align:right;flex:none"><div class="blAmt" style="color:${b.menipis?'#b42318':b.stok<=0?'#8a5a00':'inherit'}">${gdAngka(b.stok)} <span class="plSub">${esc(b.satuan)}</span></div>${b.menipis?'<span class="chip bad">Menipis</span>':''}</div></div>
      <div class="blAksi" style="justify-content:flex-start">${b.aktif?`<button class="btnS go" onclick="gdBukaForm(${b.id},'masuk')">+ Masuk</button><button class="btnS" onclick="gdBukaForm(${b.id},'keluar')">− Pakai</button><button class="btnS" onclick="gdBukaForm(${b.id},'opname')">Hitung fisik</button>`:''}<button class="btnS" onclick="gdBukaForm(${b.id},'ubah')">✎ Ubah</button><button class="btnS" onclick="gdRiwayatBarang(${b.id})">Riwayat</button></div>
      <div id="gdF${b.id}">${gd.form&&gd.form.id===b.id?gdHtmlForm(b,gd.form.jenis):''}</div></div>`).join('')
-    ||`<div class="muted">${d.barang.length?'Tidak ada barang yang cocok.':'Gudang masih kosong. Tambahkan barang lewat <b>+ Barang baru</b>.'}</div>`);
+    ||`<div class="muted">${d.barang.length?'Tidak ada barang yang cocok.':'Warehouse masih kosong. Tambahkan barang lewat <b>+ Barang baru</b>.'}</div>`);
  } else if(gd.tab==='riwayat'){
   const m=gd.riwayatId?d.mutasi.filter(x=>x.barang_id===gd.riwayatId):d.mutasi, nama=gd.riwayatId&&(d.barang.find(b=>b.id===gd.riwayatId)||{}).nama;
   const JN={masuk:['ok','Masuk','+'],keluar:['warn','Pakai','−'],koreksi:['off','Hitung fisik','']};
@@ -3066,11 +3066,11 @@ async function gdBatal(id){
  try{ await jsonAtauError(await fetch('/api/gudang/mutasi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await gdMuatData(); gdRender(); gdPesan('✅ Catatan dibatalkan, stok disesuaikan.',true); }
  catch(e){ gdPesan('Gagal: '+e.message); }
 }
-// Lencana "menipis" di menu Gudang (dicek berkala, ringan).
+// Lencana "menipis" di menu Warehouse (dicek berkala, ringan).
 async function gdCekBadge(){ try{ gdBadge((await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'}))).menipis); }catch(e){} }
 setTimeout(gdCekBadge,4000); setInterval(()=>{ if(!$('gudangModal').classList.contains('show')) gdCekBadge(); },300000);
-AKSI_LABEL.gudang_barang='Gudang: barang'; AKSI_LABEL.gudang_masuk='Gudang: barang masuk'; AKSI_LABEL.gudang_keluar='Gudang: pemakaian';
-AKSI_LABEL.gudang_opname='Gudang: hitung fisik'; AKSI_LABEL.gudang_batal='Gudang: batal catatan';
+AKSI_LABEL.gudang_barang='Warehouse: barang'; AKSI_LABEL.gudang_masuk='Warehouse: barang masuk'; AKSI_LABEL.gudang_keluar='Warehouse: pemakaian';
+AKSI_LABEL.gudang_opname='Warehouse: hitung fisik'; AKSI_LABEL.gudang_batal='Warehouse: batal catatan';
 AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.komisi_kunci='Kunci komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
 pulihkanModal();
