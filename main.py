@@ -10815,6 +10815,7 @@ class HapusOnuItem(BaseModel):
 
 class HapusOnuIn(BaseModel):
     onu: list[HapusOnuItem]
+    paksa: bool = False      # tombol Hapus manual (owner): lewati aturan pemakai/3 hari, tetap wajib offline & SN cocok
 
 
 @app.post("/api/olt/onu-mati/hapus")
@@ -10834,7 +10835,7 @@ def olt_onu_mati_hapus(d: HapusOnuIn, request: Request):
         if not x or not m or not 1 <= int(it.onu_id) <= 128:
             hasil.append({"pon": it.pon, "onu_id": it.onu_id, "sn": it.sn, "ok": False,
                           "pesan": "Tidak lagi offline / alamat atau SN berubah. Muat ulang daftar."})
-        elif not x["boleh"]:
+        elif not x["boleh"] and not d.paksa:
             hasil.append({"pon": it.pon, "onu_id": it.onu_id, "sn": it.sn, "ok": False, "pesan": x["alasan"]})
         else:
             per_if.setdefault(m.group(1), []).append((int(m.group(2)), int(it.onu_id), x))
@@ -10876,7 +10877,7 @@ def olt_onu_mati_hapus(d: HapusOnuIn, request: Request):
             conn.commit()
         finally:
             conn.close()
-        catat_aktivitas(_oleh(request), "olt_hapus_onu", "Hapus ONU mati dari OLT: " + ", ".join(
+        catat_aktivitas(_oleh(request), "olt_hapus_onu", f"Hapus ONU mati dari OLT{' (manual)' if d.paksa else ''}: " + ", ".join(
             f"{h['pon']}/{h['onu_id']} {h['sn']}" for h in terhapus) + ("" if tersimpan is not False else " (belum tersimpan)"))
     return {"hasil": hasil, "tersimpan": tersimpan}
 

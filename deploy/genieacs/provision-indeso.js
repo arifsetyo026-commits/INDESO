@@ -27,7 +27,7 @@ declare("InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnectio
 declare("InternetGatewayDevice.WANDevice.*.WANConnectionDevice.*.WANPPPConnection.*.ExternalIPAddress", {path: sekarang - 24 * jam, value: sekarang - jam});
 declare("VirtualParameters.pppoeUsername", {value: sekarang - 24 * jam});
 
-// ZTE: WAN PPPoE yang dibuat OLT (`ont ipconfig`, nama "omci_…") berjenis INTERNET_TR069_VOIP. Dengan VOIP,
+// ZTE: WAN PPPoE yang dibuat OLT (`ont ipconfig`, nama "omci_…") ikut membawa layanan VOIP. Dengan VOIP,
 // ZTE menolak ping dari luar (MikroTik tidak bisa ping ONU). INDESO tidak memakai VOIP, jadi samakan dengan
 // WAN buatan web: INTERNET_TR069. Diperiksa tiap jam; OLT bisa mengembalikannya setelah ONU restart.
 if (/zte/i.test(String((declare("DeviceID.Manufacturer", {value: 1}).value || [""])[0]))) {
@@ -41,7 +41,11 @@ if (/zte/i.test(String((declare("DeviceID.Manufacturer", {value: 1}).value || ["
   }
   for (const l of layanan) {
     const wan = l.path.replace(/\.X_ZTE-COM_ServiceList$/, "");
-    if (l.value && l.value[0] === "INTERNET_TR069_VOIP" && /^omci_/i.test(namaWan[wan] || ""))
-      declare(l.path, null, {value: "INTERNET_TR069"});
+    // Ejaan beda per firmware: F670L "INTERNET_TR069_VOIP", F609 V7 "INTERNET_VoIP_TR069". Buang kata VoIP saja,
+    // sisanya (urutan & huruf) dibiarkan seperti tulisan firmware itu sendiri.
+    const v = l.value ? String(l.value[0]) : "";
+    const tanpaVoip = v.split("_").filter(k => !/^voip$/i.test(k)).join("_");
+    if (/^omci_/i.test(namaWan[wan] || "") && /internet/i.test(v) && tanpaVoip !== v)
+      declare(l.path, null, {value: tanpaVoip});
   }
 }
