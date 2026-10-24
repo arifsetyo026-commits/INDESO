@@ -4387,9 +4387,10 @@ def keuangan_ringkasan(periode: str, request: Request):
         tagihan_periode = conn.execute(
             "SELECT COALESCE(SUM(jumlah),0), COUNT(*) FROM tagihan WHERE periode = ?", (periode,)
         ).fetchone()
-        insentif = _hitung_insentif(conn, periode)
-        insentif_dibayar = _insentif_dibayar(conn, periode)
-        insentif_tunggak = _insentif_tertunggak(conn, periode)
+        p_komisi = _geser_periode(periode, 1)          # hasil kerja bulan ini = tagihan bulan depan
+        insentif = _hitung_insentif(conn, p_komisi)
+        insentif_dibayar = _insentif_dibayar(conn, p_komisi)
+        insentif_tunggak = _insentif_tertunggak(conn, p_komisi)
         pelanggan_aktif = conn.execute(
             "SELECT COUNT(*) FROM pelanggan WHERE status='aktif' AND gratis=0").fetchone()[0]
         utang_info = _ringkas_utang(conn)
@@ -5138,12 +5139,13 @@ def tutup_buku(periode: str, d: TutupBukuIn, request: Request):
         if _buku_tertutup(conn, periode):
             raise HTTPException(status_code=400, detail="Buku bulan ini sudah ditutup.")
         r = _ringkas_periode(conn, periode)
-        # Komisi mitra bulan ini ikut final (hasil kerja bulan ini, dibayar awal bulan depan)
+        # Komisi hasil kerja bulan ini ikut final: tagihan bulan DEPAN (tagihan X = hasil kerja X-1, dibayar awal X)
         _siapkan_kunci_komisi(conn)
-        # Bulan tanpa tagihan di INDESO (sebelum Penagihan dipakai) tidak dikunci otomatis di Rp0;
+        p_komisi = _geser_periode(periode, 1)
+        # Periode tanpa tagihan di INDESO (sebelum Penagihan dipakai) tidak dikunci otomatis di Rp0;
         # komisinya dikunci manual oleh owner dengan angka yang disepakati.
-        if _ada_tagihan(conn, periode) and not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ?", (periode,)).fetchone():
-            _kunci_komisi(conn, periode, "tutup_buku", _oleh(request))
+        if _ada_tagihan(conn, p_komisi) and not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ?", (p_komisi,)).fetchone():
+            _kunci_komisi(conn, p_komisi, "tutup_buku", _oleh(request))
         conn.execute("INSERT INTO tutup_buku (periode, oleh, pada, catatan) VALUES (?,?,?,?)",
                      (periode, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                       (d.catatan or "").strip()[:300] or None))
@@ -5169,7 +5171,7 @@ def buka_buku(periode: str, d: BatalIn, request: Request):
             raise HTTPException(status_code=404, detail="Buku bulan ini belum ditutup.")
         conn.execute("DELETE FROM tutup_buku WHERE periode = ?", (periode,))
         _siapkan_kunci_komisi(conn)
-        conn.execute("DELETE FROM komisi_kunci WHERE periode = ? AND sumber = 'tutup_buku'", (periode,))
+        conn.execute("DELETE FROM komisi_kunci WHERE periode = ? AND sumber = 'tutup_buku'", (_geser_periode(periode, 1),))
         conn.commit()
     finally:
         conn.close()
@@ -5496,6 +5498,12 @@ def proses_pengingat_utang(sekarang=None) -> None:
         conn.close()
 
 
+def _nama_kerja(periode: str) -> str:
+    """Komisi disimpan per periode TAGIHAN. Aturan owner: tagihan bulan X = hasil kerja bulan X-1 (pelanggan membayar
+    di muka), dibayar awal bulan X. Contoh: tagihan November 2026 → "hasil kerja Oktober 2026"."""
+    return "hasil kerja " + _nama_periode(_geser_periode(periode, -1))
+
+
 def _insentif_dibayar(conn, periode: str) -> int:
     return conn.execute(
         "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
@@ -5572,7 +5580,7 @@ class KunciKomisiIn(BaseModel):
 @app.post("/api/keuangan/insentif/{periode}/kunci")
 def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
     _wajib_owner(request, "Hanya owner yang bisa mengunci komisi mitra.")
-    if not _periode_valid(periode) or periode > datetime.now().strftime("%Y-%m"):
+    if not _periode_valid(periode) or periode > _geser_periode(datetime.now().strftime("%Y-%m"), 1):
         raise HTTPException(status_code=400, detail="Periode tidak valid.")
     if d.total is not None and not 0 <= d.total <= 100_000_000:
         raise HTTPException(status_code=400, detail="Jumlah komisi tidak valid.")
@@ -5584,7 +5592,7 @@ def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
     finally:
         conn.close()
     total = ins["total"] if d.total is None else d.total
-    catat_aktivitas(_oleh(request), "komisi_kunci", f"Komisi {_nama_periode(periode)} dikunci {_rp(total)}"
+    catat_aktivitas(_oleh(request), "komisi_kunci", f"Komisi {_nama_kerja(periode)} dikunci {_rp(total)}"
                     + (f" (terhitung {_rp(ins['total'])})" if total != ins["total"] else "")
                     + (f" · {d.catatan.strip()[:100]}" if d.catatan and d.catatan.strip() else ""))
     return {"ok": True, "total": total, "terhitung": ins["total"]}
@@ -5620,7 +5628,7 @@ def keuangan_buka_kunci_komisi(periode: str, request: Request):
     finally:
         conn.close()
     if n:
-        catat_aktivitas(_oleh(request), "komisi_kunci", f"Kunci komisi {_nama_periode(periode)} dibuka")
+        catat_aktivitas(_oleh(request), "komisi_kunci", f"Kunci komisi {_nama_kerja(periode)} dibuka")
     return {"ok": True}
 
 
@@ -5670,7 +5678,7 @@ def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
         ins = _hitung_insentif(conn, periode)
         sisa = ins["total"] - _insentif_dibayar(conn, periode)
         if sisa <= 0:
-            raise HTTPException(status_code=400, detail=f"Komisi {_nama_periode(periode)} sudah lunas.")
+            raise HTTPException(status_code=400, detail=f"Komisi {_nama_kerja(periode)} sudah lunas.")
         if not 0 < d.jumlah <= sisa:
             raise HTTPException(status_code=400, detail=f"Jumlah harus 1 sampai {_rp(sisa)} (sisa komisi).")
         kid = conn.execute("SELECT id FROM kategori_kas WHERE nama = ? AND jenis = 'keluar'", (_KAT_INSENTIF,)).fetchone()
@@ -5678,7 +5686,7 @@ def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
             kid = (conn.execute("INSERT INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 1)",
                                 (_KAT_INSENTIF,)).lastrowid,)
         penerima = (d.penerima or "").strip()[:60]
-        ket = f"Komisi {_nama_periode(periode)}" + (f" untuk {penerima}" if penerima else "") \
+        ket = f"Komisi {_nama_kerja(periode)}" + (f" untuk {penerima}" if penerima else "") \
             + (f" · {d.keterangan.strip()[:300]}" if d.keterangan and d.keterangan.strip() else "")
         cur = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
@@ -6355,7 +6363,8 @@ def _siapkan_kunci_komisi(conn) -> None:
 
 
 def _hitung_insentif(conn, periode: str) -> dict:
-    """Komisi mitra = hasil kerja bulan `periode` (dibayar awal bulan berikutnya). Bila sudah dikunci
+    """Komisi mitra dari tagihan bulan `periode` = hasil kerja bulan sebelumnya, dibayar awal bulan `periode`
+    (lihat _nama_kerja). Bila sudah dikunci
     (otomatis saat tutup buku bulan itu, atau manual oleh owner), angka kuncian yang dipakai, sehingga
     pembayaran susulan atau perubahan tarif tidak mengubah komisi yang sudah final."""
     _siapkan_kunci_komisi(conn)
@@ -6411,6 +6420,12 @@ def mitra_list_pelanggan(periode: str, request: Request):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
     conn = _billing_conn()
     try:
+        # Bulan pertama di akun mitra: tagihan pertama di INDESO (dan tidak sebelum KOMISI_MULAI). Bulan sebelum
+        # Penagihan dipakai tidak ditampilkan ke mitra.
+        awal_mitra = max(conn.execute("SELECT MIN(periode) FROM tagihan").fetchone()[0] or periode,
+                         CONFIG.get("KOMISI_MULAI") or "")
+        if periode < awal_mitra:
+            periode = awal_mitra
         rows = conn.execute(
             "SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, p.gratis, p.insentif_gratis, k.nama AS paket, "
             "t.status AS status_bayar, t.tgl_bayar, t.jatuh_tempo, "
@@ -6453,8 +6468,10 @@ def mitra_list_pelanggan(periode: str, request: Request):
     t = insentif.get("terkunci")
     insentif["final"] = bool(t)
     insentif["terkunci"] = {"pada": t["pada"]} if t else None
-    insentif["dibayar_bulan"] = _geser_periode(periode, 1)
-    return {"akun": _oleh(request), "periode": periode, "insentif": insentif, "pelanggan": daftar}
+    insentif["dibayar_bulan"] = periode                      # tagihan X = hasil kerja X-1, dibayar awal X
+    insentif["kerja_bulan"] = _geser_periode(periode, -1)
+    return {"akun": _oleh(request), "periode": periode, "insentif": insentif, "pelanggan": daftar,
+            "awal": awal_mitra}
 
 
 class KontakIn(BaseModel):
