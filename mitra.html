@@ -2,10 +2,25 @@
 @font-face{font-family:'Inter';font-style:normal;font-weight:100 900;font-display:swap;src:url(/static/inter.woff2) format('woff2')}
 :root{--fs-2xs:11px;--fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:18px;--fs-2xl:22px;--fs-3xl:28px;--font:'Inter',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;--g900:#004a27;--g700:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318;--amber:#8a5a00;--shadow:0 5px 18px rgba(0,55,28,.09)}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:var(--font);color:var(--ink);background:var(--bg)}button,input,textarea{font:inherit}button{cursor:pointer}
-.top{background:linear-gradient(105deg,#003c20,#006f38 65%,#087f3f);color:#fff;padding:16px}
-.topIn{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:8px 12px;flex-wrap:wrap}
-.mark{width:40px;height:40px;border-radius:12px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:900}
-.top b{font-size:var(--fs-lg)}.top small{display:block;color:#bfe0cb;font-size:var(--fs-xs);margin-top:2px}
+.top{background:radial-gradient(120% 140% at 100% 0,#0b9a4c 0,transparent 55%),linear-gradient(115deg,#003a1f,#00632f 60%,#07813f);color:#fff;padding:14px 16px 16px;border-radius:0 0 22px 22px;box-shadow:0 8px 24px rgba(0,58,31,.22)}
+.topIn{max-width:860px;margin:0 auto}
+.topRow{display:flex;align-items:center;gap:12px}
+.mark{width:44px;height:44px;flex:none;border-radius:14px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:900;font-size:var(--fs-lg);box-shadow:inset 0 -3px 0 rgba(0,0,0,.12)}
+.judul{flex:1;min-width:0}.judul b{display:block;font-size:var(--fs-xl);letter-spacing:-.01em;line-height:1.15}
+.judul small{display:flex;align-items:center;gap:6px;margin-top:4px;color:#d4ecdc;font-size:var(--fs-xs);min-width:0}
+.judul small span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.peran{flex:none;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.22);color:#fff;font-weight:800;font-size:var(--fs-2xs);padding:2px 8px;border-radius:999px;letter-spacing:.04em;text-transform:uppercase}
+.ib{flex:none;width:38px;height:38px;border-radius:12px;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.1);color:#fff;display:grid;place-items:center;padding:0}
+.ib:active,.nb:active,.lapor:active{transform:scale(.96)}.ib svg,.lapor svg{width:18px;height:18px}
+.topRow2{display:flex;align-items:center;gap:10px;margin-top:14px}
+.bulan{flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:6px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:4px}
+.bulan b{font-size:var(--fs-md);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nb{width:36px;height:36px;flex:none;border:0;border-radius:10px;background:rgba(255,255,255,.14);color:#fff;font-size:var(--fs-xl);font-weight:800;line-height:1;padding:0}
+.nb:disabled{opacity:.3}
+.lapor{flex:none;display:flex;align-items:center;gap:6px;height:46px;padding:0 14px;border:0;border-radius:14px;background:#fff;color:#06703a;font-weight:800;font-size:var(--fs-sm)}
+.lapor .n{background:#d92d20;color:#fff;font-size:var(--fs-2xs);font-weight:800;min-width:18px;height:18px;border-radius:999px;display:grid;place-items:center;padding:0 5px}
+.lapor .n:empty{display:none}
+@media(max-width:380px){.lapor .t{display:none}.lapor{padding:0 13px}}
 .wrap{max-width:860px;margin:0 auto;padding:14px 16px 30px}
 .nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
 .nav b{font-size:var(--fs-md)}
@@ -38,9 +53,14 @@
 @media(max-width:620px){.cards{grid-template-columns:1fr 1fr}.card.main{grid-column:1/-1}.row{align-items:flex-start}}
 body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media(max-width:760px){input,select,textarea{font-size:16px!important}}
 </style></head><body>
-<div class="top"><div class="topIn"><div class="mark">ID</div><div style="flex:1;min-width:150px"><b>Internet Desa — Mitra</b><small id="akun">Memuat…</small></div><button class="btn" onclick="bukaTiket()">Gangguan <span id="nTiket"></span></button><button class="btn" onclick="bukaPassword()">Password</button><button class="btn" onclick="keluar()">Keluar</button></div></div>
+<div class="top"><div class="topIn">
+ <div class="topRow"><div class="mark">ID</div><div class="judul"><b>Internet Desa</b><small><span class="peran">Mitra</span><span id="akun">Memuat…</span></small></div>
+  <button class="ib" onclick="bukaPassword()" aria-label="Ganti password" title="Ganti password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M18.5 4.5l2 2"/></svg></button>
+  <button class="ib" onclick="keluar()" aria-label="Keluar" title="Keluar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button></div>
+ <div class="topRow2"><div class="bulan"><button class="nb" id="mundur" onclick="geser(-1)" aria-label="Bulan sebelumnya">‹</button><b id="periode">—</b><button class="nb" onclick="geser(1)" aria-label="Bulan berikutnya">›</button></div>
+  <button class="lapor" onclick="bukaTiket()" aria-label="Lapor gangguan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg><span class="t">Gangguan</span><span class="n" id="nTiket"></span></button></div>
+</div></div>
 <div class="wrap">
- <div class="nav"><button class="btn" id="mundur" onclick="geser(-1)" aria-label="Bulan sebelumnya">‹</button><b id="periode">—</b><button class="btn" onclick="geser(1)" aria-label="Bulan berikutnya">›</button></div>
  <div class="cards">
   <div class="card main"><small id="insJudul">Komisi bulan ini</small><strong id="insTotal">—</strong><span id="insRumus"></span><span id="insBayar" style="margin-top:6px"></span></div>
   <div class="card"><small>Sudah bayar</small><strong id="nLunas">—</strong><span>pelanggan</span></div>
@@ -115,7 +135,7 @@ async function muat(){
   const r=await fetch('/api/mitra/pelanggan?periode='+st.periode,{cache:'no-store'});
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
-  st.data=d; $('akun').textContent='Masuk sebagai '+d.akun;
+  st.data=d; $('akun').textContent=d.akun;
   st.periode=d.periode; $('periode').textContent=namaP(st.periode); $('mundur').disabled=!!d.awal&&st.periode<=d.awal;
   const ins=d.insentif;
   $('insTotal').textContent=rp(ins.total);
@@ -161,7 +181,7 @@ function tWaktu(s){ if(!s) return ''; return tgl(s.slice(0,10))+' '+s.slice(11,1
 async function muatTiket(){
  try{
   const r=await fetch('/api/mitra/tiket',{cache:'no-store'}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
-  st.tiket=d; const buka=d.tiket.filter(t=>t.terbuka).length; $('nTiket').textContent=buka?'('+buka+')':'';
+  st.tiket=d; const buka=d.tiket.filter(t=>t.terbuka).length; $('nTiket').textContent=buka||'';
   if($('tKat').options.length===0) $('tKat').innerHTML=d.kategori.map(k=>`<option>${esc(k)}</option>`).join('');
   $('tList').innerHTML=d.tiket.length?d.tiket.map(t=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(t.nama||t.username)} <span class="sub" style="display:inline">· #T${t.id}</span></div><div class="sub">${esc(t.kategori)}${t.keterangan?' — '+esc(t.keterangan):''}</div><div class="sub">Dilaporkan ${esc(tWaktu(t.dibuat_pada))}${t.teknisi?' · teknisi '+esc(t.teknisi):''}${t.terbuka?' · sudah '+esc(t.umur):''}</div>${t.solusi&&t.status==='selesai'?`<div class="sub" style="color:#0b7a3b">✔ ${esc(t.solusi)}</div>`:''}</div><div class="right">${T_CHIP[t.status]||''}</div></div>`).join(''):'<div class="muted">Belum ada laporan.</div>';
  }catch(e){ $('tList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
