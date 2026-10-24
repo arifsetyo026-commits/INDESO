@@ -1672,9 +1672,10 @@ function htmlAcs(a){
  if(wan.length>1||wan.some(bisaHapus)) h+=`<details style="margin-bottom:10px"${wan.some(bisaHapus)?' open':''}><summary class="plSub" style="cursor:pointer;font-weight:800">Koneksi WAN di ONU (${wan.length})${wan.some(bisaHapus)?' · ada WAN sisa yang tidak tersambung':''}</summary>`
   +wan.map(w=>`<div class="blRow akRow"><div><div class="plName" style="font-size:var(--fs-xs)">${esc(w.username||'(tanpa username)')}${w.nama?' <span class="plSub">· '+esc(w.nama)+'</span>':''}</div><div class="plSub">${w.jenis==='ip'?'WAN IP/bridge'+(w.tipe?' ('+esc(w.tipe)+')':'')+' · ':''}${w.tersambung?'IP '+esc(w.ip||'-'):'tidak tersambung'}${w.status?' · '+esc(w.status):''}${w.layanan?' · '+esc(w.layanan):''}${!w.hapus&&w.alasan&&!w.tersambung?'<br><i>Tidak bisa dihapus dari INDESO: '+esc(w.alasan)+'</i>':''}</div></div><div class="blKanan"><div class="blAksi">${w.tersambung?'<span class="chip ok">tersambung</span>':'<span class="chip off">mati</span>'}${bisaHapus(w)?`<button class="btnS" onclick="hapusWan(${jsq(w.path)},${jsq(w.username||'')},this)">Hapus WAN ini</button>`:''}</div></div></div>`).join('')+'</details>';
  const wifiAktif=p.wifi.filter(w=>w.aktif), wifiMati=p.wifi.filter(w=>!w.aktif);
- const kartuWifi=w=>`<div class="kuPanel" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b style="font-size:var(--fs-sm)">📶 ${esc(w.ssid)}</b> <span class="plSub">${esc(w.band)}${w.channel?' · channel '+esc(w.channel):''}${w.klien!=null?' · '+w.klien+' terhubung':''}${w.aktif?'':' · NONAKTIF'}</span></div><button class="btnS" onclick="const f=document.getElementById('dgW${w.index}');f.style.display=f.style.display==='none'?'block':'none'">Ganti nama / password</button></div>
+ const kartuWifi=w=>`<div class="kuPanel" style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b style="font-size:var(--fs-sm)">📶 ${esc(w.ssid)}</b> <span class="plSub">${esc(w.band)}${w.channel?' · channel '+esc(w.channel):''}${w.lebar?' · '+esc(String(w.lebar).replace('MHz',' MHz')):''}${w.klien!=null?' · '+w.klien+' terhubung':''}${w.aktif?'':' · NONAKTIF'}</span></div><button class="btnS" onclick="const f=document.getElementById('dgW${w.index}');f.style.display=f.style.display==='none'?'block':'none'">Ganti nama / password</button></div>
    <div id="dgW${w.index}" class="plForm" style="display:none;margin-top:4px"><label>Nama WiFi baru (kosongkan bila tetap)</label><input id="dgSsid${w.index}" maxlength="32" placeholder="${esc(w.ssid)}">
    ${w.bisa_ganti_password?`<label>Password baru (8–63 karakter, kosongkan bila tetap)</label><div style="display:flex;gap:6px"><input id="dgPw${w.index}" maxlength="63" autocomplete="off" style="flex:1"><button class="btnS" type="button" onclick="$('dgPw${w.index}').value=passwordAcak()">Buat acak</button></div>`:'<div class="plSub" style="margin-top:8px">Model ONU ini tidak membuka pengaturan password lewat TR-069.</div>'}
+   ${(w.pilihan_lebar||[]).length?`<label>Lebar kanal <span class="plSub">(saran: 2,4 GHz 20 MHz · 5 GHz 80 MHz)</span></label><select id="dgLebar${w.index}" class="btnS" style="text-align:left"><option value="">tetap (${esc(w.lebar||'—')})</option>${w.pilihan_lebar.map(v=>`<option value="${v}">${v.replace('MHz',' MHz')}${w.band==='2,4 GHz'&&v==='40MHz'?' — rawan bentrok dengan WiFi tetangga':''}</option>`).join('')}</select>`:''}
    <div class="plBtns"><button class="plSave" onclick="simpanWifi(${w.index})">Simpan ke ONU</button></div></div></div>`;
  h+=wifiAktif.map(kartuWifi).join('')||'<div class="muted">Tidak ada WiFi yang aktif di ONU ini.</div>';
  if(p.perangkat_wifi&&wifiAktif.every(w=>w.klien==null)) h+=`<div class="plSub" style="margin:-2px 0 8px">${p.perangkat_wifi} perangkat tersambung lewat WiFi (ONU tidak melaporkan jumlah per jaringan).</div>`;
@@ -1857,11 +1858,11 @@ async function hapusWan(path,nama,btn){
  }catch(e){ dgPesan('Gagal: '+e.message); btn.disabled=false; btn.textContent='Hapus WAN ini'; }
 }
 async function simpanWifi(i){
- const ssid=$('dgSsid'+i).value.trim(), pwEl=$('dgPw'+i), password=pwEl?pwEl.value:'';
- if(!ssid&&!password){ dgPesan('Isi nama WiFi baru dan/atau password baru.'); return; }
+ const ssid=$('dgSsid'+i).value.trim(), pwEl=$('dgPw'+i), password=pwEl?pwEl.value:'', lbEl=$('dgLebar'+i), lebar=lbEl?lbEl.value:'';
+ if(!ssid&&!password&&!lebar){ dgPesan('Isi nama WiFi baru, password baru, atau pilih lebar kanal.'); return; }
  if(password&&(password.length<8||password.length>63)){ dgPesan('Password WiFi 8–63 karakter.'); return; }
- if(!confirm('Simpan ke ONU '+dg.user+'?'+(ssid?'\nNama WiFi: '+ssid:'')+(password?'\nPassword: '+password:'')+'\n\nPerangkat pelanggan akan terputus dari WiFi dan perlu login ulang.')) return;
- try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:i,ssid:ssid||null,password:password||null})}));
+ if(!confirm('Simpan ke ONU '+dg.user+'?'+(ssid?'\nNama WiFi: '+ssid:'')+(password?'\nPassword: '+password:'')+(lebar?'\nLebar kanal: '+lebar:'')+'\n\nPerangkat pelanggan akan terputus dari WiFi sebentar'+(ssid||password?' dan perlu login ulang.':' lalu tersambung sendiri.'))) return;
+ try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:i,ssid:ssid||null,password:password||null,lebar:lebar||null})}));
   const P=dg.data.pelanggan, w=dg.data.acs.perangkat.wifi.find(x=>x.index===i), wa=nomorWA(P.no_hp);
   const pesan='Yth. '+(P.nama||'')+', WiFi Internet Desa Anda sudah diperbarui.\nNama WiFi: '+(ssid||w.ssid)+(password?'\nPassword: '+password:'')+'\n\nSilakan sambungkan ulang perangkat Anda. Terima kasih.';
   const tombolWA=wa?`<a class="btnS go" href="https://wa.me/${wa}?text=${encodeURIComponent(pesan)}" target="_blank" rel="noopener">Kirim ke WA pelanggan</a>`:'';
@@ -1930,10 +1931,10 @@ function bukaAktivasiOlt(sn,i,reset){
   ${reset?`<div class="kuPanel" style="margin:0 0 8px;border-color:#f3b4ab;background:#fff6f5;font-size:var(--fs-xs)"><b style="color:#b42318">Reset pabrik ONU pelanggan</b><br>Urutan: PPPoE, WiFi, dan TR-069 disimpan di OLT → bila PPPoE diterima &amp; tersimpan, ONU direset pabrik → ONU menyala dan menerima semuanya dari OLT. Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, nama WiFi tambahan, sandi admin) hilang.<br><b>Isi nama &amp; password WiFi yang dipakai pelanggan sekarang</b> supaya HP di rumah tersambung sendiri. Bila ONU tidak menerima pengaturan dari OLT, perlu kunjungan.</div>`
    :`<div class="plSub">Dikirim lewat OLT ke ONU ini: PPPoE (cara <code>ont ipconfig</code>, teruji di ZTE F670L), WiFi, dan TR-069. Tidak perlu web ONU atau kunjungan.</div>`}
   <label>Akun PPPoE (secret MikroTik)</label><input id="obUser${i}" list="obUserL${i}" autocapitalize="off" value="${esc(o.pppoe_username||o.untuk||'')}" placeholder="username PPPoE"><datalist id="obUserL${i}">${daftar.map(p=>`<option value="${esc(p.username)}">${esc(p.nama||'')}</option>`).join('')}</datalist>
-  <label>Password PPPoE <span class="plSub">(kosongkan = diambil otomatis dari MikroTik)</span></label><input id="obPass${i}" autocomplete="off">
+  <label>Password PPPoE <span class="plSub">(kosongkan = diambil otomatis dari MikroTik)</span></label><input id="obPass${i}" autocomplete="new-password" placeholder="kosongkan">
   <label>Nama WiFi <span class="plSub">(kosongkan bila WiFi tidak diubah; tanpa spasi)</span></label><input id="obOSsid${i}" maxlength="32" autocapitalize="off">
-  <label>Password WiFi (8–63 karakter, tanpa spasi)</label><input id="obOPw${i}" maxlength="63" autocomplete="off">
-  <label>Akhiran nama WiFi 5 GHz</label><input id="obOAkhir${i}" maxlength="8" value="-5G">
+  <label>Password WiFi (8–63 karakter, tanpa spasi)</label><input id="obOPw${i}" maxlength="63" autocomplete="new-password">
+  <label>Akhiran nama WiFi 5 GHz <span class="plSub">(ditempel di belakang nama: RUMAH + -5G = RUMAH-5G; kosongkan bila sama persis)</span></label><input id="obOAkhir${i}" maxlength="8" value="-5G" oninput="$('obOContoh${i}').textContent=($('obOSsid${i}').value.trim()||'NAMA')+this.value"><div class="plSub">Nama 5 GHz jadi: <b id="obOContoh${i}">NAMA-5G</b></div>
   <label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" id="obOTr${i}" checked> Kirim juga pengaturan TR-069 (lapor ke ACS)</label>
   ${reset?`<label>Ketik ulang username PPPoE untuk konfirmasi reset</label><input id="obOKonf${i}" autocapitalize="off" autocomplete="off">`:''}
   <div class="plBtns"><button class="plSave" onclick="kirimAktivasiOlt('${esc(sn)}',${i},this,${reset?'true':'false'})">${reset?'Simpan di OLT lalu reset ONU':'Kirim ke ONU lewat OLT'}</button></div><div id="obOHasil${i}"></div></div>`;
@@ -1951,11 +1952,14 @@ async function kirimAktivasiOlt(sn,i,btn,reset){
  const body={username:$('obUser'+i).value.trim(),password:$('obPass'+i).value||null,ssid:$('obOSsid'+i).value.trim()||null,
   wifi_password:$('obOPw'+i).value||null,akhiran_5g:$('obOAkhir'+i).value.trim(),tr069:$('obOTr'+i).checked,
   reset:!!reset,konfirmasi:reset?$('obOKonf'+i).value.trim():null};
- if(!body.username){ obPesan('Isi akun PPPoE.'); return; }
- if(reset&&(!body.ssid||!body.wifi_password)){ obPesan('Reset pabrik menghapus WiFi ONU: isi nama & password WiFi pelanggan yang sekarang.'); return; }
- if(reset&&body.konfirmasi.toLowerCase()!==body.username.toLowerCase()){ obPesan('Ketik ulang username PPPoE dengan benar untuk konfirmasi reset.'); return; }
- if(body.ssid&&/\s/.test(body.ssid)){ obPesan('Nama WiFi lewat OLT tidak boleh berisi spasi.'); return; }
- if(body.ssid&&(!body.wifi_password||body.wifi_password.length<8)){ obPesan('Password WiFi minimal 8 karakter.'); return; }
+ // Pesan salah isian tampil tepat di bawah tombol (pesan di atas jendela tidak terlihat saat form digulir).
+ const salah=t=>{ const el=$('obOHasil'+i); el.innerHTML='<div style="margin-top:8px;color:#b42318;font-size:var(--fs-xs);font-weight:700">✖ '+esc(t)+'</div>'; el.scrollIntoView({block:'nearest'}); };
+ if(!body.username){ salah('Isi akun PPPoE.'); return; }
+ if(reset&&(!body.ssid||!body.wifi_password)){ salah('Reset pabrik menghapus WiFi ONU: isi nama & password WiFi pelanggan yang sekarang.'); return; }
+ if(reset&&body.konfirmasi.toLowerCase()!==body.username.toLowerCase()){ salah('Ketik ulang username PPPoE dengan benar untuk konfirmasi reset.'); return; }
+ if(body.ssid&&/\s/.test(body.ssid)){ salah('Nama WiFi lewat OLT tidak boleh berisi spasi.'); return; }
+ if(body.ssid&&(!body.wifi_password||body.wifi_password.length<8)){ salah('Password WiFi minimal 8 karakter.'); return; }
+ if(reset&&body.password&&!confirm('Password PPPoE diisi manual. Pastikan itu password akun '+body.username+' (bukan isian otomatis browser). Salah password = pelanggan offline setelah reset.\n\nKosongkan kolom itu supaya INDESO mengambil password yang benar dari MikroTik. Lanjut dengan password yang diisi?')) return;
  if(!confirm((reset?'RESET PABRIK ONU '+sn+' setelah pengaturan tersimpan di OLT?\n':'Kirim ke ONU '+sn+' lewat OLT?\n')+'PPPoE: '+body.username+(body.ssid?'\nWiFi: '+body.ssid+(body.akhiran_5g?' / '+body.ssid+body.akhiran_5g:''):'')+(body.tr069?'\n+ pengaturan TR-069':''))) return;
  btn.disabled=true; btn.textContent='Mengirim ke OLT…'; const out=$('obOHasil'+i);
  try{ const d=await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/aktivasi-olt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
