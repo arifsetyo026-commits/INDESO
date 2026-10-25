@@ -204,12 +204,13 @@ CONFIG = {
     "DAILY_REPORT_MINUTE": 0,
 
     # --- Interval ---
-    "POLL_INTERVAL_SECONDS": 60,
+    "POLL_INTERVAL_SECONDS": 300,     # daftar semua pelanggan; Diagnosa satu pelanggan selalu dibaca langsung
     "ALERT_COOLDOWN_MINUTES": 720,   # 12 jam: satu alert per ONU, lalu diam sampai 12 jam kemudian
     "PUTUS_TUNGGU_MENIT": 10,         # tunggu sekian menit sebelum kirim peringatan putus
     "PUTUS_MASSAL_MIN": 5,
     # --- Pantau internet pusat (MikroTik -> ISP) ---
     "UPSTREAM_AKTIF": True,
+    "UPSTREAM_PANTAU": "tidak",              # "ya" = ukur otomatis tiap UPSTREAM_INTERVAL_DETIK; "tidak" = saat halaman dibuka
     "UPSTREAM_TUJUAN": "8.8.8.8,1.1.1.1",   # tujuan ping internet; gateway ISP ditambah otomatis
     # File uji speedtest dari ONU (TR-143 DownloadDiagnostics, HTTP). Kosong = file di GenieACS FS
     # (http://<host ACS_ONU_URL>:7567/indeso-uji-20MB.bin), lihat docs/genieacs.md.
@@ -377,24 +378,34 @@ def _ringkas_limit(raw: str) -> str:
     return "/".join(satu(p) for p in raw.split("/"))
 
 
-def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
+# Bandwidth & batas paket semua pelanggan cukup dibaca sekali per catatan riwayat (5 menit), bukan tiap
+# putaran pemantauan. Di antara itu nilai terakhir dipakai ulang. Diagnosa membaca satu pelanggan langsung.
+_trafik = {"terakhir": 0.0, "bw": {}, "limit": {}}
+
+
+def fetch_pppoe_active(dengan_trafik: bool = True, nama: Optional[str] = None) -> tuple[list[PPPoEUser], Optional[str]]:
     """Ambil daftar PPPoE active dari MikroTik via RouterOS API, sekalian
     bandwidth sesaat (monitor-traffic, satu kali panggil buat semua interface
     biar hemat) dan rate-limit tiap pelanggan kalau tersedia.
+    dengan_trafik=False: bandwidth & batas paket memakai nilai terakhir (tanpa monitor-traffic/queue).
+    nama: hanya satu pelanggan (Diagnosa), selalu dengan bandwidth langsung.
     Return (daftar_user, pesan_error). error None jika sukses — dipakai
     untuk status mikrotik_online yang akurat, bukan ditebak dari isi list."""
     connection = None
     try:
         connection = _mikrotik_pool()
         api = connection.get_api()
-        active_list = api.get_resource("/ppp/active").get()
+        active = api.get_resource("/ppp/active")
+        active_list = active.get(name=nama) if nama else active.get()
+        if nama:
+            dengan_trafik = True
 
         # Bandwidth sesaat — panggil monitor-traffic SEKALI untuk semua interface
         # PPPoE sekaligus (bukan satu-satu per user, biar nggak lambat/berat).
         # Kalau ini gagal, bandwidth cuma jadi None — data PPPoE inti tetap utuh.
-        bw_by_username: dict[str, tuple[Optional[float], Optional[float]]] = {}
+        bw_by_username: dict[str, tuple[Optional[float], Optional[float]]] = {} if dengan_trafik else _trafik["bw"]
         iface_names = [f"<pppoe-{item.get('name')}>" for item in active_list if item.get("name")]
-        if iface_names:
+        if iface_names and dengan_trafik:
             try:
                 traffic = api.get_resource("/interface").call(
                     "monitor-traffic", {"interface": ",".join(iface_names), "once": ""}
@@ -413,14 +424,21 @@ def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
 
         # /ppp/active tidak membawa rate-limit — batas paket yang benar-benar
         # berlaku ada di antrean dinamis "<pppoe-NAMA>" (max-limit).
-        limit_by_username: dict[str, str] = {}
-        try:
-            for q in api.get_resource("/queue/simple").get():
-                nama = q.get("name") or ""
-                if nama.startswith("<pppoe-") and nama.endswith(">") and q.get("max-limit"):
-                    limit_by_username[nama[len("<pppoe-"):-1]] = _ringkas_limit(q["max-limit"])
-        except Exception as e:
-            logger.warning(f"Gagal ambil antrean (queue simple): {e}")
+        limit_by_username: dict[str, str] = {} if dengan_trafik else _trafik["limit"]
+        if dengan_trafik:
+            try:
+                antrean = api.get_resource("/queue/simple")
+                for q in (antrean.get(name=f"<pppoe-{nama}>") if nama else antrean.get()):
+                    nq = q.get("name") or ""
+                    if nq.startswith("<pppoe-") and nq.endswith(">") and q.get("max-limit"):
+                        limit_by_username[nq[len("<pppoe-"):-1]] = _ringkas_limit(q["max-limit"])
+            except Exception as e:
+                logger.warning(f"Gagal ambil antrean (queue simple): {e}")
+            if nama:
+                _trafik["bw"].update(bw_by_username)
+                _trafik["limit"].update(limit_by_username)
+            else:
+                _trafik.update(terakhir=time.monotonic(), bw=bw_by_username, limit=limit_by_username)
 
         users = []
         for item in active_list:
@@ -1267,7 +1285,8 @@ async def background_monitor_loop():
         onu_list: list[ONUStatus] = []
 
         try:
-            pppoe_users, mikrotik_error = await asyncio.to_thread(fetch_pppoe_active)
+            trafik = time.monotonic() - _trafik["terakhir"] >= CONFIG["HISTORY_INTERVAL_SECONDS"] - 5
+            pppoe_users, mikrotik_error = await asyncio.to_thread(fetch_pppoe_active, trafik)
         except Exception as e:
             mikrotik_error = f"[{type(e).__name__}] {e}"
             logger.error(f"Error tak terduga saat fetch MikroTik: {mikrotik_error}")
@@ -2962,8 +2981,13 @@ _PENGATURAN = {
                                    "dipakai untuk masuk ke web ONU (akun admin)."},
     "POLL_INTERVAL_SECONDS": {"label": "Jeda baca OLT & MikroTik untuk semua pelanggan (detik)", "tipe": "int",
                               "min": 30, "max": 600,
-                              "bantuan": "Diagnosa satu pelanggan selalu dibaca langsung dari OLT. Jeda ini untuk daftar "
-                                         "ONU, peringatan offline, dan grafik. Lebih kecil = lebih cepat, beban OLT naik."},
+                              "bantuan": "Diagnosa satu pelanggan selalu dibaca langsung dari OLT dan MikroTik saat dibuka. "
+                                         "Jeda ini untuk daftar ONU, peringatan offline/putus, isolir, dan grafik. "
+                                         "Lebih kecil = peringatan lebih cepat, beban OLT & MikroTik naik."},
+    "UPSTREAM_PANTAU": {"label": "Pantau internet pusat otomatis (ping & trafik WAN dari MikroTik)", "tipe": "pilihan",
+                        "pilihan": ["tidak", "ya"],
+                        "bantuan": "tidak = diukur hanya saat halaman Internet Pusat dibuka (beban MikroTik paling "
+                                   "ringan, tanpa peringatan Telegram internet penuh/putus). ya = diukur tiap 2 menit."},
     "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
                      "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
                      "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
@@ -10386,7 +10410,7 @@ async def upstream_loop():
     await asyncio.sleep(30)
     while True:
         try:
-            if CONFIG["UPSTREAM_AKTIF"]:
+            if CONFIG["UPSTREAM_AKTIF"] and CONFIG.get("UPSTREAM_PANTAU") == "ya":
                 h = await asyncio.to_thread(ukur_upstream)
                 await asyncio.to_thread(proses_upstream, h)
         except Exception as e:
@@ -10484,7 +10508,8 @@ def get_upstream(request: Request, jam: int = 24):
         if t["hilang_persen"] is None or hilang < t["hilang_persen"]:
             t["hilang_persen"] = hilang
     kini = _upstream.get("terakhir")
-    return {"aktif": bool(CONFIG["UPSTREAM_AKTIF"]), "wan": _upstream.get("wan"), "gateway": gw,
+    return {"aktif": bool(CONFIG["UPSTREAM_AKTIF"]), "pantau_otomatis": CONFIG.get("UPSTREAM_PANTAU") == "ya",
+            "wan": _upstream.get("wan"), "gateway": gw,
             "trafik_if": _upstream.get("trafik_if") or [], "trafik_sisi": _upstream.get("trafik_sisi"),
             "kapasitas_mbps": CONFIG["UPSTREAM_KAPASITAS_MBPS"] or None,
             "batas": {"loss": CONFIG["UPSTREAM_LOSS_PERSEN"], "latensi": CONFIG["UPSTREAM_LATENSI_MS"],
@@ -10592,7 +10617,12 @@ def diagnosa(username: str, request: Request):
                              (username,)).fetchone()
     finally:
         conn.close()
-    u = next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
+    # Dibaca langsung dari MikroTik, hanya pelanggan ini; bila MikroTik tak terjangkau pakai data pemantauan.
+    langsung, err = fetch_pppoe_active(nama=username)
+    if err is None:
+        u = next((x for x in langsung if x.username == username), None)
+    else:
+        u = next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
     onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None) if _latest_data else None
     hasil = {
         "pelanggan": dict(p), "terisolir": terisolir, "tunggakan": {"jumlah": tunggak[0], "total": tunggak[1]},

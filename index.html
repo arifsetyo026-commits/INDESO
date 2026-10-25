@@ -907,7 +907,11 @@ async function muatKartuUpstream(){
   $('upSub').textContent=n?`${n.rata_ms??'—'} ms · loss ${n.loss}%`+(n.pakai_persen!=null?` · WAN ${n.pakai_persen}%`:''):'Menunggu data';
  }catch(e){}
 }
-async function openUpstream(){ $('upstreamModal').classList.add('show'); await muatUpstream(up.jam); }
+async function openUpstream(){ $('upstreamModal').classList.add('show'); await muatUpstream(up.jam);
+ // Pemantauan otomatis mati (Pengaturan): ukur sekali dari MikroTik saat halaman dibuka.
+ if(up.data&&!up.data.pantau_otomatis){ $('upMsg').textContent='Mengukur dari MikroTik…';
+  try{ await jsonAtauError(await fetch('/api/upstream/ukur',{method:'POST'})); $('upMsg').textContent=''; await muatUpstream(up.jam); muatKartuUpstream(); }
+  catch(e){ $('upMsg').textContent=e.message; } } }
 async function muatUpstream(j){
  up.jam=j; document.querySelectorAll('#upstreamModal .khJam button[data-j]').forEach(b=>b.classList.toggle('on',+b.dataset.j===j));
  $('upMsg').textContent='';

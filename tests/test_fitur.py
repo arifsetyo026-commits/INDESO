@@ -3162,3 +3162,47 @@ def test_batas_paket_dari_antrean(app):
     assert budi.rate_limit_raw == "10M/10M" and budi.rate_limit_mbps == 10.0
     assert main._ringkas_limit("1500000/512k") == "1.5M/512k"
     main._mt.queue = []
+
+
+def test_pemantauan_ringan_diagnosa_langsung(siap):
+    """Bandwidth & batas paket semua pelanggan tidak dibaca tiap putaran; Diagnosa membaca satu pelanggan langsung."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.queue = [{"name": "<pppoe-budi>", "max-limit": "10000000/10000000"}]
+    mt.traffic = {"name": "<pppoe-budi>", "tx-bits-per-second": "4000000", "rx-bits-per-second": "1000000"}
+    users, err = main.fetch_pppoe_active(True)
+    assert err is None and users[0].rx_mbps == 4.0 and users[0].rate_limit_raw == "10M/10M"
+    # putaran tanpa trafik: monitor-traffic & queue tidak dipanggil, nilai terakhir dipakai ulang
+    panggil = []
+    asli = main._mikrotik_pool
+
+    def pool_hitung():
+        p = asli()
+        api = p.get_api()
+
+        class Api:
+            def get_resource(self, path):
+                panggil.append(path)
+                return api.get_resource(path)
+        p.get_api = lambda: Api()
+        return p
+    main._mikrotik_pool = pool_hitung
+    try:
+        users, err = main.fetch_pppoe_active(False)
+        assert err is None and users[0].rx_mbps == 4.0 and users[0].rate_limit_raw == "10M/10M"
+        assert panggil == ["/ppp/active"]
+        # Diagnosa: hanya pelanggan itu, dengan bandwidth langsung
+        panggil.clear()
+        mt.traffic = {"name": "<pppoe-budi>", "tx-bits-per-second": "7000000", "rx-bits-per-second": "1000000"}
+        d = k.get("/api/diagnosa/budi").json()
+        assert d["pppoe"]["online"] is True
+        assert "/ppp/active" in panggil and "/queue/simple" in panggil
+        assert main._trafik["bw"]["budi"][0] == 7.0
+    finally:
+        main._mikrotik_pool = asli
+        mt.queue = []
+    # pantau internet pusat otomatis mati bawaan, bisa dinyalakan dari Pengaturan
+    assert main.CONFIG["UPSTREAM_PANTAU"] == "tidak"
+    assert k.get("/api/upstream?jam=1").json()["pantau_otomatis"] is False
+    assert o.put("/api/pengaturan", json={"nilai": {"UPSTREAM_PANTAU": "ya"}}).status_code == 200
+    assert main.CONFIG["UPSTREAM_PANTAU"] == "ya"
