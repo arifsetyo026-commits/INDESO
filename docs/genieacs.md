@@ -93,13 +93,13 @@ atau buka web ONU dari kantor. Nama menu bisa sedikit berbeda antar firmware.
 | Enable / ACS | Centang |
 | ACS URL | `http://10.99.0.1:7547/` |
 | ACS Username / Password | kosongkan |
-| Periodic Inform | Aktif, interval `300` detik |
+| Periodic Inform | Aktif, interval `900` detik (15 menit) |
 | Connection Request Username / Password | samakan dengan ACS username/password (lihat panduan teknisi internal); server memasangnya otomatis dari `/root/genieacs-cr-user.txt` & `/root/genieacs-cr-password.txt` |
 | WAN Connection / Interface | pilih koneksi **INTERNET (PPPoE)** |
 
-**Fiberhome (HG6243C, AN5506, dll.)**: *Management / Application → TR-069* (atau *Remote Management*). Isinya sama: aktifkan, ACS URL `http://10.99.0.1:7547/`, periodic inform 300 detik, WAN = koneksi internet/PPPoE.
+**Fiberhome (HG6243C, AN5506, dll.)**: *Management / Application → TR-069* (atau *Remote Management*). Isinya sama: aktifkan, ACS URL `http://10.99.0.1:7547/`, periodic inform 900 detik, WAN = koneksi internet/PPPoE.
 
-Simpan. Dalam 1–5 menit ONU muncul di menu *Devices* GenieACS.
+Simpan. Dalam 1–15 menit ONU muncul di menu *Devices* GenieACS.
 
 INDESO mencocokkan ONU dengan pelanggan secara otomatis. Pertama lewat **nomor seri GPON**
 (sama dengan yang dibaca dari OLT); kalau tidak cocok, lewat **username PPPoE** yang tersimpan di ONU.
@@ -109,7 +109,7 @@ INDESO bisa mengirim ACS URL & login ke ONU lewat telnet OLT, sama dengan menu *
 ```
 ont tr069 <port> <onu> tr069-management enable
 ont tr069 <port> <onu> acs-url http://10.99.0.1:7547 acs-username <user> acs-password <sandi>
-ont tr069 <port> <onu> inform enable interval 300
+ont tr069 <port> <onu> inform enable interval 900
 ```
 Isi di `/etc/indeso/indeso.env` lalu restart INDESO:
 ```
@@ -237,7 +237,7 @@ Untuk ONU yang PPPoE-nya diisi di web ONU dengan WAN bertipe INTERNET saja (mis.
 
 Nama atau password WiFi yang berisi spasi atau tanda di luar `A-Z a-z 0-9 . _ @ + -` tidak bisa dibawa CLI OLT (OLT memisah
 kata di spasi). INDESO lalu tidak mengirim WiFi lewat OLT, tetapi menyimpannya **di memori** (tidak ditulis ke disk) dan
-mengirimnya lewat ACS begitu ONU lapor setelah perintah (±3–5 menit; batas 60 menit). Huawei selalu lewat jalur ini
+mengirimnya lewat ACS begitu ONU lapor setelah perintah (±1–15 menit; batas 60 menit). Huawei selalu lewat jalur ini
 karena mengabaikan WiFi dari OLT. Bila INDESO restart sebelum terkirim, atur lewat tombol **Atur WiFi**.
 
 Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, SSID tambahan, sandi admin) hilang.
@@ -246,7 +246,7 @@ ZTE memberi WAN buatan OLT (nama `omci_ipv4_pppoe_1`) jenis layanan bertambah Vo
 F609 V7 `INTERNET_VoIP_TR069`), dan dengan VoIP ZTE
 menolak ping dari luar (Tes ping dari MikroTik gagal, padahal internet normal). Provision `indeso-default`
 (`deploy/genieacs/provision-indeso.js`) membuang kata VoIP dari jenis layanan itu (hasilnya `INTERNET_TR069`) setiap kali ONU
-ZTE lapor (dicek tiap jam).
+ZTE lapor (dicek sekali sehari dan setiap ONU restart).
 Terbukti di Astri (F670L V9): ping dari MikroTik kembali normal. Setelah file itu berubah, pasang ulang di VPS:
 `curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-indeso.js http://127.0.0.1:7557/provisions/indeso-default`
 Kerjakan saat sepi dan pada ONU yang mudah dikunjungi bila gagal.
@@ -280,6 +280,22 @@ Hasil tes diambil di sesi yang sama saat ONU melapor `8 DIAGNOSTICS COMPLETE`, o
 ±47 detik). Setelah file itu berubah, pasang ulang di VPS:
 `curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-diagnostik.js http://127.0.0.1:7557/provisions/indeso-diagnostik`
 
+
+## ACS seperlunya (beban ONU)
+
+Prosesor ONU murah dipakai bersama oleh WiFi dan TR-069. Karena itu ACS hanya bekerja saat diperlukan:
+
+- ONU lapor rutin tiap **15 menit** (`PeriodicInformInterval` 900). Laporan rutin hanya beberapa KB.
+- Provision `indeso-default` menyegarkan data kecil (nama WiFi, channel, uptime, IP WAN) **sekali sehari**.
+- Daftar perangkat terhubung dan klien WiFi **tidak lagi dibaca otomatis tiap jam**. INDESO mengetuk ONU
+  (connection request) dan membacanya saat **Diagnosa dibuka**.
+- Penghapusan VoIP di ZTE dicek sekali sehari dan setiap ONU restart.
+- Perintah dari INDESO (WiFi, ping, reboot) tetap langsung jalan lewat connection request. Hanya bila ketukan
+  gagal, perintah menunggu laporan rutin berikutnya (≤15 menit).
+
+Setelah update, pasang ulang provision:
+`curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-indeso.js http://127.0.0.1:7557/provisions/indeso-default`.
+Bila `.env` berisi `ACS_ONU_INTERVAL=300`, ubah menjadi `900` (atau hapus barisnya) supaya TR-069 yang dikirim dari OLT sama.
 
 ## 6. Isi `.env` INDESO (di HP Termux)
 

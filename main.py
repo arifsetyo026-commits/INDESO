@@ -9149,7 +9149,7 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     if r.status_code == 202:
         return {"status": "antre", "tugas_id": tid,
                 "pesan": "ONU belum merespons langsung. Perintah tersimpan dan dijalankan saat ONU lapor ke server "
-                         "berikutnya (paling lama ±5 menit)."}
+                         "berikutnya (paling lama ±15 menit)."}
     raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
 
 
@@ -9445,7 +9445,7 @@ def _info_acs(username: str, segarkan: bool = False) -> dict:
     info["lapor_menit_lalu"] = _lapor_terakhir_menit(info["lapor_terakhir"])
     for w in info["wan"]:
         w["hapus"], w["alasan"] = _boleh_hapus_wan(info["wan"], w, username)
-    # ONU lapor rutin tiap ACS_ONU_INTERVAL. Lewat dari 3x itu (min. 15 menit) berarti ONU berhenti lapor,
+    # ONU lapor rutin tiap ACS_ONU_INTERVAL. Lewat dari 3x itu (min. 45 menit) berarti ONU berhenti lapor,
     # mis. di-reset pabrik (pengaturan TR-069 hilang): data di bawahnya adalah laporan TERAKHIR, bukan keadaan sekarang.
     info["diam"] = info["lapor_menit_lalu"] is not None and info["lapor_menit_lalu"] > _batas_diam_menit()
     return {"terhubung": True, "perangkat": info, "segarkan": hasil_segar}
@@ -10770,7 +10770,7 @@ CONFIG.update({
     "ACS_ONU_URL": _env("ACS_ONU_URL", "http://10.99.0.1:7547"),
     "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
     "ACS_ONU_PASS": _env("ACS_ONU_PASS", ""),
-    "ACS_ONU_INTERVAL": int(_env("ACS_ONU_INTERVAL", "300")),
+    "ACS_ONU_INTERVAL": int(_env("ACS_ONU_INTERVAL", "900")),
 })
 
 _POLA_AMAN = re.compile(r"^[A-Za-z0-9._:/@+=~-]{1,128}$")   # tanpa spasi/baris baru: tidak bisa menyisipkan perintah
@@ -11160,8 +11160,9 @@ def _sn_terdaftar_acs() -> Optional[set]:
 
 
 def _batas_diam_menit() -> int:
-    """ONU lapor rutin tiap ACS_ONU_INTERVAL; lewat 3x itu (min. 15 menit) berarti berhenti lapor."""
-    return max(15, 3 * int(CONFIG.get("ACS_ONU_INTERVAL") or 300) // 60)
+    """ONU lapor rutin tiap ACS_ONU_INTERVAL; lewat 3x itu berarti berhenti lapor. Minimal 45 menit:
+    provision indeso-default memasang lapor tiap 15 menit, walau .env lama masih berisi 300."""
+    return max(45, 3 * int(CONFIG.get("ACS_ONU_INTERVAL") or 900) // 60)
 
 
 def _onu_di_acs() -> Optional[dict]:
