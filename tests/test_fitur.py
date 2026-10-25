@@ -1632,7 +1632,7 @@ def test_olt_kirim_tr069(siap):
     assert p[:3] == ["enable", "config", "interface gpon 0/0"]
     assert "ont tr069 1 3 tr069-management enable" in p
     assert "ont tr069 1 3 acs-url http://10.99.0.1:7547 acs-username INDESO acs-password Sandi26" in p
-    assert "ont tr069 2 1 inform enable interval 300" in p
+    assert "ont tr069 2 1 inform enable interval 900" in p
     assert not any(x.startswith("ont tr069 1 5 acs-url") for x in p)      # berhenti setelah ditolak
     assert p[-3:] == ["save", "y", "end"]                                 # selalu disimpan, konfirmasi dijawab
     # firmware yang menerima save hanya di mode enable: dicoba ulang setelah end
@@ -1670,7 +1670,7 @@ def test_skrip_push_tr069_semua_onu(tmp_path):
     assert r.returncode == 0, r.stderr
     p = olt.perintah
     assert "ont tr069 1 2 acs-url http://10.99.0.1:7547 acs-username INDESO acs-password Sandi26" in p
-    assert "ont tr069 2 2 inform enable interval 300" in p
+    assert "ont tr069 2 2 inform enable interval 900" in p
     assert not any(x.startswith("ont tr069 1 1 ") or x.startswith("ont tr069 2 1 ") for x in p)   # sudah ada / Fiberhome
     assert "save" in p and "show ont info 1 2" in p and "show ont info 2 2" in p
     assert "2 dari 2 berhasil" in r.stdout and "TERSIMPAN" in r.stdout and "config success" in r.stdout
@@ -2130,7 +2130,7 @@ def test_olt_kirim_tr069_dengan_reboot(siap):
     assert "ont reboot 1 23" in p and p[p.index("ont reboot 1 23") + 1] == "y"
     assert not any(x.startswith("ont reboot 1 5") or "all" in x for x in p if x.startswith("ont reboot"))
     # urutan uji manual yang berhasil (Endah 1/9): ip-index 0 → unbind → reboot, lalu save
-    assert (p.index("ont tr069 1 23 inform enable interval 300") < p.index("ont tr069 1 23 ip-index 0")
+    assert (p.index("ont tr069 1 23 inform enable interval 900") < p.index("ont tr069 1 23 ip-index 0")
             < p.index("ont tr069 1 23 ip-index unbind") < p.index("ont reboot 1 23") < p.index("save"))
     # WAN PPPoE dibuat OLT (Huawei HG8145V5): ikatan ip-index 0 dibiarkan, tanpa unbind
     assert "ont tr069 1 7 ip-index 0" in p and "ont tr069 1 7 ip-index unbind" not in p and "ont reboot 1 7" in p
@@ -2619,10 +2619,11 @@ def test_acs_onu_berhenti_lapor_ditandai(siap, monkeypatch):
     monkeypatch.setattr(main.requests, "request", acs.request)
     dev = acs.dev["ZTEGC1234567"]
     sekarang = datetime.now(main.timezone.utc)
-    dev["_lastInform"] = (sekarang - timedelta(minutes=37)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    dev["_lastInform"] = (sekarang - timedelta(minutes=52)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     p = k.get("/api/acs/budi").json()["perangkat"]
-    assert 36 <= p["lapor_menit_lalu"] <= 38 and p["diam"] is True
-    dev["_lastInform"] = (sekarang - timedelta(minutes=4)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert 51 <= p["lapor_menit_lalu"] <= 53 and p["diam"] is True
+    # ONU lapor tiap 15 menit (provision indeso-default): 37 menit belum berarti berhenti lapor
+    dev["_lastInform"] = (sekarang - timedelta(minutes=37)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     assert k.get("/api/acs/budi").json()["perangkat"]["diam"] is False
 
 
@@ -2724,7 +2725,7 @@ def test_aktivasi_onu_baru_dari_olt(siap):
     assert p.index("ont ipconfig 2 4 ip-index 0 binding eth 1-4 wlan 1,5") < p.index("ont internet-config 2 4 ip-index 0")
     assert any(x.startswith("ont wifi 2 4 2.4g 1 enable username RUMAH-DWI password wifi12345") for x in p)
     assert any(x.startswith("ont tr069 2 4 acs-url") for x in p) and "save" in p
-    assert p.index("ont tr069 2 4 inform enable interval 300") < p.index("ont tr069 2 4 ip-index 0") < p.index("save")
+    assert p.index("ont tr069 2 4 inform enable interval 900") < p.index("ont tr069 2 4 ip-index 0") < p.index("save")
     assert not any(x.startswith("ont wan") or x.startswith("ont reboot") for x in p)
     st = {h["langkah"]: h["ok"] for h in d["langkah"]}
     assert st["WiFi 2,4 GHz"] and st["WiFi 5 GHz"] is False and st["TR-069"]
