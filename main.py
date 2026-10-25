@@ -38,6 +38,7 @@ import secrets
 import sys
 import re
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -203,7 +204,7 @@ CONFIG = {
     "DAILY_REPORT_MINUTE": 0,
 
     # --- Interval ---
-    "POLL_INTERVAL_SECONDS": 120,
+    "POLL_INTERVAL_SECONDS": 60,
     "ALERT_COOLDOWN_MINUTES": 720,   # 12 jam: satu alert per ONU, lalu diam sampai 12 jam kemudian
     "PUTUS_TUNGGU_MENIT": 10,         # tunggu sekian menit sebelum kirim peringatan putus
     "PUTUS_MASSAL_MIN": 5,
@@ -360,6 +361,22 @@ def _parse_rate_limit(raw: Optional[str]) -> tuple[Optional[str], Optional[float
     return raw, max(values)
 
 
+def _ringkas_limit(raw: str) -> str:
+    """API mengembalikan max-limit dalam bit ("10000000/10000000") — jadikan
+    "10M/10M" biar sama dengan tampilan Winbox."""
+    def satu(v: str) -> str:
+        v = v.strip()
+        if not v.isdigit():
+            return v
+        n = int(v)
+        if n >= 1_000_000_000 and n % 1_000_000_000 == 0:
+            return f"{n // 1_000_000_000}G"
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:g}M"
+        return f"{n / 1_000:g}k" if n >= 1_000 else v
+    return "/".join(satu(p) for p in raw.split("/"))
+
+
 def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
     """Ambil daftar PPPoE active dari MikroTik via RouterOS API, sekalian
     bandwidth sesaat (monitor-traffic, satu kali panggil buat semua interface
@@ -394,11 +411,22 @@ def fetch_pppoe_active() -> tuple[list[PPPoEUser], Optional[str]]:
             except Exception as e:
                 logger.warning(f"Gagal ambil bandwidth (monitor-traffic): {e}")
 
+        # /ppp/active tidak membawa rate-limit — batas paket yang benar-benar
+        # berlaku ada di antrean dinamis "<pppoe-NAMA>" (max-limit).
+        limit_by_username: dict[str, str] = {}
+        try:
+            for q in api.get_resource("/queue/simple").get():
+                nama = q.get("name") or ""
+                if nama.startswith("<pppoe-") and nama.endswith(">") and q.get("max-limit"):
+                    limit_by_username[nama[len("<pppoe-"):-1]] = _ringkas_limit(q["max-limit"])
+        except Exception as e:
+            logger.warning(f"Gagal ambil antrean (queue simple): {e}")
+
         users = []
         for item in active_list:
             username = item.get("name", "-")
             rx_mbps, tx_mbps = bw_by_username.get(username, (None, None))
-            rate_raw, rate_mbps = _parse_rate_limit(item.get("rate-limit"))
+            rate_raw, rate_mbps = _parse_rate_limit(item.get("rate-limit") or limit_by_username.get(username))
             uptime = item.get("uptime", "-")
             users.append(
                 PPPoEUser(
@@ -685,6 +713,54 @@ async def fetch_all_onu() -> list[ONUStatus]:
     results.sort(key=lambda o: (o.pon, o.onu_id))
     _koreksi_jam_olt(results)
     return results
+
+
+# --- Baca satu ONU langsung (Diagnosa) ----------------------------------------
+# Data pemantauan rutin bisa berumur sampai satu siklus (POLL_INTERVAL_SECONDS). Saat Diagnosa dibuka, ONU
+# pelanggan itu dibaca ulang langsung lewat SNMP: hanya beberapa OID kecil, ±0,1–1 detik, tanpa telnet
+# (sesi telnet OLT terbatas dan dipakai untuk perintah).
+
+def _snmp_jalankan(args: list[str]) -> str:
+    """Jalankan snmpget/snmpwalk (sinkron, untuk endpoint biasa). Kosong bila gagal."""
+    try:
+        r = subprocess.run(args, capture_output=True, timeout=6)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        logger.warning(f"SNMP langsung gagal ({args[0]}): {e}")
+        return ""
+    return r.stdout.decode(errors="ignore")
+
+
+def _snmp_baris(teks: str) -> dict[str, str]:
+    hasil = {}
+    for line in teks.splitlines():
+        m = _SNMP_LINE_RE.match(line.strip())
+        if m:
+            hasil[m.group(1).lstrip(".")] = m.group(3).strip()
+    return hasil
+
+
+def baca_onu_langsung(o: ONUStatus) -> Optional[dict]:
+    """Bacaan terbaru satu ONU dari OLT (redaman, status, suhu, tegangan). None bila OLT tidak menjawab."""
+    dasar = ["-v" + str(CONFIG["OLT_SNMP_VERSION"]), "-c", CONFIG["OLT_SNMP_COMMUNITY"], "-O", "n", "-r", "1", "-t", "2",
+             f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}"]
+    idx = str(o.snmp_index)
+    oid_rx = f"{CONFIG['OID_OLT_RX']}.{idx}"
+    get = _snmp_baris(_snmp_jalankan(["snmpget", *dasar, oid_rx]))
+    if oid_rx not in get:
+        return None
+    optik: dict[str, Optional[float]] = {}
+    for kode, nama in (("4", "onu_rx"), ("5", "onu_tx"), ("6", "bias"), ("7", "volt"), ("8", "suhu")):
+        baris = _snmp_baris(_snmp_jalankan(["snmpwalk", *dasar, f"{CONFIG['OID_ONU_OPTICAL']}.{kode}.{idx}"]))
+        optik[nama] = _to_scaled_float(next(iter(baris.values()), None))
+    olt_rx = _to_scaled_float(get[oid_rx])
+    onu_rx = optik["onu_rx"] if optik["onu_rx"] is None or optik["onu_rx"] > -40.0 else None
+    tanpa_bacaan = olt_rx == 0.0                       # sama dengan aturan di fetch_all_onu
+    hw_status, hw_notes = classify_hardware(optik["bias"], optik["volt"], optik["suhu"])
+    return {"olt_rx_dbm": None if tanpa_bacaan else olt_rx, "onu_rx_dbm": None if tanpa_bacaan else onu_rx,
+            "onu_tx_dbm": optik["onu_tx"], "bias_current_ma": optik["bias"], "voltage_v": optik["volt"],
+            "temperature_c": optik["suhu"], "hardware_status": hw_status, "hardware_notes": hw_notes,
+            "online": olt_rx is not None and not tanpa_bacaan,
+            "status": "UNKNOWN" if tanpa_bacaan else combine_status(olt_rx, onu_rx)}
 
 
 # --- Koreksi jam OLT ---------------------------------------------------------
@@ -2884,6 +2960,10 @@ _PENGATURAN = {
                         "bantuan": "8–32 karakter tanpa spasi atau tanda kutip. Tidak pernah ditampilkan lagi setelah "
                                    "disimpan; kosongkan kolom ini bila tidak ingin mengubahnya. Catat di tempat aman: "
                                    "dipakai untuk masuk ke web ONU (akun admin)."},
+    "POLL_INTERVAL_SECONDS": {"label": "Jeda baca OLT & MikroTik untuk semua pelanggan (detik)", "tipe": "int",
+                              "min": 30, "max": 600,
+                              "bantuan": "Diagnosa satu pelanggan selalu dibaca langsung dari OLT. Jeda ini untuk daftar "
+                                         "ONU, peringatan offline, dan grafik. Lebih kecil = lebih cepat, beban OLT naik."},
     "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
                      "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
                      "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
@@ -10480,6 +10560,22 @@ def _kesimpulan(d: dict) -> list[dict]:
     return k
 
 
+def _onu_diagnosa(onu: Optional[ONUStatus]) -> Optional[dict]:
+    """Data ONU untuk Diagnosa: dibaca langsung dari OLT bila bisa, selain itu data pemantauan terakhir."""
+    if not onu:
+        return None
+    data = onu.model_dump() if hasattr(onu, "model_dump") else onu.dict()
+    baru = baca_onu_langsung(onu) if CONFIG.get("OLT_HOST") else None
+    if baru:
+        data.update(baru)
+        for k, v in baru.items():           # ikut memperbarui daftar ONU yang sedang tampil
+            setattr(onu, k, v)
+    data["dibaca"] = "langsung" if baru else "pantauan"
+    data["dibaca_pada"] = datetime.now().strftime("%H:%M:%S") if baru else (
+        _latest_data.timestamp[11:19] if _latest_data and _latest_data.timestamp else None)
+    return data
+
+
 @app.get("/api/diagnosa/{username}")
 def diagnosa(username: str, request: Request):
     _wajib_admin(request)
@@ -10503,7 +10599,7 @@ def diagnosa(username: str, request: Request):
         "tiket_terbuka": dict(tiket) if tiket else None, "data_monitoring": _latest_data is not None,
         "pppoe": {"online": u is not None, "ip": u.ip_address if u else None, "uptime": u.uptime if u else None,
                   "limit_mbps": (u.rate_limit_mbps if u else None) or p["kecepatan_mbps"], "mac": u.caller_id if u else None},
-        "onu": (onu.model_dump() if hasattr(onu, "model_dump") else onu.dict()) if onu else None,
+        "onu": _onu_diagnosa(onu),
         "lalu_lintas": _mikrotik_lalu_lintas(username) if u else None,
         "tren": _tren_optik(username),
     }

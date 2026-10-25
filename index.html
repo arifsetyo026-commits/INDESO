@@ -1717,7 +1717,7 @@ function renderDiagnosa(){
   +kotak('Putus-sambung 24 jam',(d.putus_24jam||0)+' kali')+'</div>';
  h+=`<div class="tkAksi" style="margin:0 0 12px">${pp.online?'<button class="btnS go" onclick="tesPing()">Tes ping dari MikroTik</button>':''}<button class="btnS" onclick="muatDiagnosa()">Periksa ulang</button><button class="btnS" onclick="cekDnsMtu($('dgPing'))">Cek DNS &amp; MTU MikroTik</button></div><div id="dgPing"></div>`;
  const o=d.onu, t=d.tren;
- h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Optik (OLT)</div><div class="detailGrid" style="margin-bottom:12px">'
+ h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Optik (OLT)'+(o&&o.dibaca_pada?' <span style="font-weight:400">· '+(o.dibaca==='langsung'?'<span style="color:#0b7a3b">●</span> dibaca langsung dari OLT pukul ':'data pantauan pukul ')+esc(o.dibaca_pada)+'</span>':'')+'</div><div class="detailGrid" style="margin-bottom:12px">'
   +(o?kotak('ONU '+esc(o.pon)+'/'+esc(o.onu_id),(o.online?'Online':'<span style="color:#b42318">Offline</span>')+' · '+esc(o.status))
      +kotak('Redaman ONU-RX / OLT-RX',esc(o.onu_rx_dbm??'—')+' / '+esc(o.olt_rx_dbm??'—')+' dBm')
      +kotak('Suhu · tegangan',esc(o.temperature_c??'—')+'°C · '+esc(o.voltage_v??'—')+' V')
