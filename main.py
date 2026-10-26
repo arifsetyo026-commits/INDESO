@@ -10601,6 +10601,28 @@ def _onu_diagnosa(onu: Optional[ONUStatus]) -> Optional[dict]:
     return data
 
 
+def _pppoe_langsung(username: str) -> Optional[PPPoEUser]:
+    """Sesi PPPoE satu pelanggan, dibaca langsung dari MikroTik (data pemantauan bisa berumur sampai satu
+    putaran, mis. pelanggan baru tersambung ulang). Bila MikroTik tak terjangkau, pakai data pemantauan."""
+    langsung, err = fetch_pppoe_active(nama=username)
+    if err is None:
+        return next((x for x in langsung if x.username == username), None)
+    return next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
+
+
+def _onu_pelanggan(username: str, u: Optional[PPPoEUser]) -> Optional[ONUStatus]:
+    """ONU pelanggan dari daftar pemantauan. Pemetaan ONU <-> pelanggan memakai MAC sesi PPPoE dan baru
+    diperbarui tiap putaran; bila belum terpetakan (baru tersambung ulang / akun baru), cocokkan langsung
+    dengan MAC sesi yang sedang aktif."""
+    if not _latest_data:
+        return None
+    onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None)
+    if onu is None and u and u.caller_id and u.caller_id != "-":
+        onu = next((o for o in _latest_data.onu_list
+                    if o.mac_address and o.mac_address.upper() == u.caller_id.upper()), None)
+    return onu
+
+
 @app.get("/api/diagnosa/{username}")
 def diagnosa(username: str, request: Request):
     _wajib_admin(request)
@@ -10617,13 +10639,8 @@ def diagnosa(username: str, request: Request):
                              (username,)).fetchone()
     finally:
         conn.close()
-    # Dibaca langsung dari MikroTik, hanya pelanggan ini; bila MikroTik tak terjangkau pakai data pemantauan.
-    langsung, err = fetch_pppoe_active(nama=username)
-    if err is None:
-        u = next((x for x in langsung if x.username == username), None)
-    else:
-        u = next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
-    onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None) if _latest_data else None
+    u = _pppoe_langsung(username)
+    onu = _onu_pelanggan(username, u)
     hasil = {
         "pelanggan": dict(p), "terisolir": terisolir, "tunggakan": {"jumlah": tunggak[0], "total": tunggak[1]},
         "tiket_terbuka": dict(tiket) if tiket else None, "data_monitoring": _latest_data is not None,
@@ -10772,7 +10789,7 @@ def mikrotik_cek_dns_mtu(request: Request):
 @app.post("/api/diagnosa/{username}/ping")
 def diagnosa_ping(username: str, request: Request):
     _wajib_admin(request)
-    u = next((x for x in _latest_data.pppoe_users if x.username == username), None) if _latest_data else None
+    u = _pppoe_langsung(username)
     if not u:
         raise HTTPException(status_code=400, detail="Pelanggan sedang tidak online, tidak bisa di-ping.")
     return _mikrotik_ping(u.ip_address)
