@@ -79,7 +79,13 @@ Ping harus dibalas, dan kolom *last-handshake* peer harus berisi waktu (bukan ko
 ## 4. Buat akun admin GenieACS
 
 Dari laptop atau HP yang tersambung ke LAN kantor, buka `http://10.99.0.1:3000/`.
-Pada kunjungan pertama GenieACS meminta Anda membuat akun admin. Gunakan password yang kuat.
+Pada kunjungan pertama GenieACS menampilkan wizard inisialisasi untuk membuat akun admin. Gunakan password yang kuat.
+
+**Di wizard itu, jangan centang Presets dan Provisions.** Bila dicentang, GenieACS membuat preset bawaan `bootstrap`,
+`default`, dan `inform`. Preset `inform` memasang jadwal lapor 300 detik dan kredensial connection request per ONU,
+sehingga bentrok dengan `indeso-default` (900 detik, kredensial bersama) dan saling timpa setiap ONU lapor. Preset
+`default` membaca daftar perangkat tiap jam. Preset yang benar hanya `indeso-default` dan `indeso-diagnostik`
+(dipasang `install.sh`); periksa dengan `deploy/genieacs/periksa-acs.py`.
 
 ## 5. Arahkan TR-069 di setiap ONU
 
@@ -289,13 +295,51 @@ Prosesor ONU murah dipakai bersama oleh WiFi dan TR-069. Karena itu ACS hanya be
 - Provision `indeso-default` menyegarkan data kecil (nama WiFi, channel, uptime, IP WAN) **sekali sehari**.
 - Daftar perangkat terhubung dan klien WiFi **tidak lagi dibaca otomatis tiap jam**. INDESO mengetuk ONU
   (connection request) dan membacanya saat **Diagnosa dibuka**.
-- Penghapusan VoIP di ZTE dicek sekali sehari dan setiap ONU restart.
+- Kredensial connection request **dipasang sekali**, tidak diulang tiap hari.
+- Penghapusan VoIP pada WAN PPPoE `omci_…` ZTE hanya diperiksa **setelah ONU restart** (mengubah jenis layanan
+  membuat WAN tersambung ulang).
 - Perintah dari INDESO (WiFi, ping, reboot) tetap langsung jalan lewat connection request. Hanya bila ketukan
   gagal, perintah menunggu laporan rutin berikutnya (≤15 menit).
 
 Setelah update, pasang ulang provision:
 `curl -fsS -X PUT --data-binary @/opt/indeso/deploy/genieacs/provision-indeso.js http://127.0.0.1:7557/provisions/indeso-default`.
 Bila `.env` berisi `ACS_ONU_INTERVAL=300`, ubah menjadi `900` (atau hapus barisnya) supaya TR-069 yang dikirim dari OLT sama.
+
+## Pegangan ACS yang sehat
+
+**Pembagian tugas.** OLT (lewat `ont ipconfig`, OMCI) adalah pemilik WAN: satu WAN PPPoE per ONU, binding LAN &
+WiFi, dan TR-069 menumpang di WAN itu (`ont tr069 … ip-index 0`). ACS tidak mengubah WAN secara otomatis; ACS
+membaca data dan menjalankan perintah manusia (WiFi, reboot, diagnosa) satu ONU pada satu waktu. Bila OLT dan ACS
+sama-sama mengatur WAN, keduanya saling timpa (OLT bisa mendorong ulang pengaturannya saat ONU restart).
+
+**Satu ONU = satu WAN PPPoE aktif.** Dua WAN PPPoE aktif di satu ONU saling sikut di MikroTik:
+`one-session-per-host=yes` menutup sesi lama bila MAC yang sama membuka sesi baru, dan `only-one=yes` menolak
+login kedua dengan akun yang sama. Internet pelanggan jadi putus-sambung. ONU bekas wajib di-reset pabrik
+supaya WAN pemilik lama hilang.
+
+**WAN "TR069" bawaan pabrik ZTE itu normal.** ONU ZTE baru (atau setelah reset pabrik) membawa WAN manajemen
+jenis IP bernama `TR069` (layanan `TR069_VOIP` / `VoIP_TR069`) berstatus *Connecting*. Ini bukan sesi PPPoE kedua
+dan tidak perlu dihapus; lapor ke ACS tetap lewat WAN PPPoE (`INTERNET_TR069`).
+
+**Sebelum menyalakan `genieacs-cwmp`, dan seminggu sekali,** jalankan pemeriksaan (hanya membaca):
+`sudo python3 /opt/indeso/deploy/genieacs/periksa-acs.py`. Kondisi sehat:
+
+| Bagian | Sehat |
+|---|---|
+| Preset | Hanya `indeso-default` dan `indeso-diagnostik` |
+| Provision | `indeso-default` sama dengan versi terbaru |
+| Perintah antre | 0 (perintah lama langsung jalan begitu ONU lapor) |
+| Perintah gagal | 0 (GenieACS mengulangnya setiap ONU lapor) |
+| ONU | Satu WAN PPPoE aktif per ONU, tidak ada akun atau nama WiFi yang dipakai dua ONU |
+
+Hapus ONU uji atau ONU yang sudah dicabut dari ACS (aman, ONU yang dinyalakan lagi mendaftar ulang sendiri):
+`curl -X DELETE http://127.0.0.1:7557/devices/<id>` (id lengkap, karakter khusus di-encode, mis. spasi `%20`).
+
+**Keamanan.** GenieACS 1.2.13 punya kerentanan NBI tanpa autentikasi (CVE-2025-56015). `install.sh` membuat NBI
+hanya mendengarkan di `127.0.0.1` dan dibuka ke terowongan lewat nginx berpassword. MikroTik me-masquerade lalu
+lintas pelanggan ke `wg-acs` sehingga di VPS pelanggan tampak sebagai 10.99.0.2 (alamat yang diizinkan nginx);
+karena itu MikroTik wajib memblokir pelanggan ke 10.0.0.0/8 kecuali port 7547 dan 7567 ke 10.99.0.1
+(lihat `docs/mikrotik-dasar.md`).
 
 ## 6. Isi `.env` INDESO (di HP Termux)
 

@@ -104,8 +104,44 @@ Batalkan: `/ip firewall mangle remove [find comment~"ACS MSS"]`.
 
 ## 4. Sisa konfigurasi lama
 
-Tabel rute `TO_STARLINK` (rute `BCKUP`) dan `to-LINKBIT-GAME` adalah sisa percobaan pemisahan jalur. Keduanya tidak
-dipakai (tidak ada mangle yang menandai rute ke sana) dan boleh dihapus.
+Dihapus 26 Oktober 2026 (tidak pernah aktif): tabel rute `TO_STARLINK` (rute `BCKUP`) dan `to-LINKBIT-GAME`, queue tree
+(tidak ada mangle yang memberi penanda paket), NAT "Force DNS to Router" dan address list `IP_PELANGGAN` (untuk
+10.10.0.0/16, bukan subnet pelanggan), NAT "TUNNEL-ONT", filter "Isolir: Allow DNS" (address list `ISOLIR_RTRW` tidak
+ada), dan pool `pool-pppoe`. DHCP server `dhcp-wifi-server` di port Starlink dinonaktifkan (tanpa lease). Cache DNS
+diperkecil ke 20 MB, log penting ditulis ke disk, dan `default-profile` PPPoE server menjadi `paket-15mbps`.
 
 Bila ide jalur per paket (gaming lewat Linkbit, rumahan lewat Starlink) dikerjakan lagi, rancangannya ada di commit
 `d030daf`.
+
+## 5. Batasi akses pelanggan ke jaringan internal
+
+Firewall bawaan hanya berisi aturan *accept*. Lalu lintas pelanggan ke `wg-acs` di-masquerade sehingga di VPS tampak
+sebagai 10.99.0.2 (alamat MikroTik yang diizinkan nginx), jadi pelanggan bisa membuka halaman login NBI dan web
+GenieACS, juga manajemen OLT. ONU hanya butuh port 7547 (TR-069) dan 7567 (file uji) ke 10.99.0.1.
+
+Dipasang di jam sepi dengan Safe Mode (Ctrl+X). Internet pelanggan, PPPoE, antrean, dan NAT ke internet tidak tersentuh:
+
+```
+/ip firewall address-list add list=JARINGAN-INTERNAL address=10.0.0.0/8
+/ip firewall address-list add list=JARINGAN-INTERNAL address=192.168.0.0/16
+/ip firewall filter move [find comment~"Established/Related"] destination=0
+/ip firewall filter add chain=forward action=drop connection-state=invalid comment="Drop invalid" place-before=1
+/ip firewall filter add chain=forward action=accept src-address-list=pppoe-client dst-address=10.99.0.1 protocol=tcp dst-port=7547,7567 comment="ONU -> ACS (TR-069 & file)" place-before=2
+/ip firewall filter add chain=forward action=drop src-address-list=pppoe-client dst-address-list=JARINGAN-INTERNAL comment="Pelanggan tidak boleh ke jaringan internal" place-before=3
+/ip firewall filter add chain=input action=accept connection-state=established,related comment="Input: lanjutan koneksi" place-before=0
+/ip firewall filter add chain=input action=accept src-address-list=pppoe-client protocol=icmp comment="Input: ping dari pelanggan"
+/ip firewall filter add chain=input action=accept src-address-list=pppoe-client protocol=udp dst-port=53,123 comment="Input: DNS & NTP dari pelanggan"
+/ip firewall filter add chain=input action=drop src-address-list=pppoe-client comment="Input: pelanggan tidak boleh akses router"
+```
+
+Uji sebelum keluar dari Safe Mode: internet pelanggan normal, Diagnosa INDESO "Ambil data terbaru dari ONU"
+berhasil, dan `http://10.99.0.1:3000` dari HP pelanggan tidak bisa dibuka.
+
+Batalkan:
+```
+/ip firewall filter remove [find comment="Drop invalid"]
+/ip firewall filter remove [find comment="ONU -> ACS (TR-069 & file)"]
+/ip firewall filter remove [find comment="Pelanggan tidak boleh ke jaringan internal"]
+/ip firewall filter remove [find comment~"^Input:"]
+/ip firewall address-list remove [find list=JARINGAN-INTERNAL]
+```
