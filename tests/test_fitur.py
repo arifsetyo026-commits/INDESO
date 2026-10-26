@@ -2040,7 +2040,8 @@ def test_pantau_internet_pusat(siap):
     mt.ping_per = dict(baik)
     main.CONFIG.update(UPSTREAM_KAPASITAS_MBPS=100, UPSTREAM_WAN="", UPSTREAM_TUJUAN="8.8.8.8,1.1.1.1")
     main._upstream.update(buruk=0, penuh=0, alert_buruk=False, alert_penuh=False)
-    t = datetime(2026, 10, 19, 20, 0)
+    # Relatif terhadap hari ini: API grafik membaca riwayat N jam terakhir dari jam sekarang.
+    t = (datetime.now() - timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0)
     main._terkirim.clear()
     h = main.ukur_upstream(t)
     assert h["wan"] == "ether1" and h["gateway"] == "192.168.1.1" and h["rx_mbps"] == 95.0
