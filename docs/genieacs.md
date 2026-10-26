@@ -296,8 +296,9 @@ Prosesor ONU murah dipakai bersama oleh WiFi dan TR-069. Karena itu ACS hanya be
 - Daftar perangkat terhubung dan klien WiFi **tidak lagi dibaca otomatis tiap jam**. INDESO mengetuk ONU
   (connection request) dan membacanya saat **Diagnosa dibuka**.
 - Kredensial connection request **dipasang sekali**, tidak diulang tiap hari.
-- Penghapusan VoIP pada WAN PPPoE `omci_…` ZTE hanya diperiksa **setelah ONU restart** (mengubah jenis layanan
-  membuat WAN tersambung ulang).
+- Penghapusan VoIP pada WAN PPPoE `omci_…` ZTE: jenis layanan hanya **dibaca setelah ONU restart**, dan **diubah
+  hanya bila masih ada VoIP**. Setelah dibuang, VoIP tidak kembali walau ONU restart; VoIP muncul lagi hanya setelah
+  ONU di-reset pabrik lalu diisi ulang dari OLT. Mengubah jenis layanan membuat WAN tersambung ulang.
 - Perintah dari INDESO (WiFi, ping, reboot) tetap langsung jalan lewat connection request. Hanya bila ketukan
   gagal, perintah menunggu laporan rutin berikutnya (≤15 menit).
 

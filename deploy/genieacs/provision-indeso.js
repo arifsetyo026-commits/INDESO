@@ -39,9 +39,10 @@ declare("VirtualParameters.pppoeUsername", {value: harian});
 
 // ZTE: WAN PPPoE yang dibuat OLT (`ont ipconfig`, nama "omci_…") ikut membawa layanan VOIP. Dengan VOIP,
 // ZTE menolak ping dari luar (MikroTik tidak bisa ping ONU). INDESO tidak memakai VOIP, jadi samakan dengan
-// WAN buatan web: INTERNET_TR069. Mengubah jenis layanan membuat WAN tersambung ulang, jadi hanya diperiksa
-// setelah ONU restart (saat itu internet pelanggan memang sedang tersambung ulang), tidak terjadwal harian.
-// OLT bisa mengembalikan VOIP setelah ONU restart; di antara dua restart nilai tersimpan yang dipakai.
+// WAN buatan web: INTERNET_TR069. Setelah dibuang, VOIP tetap hilang walau ONU restart; VOIP baru muncul lagi
+// bila ONU di-reset pabrik lalu diisi ulang dari OLT (WAN omci_ baru). Karena itu jenis layanan hanya DIBACA
+// setelah ONU restart (reset pabrik juga diakhiri restart) dan baru DIUBAH bila memang masih ada VOIP.
+// Mengubahnya membuat WAN tersambung ulang, jadi tidak terjadwal harian.
 // WAN manajemen bawaan pabrik ZTE (jenis IP, nama "TR069", layanan TR069_VOIP/VoIP_TR069) tidak disentuh.
 // FiberHome: lebar kanal WiFi (kode angka X_FH_ChannelWidth) untuk pilihan di Diagnosa.
 if (/fiberhome/i.test(String((declare("DeviceID.Manufacturer", {value: 1}).value || [""])[0])))
