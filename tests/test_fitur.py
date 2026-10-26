@@ -3207,3 +3207,26 @@ def test_pemantauan_ringan_diagnosa_langsung(siap):
     assert k.get("/api/upstream?jam=1").json()["pantau_otomatis"] is False
     assert o.put("/api/pengaturan", json={"nilai": {"UPSTREAM_PANTAU": "ya"}}).status_code == 200
     assert main.CONFIG["UPSTREAM_PANTAU"] == "ya"
+
+
+def test_diagnosa_baru_tersambung_ulang(siap):
+    """Pelanggan baru tersambung ulang / akun baru: data pemantauan (tiap 5 menit) belum memuat sesinya dan
+    ONU belum terpetakan. Diagnosa & tes ping membaca sesi langsung dan memetakan ONU lewat MAC sesi."""
+    main, o, k, m = siap
+    mt = main._mt
+    mt.ping = [{"seq": "9", "sent": "10", "received": "10", "avg-rtt": "3ms", "max-rtt": "5ms", "min-rtt": "2ms"}]
+    onu = main.ONUStatus(pon="0/0/1", onu_id=7, snmp_index=7, olt_rx_dbm=-20.5, online=True, status="OK",
+                         serial_number="FHTT9D2674A0", mac_address="aa:bb:cc:00:00:01")
+    main._latest_data = main._build_dashboard([], None, [onu])     # putaran lalu: budi belum tersambung
+    try:
+        d = k.get("/api/diagnosa/budi").json()
+        assert d["pppoe"]["online"] is True and d["pppoe"]["ip"] == "10.0.0.2"
+        assert d["onu"] and d["onu"]["serial_number"] == "FHTT9D2674A0"
+        r = k.post("/api/diagnosa/budi/ping")
+        assert r.status_code == 200
+        mt.mati = True                                               # MikroTik tak terjangkau: pakai data pemantauan
+        assert k.post("/api/diagnosa/budi/ping").status_code == 400
+    finally:
+        mt.mati = False
+        mt.ping = []
+        main._latest_data = None
