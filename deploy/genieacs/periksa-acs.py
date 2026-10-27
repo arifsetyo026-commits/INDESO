@@ -5,8 +5,8 @@ Jalankan di VPS sebelum menyalakan genieacs-cwmp / INDESO, dan seminggu sekali:
     sudo python3 /opt/indeso/deploy/genieacs/periksa-acs.py [folder data INDESO]
 
 Kondisi sehat: semua layanan aktif, file uji kecepatan terjangkau, jadwal lapor INDESO = provision, preset hanya
-indeso-default & indeso-diagnostik, provision sama dengan versi terbaru, perintah antre 0 (tidak ada reboot / hapus WAN
-yang antre), perintah gagal 0, kredensial ketukan setiap ONU dipasang ≤ 24 jam lalu, setiap ONU satu WAN PPPoE aktif,
+indeso-default & indeso-diagnostik, provision sama dengan versi terbaru, perintah antre 0 (INDESO tidak pernah
+meninggalkan perintah: berhasil, atau gagal lalu dihapus), perintah gagal 0, kredensial ketukan setiap ONU dipasang ≤ 24 jam lalu, setiap ONU satu WAN PPPoE aktif,
 tidak ada akun / nama WiFi ganda. Password (WiFi, PPPoE, ketukan, login ACS) tidak pernah ditampilkan.
 """
 import json, sqlite3, sys, collections, os, re, subprocess, urllib.request, urllib.parse
@@ -106,6 +106,9 @@ def ketukan():
             bermasalah += 1
             print(f"  {dev['_id'][-30:]}: " + "; ".join(tanda))
     print(f"  ONU: {len(d)} | perlu perhatian: {bermasalah} (dipulihkan otomatis saat ONU lapor berikutnya)")
+    tanda = [x["_id"] for x in get("/devices/?query=" + urllib.parse.quote(json.dumps({"_tags": "pulihkan_ketukan"}))
+                                   + "&projection=_id")]
+    print("  Menunggu pemasangan ulang kredensial (tag pulihkan_ketukan):", [x[-24:] for x in tanda] or "tidak ada")
 def log_lapor():
     jalur = "/var/log/genieacs/genieacs-cwmp-access.log"
     try:
@@ -149,11 +152,11 @@ def ketukan_indeso():
     h = sqlite3.connect(f"file:{os.path.join(DATA, 'isp_history.db')}?mode=ro", uri=True)
     batas = (datetime.now() - timedelta(hours=24)).isoformat(timespec="seconds")
     r = h.execute("SELECT COALESCE(SUM(langsung),0), COUNT(*) FROM acs_tugas WHERE ts >= ?", (batas,)).fetchone()
-    print(f"  Perintah 24 jam terakhir: {r[1]} | langsung jalan (ketukan berhasil): {r[0]}"
+    print(f"  Perintah 24 jam terakhir: {r[1]} | berhasil diketuk: {r[0]}"
           + (f" ({round(r[0] * 100 / r[1])}%)" if r[1] else ""))
     for alasan, n in h.execute("SELECT alasan, COUNT(*) FROM acs_tugas WHERE ts >= ? AND langsung=0 GROUP BY alasan "
                                "ORDER BY 2 DESC", (batas,)):
-        print(f"    antre karena: {alasan or '-'} ({n}x)")
+        print(f"    gagal/dibatalkan karena: {alasan or '-'} ({n}x)")
 def preset():
     for p in get("/presets/"):
         asing = "" if p["_id"] in ("indeso-default", "indeso-diagnostik") else "   <<< BUKAN DARI INDESO"
@@ -175,8 +178,8 @@ def tugas():
         tanda = ""
         if x.get("name") in ("reboot", "deleteObject", "factoryReset"):
             tanda = "   <<< BERISIKO: jalan mendadak saat ONU lapor"
-        elif umur is not None and umur > 20:
-            tanda = "   <<< tertahan lebih dari satu jadwal lapor"
+        elif umur is not None and umur > 3:
+            tanda = "   <<< sisa perintah (dihapus otomatis INDESO dalam ±5 menit)"
         print(f"  {wib(x.get('timestamp'))} ({umur} mnt) {str(x.get('device', ''))[-24:]} {x.get('name')} {str(isi)[:90]}{tanda}")
     print("  jumlah:", len(t))
 def fault():

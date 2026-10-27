@@ -1361,9 +1361,9 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat cek GenieACS: {e}")
         try:
-            await asyncio.to_thread(proses_bersih_ping_tertahan)
+            await asyncio.to_thread(proses_bersih_tugas_tertahan)
         except Exception as e:
-            logger.error(f"Error saat bersih ping tertahan: {e}")
+            logger.error(f"Error saat bersih perintah ACS tersisa: {e}")
 
         # Dibungkus juga: bila ini error tanpa try, seluruh loop (isolir, tagihan, backup) berhenti diam-diam.
         try:
@@ -1396,30 +1396,26 @@ def proses_bersih_harian() -> None:
         _bersih_hari = hari
 
 
-_bersih_ping = {"terakhir": None}
+_bersih_tugas = {"terakhir": None}
 
 
-def proses_bersih_ping_tertahan(umur_menit: Optional[int] = None) -> int:
-    """Perintah ping / tes kecepatan yang tertahan lebih lama dari satu jadwal lapor ONU (+3 menit) dihapus beserta
-    fault-nya. Tanpa ini GenieACS mengulangnya setiap ONU lapor, ONU terus 'sibuk diagnosa', ping berikutnya ikut
-    ditolak (9002 Internal error), dan tes kecepatan yang ditinggal (jendela Diagnosa ditutup) baru jalan belakangan.
-    Batasnya sama dengan lama halaman Diagnosa menunggu; dulu 10 menit, padahal ONU lapor tiap 15 menit."""
-    umur_menit = umur_menit if umur_menit is not None else -(-_tunggu_lapor_detik() // 60)
+def proses_bersih_tugas_tertahan(umur_menit: int = 3) -> int:
+    """Kebijakan tanpa antre: INDESO tidak pernah meninggalkan perintah di GenieACS (berhasil, atau gagal lalu
+    dihapus). Sisa perintah yang tetap ada lebih dari umur_menit (dari web GenieACS, versi INDESO lama, atau INDESO
+    berhenti di tengah perintah) dihapus beserta catatan fault-nya, supaya tidak jalan belakangan tanpa ditunggui
+    dan tidak menahan perintah berikutnya (ONU 'sibuk diagnosa', 9002 Internal error)."""
     if not CONFIG.get("GENIEACS_URL") or (
-            _bersih_ping["terakhir"] is not None and time.monotonic() - _bersih_ping["terakhir"] < 600):
+            _bersih_tugas["terakhir"] is not None and time.monotonic() - _bersih_tugas["terakhir"] < 240):
         return 0
-    _bersih_ping["terakhir"] = time.monotonic()
+    _bersih_tugas["terakhir"] = time.monotonic()
     from urllib.parse import quote
     batas = (datetime.utcnow() - timedelta(minutes=umur_menit)).isoformat()
     try:
-        r = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "setParameterValues"})}, timeout=15)
+        r = _acs("GET", "/tasks/", params={"projection": "_id,device,name,timestamp"}, timeout=15)
     except HTTPException:
         return 0
-    n = 0
+    jenis: dict = {}
     for t in (r.json() if r.ok else []):
-        pv = t.get("parameterValues") or []
-        if not any(str(p[0]).startswith((_PING_ONU, _UNDUH_ONU)) for p in pv if p):
-            continue
         if str(t.get("timestamp") or "")[:19] > batas[:19]:
             continue
         tid, dev = str(t.get("_id")), str(t.get("device") or "")
@@ -1427,11 +1423,12 @@ def proses_bersih_ping_tertahan(umur_menit: Optional[int] = None) -> int:
             _acs("DELETE", f"/tasks/{tid}")
             if dev:
                 _acs("DELETE", f"/faults/{quote(dev + ':task_' + tid, safe='')}")
-            n += 1
+            jenis[str(t.get("name"))] = jenis.get(str(t.get("name")), 0) + 1
         except HTTPException:
             pass
+    n = sum(jenis.values())
     if n:
-        logger.warning(f"{n} perintah ping/tes kecepatan tertahan > {umur_menit} menit dihapus dari GenieACS")
+        logger.warning(f"{n} perintah tersisa > {umur_menit} menit dihapus dari GenieACS: {jenis}")
     return n
 
 
@@ -9171,12 +9168,30 @@ def _tolak_bila_onu_diam(acs_id: str) -> None:
         raise HTTPException(status_code=409, detail=_pesan_onu_diam(menit))
 
 
-def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20, boleh_antre: bool = True) -> dict:
-    """Kirim tugas + connection request. 200 = langsung dijalankan ONU, 202 = antre
-    (ONU belum bisa dihubungi; dijalankan saat ONU lapor berikutnya). ONU yang berhenti lapor ditolak (409).
-    boleh_antre=False (reboot, hapus WAN): bila ketukan gagal, perintah dihapus lagi dan ditolak (409). Perintah
-    seperti itu tidak boleh jalan belakangan tanpa ditunggui: reboot mendadak saat ONU lapor nanti (atau dua kali
-    bila ONU sudah di-restart lewat OLT), hapus WAN memakai nomor WAN yang bisa sudah bergeser."""
+class KetukanGagal(HTTPException):
+    """ACS tidak berhasil mengetuk ONU (offline, tidak terjangkau, atau kredensial ketukan berbeda). Perintahnya
+    sudah dihapus dari GenieACS."""
+    def __init__(self, detail: str):
+        super().__init__(status_code=409, detail=detail)
+
+
+class TugasDitolak(HTTPException):
+    """ONU terhubung tapi menolak perintahnya (fault). Rinciannya di .fault (pesan, kode, parameter, sibuk);
+    perintah & catatan fault-nya sudah dihapus dari GenieACS."""
+    def __init__(self, fault: dict):
+        super().__init__(status_code=409, detail=fault.get("pesan") or "ONU menolak perintah.")
+        self.fault = fault
+
+
+_TUNGGU_SELESAI_DETIK = 20   # tambahan menunggu ONU yang sudah diketuk tapi belum selesai menjalankan perintah
+
+
+def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
+    """Kirim perintah, ketuk ONU (connection request), lalu tunggu hasilnya. Tidak ada perintah antre: hasilnya
+    hanya {"status": "selesai"}, atau gagal (KetukanGagal, TugasDitolak, 409 ONU berhenti lapor, 504 tidak selesai)
+    dengan perintah & catatan fault-nya sudah dihapus dari GenieACS. Perintah yang gagal baru dikirim lagi bila
+    admin mengulanginya, jadi tidak ada yang jalan belakangan tanpa ditunggui (reboot mendadak, hapus WAN yang
+    nomornya sudah bergeser, tes kecepatan setelah jendela Diagnosa ditutup)."""
     from urllib.parse import quote
     _tolak_bila_onu_diam(acs_id)
     if "objectName" in tugas:
@@ -9188,13 +9203,14 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20, boleh_antre: bool = T
         tid = (r.json() or {}).get("_id")
     except ValueError:
         tid = None
+    alasan = str(getattr(r, "reason", "") or "")
     if r.status_code in (200, 202):
         try:
             conn = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
             try:
                 conn.execute("INSERT INTO acs_tugas VALUES (?,?,?,?,?)",
                              (datetime.now().isoformat(timespec="seconds"), acs_id, tugas.get("name"),
-                              1 if r.status_code == 200 else 0, None if r.status_code == 200 else str(getattr(r, "reason", "") or "")[:200]))
+                              1 if r.status_code == 200 else 0, None if r.status_code == 200 else alasan[:200]))
                 conn.commit()
             finally:
                 conn.close()
@@ -9202,53 +9218,59 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20, boleh_antre: bool = T
             logger.warning(f"Gagal mencatat tugas ACS: {e}")
     if r.status_code == 200:
         return {"status": "selesai", "tugas_id": tid}
-    if r.status_code == 202:
-        alasan = str(getattr(r, "reason", "") or "").lower()
-        if "credential" in alasan:
-            _pulihkan_ketukan(acs_id)
-        # "Device is offline" / "Connection request error: …" = ketukan gagal. "Task faulted" dan "queued but not
-        # processed" berarti ONU sudah tersambung: perintahnya sedang/sudah diproses, jadi tidak dihapus.
-        ketukan_gagal = "offline" in alasan or "connection request" in alasan
-        if not boleh_antre and tid and ketukan_gagal:
+    if r.status_code != 202:
+        raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
+    a = alasan.lower()
+    if "offline" in a or "connection request" in a:
+        # "Device is offline" / "Connection request error: …": ketukan gagal, ONU belum menerima apa pun.
+        if tid:
             _hapus_tugas_acs(acs_id, tid)
-            raise HTTPException(status_code=409, detail=(
-                "ONU tidak bisa diketuk langsung" + (" (kredensial ketukannya berubah; dipasang ulang otomatis saat ONU "
-                                                     "lapor berikutnya, ±15 menit)" if "credential" in alasan else "")
-                + ", jadi perintah ini tidak diantrekan supaya tidak jalan belakangan tanpa ditunggui."))
-        if "credential" in alasan:
-            return {"status": "antre", "tugas_id": tid, "ketukan_gagal": True,
-                    "pesan": "ONU menolak ketukan ACS karena kredensialnya berubah (bisa terjadi setelah ONU restart atau "
-                             "pengaturan TR-069 dikirim ulang dari OLT). Kredensial dipasang ulang saat ONU lapor ke server "
-                             "berikutnya (paling lama ±15 menit), dan perintah ini ikut dijalankan saat itu. Setelahnya "
-                             "perintah kembali langsung jalan."}
-        return {"status": "antre", "tugas_id": tid, "ketukan_gagal": ketukan_gagal,
-                "pesan": "ONU belum merespons langsung. Perintah tersimpan dan dijalankan saat ONU lapor ke server "
-                         "berikutnya (paling lama ±15 menit)."}
-    raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
+        if "credential" in a:
+            _pulihkan_ketukan(acs_id)
+            raise KetukanGagal("ONU menolak ketukan ACS karena kredensialnya berubah (bisa terjadi setelah ONU restart atau "
+                               "pengaturan TR-069 dikirim ulang dari OLT). Perintah dibatalkan. Kredensial dipasang ulang "
+                               "otomatis saat ONU lapor rutin berikutnya (paling lama ±15 menit); setelah itu ulangi perintah ini.")
+        raise KetukanGagal("ONU tidak bisa diketuk langsung (ONU mati/offline, atau jalur ACS ke ONU terputus). "
+                           "Perintah dibatalkan; ulangi setelah ONU online.")
+    # ONU sudah tersambung ke ACS: perintahnya ditolak ("Task faulted") atau belum selesai saat batas waktu.
+    st = _tunggu_tugas(acs_id, tid, _TUNGGU_SELESAI_DETIK) if tid else {"status": "selesai"}
+    if st["status"] == "selesai":
+        return {"status": "selesai", "tugas_id": tid}
+    _hapus_tugas_acs(acs_id, tid)
+    if st["status"] == "gagal":
+        raise TugasDitolak(st)
+    raise HTTPException(status_code=504, detail=f"ONU tidak menyelesaikan perintah dalam {tunggu + _TUNGGU_SELESAI_DETIK} "
+                                                "detik, jadi perintah dibatalkan. ONU mungkin sudah menjalankan sebagian; "
+                                                "periksa dulu sebelum mengulang.")
 
 
-_KREDENSIAL_KETUKAN = ("InternetGatewayDevice.ManagementServer.ConnectionRequestUsername",
-                       "InternetGatewayDevice.ManagementServer.ConnectionRequestPassword")
+def _tunggu_tugas(acs_id: str, tid: str, detik: int) -> dict:
+    """Status perintah yang ONU-nya sudah diketuk, ditunggu sampai selesai/ditolak atau `detik` habis."""
+    batas = time.monotonic() + detik
+    while True:
+        st = _status_tugas(acs_id, tid)
+        if st["status"] != "berjalan" or time.monotonic() >= batas:
+            return st
+        time.sleep(2)
+
+
+_TAG_PULIHKAN = "pulihkan_ketukan"
 
 
 def _pulihkan_ketukan(acs_id: str) -> bool:
     """GenieACS: "Incorrect connection request credentials". Kredensial ketukan di ONU berubah tanpa sepengetahuan
     ACS (ZTE F609/F670, FiberHome: setelah restart atau saat OLT mendorong ulang TR-069). Password tidak bisa dibaca
-    balik dari ONU, jadi GenieACS mengira kredensialnya masih terpasang. Membaca ulang kredensial (password selalu
-    kosong) membuat provision indeso-default memasangnya lagi di sesi yang sama saat ONU lapor berikutnya.
-    Cukup satu permintaan per ONU."""
+    balik dari ONU, jadi GenieACS mengira kredensialnya masih terpasang. Tanpa perintah antre: ONU diberi tanda (tag);
+    provision indeso-default melihat tanda itu saat ONU lapor berikutnya, memasang ulang kredensial, lalu menghapus
+    tandanya."""
     from urllib.parse import quote
     try:
-        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": acs_id, "name": "getParameterValues"}),
-                                            "projection": "_id,parameterNames"}, timeout=10)
-        if r.ok and any(_KREDENSIAL_KETUKAN[1] in (t.get("parameterNames") or []) for t in r.json()):
-            return False
-        _acs("POST", f"/devices/{quote(acs_id, safe='')}/tasks",
-             json={"name": "getParameterValues", "parameterNames": list(_KREDENSIAL_KETUKAN)}, timeout=15)
+        r = _acs("POST", f"/devices/{quote(acs_id, safe='')}/tags/{_TAG_PULIHKAN}", timeout=10)
     except HTTPException:
         return False
-    logger.info(f"Ketukan ke {acs_id} ditolak (kredensial berubah): dipasang ulang saat ONU lapor berikutnya")
-    return True
+    if r.ok:
+        logger.info(f"Ketukan ke {acs_id} ditolak (kredensial berubah): dipasang ulang saat ONU lapor berikutnya")
+    return r.ok
 
 
 def _param_ditolak(detail) -> list[str]:
@@ -9286,7 +9308,7 @@ def _rincian_fault(detail) -> list[str]:
 
 
 def _status_tugas(acs_id: str, tid: str) -> dict:
-    """antre = masih menunggu ONU; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
+    """berjalan = ONU sudah diketuk tapi belum selesai; gagal = ONU menolak (fault); selesai = sudah dijalankan."""
     q = json.dumps({"device": acs_id})
     r = _acs("GET", "/faults/", params={"query": q})
     for f in (r.json() if r.ok else []):
@@ -9302,35 +9324,8 @@ def _status_tugas(acs_id: str, tid: str) -> dict:
                                 "atau Reboot ONU bila tetap gagal." if sibuk else "")}
     r = _acs("GET", "/tasks/", params={"query": q})
     if r.ok and any(str(t.get("_id")) == tid for t in r.json()):
-        return {"status": "antre"}
+        return {"status": "berjalan"}
     return {"status": "selesai"}
-
-
-@app.get("/api/acs/{username}/tugas/{tid}")
-def acs_status_tugas(username: str, tid: str, request: Request):
-    _wajib_admin(request)
-    if not re.fullmatch(r"[0-9a-f]{24}", tid):
-        raise HTTPException(status_code=400, detail="ID tugas tidak valid.")
-    doc = _cari_perangkat(username)
-    if not doc:
-        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
-    return _status_tugas(doc["_id"], tid)
-
-
-@app.post("/api/acs/{username}/tugas/{tid}/batal")
-def acs_batal_tugas(username: str, tid: str, request: Request):
-    """Hapus perintah yang tertahan (mis. ditolak ONU) beserta catatan fault-nya."""
-    _wajib_admin(request)
-    if not re.fullmatch(r"[0-9a-f]{24}", tid):
-        raise HTTPException(status_code=400, detail="ID tugas tidak valid.")
-    doc = _cari_perangkat(username)
-    if not doc:
-        raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
-    from urllib.parse import quote
-    _acs("DELETE", f"/tasks/{tid}")
-    _acs("DELETE", f"/faults/{quote(doc['_id'] + ':task_' + tid, safe='')}")
-    catat_aktivitas(_oleh(request), "onu_batal_tugas", f"{username} ({doc['_id']}) tugas {tid} dibatalkan")
-    return {"ok": True}
 
 
 def _band_wifi(doc: dict, b: str, ssid: str) -> str:
@@ -9504,7 +9499,8 @@ def _lapor_terakhir_menit(teks: Optional[str]) -> Optional[int]:
 def _segarkan_perangkat(doc: dict) -> dict:
     """Ambil ulang hanya yang berubah cepat: tabel host, klien tiap WiFi yang menyala, dan status SSID.
     Jauh lebih kecil dari refreshObject seluruh LANDevice (ZTE: 8 slot WLAN + host, bisa ±30 detik).
-    Tugas kecil diantrekan dulu, lalu satu ketukan ONU menjalankan semuanya dalam satu sesi."""
+    Tugas kecil dititipkan dulu, lalu satu ketukan ONU menjalankan semuanya dalam satu sesi. Bila gagal, semuanya
+    dihapus lagi (tanpa antre)."""
     from urllib.parse import quote
     menit = _onu_diam_menit(doc.get("_lastInform"))
     if menit is not None:
@@ -9522,34 +9518,26 @@ def _segarkan_perangkat(doc: dict) -> dict:
     if params:
         tugas.insert(0, {"name": "getParameterValues", "parameterNames": params})
     _bersihkan_tertahan(doc["_id"])
-    _hapus_baca_antre(doc["_id"])
-    for t in tugas[:-1]:
-        _acs("POST", f"/devices/{quote(doc['_id'], safe='')}/tasks", json=t, timeout=15)
-    return _tugas_acs(doc["_id"], tugas[-1], tunggu=25)
-
-
-def _hapus_baca_antre(acs_id: str) -> int:
-    """Perintah baca data perangkat (refreshObject / getParameterValues LANDevice & WANDevice) yang masih
-    antre untuk ONU ini dihapus sebelum diantrekan lagi. ONU yang tidak menjawab ketukan (mis. WAN TR-069-nya
-    berubah) tidak menumpuk 5 perintah baru setiap Diagnosa dibuka; perintah ubah, tes ping, dan pemulihan
-    kredensial ketukan (ManagementServer) tidak disentuh."""
+    ids = []
     try:
-        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": acs_id}),
-                                            "projection": "_id,name,objectName,parameterNames"}, timeout=10)
-    except HTTPException:
-        return 0
-    n = 0
-    for t in (r.json() if r.ok else []):
-        jalur = [str(t.get("objectName") or "")] + [str(x) for x in (t.get("parameterNames") or [])]
-        if t.get("name") not in ("refreshObject", "getParameterValues") or \
-                any("Diagnostics" in j or "ManagementServer" in j for j in jalur):
-            continue
-        try:
-            _acs("DELETE", f"/tasks/{t['_id']}")
-            n += 1
-        except HTTPException:
-            pass
-    return n
+        for t in tugas[:-1]:
+            x = _acs("POST", f"/devices/{quote(doc['_id'], safe='')}/tasks", json=t, timeout=15)
+            try:
+                ids.append((x.json() or {}).get("_id"))
+            except ValueError:
+                pass
+        hasil = _tugas_acs(doc["_id"], tugas[-1], tunggu=25)
+    except HTTPException as e:
+        pesan = str(e.detail)
+        if not isinstance(e, KetukanGagal):
+            # Bacaan sebelumnya yang ditolak ONU menahan bacaan terakhir: sebutkan alasan penolakannya.
+            tolak = next((st for st in (_status_tugas(doc["_id"], t) for t in ids if t) if st["status"] == "gagal"), None)
+            pesan = tolak["pesan"] if tolak else pesan
+        hasil = {"status": "gagal", "pesan": pesan}
+    for tid in ids:
+        if tid:
+            _hapus_tugas_acs(doc["_id"], tid)   # yang sudah dijalankan tidak ada lagi; sisanya dibuang (tanpa antre)
+    return hasil
 
 
 def _info_acs(username: str, segarkan: bool = False) -> dict:
@@ -9663,9 +9651,7 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else []) \
         + ([f"lebar kanal → {lebar}"] if lebar else [])
-    catat_aktivitas(_oleh(request), "onu_wifi",
-                    f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}"
-                    + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+    catat_aktivitas(_oleh(request), "onu_wifi", f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}")
     return hasil
 
 
@@ -9692,10 +9678,9 @@ def acs_hapus_wan(username: str, d: HapusWanIn, request: Request):
     if not boleh:
         raise HTTPException(status_code=409, detail=f"WAN ini tidak dihapus: {alasan}.")
     _bersihkan_tertahan(doc["_id"])
-    hasil = _tugas_acs(doc["_id"], {"name": "deleteObject", "objectName": d.path}, tunggu=25, boleh_antre=False)
+    hasil = _tugas_acs(doc["_id"], {"name": "deleteObject", "objectName": d.path}, tunggu=25)
     catat_aktivitas(_oleh(request), "onu_hapus_wan",
-                    f"{username} ({doc['_id']}) hapus WAN {d.path} (username {w['username'] or '-'})"
-                    + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
+                    f"{username} ({doc['_id']}) hapus WAN {d.path} (username {w['username'] or '-'})")
     return hasil
 
 
@@ -9840,12 +9825,6 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     return hasil
 
 
-def _tunggu_lapor_detik() -> int:
-    """Batas browser menunggu hasil tes yang antre (ketukan gagal): satu jadwal lapor ONU + 3 menit untuk tesnya.
-    Tanpa ini perintah dihapus sebelum ONU sempat lapor (dulu 6 menit, padahal ONU lapor tiap 15 menit)."""
-    return max(60, min(int(CONFIG.get("ACS_ONU_INTERVAL") or 900), 86400)) + 180
-
-
 def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: bool = True, minimal: bool = False) -> dict:
     _bersihkan_tugas_ping(doc["_id"])
     mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
@@ -9870,7 +9849,7 @@ def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: boo
         try:
             _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _PING_ONU}, tunggu=20)
             doc = _cari_perangkat(username) or doc
-        except HTTPException as e:
+        except TugasDitolak as e:
             logger.warning(f"Gagal membaca tipe IPPingDiagnostics {doc['_id']}: {e.detail}")
     zte = "zte" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
     for v in nilai:
@@ -9880,66 +9859,60 @@ def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: boo
         tipe = _param(doc, v[0]).get("_type")
         if isinstance(tipe, str) and tipe.startswith("xsd:"):
             v[2] = tipe
-    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    asal = (doc["_id"], bool(wan), username, model, host, jumlah)
+    try:
+        hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
+    except TugasDitolak as e:
+        return _ping_ditolak(username, doc, asal, e.fault)
     if hasil.get("tugas_id"):
-        _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan), username, model, host, jumlah)
+        _ping_tugas[str(hasil["tugas_id"])] = asal
         while len(_ping_tugas) > 500:
             _ping_tugas.pop(next(iter(_ping_tugas)))
-    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=minimal,
-                tunggu_maks=_tunggu_lapor_detik())
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=minimal)
+
+
+def _ping_ditolak(username: str, doc: dict, asal: tuple, st: dict) -> dict:
+    """ONU menolak perintah ping (fault). Perintahnya sudah dihapus dan tidak dicoba ulang otomatis, kecuali
+    ping ke nama situs: ZTE menolaknya (9002 pada objek IPPingDiagnostics) dan di PITOYO (ZTEGD770288C) penolakan
+    itu hilang setelah satu ping ke IP sukses (google.com kemudian 5/5, DNS WAN normal). Jadi bukan DNS rusak
+    melainkan keadaan fitur diagnosa ONU: langsung diuji sekali dengan IP, memastikan koneksi ONU dan memulihkan
+    fitur diagnosanya. Ditolak saat lewat WAN (kolom Interface): ONU ini memakai cara tanpa WAN berikutnya; seluruh
+    model ONU ikut diganti bila ONU jelas menyebut kolom Interface (penolakan umum bisa karena hal lain)."""
+    host_asal = asal[4]
+    if host_asal and not re.fullmatch(r"[0-9.]+", host_asal):
+        _catat_ping(asal, "nama_ditolak", f"Ping ke {host_asal} ditolak: {st['pesan']}")
+        lanjut = _mulai_ping(username, doc, "8.8.8.8", asal[5], bool(asal[1]))
+        return {"status": "nama_ditolak", "host": host_asal, "lanjut": lanjut,
+                "pesan": f"ONU menolak ping ke {host_asal}. Sedang dicek dengan ping ke 8.8.8.8…"}
+    ganti_cara = bool(asal[1])
+    belajar_model = ganti_cara and "Interface" in (st.get("parameter") or [])
+    pesan = st["pesan"]
+    if ganti_cara:
+        _ping_tanpa_wan.add(doc["_id"])
+        pesan = (f"ONU menolak perintah ping lewat jalur WAN ({st.get('kode') or 'fault'}). Percobaan berikutnya "
+                 "untuk ONU ini memakai cara tanpa memilih WAN; tekan Ping lagi.")
+    _catat_ping(asal, "ditolak", st["pesan"], belajar=belajar_model)
+    return {"status": "gagal", "pesan": pesan, "dihapus": True, "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
 
 
 @app.get("/api/acs/{username}/ping")
 def acs_ping_hasil(username: str, request: Request, mulai: str, segarkan: bool = False, tugas: Optional[str] = None):
-    """menunggu → ONU belum selesai / hasil belum terbaca; gagal → ONU menolak perintah ping;
-    selesai → angka hasil ping."""
+    """menunggu → ONU belum selesai / hasil belum terbaca; selesai → angka hasil ping. (Penolakan ONU sudah dijawab
+    saat perintah dikirim.)"""
     _wajib_admin(request)
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
-    if tugas and re.fullmatch(r"[0-9a-f]{24}", tugas):
-        st = _status_tugas(doc["_id"], tugas)
-        if st["status"] == "gagal":
-            # Hapus langsung supaya tidak diulang GenieACS tiap ONU lapor (tidak menumpuk). Tidak dicoba
-            # ulang otomatis; bila tadi lewat WAN, permintaan berikutnya memakai cara tanpa WAN.
-            _hapus_tugas_acs(doc["_id"], tugas)
-            asal = _ping_tugas.pop(tugas, None)
-            # Ditolak saat memakai kolom Interface (lewat WAN): ONU ini mencoba cara tanpa WAN berikutnya.
-            # Seluruh model ONU baru ikut diganti bila ONU jelas menyebut kolom Interface yang ditolak;
-            # penolakan umum (mis. 9002 pada objek IPPingDiagnostics) bisa karena hal lain (tipe data).
-            host_asal = asal[4] if asal and len(asal) > 4 else None
-            if host_asal and not re.fullmatch(r"[0-9.]+", host_asal):
-                # Ping ke nama situs ditolak (ZTE: 9002 pada objek IPPingDiagnostics). Di PITOYO (ZTEGD770288C)
-                # penolakan ini hilang setelah satu ping ke IP sukses (google.com kemudian 5/5, DNS WAN normal),
-                # jadi bukan DNS rusak melainkan keadaan fitur diagnosa ONU. Langsung uji sekali dengan IP
-                # (perintah yang gagal sudah dihapus): memastikan koneksi ONU dan memulihkan fitur diagnosanya.
-                _catat_ping(asal, "nama_ditolak", f"Ping ke {host_asal} ditolak: {st['pesan']}")
-                lanjut = _mulai_ping(username, doc, "8.8.8.8", asal[5] if len(asal) > 5 else 10, bool(asal[1]))
-                return {"status": "nama_ditolak", "tugas_id": tugas, "dihapus": True, "host": host_asal,
-                        "pesan": f"ONU menolak ping ke {host_asal}. Sedang dicek dengan ping ke 8.8.8.8…",
-                        "lanjut": lanjut}
-            ganti_cara = bool(asal and asal[1])
-            belajar_model = ganti_cara and "Interface" in (st.get("parameter") or [])
-            pesan = st["pesan"]
-            if ganti_cara:
-                _ping_tanpa_wan.add(doc["_id"])
-                pesan = (f"ONU menolak perintah ping lewat jalur WAN ({st.get('kode') or 'fault'}). Percobaan berikutnya "
-                         "untuk ONU ini memakai cara tanpa memilih WAN; tekan Ping lagi.")
-            if asal:
-                _catat_ping(asal, "ditolak", st["pesan"], belajar=belajar_model)
-            return {"status": "gagal", "pesan": pesan, "tugas_id": tugas, "dihapus": True,
-                    "cara_berikutnya": "tanpa_wan" if ganti_cara else None}
-    tertunda = False
     if segarkan:
-        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": doc["_id"], "name": "getParameterValues"})})
-        tertunda = r.ok and any(any(str(n).startswith(_PING_ONU) for n in (t.get("parameterNames") or [])) for t in r.json())
-    if segarkan and not tertunda:
-        # Hasil belum masuk: minta ONU mengirim nilai IPPingDiagnostics (diulang berkala dari browser;
-        # tidak ditumpuk bila permintaan sebelumnya masih menunggu ONU).
-        _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
-            f"{_PING_ONU}.{k}" for k in ("DiagnosticsState", "SuccessCount", "FailureCount",
-                                         "AverageResponseTime", "MinimumResponseTime", "MaximumResponseTime")]}, tunggu=15)
-        doc = _cari_perangkat(username) or doc
+        # Hasil belum masuk (ZTE tidak mengabari server saat ping selesai): baca langsung dari ONU. Bila gagal,
+        # belum ada hasil; browser meminta lagi berikutnya.
+        try:
+            _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
+                f"{_PING_ONU}.{k}" for k in ("DiagnosticsState", "SuccessCount", "FailureCount",
+                                             "AverageResponseTime", "MinimumResponseTime", "MaximumResponseTime")]}, tunggu=15)
+            doc = _cari_perangkat(username) or doc
+        except HTTPException as e:
+            logger.info(f"Hasil ping {doc['_id']} belum terbaca: {e.detail}")
     st = _param(doc, f"{_PING_ONU}.DiagnosticsState")
     keadaan, waktu = st.get("_value"), str(st.get("_timestamp") or "")
     if not keadaan or keadaan in ("Requested", "None") or waktu < mulai:
@@ -10065,18 +10038,12 @@ def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
     if not _ada(doc, _UNDUH_ONU) and not _ada(doc, _UNDUH_ONU + ".DiagnosticsState"):
         # Belum pernah terbaca: minta ONU melaporkan objeknya dulu (sekalian tahu didukung atau tidak).
-        baca = {}
+        # Ketukan gagal (KetukanGagal) diteruskan apa adanya: belum bisa disimpulkan ONU tidak mendukung.
         try:
-            baca = _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU}, tunggu=20)
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU}, tunggu=20)
             doc = _cari_perangkat(username) or doc
-        except HTTPException as e:
-            logger.warning(f"Gagal membaca DownloadDiagnostics {doc['_id']}: {e.detail}")
-        if not _ada(doc, _UNDUH_ONU) and baca.get("ketukan_gagal"):
-            # Ketukan gagal: belum bisa disimpulkan ONU tidak mendukung. Pembacaannya tetap antre.
-            sebab = " karena kredensial ketukannya berubah (dipasang ulang otomatis)" if "kredensial" in str(baca.get("pesan")) else ""
-            raise HTTPException(status_code=409, detail=f"ONU belum bisa diketuk langsung{sebab}, jadi fitur tes kecepatan "
-                                                        "ONU belum terbaca. Data itu dibaca saat ONU lapor ke server berikutnya "
-                                                        "(paling lama ±15 menit); setelah itu tekan Tes kecepatan lagi.")
+        except TugasDitolak as e:
+            logger.warning(f"ONU {doc['_id']} menolak membaca DownloadDiagnostics: {e.detail}")
         if not _ada(doc, _UNDUH_ONU):
             raise HTTPException(status_code=409, detail="ONU ini tidak menyediakan tes kecepatan lewat TR-069 "
                                                         "(DownloadDiagnostics). Uji dari HP pelanggan di dekat ONU.")
@@ -10090,51 +10057,47 @@ def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
         if isinstance(tipe, str) and tipe.startswith("xsd:"):
             v[2] = tipe
     mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
-    hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=25)
+    # Pemakaian dicatat SEBELUM tes (data monitor terakhir), supaya unduhan tes sendiri tidak ikut terhitung.
+    # Data monitor diperbarui ±2 menit sekali: bila ada tes lain dimulai < 3 menit lalu, angkanya bisa berisi
+    # unduhan tes itu, jadi tidak dipakai (bukan bukti "kuota terbagi").
+    u = next((x for x in (_latest_data.pppoe_users if _latest_data else []) if x.username == username), None)
+    lalu = _speed_mulai_terakhir.get(username)
+    pakai = None if u is None or (lalu and time.monotonic() - lalu < 180) else u.rx_mbps
+    asal = (doc["_id"], username, _model_onu(doc), url, bool(wan), pakai, _kecepatan_tetap(username))
+    try:
+        hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=25)
+    except TugasDitolak as e:
+        pesan = str(e.detail)
+        if wan and "Interface" in (e.fault.get("parameter") or []):
+            _speed_tanpa_wan.add(doc["_id"])
+            pesan += " Percobaan berikutnya tanpa memilih WAN; tekan Tes lagi."
+        _catat_speedtest(asal, "ditolak", str(e.detail))
+        raise HTTPException(status_code=409, detail=pesan)
+    _speed_mulai_terakhir[username] = time.monotonic()
     if hasil.get("tugas_id"):
-        # Pemakaian dicatat SEBELUM tes (data monitor terakhir), supaya unduhan tes sendiri tidak ikut terhitung.
-        # Data monitor diperbarui ±2 menit sekali: bila ada tes lain dimulai < 3 menit lalu, angkanya bisa berisi
-        # unduhan tes itu, jadi tidak dipakai (bukan bukti "kuota terbagi").
-        u = next((x for x in (_latest_data.pppoe_users if _latest_data else []) if x.username == username), None)
-        lalu = _speed_mulai_terakhir.get(username)
-        pakai = None if u is None or (lalu and time.monotonic() - lalu < 180) else u.rx_mbps
-        _speed_tugas[str(hasil["tugas_id"])] = (doc["_id"], username, _model_onu(doc), url, bool(wan), pakai,
-                                               _kecepatan_tetap(username))
-        _speed_mulai_terakhir[username] = time.monotonic()
+        _speed_tugas[str(hasil["tugas_id"])] = asal
         while len(_speed_tugas) > 200:
             _speed_tugas.pop(next(iter(_speed_tugas)))
     catat_aktivitas(_oleh(request), "onu_speedtest", f"{username} ({doc['_id']}) unduh {url}")
-    return dict(hasil, mulai=mulai, url=url, lewat_wan=bool(wan), tunggu_maks=_tunggu_lapor_detik())
+    return dict(hasil, mulai=mulai, url=url, lewat_wan=bool(wan))
 
 
 @app.get("/api/acs/{username}/speedtest")
 def acs_speedtest_hasil(username: str, request: Request, mulai: str, segarkan: bool = False, tugas: Optional[str] = None):
-    """menunggu / gagal (ONU menolak atau unduhan error) / selesai (Mbps)."""
+    """menunggu / gagal (unduhan error) / selesai (Mbps). Penolakan ONU sudah dijawab saat perintah dikirim."""
     _wajib_admin(request)
     doc = _cari_perangkat(username)
     if not doc:
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
     asal = _speed_tugas.get(tugas) if tugas else None
-    if tugas and re.fullmatch(r"[0-9a-f]{24}", tugas):
-        st = _status_tugas(doc["_id"], tugas)
-        if st["status"] == "gagal":
-            _hapus_tugas_acs(doc["_id"], tugas)
-            _speed_tugas.pop(tugas, None)
-            pesan = st["pesan"]
-            if asal and asal[4] and "Interface" in (st.get("parameter") or []):
-                _speed_tanpa_wan.add(doc["_id"])
-                pesan += " Percobaan berikutnya tanpa memilih WAN; tekan Tes lagi."
-            if asal:
-                _catat_speedtest(asal, "ditolak", st["pesan"])
-            return {"status": "gagal", "pesan": pesan}
     if segarkan:
-        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": doc["_id"], "name": "getParameterValues"})})
-        tertunda = r.ok and any(any(str(n).startswith(_UNDUH_ONU) for n in (t.get("parameterNames") or [])) for t in r.json())
-        if not tertunda:
+        try:
             _tugas_acs(doc["_id"], {"name": "getParameterValues", "parameterNames": [
                 f"{_UNDUH_ONU}.{k}" for k in ("DiagnosticsState", "BOMTime", "EOMTime", "TestBytesReceived",
                                               "TotalBytesReceived", "ROMTime")]}, tunggu=15)
             doc = _cari_perangkat(username) or doc
+        except HTTPException as e:
+            logger.info(f"Hasil tes kecepatan {doc['_id']} belum terbaca: {e.detail}")
     st = _param(doc, f"{_UNDUH_ONU}.DiagnosticsState")
     keadaan, waktu = st.get("_value"), str(st.get("_timestamp") or "")
     if not keadaan or keadaan in ("Requested", "None") or waktu < mulai:
@@ -10231,10 +10194,10 @@ def acs_amankan(username: str, request: Request):
     # Bagian ini tidak dibaca rutin oleh provision: minta ONU melaporkannya dulu bila belum ada.
     kurang = [o for o in bagian if not _ada(doc, f"{_IGD}.{o}")]
     for o in kurang:
-        if _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.{o}"}, tunggu=20).get("ketukan_gagal"):
-            raise HTTPException(status_code=409, detail="ONU belum bisa diketuk langsung, jadi pengaturan akunnya belum "
-                                                        "terbaca. Data itu dibaca saat ONU lapor ke server berikutnya (paling "
-                                                        "lama ±15 menit); setelah itu tekan Amankan ONU lagi.")
+        try:
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.{o}"}, tunggu=20)
+        except TugasDitolak:
+            pass                 # bagian ini tidak ada di firmware ONU ini
     if kurang:
         doc = _cari_perangkat(username) or doc
     nilai, langkah = [], []
@@ -10262,8 +10225,7 @@ def acs_amankan(username: str, request: Request):
         raise HTTPException(status_code=409, detail="ONU tidak melaporkan pengaturan akun/layanan yang bisa diamankan.")
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
-    catat_aktivitas(_oleh(request), "onu_amankan", f"{username} ({doc['_id']}): {', '.join(langkah)}"
-                    + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
+    catat_aktivitas(_oleh(request), "onu_amankan", f"{username} ({doc['_id']}): {', '.join(langkah)}")
     return dict(hasil, langkah=langkah)
 
 
@@ -10276,13 +10238,10 @@ def acs_reboot(username: str, request: Request):
     _bersihkan_tertahan(doc["_id"])
     _bersihkan_tugas_ping(doc["_id"])     # ping yang belum jalan tidak berguna lagi setelah restart
     try:
-        hasil = _tugas_acs(doc["_id"], {"name": "reboot"}, boleh_antre=False)
-    except HTTPException as e:
-        if e.status_code == 409:
-            raise HTTPException(status_code=409, detail=e.detail + " Pakai Restart lewat OLT.")
-        raise
-    catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({doc['_id']})"
-                    + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+        hasil = _tugas_acs(doc["_id"], {"name": "reboot"})
+    except KetukanGagal as e:
+        raise KetukanGagal(e.detail + " Atau pakai Restart lewat OLT.")
+    catat_aktivitas(_oleh(request), "onu_reboot", f"{username} ({doc['_id']})")
     return hasil
 
 
@@ -11821,31 +11780,20 @@ def wifi_kesehatan(request: Request):
         "data_lama": sum(1 for h in onu if h["data_lama"]), "per_masalah": jumlah}, "ambang_ramai": WIFI_RAMAI}
 
 
+class SegarWifiIn(BaseModel):
+    id: str
+
+
 @app.post("/api/wifi-kesehatan/segarkan")
-def wifi_kesehatan_segarkan(request: Request):
-    """Minta semua ONU mengirim ulang data WiFi-nya saat lapor berikutnya (≤ ±15 menit). Tugas diantrekan
-    tanpa mengetuk ONU satu per satu, supaya ringan dan tidak mengganggu pelanggan."""
+def wifi_kesehatan_segarkan(d: SegarWifiIn, request: Request):
+    """Baca ulang data WiFi SATU ONU, langsung (diketuk). Halaman memanggilnya satu per satu untuk semua ONU, jadi
+    tidak ada perintah antre dan ACS tidak dibanjiri: per ONU berhasil atau gagal beserta alasannya."""
     _wajib_admin(request)
-    from urllib.parse import quote
-    r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_id,_lastInform"}, timeout=15)
-    if not r.ok:
-        raise HTTPException(status_code=502, detail=f"Server ACS menolak permintaan (HTTP {r.status_code}).")
-    antre = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "refreshObject"}),
-                                            "projection": "device,objectName"}, timeout=15)
-    sudah = {t.get("device") for t in (antre.json() if antre.ok else [])
-             if str(t.get("objectName") or "").endswith("WLANConfiguration")}
-    n = diam = 0
-    for d in r.json():
-        if d.get("_id") in sudah:
-            continue
-        if _onu_diam_menit(d.get("_lastInform")) is not None:     # tidak akan pernah dijalankan, hanya menumpuk
-            diam += 1
-            continue
-        x = _acs("POST", f"/devices/{quote(d['_id'], safe='')}/tasks",
-                 json={"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.WLANConfiguration"}, timeout=15)
-        n += x.status_code in (200, 202)
-    catat_aktivitas(_oleh(request), "wifi_segarkan", f"Data WiFi {n} ONU diminta diperbarui")
-    return {"diantrekan": n, "sudah_antre": len(sudah), "berhenti_lapor": diam}
+    r = _acs("GET", "/devices/", params={"query": json.dumps({"_id": d.id}), "projection": "_id"}, timeout=10)
+    if not (r.ok and r.json()):
+        raise HTTPException(status_code=404, detail="ONU tidak ditemukan di server ACS.")
+    _tugas_acs(d.id, {"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.WLANConfiguration"}, tunggu=25)
+    return {"status": "selesai"}
 
 # ============================================================
 # ONU BARU — deteksi ONU yang baru dicolok + aktivasi (TR-069, WiFi)
@@ -12180,8 +12128,8 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
     if lewat_acs and hasil["pppoe"]:
         _wifi_tertunda[sn.upper()] = {"ssid": ssid, "pw": d.wifi_password, "akhir": akhir, "sejak": sejak,
                                       "mulai": time.monotonic(), "oleh": _oleh(request)}
-        hasil["wifi_acs"] = (f"WiFi {ssid} dikirim lewat ACS otomatis begitu ONU lapor (±1–15 menit; maks. "
-                             f"{WIFI_TERTUNDA_MENIT} menit).")
+        hasil["wifi_acs"] = (f"WiFi {ssid} dikirim lewat ACS satu kali, otomatis begitu ONU lapor (±1–15 menit; maks. "
+                             f"{WIFI_TERTUNDA_MENIT} menit). Bila gagal, tercatat di Aktivitas: atur lewat tombol Atur WiFi.")
     if d.reset:
         # Hanya bila PPPoE diterima dan konfigurasi OLT tersimpan: setelah reset, ONU hanya punya apa yang disimpan OLT.
         if not hasil["pppoe"] or hasil["tersimpan"] is not True:
@@ -12327,19 +12275,25 @@ def terapkan_wifi_tertunda() -> None:
         try:
             o = _onu_live(sn)
             doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
-            # Hanya laporan SETELAH perintah dikirim (ONU yang direset melapor ulang dengan WiFi bawaan pabrik).
-            if not doc or str(doc.get("_lastInform") or "") < t["sejak"]:
-                continue
+        except HTTPException as e:
+            logger.warning(f"WiFi tertunda {sn}: ONU belum terbaca di ACS: {e.detail}")
+            continue
+        # Hanya laporan SETELAH perintah dikirim (ONU yang direset melapor ulang dengan WiFi bawaan pabrik), dan
+        # ±1 menit setelahnya supaya sesi lapor pertama (provision memasang kredensial ketukan) sudah selesai.
+        if not doc or str(doc.get("_lastInform") or "") < t["sejak"] or (_lapor_terakhir_detik(doc.get("_lastInform")) or 0) < 60:
+            continue
+        # Satu kali kirim, tanpa antre dan tanpa diulang otomatis: gagal → admin mengulang lewat tombol Atur WiFi.
+        _wifi_tertunda.pop(sn, None)
+        try:
             nilai, diatur = _nilai_wifi_utama(doc, t["ssid"], t["pw"], t["akhir"])
             _bersihkan_tertahan(doc["_id"])
-            hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=15)
+            _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=15)
         except HTTPException as e:
-            logger.warning(f"WiFi tertunda {sn} belum terkirim: {e.detail}")
+            catat_aktivitas(t["oleh"], "onu_wifi", f"ONU baru {sn} ({doc['_id']}): WiFi {t['ssid']} GAGAL dikirim lewat "
+                                                   f"ACS ({e.detail}). Atur lewat tombol Atur WiFi.")
             continue
-        _wifi_tertunda.pop(sn, None)
         _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=t["ssid"])
-        catat_aktivitas(t["oleh"], "onu_wifi", f"ONU baru {sn} ({doc['_id']}) WiFi lewat ACS: {', '.join(diatur)}"
-                        + (" — menunggu ONU" if hasil["status"] == "antre" else ""))
+        catat_aktivitas(t["oleh"], "onu_wifi", f"ONU baru {sn} ({doc['_id']}) WiFi lewat ACS: {', '.join(diatur)}")
 
 
 @app.post("/api/onu-baru/{sn}/wifi")
@@ -12358,8 +12312,7 @@ def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     _wifi_tertunda.pop(sn.upper(), None)
     _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=ssid)
-    catat_aktivitas(_oleh(request), "onu_wifi", f"ONU baru {sn.upper()} ({doc['_id']}) WiFi: {', '.join(diatur)}"
-                    + (" — menunggu ONU online" if hasil["status"] == "antre" else ""))
+    catat_aktivitas(_oleh(request), "onu_wifi", f"ONU baru {sn.upper()} ({doc['_id']}) WiFi: {', '.join(diatur)}")
     return dict(hasil, diatur=diatur)
 
 
