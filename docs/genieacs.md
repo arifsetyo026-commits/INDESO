@@ -335,11 +335,22 @@ dan tidak perlu dihapus; lapor ke ACS tetap lewat WAN PPPoE (`INTERNET_TR069`).
 
 | Bagian | Sehat |
 |---|---|
+| Layanan | `mongod`, `genieacs-cwmp/nbi/fs/ui`, `nginx`, `indeso` aktif; file uji kecepatan `20000000 byte` |
+| Jadwal lapor | Provision dan `ACS_ONU_INTERVAL` INDESO (yang dikirim OLT) sama; tidak ada `cwmp.auth` kecuali sengaja |
 | Preset | Hanya `indeso-default` dan `indeso-diagnostik` |
 | Provision | `indeso-default` sama dengan versi terbaru |
-| Perintah antre | 0 (perintah lama langsung jalan begitu ONU lapor) |
+| Perintah antre | 0; tidak pernah ada `reboot` / `deleteObject` yang antre |
 | Perintah gagal | 0 (GenieACS mengulangnya setiap ONU lapor) |
+| Ketukan | Kredensial setiap ONU dipasang ≤ 24 jam lalu; catatan INDESO: hampir semua perintah langsung jalan |
+| Laporan ONU (24 jam) | ±96 lapor rutin per ONU (15 menit); `6 CONNECTION REQUEST` muncul saat Diagnosa dipakai |
 | ONU | Satu WAN PPPoE aktif per ONU, tidak ada akun atau nama WiFi yang dipakai dua ONU |
+
+**Perintah berisiko tidak pernah diantrekan.** Reboot dan hapus WAN hanya dikirim bila ONU bisa diketuk langsung.
+Bila ketukan gagal, perintahnya dihapus lagi dan INDESO menyarankan *Restart lewat OLT*. Perintah antre baru jalan
+saat ONU lapor (bisa belasan menit kemudian, tanpa ada yang menunggui): reboot jadi mendadak, atau dua kali bila ONU
+sudah di-restart lewat OLT, dan hapus WAN bisa mengenai WAN lain bila nomor WAN bergeser. *Restart lewat OLT* juga
+membuang reboot ACS yang masih antre. Ping dan tes kecepatan yang tertahan lebih dari satu jadwal lapor (+3 menit)
+dihapus otomatis.
 
 Hapus ONU uji atau ONU yang sudah dicabut dari ACS (aman, ONU yang dinyalakan lagi mendaftar ulang sendiri):
 `curl -X DELETE http://127.0.0.1:7557/devices/<id>` (id lengkap, karakter khusus di-encode, mis. spasi `%20`).

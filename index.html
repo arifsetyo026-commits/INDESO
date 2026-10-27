@@ -1924,7 +1924,7 @@ async function amankanOnu(btn){
  btn.disabled=false;
 }
 async function rebootOnu(){
- if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.')) return;
+ if(!confirm('Reboot ONU '+dg.user+'? Internet pelanggan terputus ±1–2 menit.\nBila ONU tidak bisa diketuk langsung, reboot tidak diantrekan: pakai Restart lewat OLT.')) return;
  try{ const r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(dg.user)+'/reboot',{method:'POST'}));
   if(r.status==='antre') pantauTugas(r.tugas_id,'Reboot ONU','ONU sedang reboot, internet pelanggan menyala lagi dalam ±2 menit.',' <span class="plSub">Bila tidak jalan dalam 2 menit, pakai <b>Restart lewat OLT</b>.</span>');
   else dgPesan('✅ Perintah reboot diterima ONU. Internet pelanggan menyala lagi dalam ±2 menit.',true); }
@@ -2152,7 +2152,7 @@ async function segarkanWifiKh(btn){
  if(!confirm('Minta semua ONU mengirim data WiFi terbaru?\nData diperbarui saat masing-masing ONU lapor berikutnya (±15 menit). Tidak mengganggu internet pelanggan.')) return;
  btn.disabled=true;
  try{ const r=await jsonAtauError(await fetch('/api/wifi-kesehatan/segarkan',{method:'POST'}));
-  wkPesan('✅ '+r.diantrekan+' ONU diminta memperbarui data WiFi'+(r.sudah_antre?' ('+r.sudah_antre+' sudah dalam antrean)':'')+'. Tekan Muat ulang ±5–10 menit lagi.',true); }
+  wkPesan('✅ '+r.diantrekan+' ONU diminta memperbarui data WiFi'+(r.sudah_antre?' ('+r.sudah_antre+' sudah dalam antrean)':'')+'. Tekan Muat ulang ±15 menit lagi.',true); }
  catch(e){ wkPesan('Gagal: '+e.message); btn.disabled=false; }
 }
 
