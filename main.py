@@ -9197,10 +9197,41 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     if r.status_code == 200:
         return {"status": "selesai", "tugas_id": tid}
     if r.status_code == 202:
+        if "credential" in str(getattr(r, "reason", "") or "").lower():
+            _pulihkan_ketukan(acs_id)
+            return {"status": "antre", "tugas_id": tid,
+                    "pesan": "ONU menolak ketukan ACS karena kredensialnya berubah (bisa terjadi setelah ONU restart atau "
+                             "pengaturan TR-069 dikirim ulang dari OLT). Kredensial dipasang ulang saat ONU lapor ke server "
+                             "berikutnya (paling lama ±15 menit), dan perintah ini ikut dijalankan saat itu. Setelahnya "
+                             "perintah kembali langsung jalan."}
         return {"status": "antre", "tugas_id": tid,
                 "pesan": "ONU belum merespons langsung. Perintah tersimpan dan dijalankan saat ONU lapor ke server "
                          "berikutnya (paling lama ±15 menit)."}
     raise HTTPException(status_code=502, detail=f"Server ACS menolak perintah (HTTP {r.status_code}): {r.text[:150]}")
+
+
+_KREDENSIAL_KETUKAN = ("InternetGatewayDevice.ManagementServer.ConnectionRequestUsername",
+                       "InternetGatewayDevice.ManagementServer.ConnectionRequestPassword")
+
+
+def _pulihkan_ketukan(acs_id: str) -> bool:
+    """GenieACS: "Incorrect connection request credentials". Kredensial ketukan di ONU berubah tanpa sepengetahuan
+    ACS (ZTE F609/F670, FiberHome: setelah restart atau saat OLT mendorong ulang TR-069). Password tidak bisa dibaca
+    balik dari ONU, jadi GenieACS mengira kredensialnya masih terpasang. Membaca ulang kredensial (password selalu
+    kosong) membuat provision indeso-default memasangnya lagi di sesi yang sama saat ONU lapor berikutnya.
+    Cukup satu permintaan per ONU."""
+    from urllib.parse import quote
+    try:
+        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": acs_id, "name": "getParameterValues"}),
+                                            "projection": "_id,parameterNames"}, timeout=10)
+        if r.ok and any(_KREDENSIAL_KETUKAN[1] in (t.get("parameterNames") or []) for t in r.json()):
+            return False
+        _acs("POST", f"/devices/{quote(acs_id, safe='')}/tasks",
+             json={"name": "getParameterValues", "parameterNames": list(_KREDENSIAL_KETUKAN)}, timeout=15)
+    except HTTPException:
+        return False
+    logger.info(f"Ketukan ke {acs_id} ditolak (kredensial berubah): dipasang ulang saat ONU lapor berikutnya")
+    return True
 
 
 def _param_ditolak(detail) -> list[str]:
@@ -9483,7 +9514,8 @@ def _segarkan_perangkat(doc: dict) -> dict:
 def _hapus_baca_antre(acs_id: str) -> int:
     """Perintah baca data perangkat (refreshObject / getParameterValues LANDevice & WANDevice) yang masih
     antre untuk ONU ini dihapus sebelum diantrekan lagi. ONU yang tidak menjawab ketukan (mis. WAN TR-069-nya
-    berubah) tidak menumpuk 5 perintah baru setiap Diagnosa dibuka; perintah ubah dan tes ping tidak disentuh."""
+    berubah) tidak menumpuk 5 perintah baru setiap Diagnosa dibuka; perintah ubah, tes ping, dan pemulihan
+    kredensial ketukan (ManagementServer) tidak disentuh."""
     try:
         r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": acs_id}),
                                             "projection": "_id,name,objectName,parameterNames"}, timeout=10)
@@ -9492,7 +9524,8 @@ def _hapus_baca_antre(acs_id: str) -> int:
     n = 0
     for t in (r.json() if r.ok else []):
         jalur = [str(t.get("objectName") or "")] + [str(x) for x in (t.get("parameterNames") or [])]
-        if t.get("name") not in ("refreshObject", "getParameterValues") or any("Diagnostics" in j for j in jalur):
+        if t.get("name") not in ("refreshObject", "getParameterValues") or \
+                any("Diagnostics" in j or "ManagementServer" in j for j in jalur):
             continue
         try:
             _acs("DELETE", f"/tasks/{t['_id']}")

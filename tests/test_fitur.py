@@ -862,6 +862,7 @@ class FakeACS:
                     "Username": {"_value": "budi"}, "ExternalIPAddress": {"_value": "10.0.0.2"}}}}}}}}}}
         self.tugas, self.antre = [], False
         self.antrean, self.faults = {}, []
+        self.alasan = "Device is offline"           # alasan 202 dari GenieACS saat ketukan gagal
 
     def _cocok(self, doc, q):
         if "$or" in q:
@@ -888,6 +889,8 @@ class FakeACS:
                 self.antrean[tid] = json
             r = FakeResp(True, dict(json, _id=tid))
             r.status_code = 202 if self.antre else 200
+            if self.antre and "connection_request" in (params or {}):
+                r.reason = self.alasan
             return r
         if url.endswith("/tasks/") and method == "GET":
             return FakeResp(True, [dict(t, _id=k) for k, t in self.antrean.items()])
@@ -3249,6 +3252,31 @@ def test_segarkan_onu_tidak_menumpuk(siap, monkeypatch):
             and not any("Diagnostics" in x for x in t.get("parameterNames") or [])]
     assert 0 < len(baca) <= 5                                    # satu set saja, bukan 3 set
     assert {"name": "reboot"} in acs.antrean.values() and "ping1" in acs.antrean
+
+
+def test_ketukan_ditolak_kredensial_dipulihkan(siap, monkeypatch):
+    """Kredensial ketukan di ONU berubah (ZTE F609 setelah OLT mendorong ulang TR-069): GenieACS menjawab
+    "Incorrect connection request credentials". INDESO meminta pemasangan ulang sekali saja (membaca ulang
+    kredensial membuat provision memasangnya lagi), permintaan itu tidak terhapus oleh 'Ambil data terbaru',
+    dan ONU yang sekadar offline tidak memicunya."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    pulih = lambda: {tid: t for tid, t in acs.antrean.items()
+                     if main._KREDENSIAL_KETUKAN[1] in (t.get("parameterNames") or [])}
+    acs.antre = True
+    assert k.post("/api/acs/budi/reboot").json()["status"] == "antre" and not pulih()   # offline biasa
+    acs.alasan = "Connection request error: Incorrect connection request credentials"
+    r = k.post("/api/acs/budi/reboot").json()
+    assert r["status"] == "antre" and "kredensial" in r["pesan"]
+    awal = pulih()
+    assert len(awal) == 1
+    t = next(iter(awal.values()))
+    assert t["name"] == "getParameterValues" and list(t["parameterNames"]) == list(main._KREDENSIAL_KETUKAN)
+    k.post("/api/acs/budi/reboot")
+    k.get("/api/acs/budi?segarkan=true")
+    assert pulih() == awal                                        # tetap satu, permintaan yang sama
 
 
 def test_onu_berhenti_lapor_tidak_diantrekan(siap, monkeypatch):
