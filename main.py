@@ -9227,7 +9227,7 @@ def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
             _hapus_tugas_acs(acs_id, tid)
         if "credential" in a:
             _pulihkan_ketukan(acs_id)
-            raise KetukanGagal("ONU menolak ketukan ACS karena kredensialnya berubah (bisa terjadi setelah ONU restart atau "
+            raise KetukanGagal("ONU menolak ketukan ACS karena kredensialnya berubah (biasanya setelah ONU di-reset atau "
                                "pengaturan TR-069 dikirim ulang dari OLT). Perintah dibatalkan. Kredensial dipasang ulang "
                                "otomatis saat ONU lapor rutin berikutnya (paling lama ±15 menit); setelah itu ulangi perintah ini.")
         raise KetukanGagal("ONU tidak bisa diketuk langsung (ONU mati/offline, atau jalur ACS ke ONU terputus). "
@@ -9259,10 +9259,10 @@ _TAG_PULIHKAN = "pulihkan_ketukan"
 
 def _pulihkan_ketukan(acs_id: str) -> bool:
     """GenieACS: "Incorrect connection request credentials". Kredensial ketukan di ONU berubah tanpa sepengetahuan
-    ACS (ZTE F609/F670, FiberHome: setelah restart atau saat OLT mendorong ulang TR-069). Password tidak bisa dibaca
-    balik dari ONU, jadi GenieACS mengira kredensialnya masih terpasang. Tanpa perintah antre: ONU diberi tanda (tag);
-    provision indeso-default melihat tanda itu saat ONU lapor berikutnya, memasang ulang kredensial, lalu menghapus
-    tandanya."""
+    ACS (setelah ONU di-reset atau TR-069 dikirim ulang dari OLT + restart; restart biasa tidak). Password tidak
+    bisa dibaca balik dari ONU, jadi GenieACS mengira kredensialnya masih terpasang. Tanpa perintah antre: ONU
+    diberi tanda (tag); provision indeso-default melihat tanda itu saat ONU lapor berikutnya, memasang ulang
+    kredensial, lalu menghapus tandanya."""
     from urllib.parse import quote
     try:
         r = _acs("POST", f"/devices/{quote(acs_id, safe='')}/tags/{_TAG_PULIHKAN}", timeout=10)
