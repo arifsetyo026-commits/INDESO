@@ -2615,6 +2615,25 @@ def test_speedtest_dari_onu(siap, monkeypatch):
     assert k.get("/api/speedtest-onu/budi").json()["url"] == "http://mirror.test:8080/uji-25MB.bin"
 
 
+def test_speedtest_onu_antre_saat_ketukan_gagal(siap, monkeypatch):
+    """ONU yang tidak bisa diketuk: belum terbacanya DownloadDiagnostics tidak dianggap 'tidak mendukung', dan tes
+    yang antre memberi tahu browser untuk menunggu satu jadwal lapor ONU (bukan 6 menit lalu dihapus)."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.antre, acs.alasan = True, "Connection request error: Incorrect connection request credentials"
+    r = k.post("/api/acs/budi/speedtest", json={})
+    assert r.status_code == 409
+    assert "belum bisa diketuk" in r.json()["detail"] and "kredensial" in r.json()["detail"]
+    assert "tidak menyediakan" not in r.json()["detail"]
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["DownloadDiagnostics"] = {
+        "DiagnosticsState": {"_value": "None", "_type": "xsd:string", "_timestamp": "2020-01-01T00:00:00.000Z"},
+        "DownloadURL": {"_value": "", "_type": "xsd:string"}}
+    r = k.post("/api/acs/budi/speedtest", json={}).json()
+    assert r["status"] == "antre" and r["tunggu_maks"] == main.CONFIG["ACS_ONU_INTERVAL"] + 180
+
+
 def test_acs_onu_berhenti_lapor_ditandai(siap, monkeypatch):
     """ONU yang di-reset pabrik berhenti lapor: data ACS-nya laporan lama → ditandai 'diam' (tombol TR-069 muncul)."""
     main, o, k, m = siap

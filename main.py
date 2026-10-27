@@ -9823,6 +9823,12 @@ def acs_ping_mulai(username: str, d: PingOnuIn, request: Request):
     return hasil
 
 
+def _tunggu_lapor_detik() -> int:
+    """Batas browser menunggu hasil tes yang antre (ketukan gagal): satu jadwal lapor ONU + 3 menit untuk tesnya.
+    Tanpa ini perintah dihapus sebelum ONU sempat lapor (dulu 6 menit, padahal ONU lapor tiap 15 menit)."""
+    return max(60, min(int(CONFIG.get("ACS_ONU_INTERVAL") or 900), 86400)) + 180
+
+
 def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: bool = True, minimal: bool = False) -> dict:
     _bersihkan_tugas_ping(doc["_id"])
     mulai = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
@@ -9862,7 +9868,8 @@ def _mulai_ping(username: str, doc: dict, host: str, jumlah: int, lewat_wan: boo
         _ping_tugas[str(hasil["tugas_id"])] = (doc["_id"], bool(wan), username, model, host, jumlah)
         while len(_ping_tugas) > 500:
             _ping_tugas.pop(next(iter(_ping_tugas)))
-    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=minimal)
+    return dict(hasil, mulai=mulai, host=host, jumlah=jumlah, lewat_wan=bool(wan), minimal=minimal,
+                tunggu_maks=_tunggu_lapor_detik())
 
 
 @app.get("/api/acs/{username}/ping")
@@ -10041,11 +10048,18 @@ def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
         raise HTTPException(status_code=404, detail="ONU pelanggan ini belum terdaftar di server ACS.")
     if not _ada(doc, _UNDUH_ONU) and not _ada(doc, _UNDUH_ONU + ".DiagnosticsState"):
         # Belum pernah terbaca: minta ONU melaporkan objeknya dulu (sekalian tahu didukung atau tidak).
+        baca = {}
         try:
-            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU}, tunggu=20)
+            baca = _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": _UNDUH_ONU}, tunggu=20)
             doc = _cari_perangkat(username) or doc
         except HTTPException as e:
             logger.warning(f"Gagal membaca DownloadDiagnostics {doc['_id']}: {e.detail}")
+        if not _ada(doc, _UNDUH_ONU) and baca.get("status") == "antre":
+            # Ketukan gagal: belum bisa disimpulkan ONU tidak mendukung. Pembacaannya tetap antre.
+            sebab = " karena kredensial ketukannya berubah (dipasang ulang otomatis)" if "kredensial" in str(baca.get("pesan")) else ""
+            raise HTTPException(status_code=409, detail=f"ONU belum bisa diketuk langsung{sebab}, jadi fitur tes kecepatan "
+                                                        "ONU belum terbaca. Data itu dibaca saat ONU lapor ke server berikutnya "
+                                                        "(paling lama ±15 menit); setelah itu tekan Tes kecepatan lagi.")
         if not _ada(doc, _UNDUH_ONU):
             raise HTTPException(status_code=409, detail="ONU ini tidak menyediakan tes kecepatan lewat TR-069 "
                                                         "(DownloadDiagnostics). Uji dari HP pelanggan di dekat ONU.")
@@ -10073,7 +10087,7 @@ def acs_speedtest_mulai(username: str, d: SpeedtestIn, request: Request):
         while len(_speed_tugas) > 200:
             _speed_tugas.pop(next(iter(_speed_tugas)))
     catat_aktivitas(_oleh(request), "onu_speedtest", f"{username} ({doc['_id']}) unduh {url}")
-    return dict(hasil, mulai=mulai, url=url, lewat_wan=bool(wan))
+    return dict(hasil, mulai=mulai, url=url, lewat_wan=bool(wan), tunggu_maks=_tunggu_lapor_detik())
 
 
 @app.get("/api/acs/{username}/speedtest")

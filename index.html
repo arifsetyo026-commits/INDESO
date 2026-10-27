@@ -1798,7 +1798,8 @@ async function pingOnu(host,catatan,tahap,lanjut){
  catch(e){ box.innerHTML='<div class="muted">Gagal: '+esc(e.message)+'</div>'; return; } }
  // ONU ZTE tidak mengabari server saat ping selesai: minta hasilnya berkala (detik 12, 27, 42, … s/d 2 menit,
  // lalu tiap 30 detik). Permintaan tidak ditumpuk selama yang sebelumnya belum kembali.
- const awal=Date.now(); let segarBerikut=12, sibuk=false;
+ // Perintah antre (ketukan gagal) baru jalan saat ONU lapor rutin: tunggu satu jadwal lapor, bukan 6 menit.
+ const awal=Date.now(), antre=r.status==='antre', batas=antre?(r.tunggu_maks||1080):360; let segarBerikut=12, sibuk=false;
  const cek=async()=>{
   if(dg.user!==user||!$('diagModal').classList.contains('show')){ clearInterval(_pantauPing); return; }
   if(sibuk) return;
@@ -1816,10 +1817,10 @@ async function pingOnu(host,catatan,tahap,lanjut){
    return;
   }
   if(s.status!=='selesai'){
-   box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU sedang ping ke ${esc(host)}… (${dtk} detik)${dtk>90?' — ONU lambat merespons; hasil muncul begitu ONU lapor ke server (maks. ±15 menit).':''}</div>`;
-   if(dtk>360){ clearInterval(_pantauPing);
+   box.innerHTML=(catatan||'')+`<div class="muted">⏳ ONU sedang ping ke ${esc(host)}… (${dtk} detik)${antre?' — '+esc(r.pesan||'ONU belum bisa diketuk langsung; ping dijalankan saat ONU lapor ke server.')+' Biarkan jendela ini terbuka.':dtk>90?' — ONU lambat merespons; hasil muncul begitu ONU lapor ke server (maks. ±15 menit).':''}</div>`;
+   if(dtk>batas){ clearInterval(_pantauPing);
     if(r.tugas_id) fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+r.tugas_id+'/batal',{method:'POST'}).catch(()=>{});
-    box.innerHTML='<div class="muted">Belum ada hasil setelah 6 menit; perintah ping dihapus dari antrean. ONU mungkin offline atau tidak mendukung tes ping. Coba lagi nanti.</div>'; }
+    box.innerHTML=`<div class="muted">Belum ada hasil setelah ${Math.round(batas/60)} menit; perintah ping dihapus dari antrean. ONU mungkin offline atau tidak mendukung tes ping. Coba lagi nanti.</div>`; }
    return;
   }
   clearInterval(_pantauPing);
@@ -1861,7 +1862,8 @@ async function speedOnu(btn){
  btn.disabled=true; box.innerHTML='<div class="muted">⏳ Menyuruh ONU mengunduh file uji…</div>';
  let r; try{ r=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/speedtest',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})); }
  catch(e){ box.innerHTML='<div class="kuPanel" style="margin:0 0 10px;border-color:#f3b4ab;background:#fff6f5"><b style="font-size:var(--fs-xs);color:#b42318">✖ Tes kecepatan tidak bisa dimulai</b><div class="plSub">'+esc(e.message)+'</div></div>'; btn.disabled=false; return; }
- const awal=Date.now(); let segarBerikut=10, sibuk=false;
+ // Perintah antre (ketukan gagal) baru jalan saat ONU lapor rutin: tunggu satu jadwal lapor, bukan 6 menit.
+ const awal=Date.now(), antre=r.status==='antre', batas=antre?(r.tunggu_maks||1080):360; let segarBerikut=10, sibuk=false;
  const cek=async()=>{
   if(dg.user!==user||!$('diagModal').classList.contains('show')){ clearInterval(_pantauSpeed); btn.disabled=false; return; }
   if(sibuk) return;
@@ -1871,10 +1873,10 @@ async function speedOnu(btn){
   let s; try{ s=await jsonAtauError(await fetch('/api/acs/'+encodeURIComponent(user)+'/speedtest?mulai='+encodeURIComponent(r.mulai)+(r.tugas_id?'&tugas='+r.tugas_id:'')+(segar?'&segarkan=true':''),{cache:'no-store'})); }catch(e){ return; }
   finally{ sibuk=false; }
   if(s.status==='menunggu'){
-   box.innerHTML=`<div class="muted">⏳ ONU sedang mengunduh file uji… (${dtk} detik)${dtk>90?' — hasil muncul begitu ONU lapor ke server (maks. ±15 menit).':''}</div>`;
-   if(dtk>360){ clearInterval(_pantauSpeed); btn.disabled=false;
+   box.innerHTML=`<div class="muted">⏳ ${antre?'Menunggu ONU menjalankan tes':'ONU sedang mengunduh file uji'}… (${dtk} detik)${antre?' — '+esc(r.pesan||'ONU belum bisa diketuk langsung; tes dijalankan saat ONU lapor ke server.')+' Biarkan jendela ini terbuka.':dtk>90?' — hasil muncul begitu ONU lapor ke server (maks. ±15 menit).':''}</div>`;
+   if(dtk>batas){ clearInterval(_pantauSpeed); btn.disabled=false;
     if(r.tugas_id) fetch('/api/acs/'+encodeURIComponent(user)+'/tugas/'+r.tugas_id+'/batal',{method:'POST'}).catch(()=>{});
-    box.innerHTML='<div class="muted">Belum ada hasil setelah 6 menit; perintah dihapus dari antrean. ONU mungkin offline atau tidak mendukung tes kecepatan.</div>'; }
+    box.innerHTML=`<div class="muted">Belum ada hasil setelah ${Math.round(batas/60)} menit; perintah dihapus dari antrean. ONU mungkin offline atau tidak mendukung tes kecepatan.</div>`; }
    return;
   }
   clearInterval(_pantauSpeed); btn.disabled=false;

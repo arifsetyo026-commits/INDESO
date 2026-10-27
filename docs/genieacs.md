@@ -280,6 +280,9 @@ Baris terakhir harus menampilkan `ukuran: 20000000 byte`.
 Hasil tes mencakup jalur sampai VPS. Kalau VPS jauh atau kecepatannya terbatas, isi **Pengaturan → File uji
 speedtest** dengan file HTTP 10–50 MB di server yang dekat, misalnya mirror di Indonesia. ONU tidak bisa memakai HTTPS.
 Tidak semua ONU mendukung tes ini. Kalau ONU tidak mendukung, INDESO menampilkan pesan yang jelas.
+Kalau ONU tidak bisa diketuk langsung, tes (juga ping dari ONU) antre sampai ONU lapor rutin. Halaman Diagnosa
+menunggu satu jadwal lapor ditambah 3 menit (±18 menit pada lapor 15 menit) sebelum membatalkan perintahnya.
+Biarkan jendela Diagnosa terbuka selama itu.
 
 Hasil tes diambil di sesi yang sama saat ONU melapor `8 DIAGNOSTICS COMPLETE`, oleh provision `indeso-diagnostik`
 (`deploy/genieacs/provision-diagnostik.js`). Tanpa itu hasil baru terbaca saat INDESO memanggil ONU lagi (Huawei:
