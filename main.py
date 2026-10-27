@@ -9143,10 +9143,36 @@ def _cari_perangkat(username: str) -> Optional[dict]:
     return None
 
 
+def _onu_diam_menit(lapor_terakhir: Optional[str]) -> Optional[int]:
+    """Menit sejak ONU terakhir lapor bila sudah melewati batas 'berhenti lapor', selain itu None."""
+    menit = _lapor_terakhir_menit(lapor_terakhir)
+    return menit if menit is not None and menit > _batas_diam_menit() else None
+
+
+def _pesan_onu_diam(menit: int) -> str:
+    lama = f"{menit // 1440} hari" if menit >= 1440 else (f"{menit // 60} jam" if menit >= 60 else f"{menit} menit")
+    return (f"ONU tidak lapor ke server ACS sejak {lama} lalu, jadi perintah tidak dikirim (supaya tidak menumpuk di "
+            "antrean). Biasanya WAN PPPoE ONU tidak lagi membawa layanan TR069, mis. setelah akun atau WAN diganti. "
+            "Perbaiki TR-069 ONU (layanan WAN berisi TR069, atau kirim TR-069 dari OLT), lalu coba lagi.")
+
+
+def _tolak_bila_onu_diam(acs_id: str) -> None:
+    """Perintah ke ONU yang berhenti lapor tidak pernah dijalankan dan hanya menumpuk di antrean GenieACS."""
+    try:
+        r = _acs("GET", "/devices/", params={"query": json.dumps({"_id": acs_id}), "projection": "_lastInform"}, timeout=10)
+        lapor = ((r.json() if r.ok else []) or [{}])[0].get("_lastInform")
+    except (HTTPException, ValueError, IndexError):
+        return
+    menit = _onu_diam_menit(lapor)
+    if menit is not None:
+        raise HTTPException(status_code=409, detail=_pesan_onu_diam(menit))
+
+
 def _tugas_acs(acs_id: str, tugas: dict, tunggu: int = 20) -> dict:
     """Kirim tugas + connection request. 200 = langsung dijalankan ONU, 202 = antre
-    (ONU belum bisa dihubungi; dijalankan saat ONU lapor berikutnya)."""
+    (ONU belum bisa dihubungi; dijalankan saat ONU lapor berikutnya). ONU yang berhenti lapor ditolak (409)."""
     from urllib.parse import quote
+    _tolak_bila_onu_diam(acs_id)
     if "objectName" in tugas:
         # GenieACS menolak path berakhiran titik ("Invalid parameter path", fault script.Error).
         tugas = dict(tugas, objectName=str(tugas["objectName"]).rstrip("."))
@@ -9432,6 +9458,9 @@ def _segarkan_perangkat(doc: dict) -> dict:
     Jauh lebih kecil dari refreshObject seluruh LANDevice (ZTE: 8 slot WLAN + host, bisa ±30 detik).
     Tugas kecil diantrekan dulu, lalu satu ketukan ONU menjalankan semuanya dalam satu sesi."""
     from urllib.parse import quote
+    menit = _onu_diam_menit(doc.get("_lastInform"))
+    if menit is not None:
+        return {"status": "diam", "pesan": _pesan_onu_diam(menit)}
     wlan = f"{_IGD}.LANDevice.1.WLANConfiguration"
     idx = _anak(doc, wlan)
     nyala = [i for i in idx if _nilai(doc, f"{wlan}.{i}.Enable") in (True, "true", "1", 1)] or idx[:1]
@@ -11699,22 +11728,25 @@ def wifi_kesehatan_segarkan(request: Request):
     tanpa mengetuk ONU satu per satu, supaya ringan dan tidak mengganggu pelanggan."""
     _wajib_admin(request)
     from urllib.parse import quote
-    r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_id"}, timeout=15)
+    r = _acs("GET", "/devices/", params={"query": "{}", "projection": "_id,_lastInform"}, timeout=15)
     if not r.ok:
         raise HTTPException(status_code=502, detail=f"Server ACS menolak permintaan (HTTP {r.status_code}).")
     antre = _acs("GET", "/tasks/", params={"query": json.dumps({"name": "refreshObject"}),
                                             "projection": "device,objectName"}, timeout=15)
     sudah = {t.get("device") for t in (antre.json() if antre.ok else [])
              if str(t.get("objectName") or "").endswith("WLANConfiguration")}
-    n = 0
+    n = diam = 0
     for d in r.json():
         if d.get("_id") in sudah:
+            continue
+        if _onu_diam_menit(d.get("_lastInform")) is not None:     # tidak akan pernah dijalankan, hanya menumpuk
+            diam += 1
             continue
         x = _acs("POST", f"/devices/{quote(d['_id'], safe='')}/tasks",
                  json={"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.WLANConfiguration"}, timeout=15)
         n += x.status_code in (200, 202)
     catat_aktivitas(_oleh(request), "wifi_segarkan", f"Data WiFi {n} ONU diminta diperbarui")
-    return {"diantrekan": n, "sudah_antre": len(sudah)}
+    return {"diantrekan": n, "sudah_antre": len(sudah), "berhenti_lapor": diam}
 
 # ============================================================
 # ONU BARU — deteksi ONU yang baru dicolok + aktivasi (TR-069, WiFi)

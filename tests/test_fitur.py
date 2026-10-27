@@ -3249,3 +3249,21 @@ def test_segarkan_onu_tidak_menumpuk(siap, monkeypatch):
             and not any("Diagnostics" in x for x in t.get("parameterNames") or [])]
     assert 0 < len(baca) <= 5                                    # satu set saja, bukan 3 set
     assert {"name": "reboot"} in acs.antrean.values() and "ping1" in acs.antrean
+
+
+def test_onu_berhenti_lapor_tidak_diantrekan(siap, monkeypatch):
+    """ONU yang berhenti lapor (mis. WAN TR-069 hilang setelah akun diganti): perintah ditolak 409 dengan pesan
+    jelas, 'Ambil data terbaru' tidak mengantrekan apa pun, sapu WiFi melewatinya."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.antre = True
+    dev = acs.dev["ZTEGC1234567"]
+    dev["_lastInform"] = (datetime.now(main.timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    r = k.post("/api/acs/budi/reboot")
+    assert r.status_code == 409 and "2 hari" in r.json()["detail"] and "TR069" in r.json()["detail"]
+    a = k.get("/api/acs/budi?segarkan=true").json()
+    assert a["segarkan"]["status"] == "diam" and a["perangkat"]["diam"] is True
+    assert o.post("/api/wifi-kesehatan/segarkan").json()["berhenti_lapor"] >= 1
+    assert not acs.antrean and not acs.tugas
