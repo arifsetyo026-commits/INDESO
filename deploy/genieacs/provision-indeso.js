@@ -20,12 +20,15 @@ const bootTerakhir = (() => {
 // pengaturan TR-069 (OMCI). Password tidak bisa dibaca balik dari ONU (selalu kosong), jadi GenieACS mengira
 // kredensialnya masih terpasang dan setiap ketukan ditolak (401). Karena itu kredensial dipasang ulang sekali
 // sehari dan sekali setelah ONU restart: cukup 2 parameter, tanpa memutus internet. Bila ketukan ditolak di
-// antara jadwal itu, INDESO meminta pemasangan ulang untuk ONU tersebut saat ONU lapor berikutnya.
-const segarKetukan = Math.max(harian, bootTerakhir);
+// antara jadwal itu, INDESO memberi ONU tanda (tag) "pulihkan_ketukan" (bukan perintah antre): kredensial dipasang
+// ulang saat ONU lapor berikutnya, lalu tandanya dihapus.
+const pulihkan = Boolean((declare("Tags.pulihkan_ketukan", {value: 1}).value || [])[0]);
+const segarKetukan = pulihkan ? sekarang : Math.max(harian, bootTerakhir);
 if (args && args[0] && args[1]) {
   declare("InternetGatewayDevice.ManagementServer.ConnectionRequestUsername", {value: segarKetukan}, {value: args[0]});
   declare("InternetGatewayDevice.ManagementServer.ConnectionRequestPassword", {value: segarKetukan}, {value: args[1]});
 }
+if (pulihkan) declare("Tags.pulihkan_ketukan", null, {value: false});
 declare("InternetGatewayDevice.ManagementServer.PeriodicInformEnable", {value: 1}, {value: true});
 declare("InternetGatewayDevice.ManagementServer.PeriodicInformInterval", {value: 1}, {value: 900});
 

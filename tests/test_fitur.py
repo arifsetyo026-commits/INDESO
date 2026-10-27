@@ -863,6 +863,8 @@ class FakeACS:
         self.tugas, self.antre = [], False
         self.antrean, self.faults = {}, []
         self.alasan = "Device is offline"           # alasan 202 dari GenieACS saat ketukan gagal
+        self.tags = set()                            # (id perangkat, tag)
+        self.sisa_fault = None                       # "Task faulted" hanya sebanyak ini, setelahnya berhasil
 
     def _cocok(self, doc, q):
         if "$or" in q:
@@ -885,15 +887,31 @@ class FakeACS:
             assert not str((json or {}).get("objectName") or "x").endswith("."), f"path tidak valid: {json}"
             self.tugas.append(json)
             tid = f"{len(self.tugas):024x}"
-            if self.antre:
+            antre = self.antre
+            if antre and self.alasan == "Task faulted" and self.sisa_fault is not None and "connection_request" in (params or {}):
+                antre = self.sisa_fault > 0
+                self.sisa_fault = max(0, self.sisa_fault - 1)
+            if antre:
                 self.antrean[tid] = json
             r = FakeResp(True, dict(json, _id=tid))
-            r.status_code = 202 if self.antre else 200
-            if self.antre and "connection_request" in (params or {}):
+            r.status_code = 202 if antre else 200
+            if antre and "connection_request" in (params or {}):
                 r.reason = self.alasan
+                if self.alasan == "Task faulted":    # ONU tersambung tapi menolak: GenieACS mencatat fault
+                    dev = __import__("urllib.parse").parse.unquote(url.split("/devices/")[1].split("/tasks")[0])
+                    self.faults.append({"_id": f"{dev}:task_{tid}", "channel": f"task_{tid}", "device": dev,
+                                        "code": "cwmp.9003", "message": "Invalid arguments",
+                                        "detail": getattr(self, "fault_detail", None)})
             return r
+        if "/tags/" in url and method == "POST":
+            dev, tag = url.split("/devices/")[1].split("/tags/")
+            self.tags.add((__import__("urllib.parse").parse.unquote(dev), tag))
+            return FakeResp(True, {})
         if url.endswith("/tasks/") and method == "GET":
-            return FakeResp(True, [dict(t, _id=k) for k, t in self.antrean.items()])
+            # Saringan sederhana seperti query NBI (kolom yang tidak dicatat tiruan ini dianggap cocok).
+            q = js.loads((params or {}).get("query", "{}"))
+            return FakeResp(True, [dict(t, _id=k) for k, t in self.antrean.items()
+                                   if all(t.get(f, nilai) == nilai for f, nilai in q.items())])
         if url.endswith("/faults/") and method == "GET":
             return FakeResp(True, list(self.faults))
         if method == "DELETE":
@@ -935,8 +953,9 @@ def test_acs_dan_diagnosa(siap, monkeypatch):
     log = " ".join(x["detail"] for x in o.get("/api/aktivitas").json()["aktivitas"])
     assert "password WiFi diganti" in log and "rahasia123" not in log
     acs.antre = True
-    assert k.post("/api/acs/budi/reboot").json()["status"] == "antre"
-    assert acs.tugas[-1] == {"name": "reboot"}
+    r = k.post("/api/acs/budi/reboot")              # ketukan gagal: reboot tidak diantrekan
+    assert r.status_code == 409 and "Restart lewat OLT" in r.json()["detail"]
+    assert acs.tugas[-1] == {"name": "reboot"} and {"name": "reboot"} not in acs.antrean.values()
     # diagnosa: online, pemakaian penuh, banyak perangkat, ONU baru restart
     main._latest_data = main._build_dashboard(main.fetch_pppoe_active()[0], None, [])
     main._mt.traffic = {"tx-bits-per-second": "9800000", "rx-bits-per-second": "500000"}
@@ -1016,32 +1035,34 @@ def test_ringkas_perangkat_zte(app):
     assert w == {"GHARIL": "2,4 GHz", "ZTE_5G_2zNUEZ": "5 GHz", "Tamu": "5 GHz"}
 
 
-def test_acs_pantau_tugas(siap, monkeypatch):
+def test_acs_tanpa_antre(siap, monkeypatch):
+    """Tidak ada perintah antre: setiap perintah ke ONU hanya berhasil atau gagal. Gagal (ketukan gagal, ONU menolak,
+    atau tidak selesai) → perintah & fault-nya dihapus dari GenieACS dan alasannya disampaikan; admin mengulang sendiri.
+    Kredensial ketukan yang berubah dipulihkan lewat tag (bukan perintah antre)."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
     monkeypatch.setattr(main.requests, "request", acs.request)
-    r = k.post("/api/acs/budi/wifi", json={"index": 1, "password": "rahasia123"}).json()
+    monkeypatch.setattr(main, "_TUNGGU_SELESAI_DETIK", 0)
+    wifi = lambda pw: k.post("/api/acs/budi/wifi", json={"index": 1, "password": pw})
+    r = wifi("rahasia123").json()
     assert r["status"] == "selesai" and len(r["tugas_id"]) == 24
     acs.antre = True
-    r = k.post("/api/acs/budi/wifi", json={"index": 1, "password": "rahasia456"}).json()
-    tid = r["tugas_id"]
-    assert r["status"] == "antre"
-    assert k.get(f"/api/acs/budi/tugas/{tid}").json()["status"] == "antre"
-    assert k.get("/api/acs/budi/tugas/bukan-id").status_code == 400
-    assert m.get(f"/api/acs/budi/tugas/{tid}").status_code == 403
-    # ONU menolak -> gagal dengan alasan, lalu bisa dibatalkan
-    acs.faults.append({"_id": f"ZTE-F609-ZTEGC1234567:task_{tid}", "channel": f"task_{tid}",
-                       "device": "ZTE-F609-ZTEGC1234567", "code": "cwmp.9007", "message": "Invalid parameter value"})
-    g = k.get(f"/api/acs/budi/tugas/{tid}").json()
-    assert g["status"] == "gagal" and "9007" in g["pesan"]
-    assert k.post(f"/api/acs/budi/tugas/{tid}/batal").json()["ok"]
-    assert k.get(f"/api/acs/budi/tugas/{tid}").json()["status"] == "selesai" and not acs.faults
-    # tugas antre yang kemudian dijalankan ONU -> selesai
-    r = k.post("/api/acs/budi/reboot").json()
-    assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "antre"
-    acs.antrean.clear()
-    assert k.get(f"/api/acs/budi/tugas/{r['tugas_id']}").json()["status"] == "selesai"
+    r = wifi("rahasia456")                                       # ONU offline
+    assert r.status_code == 409 and "tidak bisa diketuk" in r.json()["detail"] and not acs.antrean
+    acs.alasan = "Connection request error: Incorrect connection request credentials"
+    r = wifi("rahasia456")                                       # kredensial ketukan berubah
+    assert r.status_code == 409 and "kredensial" in r.json()["detail"] and not acs.antrean
+    assert acs.tags == {("ZTE-F609-ZTEGC1234567", "pulihkan_ketukan")}
+    acs.alasan = "Task faulted"                                  # ONU tersambung tapi menolak
+    r = wifi("rahasia456")
+    assert r.status_code == 409 and "9003" in r.json()["detail"] and not acs.antrean and not acs.faults
+    acs.alasan = "Task queued but not processed"                 # diketuk tapi tidak selesai
+    r = wifi("rahasia456")
+    assert r.status_code == 504 and "dibatalkan" in r.json()["detail"] and not acs.antrean
+    log = " ".join(x["detail"] for x in o.get("/api/aktivitas").json()["aktivitas"])
+    assert log.count("password WiFi diganti") == 1               # hanya yang berhasil tercatat
+    assert k.get(f"/api/acs/budi/tugas/{'a' * 24}").status_code in (404, 405)   # tidak ada lagi pantau antrean
 
 
 def test_acs_ping_dari_onu(siap, monkeypatch):
@@ -1228,14 +1249,10 @@ def test_acs_onu_diganti_dan_ping_lewat_wan(siap, monkeypatch):
     assert r["lewat_wan"] and nilai["Interface"] == "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.1.WANPPPConnection.1"
     r2 = k.post("/api/acs/budi/ping", json={"lewat_wan": False}).json()
     assert not r2["lewat_wan"] and "Interface" not in {p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]}
-    # ONU menolak (fault) -> gagal, bukan menunggu terus
-    acs.antre = True
+    # ONU menolak (fault) -> langsung gagal, perintah & fault dihapus (tidak menunggu, tidak antre)
+    acs.antre, acs.alasan = True, "Task faulted"
     r3 = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
-    tid = r3["tugas_id"]
-    acs.faults.append({"_id": f"{baru['_id']}:task_{tid}", "channel": f"task_{tid}", "device": baru["_id"],
-                       "code": "cwmp.9007", "message": "Invalid parameter value"})
-    h = k.get(f"/api/acs/budi/ping?mulai={r3['mulai']}&tugas={tid}").json()
-    assert h["status"] == "gagal" and "9007" in h["pesan"]
+    assert r3["status"] == "gagal" and "9003" in r3["pesan"] and not acs.antrean and not acs.faults
 
 
 def test_acs_ping_minimal_dan_detail_fault(siap, monkeypatch):
@@ -1248,14 +1265,11 @@ def test_acs_ping_minimal_dan_detail_fault(siap, monkeypatch):
     r = k.post("/api/acs/budi/ping", json={"minimal": True}).json()
     assert r["minimal"] and [p[0].rsplit(".", 1)[-1] for p in acs.tugas[-1]["parameterValues"]] == [
         "Host", "NumberOfRepetitions", "DiagnosticsState"]
-    acs.antre = True
-    tid = k.post("/api/acs/budi/ping", json={}).json()["tugas_id"]
-    acs.faults.append({"_id": f"ZTE-F609-ZTEGC1234567:task_{tid}", "channel": f"task_{tid}", "device": "ZTE-F609-ZTEGC1234567",
-                       "code": "cwmp.9003", "message": "Invalid arguments",
-                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
-                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.DataBlockSize", "faultCode": "9007"}]}})
-    st = k.get(f"/api/acs/budi/tugas/{tid}").json()
-    assert st["status"] == "gagal" and st["parameter"] == ["DataBlockSize"] and "DataBlockSize" in st["pesan"]
+    acs.antre, acs.alasan = True, "Task faulted"
+    acs.fault_detail = {"faultCode": "9003", "setParameterValuesFault": [
+        {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.DataBlockSize", "faultCode": "9007"}]}
+    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
+    assert r["status"] == "gagal" and "DataBlockSize" in r["pesan"] and not acs.antrean and not acs.faults
 
 
 def test_acs_ping_ikut_tipe_onu(siap, monkeypatch):
@@ -1292,7 +1306,8 @@ def test_acs_ping_bersihkan_tugas_tertahan(siap, monkeypatch):
 
 
 def test_acs_ping_segarkan_tidak_menumpuk(siap, monkeypatch):
-    """Permintaan hasil ping diulang berkala dari browser, tapi tidak ditumpuk bila ONU belum menjawab."""
+    """Permintaan hasil ping diulang berkala dari browser; bila ONU tidak bisa diketuk, tidak ada perintah yang
+    tertinggal (setiap permintaan berhasil atau dihapus lagi)."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
@@ -1302,7 +1317,7 @@ def test_acs_ping_segarkan_tidak_menumpuk(siap, monkeypatch):
     acs.antre = True
     for _ in range(3):
         assert k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&segarkan=true").json()["status"] == "menunggu"
-    assert sum(1 for t in acs.tugas if t["name"] == "getParameterValues") == 1
+    assert not acs.antrean
 
 
 def test_kelola_kategori(siap):
@@ -1862,8 +1877,9 @@ def test_komisi_mulai_bulan(siap):
 
 
 def test_acs_ping_tertahan_dibersihkan_berkala_dan_pesan_jelas(siap, monkeypatch):
-    """Ping yang ditolak '9002 Internal error' pada objek IPPingDiagnostics. (ONU sibuk) dihapus berkala
-    bila tertahan > 10 menit, dan pesan gagal menyebut bagian & alasannya."""
+    """Tanpa antre: sisa perintah apa pun di GenieACS yang lebih tua dari 3 menit (dari web GenieACS / versi lama)
+    dihapus berkala beserta fault-nya; perintah yang baru saja dibuat dibiarkan. Pesan gagal menyebut bagian &
+    alasannya."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
@@ -1878,12 +1894,16 @@ def test_acs_ping_tertahan_dibersihkan_berkala_dan_pesan_jelas(siap, monkeypatch
     acs.antrean[baru] = {"name": "setParameterValues", "parameterValues": pv, "device": "DEV1",
                          "timestamp": datetime.utcnow().isoformat() + "Z"}
     acs.antrean["e" * 24] = {"name": "reboot", "device": "DEV1", "timestamp": jam_lalu}
+    acs.antrean["7" * 24] = {"name": "setParameterValues", "device": "DEV1", "timestamp": jam_lalu, "parameterValues":
+                             [["InternetGatewayDevice.DownloadDiagnostics.DiagnosticsState", "Requested", "xsd:string"]]}
+    acs.antrean["8" * 24] = {"name": "setParameterValues", "parameterValues": pv, "device": "DEV1",
+                             "timestamp": (datetime.utcnow() - timedelta(minutes=12)).isoformat() + "Z"}
     acs.faults.append({"_id": f"DEV1:task_{lama}", "channel": f"task_{lama}", "device": "DEV1", "code": "cwmp.9003",
                        "message": "Invalid arguments", "detail": detail})
-    main._bersih_ping["terakhir"] = None
-    assert main.proses_bersih_ping_tertahan() == 1
-    assert lama not in acs.antrean and baru in acs.antrean and "e" * 24 in acs.antrean and not acs.faults
-    assert main.proses_bersih_ping_tertahan() == 0            # dibatasi tiap 10 menit
+    main._bersih_tugas["terakhir"] = None
+    assert main.proses_bersih_tugas_tertahan() == 4
+    assert set(acs.antrean) == {baru} and not acs.faults
+    assert main.proses_bersih_tugas_tertahan() == 0           # dibatasi sekali per putaran
     # pesan gagal saat tugas ditolak
     acs.faults.append({"_id": f"DEV1:task_{baru}", "channel": f"task_{baru}", "device": "DEV1", "code": "cwmp.9003",
                        "message": "Invalid arguments", "detail": detail})
@@ -1934,15 +1954,11 @@ def test_acs_ping_gagal_langsung_dihapus_tanpa_ulang(siap, monkeypatch):
     dev["InternetGatewayDevice"]["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"},
                                                          "Interface": {"_value": ""}}
     main._ping_tanpa_wan.discard(dev["_id"])
-    acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
-    tid = r["tugas_id"]
-    assert r["lewat_wan"] and tid in acs.antrean
-    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
-                       "code": "cwmp.9003", "message": "Invalid arguments"})
-    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    acs.antre, acs.alasan = True, "Task faulted"
+    h = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     assert h["status"] == "gagal" and h["dihapus"] and h["cara_berikutnya"] == "tanpa_wan"
-    assert tid not in acs.antrean and not acs.faults
+    assert not acs.antrean and not acs.faults
+    acs.antre = False
     spv = lambda: sum(1 for t in acs.tugas if t["name"] == "setParameterValues")
     jumlah = spv()
     r2 = k.post("/api/acs/budi/ping", json={}).json()          # hanya bila diminta lagi
@@ -2157,31 +2173,19 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
     dev["_deviceId"]["_ProductClass"] = "F670LV9.0"
     igd = dev["InternetGatewayDevice"]
     igd["IPPingDiagnostics"] = {"DiagnosticsState": {"_value": "None"}, "Interface": {"_value": ""}}
-    acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
-    assert r["lewat_wan"]
-    tid = r["tugas_id"]
+    acs.antre, acs.alasan = True, "Task faulted"
     # Jawaban F670L sungguhan (ZTEGD770288C): 9002 Internal error pada objek IPPingDiagnostics.
-    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
-                       "code": "cwmp.9003", "message": "Invalid arguments",
-                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
-                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002",
-                            "faultString": "Internal error"}]}})
-    g = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    acs.fault_detail = {"faultCode": "9003", "setParameterValuesFault": [
+        {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002", "faultString": "Internal error"}]}
+    g = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
     assert g["status"] == "gagal" and g["cara_berikutnya"] == "tanpa_wan" and "tanpa memilih WAN" in g["pesan"]
     # penolakan umum (9002 pada objek) hanya mengganti cara untuk ONU ini, bukan seluruh model
     assert k.get("/api/ping-onu/ringkasan").json()["model"][0]["cara"] == "wan"
     main._ping_tanpa_wan.clear()
-    acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
-    assert r["lewat_wan"]
-    tid = r["tugas_id"]
     # ONU menyebut kolom Interface yang ditolak -> seluruh model memakai cara tanpa WAN, juga setelah restart
-    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
-                       "code": "cwmp.9003", "message": "Invalid arguments",
-                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
-                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.Interface", "faultCode": "9007"}]}})
-    k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}")
+    acs.fault_detail = {"faultCode": "9003", "setParameterValuesFault": [
+        {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.Interface", "faultCode": "9007"}]}
+    assert k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()["status"] == "gagal"
     main._ping_tanpa_wan.clear()                                   # seperti INDESO baru dinyalakan ulang
     acs.antre = False
     r2 = k.post("/api/acs/budi/ping", json={"host": "8.8.8.8"}).json()
@@ -2200,8 +2204,8 @@ def test_ping_onu_dicatat_dan_cara_per_model_diingat(siap, monkeypatch):
 
 
 def test_kesehatan_acs(siap, monkeypatch):
-    """Panel kesehatan ACS: ONU belum di ACS beserta saran, ketukan langsung vs antre, fault tertahan
-    dan tombol bersihkan."""
+    """Panel kesehatan ACS: ONU belum di ACS beserta saran, ketukan berhasil vs gagal (dibatalkan), fault sisa
+    perintah lama dan tombol bersihkan."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
@@ -2221,7 +2225,11 @@ def test_kesehatan_acs(siap, monkeypatch):
     try:
         k.post("/api/acs/budi/ping", json={})                      # langsung (200)
         acs.antre = True
-        tid = k.post("/api/acs/budi/ping", json={}).json()["tugas_id"]   # antre (202)
+        assert k.post("/api/acs/budi/ping", json={}).status_code == 409   # ketukan gagal: dibatalkan, tidak antre
+        assert not acs.antrean
+        acs.antre = False
+        tid = "f" * 24                                             # sisa perintah lama (mis. dari web GenieACS)
+        acs.antrean[tid] = {"name": "setParameterValues", "device": dev["_id"], "parameterValues": []}
         acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
                            "code": "cwmp.9003", "message": "Invalid arguments", "retries": 9})
         import sqlite3 as _sq
@@ -2244,7 +2252,7 @@ def test_kesehatan_acs(siap, monkeypatch):
 
 def test_reboot_onu_tidak_tertahan_dan_lewat_olt(siap, monkeypatch):
     """Reboot lewat ACS: perintah ping yang tertahan (fault) dihapus dulu supaya reboot tidak ikut tertahan.
-    Restart lewat OLT: 'ont reboot P O' untuk ONU pelanggan, dijawab y, tanpa 'all'."""
+    Restart lewat OLT: 'ont reboot P O' untuk ONU pelanggan, dijawab y, tanpa 'all'; reboot ACS yang masih antre dibuang."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
@@ -2263,9 +2271,12 @@ def test_reboot_onu_tidak_tertahan_dan_lewat_olt(siap, monkeypatch):
     onu = main.ONUStatus(pon="0/0/1", onu_id=21, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK",
                          serial_number="ZTEGD770288C", pppoe_username="budi")
     main._latest_data = main._build_dashboard([], None, [onu])
+    acs.antrean["a" * 24] = {"name": "reboot", "device": dev["_id"]}          # sisa reboot ACS yang antre
+    acs.antrean["b" * 24] = {"name": "setParameterValues", "device": dev["_id"], "parameterValues": []}
     try:
         r = k.post("/api/olt/reboot/pelanggan/budi").json()
         assert r["ok"] and r["onu_id"] == 21
+        assert "a" * 24 not in acs.antrean and "b" * 24 in acs.antrean     # ONU tidak restart dua kali
         p = olt.perintah
         assert "ont reboot 1 21" in p and p[p.index("ont reboot 1 21") + 1] == "y"
         assert not any("all" in x for x in p if x.startswith("ont reboot")) and "save" not in p
@@ -2310,18 +2321,14 @@ def test_ping_onu_nama_situs_ditolak_uji_ip(siap, monkeypatch):
     igd = dev["InternetGatewayDevice"]
     igd["IPPingDiagnostics"] = {k_: {"_value": "", "_type": "xsd:string"} for k_ in ("DiagnosticsState", "Host", "Interface")}
     igd["IPPingDiagnostics"]["NumberOfRepetitions"] = {"_value": 1, "_type": "xsd:unsignedInt"}
-    acs.antre = True
-    r = k.post("/api/acs/budi/ping", json={}).json()
-    tid = r["tugas_id"]
-    acs.faults.append({"_id": f"{dev['_id']}:task_{tid}", "channel": f"task_{tid}", "device": dev["_id"],
-                       "code": "cwmp.9003", "message": "Invalid arguments",
-                       "detail": {"faultCode": "9003", "setParameterValuesFault": [
-                           {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002"}]}})
-    h = k.get(f"/api/acs/budi/ping?mulai={r['mulai']}&tugas={tid}").json()
+    acs.antre, acs.alasan, acs.sisa_fault = True, "Task faulted", 1    # google.com ditolak, 8.8.8.8 diterima
+    acs.fault_detail = {"faultCode": "9003", "setParameterValuesFault": [
+        {"parameterName": "InternetGatewayDevice.IPPingDiagnostics.", "faultCode": "9002"}]}
+    h = k.post("/api/acs/budi/ping", json={}).json()
     assert h["status"] == "nama_ditolak" and "8.8.8.8" in h["pesan"] and h["lanjut"]["host"] == "8.8.8.8"
-    assert tid not in acs.antrean and not acs.faults
+    assert not acs.antrean and not acs.faults
     host = {p[0].rsplit(".", 1)[-1]: p[1] for p in acs.tugas[-1]["parameterValues"]}["Host"]
-    assert host == "8.8.8.8" and h["lanjut"]["tugas_id"] in acs.antrean
+    assert host == "8.8.8.8" and h["lanjut"]["status"] == "selesai"
     assert dev["_id"] not in main._ping_tanpa_wan                 # bukan alasan ganti cara ping
     d = k.get("/api/ping-onu/ringkasan").json()["model"][0]
     assert [o_["username"] for o_ in d["onu_nama_ditolak"]] == ["budi"] and d["cara"] == "wan"
@@ -2534,7 +2541,7 @@ def test_onu_baru_deteksi_dan_aktivasi(siap, monkeypatch):
 
 def test_kesehatan_wifi(siap, monkeypatch):
     """Sapu WiFi semua ONU: tanpa password (kritis), nama bawaan, terlalu ramai + 5 GHz mati, channel bertumpuk;
-    ONU sehat tidak ditandai; segarkan hanya mengantrekan tugas (tanpa mengetuk ONU), tidak dobel."""
+    ONU sehat tidak ditandai; baca ulang per ONU langsung (diketuk), gagal = dibatalkan, tidak ada yang antre."""
     main, o, k, m = siap
     acs = FakeACS()
     assert k.get("/api/wifi-kesehatan").json() == {"aktif": False}
@@ -2560,8 +2567,11 @@ def test_kesehatan_wifi(siap, monkeypatch):
     assert {"terbuka", "bawaan", "ramai", "channel", "5g_mati"} <= {x["kode"] for x in a["masalah"]}
     assert b["username"] == "budi" and b["tingkat"] == "sehat" and b["masalah"] == []
     assert m.get("/api/wifi-kesehatan").status_code == 403
-    r = k.post("/api/wifi-kesehatan/segarkan").json()
-    assert r["diantrekan"] == 2 and all(t["name"] == "refreshObject" for t in acs.tugas)
+    assert k.post("/api/wifi-kesehatan/segarkan", json={"id": a["id"]}).json()["status"] == "selesai"
+    assert acs.tugas[-1] == {"name": "refreshObject", "objectName": "InternetGatewayDevice.LANDevice.1.WLANConfiguration"}
+    assert k.post("/api/wifi-kesehatan/segarkan", json={"id": "tidak-ada"}).status_code == 404
+    acs.antre = True
+    assert k.post("/api/wifi-kesehatan/segarkan", json={"id": b["id"]}).status_code == 409 and not acs.antrean
 
 
 def test_speedtest_dari_onu(siap, monkeypatch):
@@ -2613,6 +2623,28 @@ def test_speedtest_dari_onu(siap, monkeypatch):
     assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "https://a.test/x"}}).status_code == 400
     assert o.put("/api/pengaturan", json={"nilai": {"SPEEDTEST_URL": "http://mirror.test:8080/uji-25MB.bin"}}).status_code == 200
     assert k.get("/api/speedtest-onu/budi").json()["url"] == "http://mirror.test:8080/uji-25MB.bin"
+
+
+def test_speedtest_onu_ketukan_gagal_atau_ditolak(siap, monkeypatch):
+    """Tes kecepatan tanpa antre. Ketukan gagal: belum terbacanya DownloadDiagnostics tidak dianggap 'tidak
+    mendukung', alasannya disampaikan, tidak ada perintah tersisa. ONU menolak perintahnya: gagal langsung, dicatat."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.antre, acs.alasan = True, "Connection request error: Incorrect connection request credentials"
+    r = k.post("/api/acs/budi/speedtest", json={})
+    assert r.status_code == 409 and "kredensial" in r.json()["detail"]
+    assert "tidak menyediakan" not in r.json()["detail"] and not acs.antrean
+    acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["DownloadDiagnostics"] = {
+        "DiagnosticsState": {"_value": "None", "_type": "xsd:string", "_timestamp": "2020-01-01T00:00:00.000Z"},
+        "DownloadURL": {"_value": "", "_type": "xsd:string"}}
+    r = k.post("/api/acs/budi/speedtest", json={})
+    assert r.status_code == 409 and "kredensial" in r.json()["detail"] and not acs.antrean
+    acs.alasan = "Task faulted"
+    r = k.post("/api/acs/budi/speedtest", json={})
+    assert r.status_code == 409 and "9003" in r.json()["detail"] and not acs.antrean and not acs.faults
+    assert k.get("/api/speedtest-onu/budi").json()["riwayat"][0]["status"] == "ditolak"
 
 
 def test_acs_onu_berhenti_lapor_ditandai(siap, monkeypatch):
@@ -2923,7 +2955,12 @@ def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):
     n = len(acs.tugas)
     main.terapkan_wifi_tertunda()                       # laporan ACS masih yang lama (sebelum reset): belum dikirim
     assert len(acs.tugas) == n and "ZTEGD5D276C6" in main._wifi_tertunda
-    dev["_lastInform"] = "2099-01-01T00:00:00.000Z"     # ONU lapor setelah reset
+    iso = lambda menit: (datetime.utcnow() - timedelta(minutes=menit)).isoformat(timespec="milliseconds") + "Z"
+    main._wifi_tertunda["ZTEGD5D276C6"]["sejak"] = iso(10)
+    dev["_lastInform"] = iso(0)                         # ONU baru saja lapor setelah reset: sesi pertamanya dibiarkan
+    main.terapkan_wifi_tertunda()
+    assert len(acs.tugas) == n and "ZTEGD5D276C6" in main._wifi_tertunda
+    dev["_lastInform"] = iso(2)                         # ±1 menit kemudian: dikirim satu kali
     main.terapkan_wifi_tertunda()
     nilai = {p.rsplit(".", 1)[-1] if "PreSharedKey" not in p else "psk": v for p, v, _ in acs.tugas[-1]["parameterValues"]
              if p.endswith("SSID") and "WLANConfiguration.1." in p or "WLANConfiguration.1.PreSharedKey" in p}
@@ -2934,6 +2971,14 @@ def test_wifi_berspasi_lewat_acs_setelah_reset(siap, monkeypatch):
     assert x["wifi"] and x["langkah"]["acs"] is True
     log = o.get("/api/aktivitas").text
     assert "WiFi lewat ACS" in log and "sandi rahasia" not in log and "Rahasia26" not in log
+    # Gagal dikirim (ONU tidak bisa diketuk): satu kali saja, tidak antre, tidak diulang; tercatat untuk admin.
+    main._wifi_tertunda["ZTEGD5D276C6"] = {"ssid": "Rumah Dimas", "pw": "sandi rahasia!", "akhir": "", "sejak": iso(10),
+                                           "mulai": main.time.monotonic(), "oleh": "owner"}
+    acs.antre = True
+    main.terapkan_wifi_tertunda()
+    assert "ZTEGD5D276C6" not in main._wifi_tertunda and not acs.antrean
+    log = o.get("/api/aktivitas").text
+    assert "GAGAL dikirim" in log and "Atur WiFi" in log and "sandi rahasia" not in log
 
 
 def test_ganti_onu_sn_lama_dilepas(siap):
@@ -3236,52 +3281,71 @@ def test_diagnosa_baru_tersambung_ulang(siap):
 
 
 def test_segarkan_onu_tidak_menumpuk(siap, monkeypatch):
-    """ONU yang tidak menjawab ketukan: setiap 'Ambil data terbaru' tidak menambah 5 perintah baca baru;
-    perintah baca lama dihapus dulu. Perintah ubah (reboot) dan tes ping tidak ikut terhapus."""
+    """ONU yang tidak menjawab ketukan: 'Ambil data terbaru' gagal dengan alasan jelas dan kelima perintah bacanya
+    dihapus lagi (tidak ada yang antre, tidak menumpuk). Sisa perintah lain tidak disentuh di sini (disapu berkala)."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
     monkeypatch.setattr(main.requests, "request", acs.request)
     acs.antre = True
-    assert k.post("/api/acs/budi/reboot").json()["status"] == "antre"
     acs.antrean["ping1"] = {"name": "getParameterValues",
                             "parameterNames": ["InternetGatewayDevice.IPPingDiagnostics.DiagnosticsState"]}
     for _ in range(3):
-        k.get("/api/acs/budi?segarkan=true")
-    baca = [t for t in acs.antrean.values() if t["name"] in ("refreshObject", "getParameterValues")
-            and not any("Diagnostics" in x for x in t.get("parameterNames") or [])]
-    assert 0 < len(baca) <= 5                                    # satu set saja, bukan 3 set
-    assert {"name": "reboot"} in acs.antrean.values() and "ping1" in acs.antrean
+        a = k.get("/api/acs/budi?segarkan=true").json()
+        assert a["segarkan"]["status"] == "gagal" and "tidak bisa diketuk" in a["segarkan"]["pesan"]
+    assert set(acs.antrean) == {"ping1"} and len(acs.tugas) == 15     # 3 x 5 bacaan, semuanya dihapus lagi
 
 
 def test_ketukan_ditolak_kredensial_dipulihkan(siap, monkeypatch):
     """Kredensial ketukan di ONU berubah (ZTE F609 setelah OLT mendorong ulang TR-069): GenieACS menjawab
-    "Incorrect connection request credentials". INDESO meminta pemasangan ulang sekali saja (membaca ulang
-    kredensial membuat provision memasangnya lagi), permintaan itu tidak terhapus oleh 'Ambil data terbaru',
-    dan ONU yang sekadar offline tidak memicunya."""
+    "Incorrect connection request credentials". Perintahnya dibatalkan, dan ONU diberi tanda (tag) supaya provision
+    memasang ulang kredensial saat ONU lapor berikutnya; tanda, bukan perintah antre. ONU yang sekadar offline
+    tidak memicunya."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
     monkeypatch.setattr(main.requests, "request", acs.request)
-    pulih = lambda: {tid: t for tid, t in acs.antrean.items()
-                     if main._KREDENSIAL_KETUKAN[1] in (t.get("parameterNames") or [])}
     acs.antre = True
-    assert k.post("/api/acs/budi/reboot").json()["status"] == "antre" and not pulih()   # offline biasa
+    wifi = lambda: k.post("/api/acs/budi/wifi", json={"index": 1, "ssid": "BUDI2"})
+    assert wifi().status_code == 409 and not acs.tags                 # offline biasa
     acs.alasan = "Connection request error: Incorrect connection request credentials"
-    r = k.post("/api/acs/budi/reboot").json()
-    assert r["status"] == "antre" and "kredensial" in r["pesan"]
-    awal = pulih()
-    assert len(awal) == 1
-    t = next(iter(awal.values()))
-    assert t["name"] == "getParameterValues" and list(t["parameterNames"]) == list(main._KREDENSIAL_KETUKAN)
-    k.post("/api/acs/budi/reboot")
-    k.get("/api/acs/budi?segarkan=true")
-    assert pulih() == awal                                        # tetap satu, permintaan yang sama
+    r = wifi()
+    assert r.status_code == 409 and "kredensial" in r.json()["detail"] and "ulangi" in r.json()["detail"]
+    tanda = {("ZTE-F609-ZTEGC1234567", main._TAG_PULIHKAN)}
+    assert acs.tags == tanda and not acs.antrean
+    r = k.post("/api/acs/budi/reboot")
+    assert r.status_code == 409 and "kredensial" in r.json()["detail"] and "Restart lewat OLT" in r.json()["detail"]
+    assert k.get("/api/acs/budi?segarkan=true").json()["segarkan"]["status"] == "gagal"
+    assert acs.tags == tanda and not acs.antrean
+
+
+def test_perintah_berisiko_tidak_diantrekan(siap, monkeypatch):
+    """Reboot dan hapus WAN (dan perintah lain) tidak pernah diantrekan: ketukan gagal atau ONU menolak → perintah &
+    fault dihapus dan alasannya disampaikan. Tidak ada yang jalan belakangan tanpa ditunggui (reboot mendadak, hapus
+    WAN dengan nomor yang sudah bergeser)."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.antre = True
+    r = k.post("/api/acs/budi/reboot")
+    assert r.status_code == 409 and "Restart lewat OLT" in r.json()["detail"] and not acs.antrean
+    wan = acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["WANDevice"]["1"]["WANConnectionDevice"]
+    wan["2"] = {"WANPPPConnection": {"1": {"Username": {"_value": "lama"}, "ExternalIPAddress": {"_value": ""},
+                                           "ConnectionStatus": {"_value": "Disconnected"}}}}
+    jalur = "InternetGatewayDevice.WANDevice.1.WANConnectionDevice.2.WANPPPConnection.1"
+    r = k.post("/api/acs/budi/wan-hapus", json={"path": jalur})
+    assert r.status_code == 409 and not acs.antrean and acs.tugas[-1] == {"name": "deleteObject", "objectName": jalur}
+    acs.alasan = "Task faulted"
+    r = k.post("/api/acs/budi/reboot")
+    assert r.status_code == 409 and "9003" in r.json()["detail"] and not acs.antrean and not acs.faults
+    log = o.get("/api/aktivitas").text
+    assert "onu_reboot" not in log and "onu_hapus_wan" not in log          # yang gagal tidak dicatat sebagai terjadi
 
 
 def test_onu_berhenti_lapor_tidak_diantrekan(siap, monkeypatch):
     """ONU yang berhenti lapor (mis. WAN TR-069 hilang setelah akun diganti): perintah ditolak 409 dengan pesan
-    jelas, 'Ambil data terbaru' tidak mengantrekan apa pun, sapu WiFi melewatinya."""
+    jelas tanpa mengirim apa pun; 'Ambil data terbaru' dan baca ulang WiFi juga."""
     main, o, k, m = siap
     acs = FakeACS()
     main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
@@ -3293,5 +3357,6 @@ def test_onu_berhenti_lapor_tidak_diantrekan(siap, monkeypatch):
     assert r.status_code == 409 and "2 hari" in r.json()["detail"] and "TR069" in r.json()["detail"]
     a = k.get("/api/acs/budi?segarkan=true").json()
     assert a["segarkan"]["status"] == "diam" and a["perangkat"]["diam"] is True
-    assert o.post("/api/wifi-kesehatan/segarkan").json()["berhenti_lapor"] >= 1
+    r = o.post("/api/wifi-kesehatan/segarkan", json={"id": dev["_id"]})
+    assert r.status_code == 409 and "tidak lapor" in r.json()["detail"]
     assert not acs.antrean and not acs.tugas
