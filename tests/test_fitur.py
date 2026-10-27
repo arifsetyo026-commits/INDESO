@@ -3297,7 +3297,7 @@ def test_segarkan_onu_tidak_menumpuk(siap, monkeypatch):
 
 
 def test_ketukan_ditolak_kredensial_dipulihkan(siap, monkeypatch):
-    """Kredensial ketukan di ONU berubah (ZTE F609 setelah OLT mendorong ulang TR-069): GenieACS menjawab
+    """Kredensial ketukan di ONU berubah (mis. FiberHome setelah TR-069 dikirim ulang dari OLT + restart): GenieACS menjawab
     "Incorrect connection request credentials". Perintahnya dibatalkan, dan ONU diberi tanda (tag) supaya provision
     memasang ulang kredensial saat ONU lapor berikutnya; tanda, bukan perintah antre. ONU yang sekadar offline
     tidak memicunya."""

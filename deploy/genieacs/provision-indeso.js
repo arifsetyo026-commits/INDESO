@@ -15,11 +15,12 @@ const bootTerakhir = (() => {
 })();
 
 // Kredensial connection request (ACS "mengetuk" ONU agar perintah langsung jalan).
-// Dikirim lewat args preset (tidak tersimpan di repo). Sebagian ONU kehilangan kredensial ini tanpa sepengetahuan
-// ACS: ZTE F609/F670 dan FiberHome bisa kembali ke nilai lain setelah restart atau saat OLT mendorong ulang
-// pengaturan TR-069 (OMCI). Password tidak bisa dibaca balik dari ONU (selalu kosong), jadi GenieACS mengira
-// kredensialnya masih terpasang dan setiap ketukan ditolak (401). Karena itu kredensial dipasang ulang sekali
-// sehari dan sekali setelah ONU restart: cukup 2 parameter, tanpa memutus internet. Bila ketukan ditolak di
+// Dikirim lewat args preset (tidak tersimpan di repo). ONU yang di-reset (0 BOOTSTRAP) atau dikirimi ulang
+// pengaturan TR-069 dari OLT lalu restart kembali memakai kredensial lain tanpa sepengetahuan ACS (terbukti 27-10:
+// FiberHome HG6145D2, ZTE F670L; restart biasa tidak). Password tidak bisa dibaca balik dari ONU (selalu kosong),
+// jadi GenieACS mengira kredensialnya masih terpasang dan setiap ketukan ditolak. Karena itu kredensial dipasang
+// ulang sekali sehari dan sekali setelah ONU restart (kedua kejadian di atas diakhiri restart): cukup 2 parameter,
+// tanpa memutus internet. Bila ketukan ditolak di
 // antara jadwal itu, INDESO memberi ONU tanda (tag) "pulihkan_ketukan" (bukan perintah antre): kredensial dipasang
 // ulang saat ONU lapor berikutnya, lalu tandanya dihapus.
 const pulihkan = Boolean((declare("Tags.pulihkan_ketukan", {value: 1}).value || [])[0]);

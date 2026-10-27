@@ -298,11 +298,13 @@ Prosesor ONU murah dipakai bersama oleh WiFi dan TR-069. Karena itu ACS hanya be
 - Daftar perangkat terhubung dan klien WiFi **tidak lagi dibaca otomatis tiap jam**. INDESO mengetuk ONU
   (connection request) dan membacanya saat **Diagnosa dibuka**.
 - Kredensial connection request dipasang ulang **sekali sehari dan sekali setelah ONU restart**. Hanya 2 parameter
-  dan tidak memutus internet. Sebagian ONU (ZTE F609/F670, sebagian FiberHome) kehilangan kredensial ini setelah
-  restart atau saat OLT mendorong ulang TR-069. Password tidak bisa dibaca balik dari ONU, jadi GenieACS tidak
-  tahu. Tanpa pemasangan ulang, setiap ketukan ditolak (401). Bila ketukan ditolak di antara jadwal itu, INDESO
-  memberi ONU tanda (tag `pulihkan_ketukan`, bukan perintah antre); provision memasang ulang kredensial saat ONU
-  lapor berikutnya (≤15 menit) lalu menghapus tandanya.
+  dan tidak memutus internet. ONU yang **di-reset** (lapor `0 BOOTSTRAP`) atau **dikirimi ulang pengaturan TR-069 dari
+  OLT lalu restart** kembali memakai kredensial lain. Ini terbukti pada FiberHome HG6145D2 dan ZTE F670L (27-10).
+  Restart biasa tidak menghapusnya. Password tidak bisa dibaca balik dari ONU, jadi GenieACS tidak tahu, dan setiap
+  ketukan ditolak sampai kredensial dipasang ulang. Kedua kejadian itu diakhiri restart, sehingga provision langsung
+  memasangnya lagi. Bila ketukan tetap ditolak di antara jadwal itu, INDESO memberi ONU tanda (tag
+  `pulihkan_ketukan`, bukan perintah antre); provision memasang ulang kredensial saat ONU lapor berikutnya
+  (≤15 menit) lalu menghapus tandanya.
 - Penghapusan VoIP pada WAN PPPoE `omci_…` ZTE: jenis layanan hanya **dibaca setelah ONU restart**, dan **diubah
   hanya bila masih ada VoIP**. Setelah dibuang, VoIP tidak kembali walau ONU restart; VoIP muncul lagi hanya setelah
   ONU di-reset pabrik lalu diisi ulang dari OLT. Mengubah jenis layanan membuat WAN tersambung ulang.
@@ -387,8 +389,8 @@ dan tidak dicatat di INDESO. Setelah ganti password, ada tombol untuk mengirimka
 | Gejala | Penyebab umum | Periksa |
 |---|---|---|
 | ONU tidak muncul di GenieACS | ACS URL salah, WAN TR-069 bukan koneksi internet, terowongan putus | Di MikroTik: `/ping 10.99.0.1`, `/interface wireguard peers print`. Di VPS: `sudo wg show`, `sudo tail -f /var/log/genieacs/genieacs-cwmp-access.log` |
-| Perintah gagal: "ONU tidak bisa diketuk langsung" | GenieACS tidak bisa menghubungi ONU balik | ONU mati/offline, atau aturan firewall `forward` MikroTik dari skrip tidak di urutan atas. Connection Request di ONU harus aktif |
-| Perintah gagal: "ONU menolak ketukan … kredensialnya berubah" | Ketukan (connection request) ditolak | Uji dari VPS dengan kredensial di preset `indeso-default` (`args`) dan URL ketukan ONU (`InternetGatewayDevice.ManagementServer.ConnectionRequestURL`; ZTE F609 memakai port 58000 dengan path acak): `curl -s -o /dev/null --anyauth -u "USER:SANDI" -w "%{http_code}\n" URL_CR_ONU`. **401** = kredensial di ONU berubah. Pulih otomatis saat ONU lapor berikutnya (INDESO memberi tanda `pulihkan_ketukan` begitu ketukan ditolak; paling lambat sehari lewat jadwal provision), lalu ulangi perintahnya. **000** = tidak sampai (ZTE: cek *Security → Service Control/ACL*, izinkan TR-069 dari WAN) |
+| Perintah gagal: "ONU tidak bisa diketuk langsung" | GenieACS tidak bisa menghubungi ONU balik | ONU mati/offline, atau aturan firewall `forward` MikroTik dari skrip tidak di urutan atas. Connection Request di ONU harus aktif (ZTE: cek *Security → Service Control/ACL*, izinkan TR-069 dari WAN) |
+| Perintah gagal: "ONU menolak ketukan … kredensialnya berubah" | Kredensial ketukan di ONU berbeda dengan yang dicatat ACS, biasanya setelah ONU di-reset atau TR-069 dikirim ulang dari OLT | Pulih otomatis saat ONU lapor berikutnya (INDESO memberi tanda `pulihkan_ketukan`; paling lambat sehari lewat jadwal provision), lalu ulangi perintahnya. Riwayatnya terlihat di `periksa-acs.py`: bagian *Ketukan menurut catatan INDESO* (alasan GenieACS per perintah) dan *Laporan ONU ke ACS* (`6 CONNECTION REQUEST` = ketukan berhasil). **Jangan menguji ketukan dengan curl**: ZTE F609/F670 lama menolak jawaban login Digest dari curl (401) walau kredensialnya benar, sementara ketukan GenieACS diterima (27-10: curl ditolak 08:14 & 12:02, GenieACS berhasil 09:11 ke ONU yang sama) |
 | Ping dari ONU: "DNS bermasalah" | ONU tidak bisa resolve nama | INDESO otomatis mengulang ke 8.8.8.8. Bila 8.8.8.8 berhasil, perbaiki DNS di WAN PPPoE ONU / profil PPPoE MikroTik |
 | Ping/perintah ke satu ONU selalu ditolak (mis. `cwmp.9003 Invalid arguments`), padahal ONU lain normal | Perintah lama yang pernah gagal masih tertahan dan **digabung** dengan perintah baru, jadi ikut ditolak (terjadi pada ZTE F609). INDESO kini membersihkan perintah ping lama otomatis | Lihat `retries` di daftar fault di bawah; hapus tugas & fault-nya (tombol Batalkan di dashboard, atau `DELETE /tasks/<id>` dan `DELETE /faults/<id>` lewat NBI) |
 | Perintah ke ONU tertentu selalu gagal | Ada *fault* tertahan | `curl -s http://127.0.0.1:7557/faults/ \| python3 -m json.tool` di VPS. Fault tugas bisa dihapus dari dashboard (tombol Batalkan) |
