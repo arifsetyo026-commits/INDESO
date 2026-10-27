@@ -1554,14 +1554,18 @@ def test_abaikan_peringatan_kas_minus(siap):
 class FakeOLTTelnet:
     """Server telnet tiruan mirip CLI C-Data FD1602S-B1: catat perintah yang diterima."""
     def __init__(self, tolak_onu=None, save_di_enable=False, tolak_awalan=(), wan_olt=(), sn=None, mati_setelah=1,
-                 hapus_gagal=False, offline=(), tanpa_run=False):
+                 hapus_gagal=False, offline=(), tanpa_run=False, akun_olt=None):
         import socket, threading
         self.perintah, self.tolak_onu, self.save_di_enable = [], tolak_onu, save_di_enable
         self.wan_olt = set(wan_olt)          # {"2 5", ...}: ONU yang WAN PPPoE-nya disimpan OLT
+        self.akun_olt = dict(akun_olt or {})  # {"2 5": "budi"}: akun PPPoE yang disimpan OLT (show ont info)
+        # Seperti hasil aktivasi dari OLT: index 0 dipakai jalur internet & TR-069, jadi `no ont ipconfig` ditolak
+        # ("The IP interface has been used") sampai keduanya dilepas (teruji di FD1602S-B1, ONU 2/6).
+        self.inet, self.tr069_ip = set(wan_olt), set(wan_olt)
         self.tolak_awalan = tuple(tolak_awalan)
         self.sn = dict(sn or {})             # {"1 1": "ZTEG..."}: SN yang tercantum di show ont info
         self.mati_setelah = mati_setelah     # setelah restore-factory: N kali show ont info masih Online, lalu Offline
-        self.hapus_gagal = hapus_gagal       # perintah hapus PPPoE uji diterima tapi WAN tetap ada
+        self.hapus_gagal = hapus_gagal       # `no ont ipconfig` diterima tapi WAN tetap ada
         self.offline, self.hitung_reset, self.terhapus = set(offline), {}, set()
         self.tanpa_run = tanpa_run           # firmware yang show ont info-nya tanpa "Run state"
         self.srv = socket.socket(); self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1612,13 +1616,28 @@ class FakeOLTTelnet:
             elif self.tolak_onu and b.startswith(f"ont tr069 {self.tolak_onu}"): out = "% ONT does not exist.\r\n"
             elif self.tolak_awalan and b.startswith(self.tolak_awalan): out = "% Unknown command.\r\n"
             elif b.startswith("show ont ipconfig "):
+                # OLT asli: ONU offline selalu "does not configure", walau PPPoE-nya tersimpan (ONU 2/6).
+                kk = b[len("show ont ipconfig "):]
                 out = ("-" * 40 + "\r\n  ONT IP host index        : 0\r\n  ONT config type          : PPPOE\r\n"
-                       if b[len("show ont ipconfig "):] in self.wan_olt else "  Error: The ONT does not configure IP information\r\n")
-            elif b.endswith(" ip-index 0 hapus-uji"):          # perintah hapus PPPoE uji (OLT_HAPUS_PPPOE di tes)
-                if not self.hapus_gagal:
-                    self.wan_olt.discard(" ".join(b.split()[2:4]))
+                       if kk in self.wan_olt and kk not in self.offline else "  Error: The ONT does not configure IP information\r\n")
+            elif re.match(r"no ont ipconfig \d+ \d+ ip-index 0$", b):
+                kk = " ".join(b.split()[3:5])
+                if kk in self.inet or kk in self.tr069_ip:
+                    out = "Error: The IP interface has been used.\r\n"
+                elif not self.hapus_gagal:
+                    self.wan_olt.discard(kk)
+                    self.akun_olt.pop(kk, None)
+            elif re.match(r"no ont internet-config \d+ \d+$", b):
+                self.inet.discard(" ".join(b.split()[3:5]))
+            elif re.match(r"ont tr069 \d+ \d+ ip-index unbind$", b):
+                self.tr069_ip.discard(" ".join(b.split()[2:4]))
+            elif re.match(r"ont tr069 \d+ \d+ ip-index 0$", b):
+                self.tr069_ip.add(" ".join(b.split()[2:4]))
+            elif re.match(r"ont internet-config \d+ \d+ ip-index 0$", b):
+                self.inet.add(" ".join(b.split()[2:4]))
             elif re.match(r"ont ipconfig \d+ \d+ ip-index 0 pppoe ", b):
                 self.wan_olt.add(" ".join(b.split()[2:4]))
+                self.akun_olt[" ".join(b.split()[2:4])] = b.split()[7]
             elif b.startswith("ont delete"):
                 kirim("\r\nAre you sure to delete the ONT? (y/n):")
                 self.perintah.append(baris())
@@ -1651,8 +1670,12 @@ class FakeOLTTelnet:
                     if n is not None:
                         self.hitung_reset[kk] = n - 1
                     run = "Offline" if kk in self.offline or (n is not None and n <= 0) else "Online"
+                    sn = f"  SN                   : {self.sn[kk]} ({self.sn[kk][:4]}-{self.sn[kk][4:]})\r\n" if kk in self.sn else ""
+                    wan = ("  ONT IP host index        : 0\r\n  ONT config type          : PPPOE\r\n"
+                           f"  PPPOE username           : {self.akun_olt.get(kk, 'X')}\r\n"
+                           "  PPPOE password           : RahasiaPPPoE\r\n" if kk in self.wan_olt else "")
                     out = (("" if self.tanpa_run else f"  Run state            : {run}\r\n") + "  Config state         : success\r\n"
-                           + (f"  SN                   : {self.sn[kk]}\r\n" if kk in self.sn else ""))
+                           + sn + "  Authentic mode       : sn-auth\r\n" + "-" * 60 + "\r\n" + wan + "-" * 60 + "\r\n")
             if "--More" in out:
                 kirim("\r\n" + out); f.read(1); out = "OK\r\n"
             try:
@@ -2872,7 +2895,7 @@ def _siap_ganti_onu(main, k, o, monkeypatch, **olt_kw):
              model="F670LV9.0", olt_rx_dbm=-21.0, online=True, status="OK")
     main.catat_onu_baru([lama, baru])
     main._latest_data = main._build_dashboard([], None, [lama, baru])
-    olt = FakeOLTTelnet(wan_olt={"1 1"}, sn={"1 1": "ZTEGD33C6275"}, **olt_kw)
+    olt = FakeOLTTelnet(wan_olt={"1 1"}, sn={"1 1": "ZTEGD33C6275"}, akun_olt={"1 1": "budi"}, **olt_kw)
     main.CONFIG.update(OLT_HOST="127.0.0.1", OLT_TELNET_PORT=olt.port, OLT_TELNET_USER="root", OLT_TELNET_PASS="rahasiaOLT",
                        ACS_ONU_USER="INDESO", ACS_ONU_PASS="Sandi26", OLT_TUNGGU_OFFLINE_DETIK=1)
     monkeypatch.setattr(main, "_mulai_latar", lambda fn, *a: fn(*a))     # tahap latar dijalankan langsung
@@ -2895,18 +2918,23 @@ def test_ganti_onu_rute_lengkap(siap, monkeypatch):
     sn = "ZTEGD0525891"
     cek = k.get(f"/api/onu-baru/{sn}/periksa?username=budi").json()
     assert cek["mode"] == "ganti" and cek["lama"]["sn"] == "ZTEGD33C6275" and cek["lama"]["wan_olt"] is True
-    assert cek["siap"] is False and "Pengaturan" in cek["pesan"]                  # perintah hapus PPPoE belum diisi
+    assert cek["siap"] is True and cek["lama"]["run"] == "online"
     assert cek["sesi"] == [{"caller_id": "AA:BB:CC:00:00:01", "milik": "ZTEGD33C6275"}]
+    assert "RahasiaPPPoE" not in str(cek)                                          # password dari show ont info tidak ikut
     r = k.post(f"/api/onu-baru/{sn}/aktivasi-olt", json={"username": "budi"})   # aktivasi biasa menolak, arahkan ke Ganti ONU
     assert r.status_code == 409 and "Ganti ONU" in r.json()["detail"]
     dasar = {"username": "budi", "konfirmasi": "budi", "ssid": "Rumah Budi", "wifi_password": "sandi wifi 1"}
+    # PPPoE yang disimpan OLT untuk ONU lama berakun lain: berhenti di periksa
+    olt.akun_olt["1 1"] = "ani"
+    cek = k.get(f"/api/onu-baru/{sn}/periksa?username=budi").json()
+    assert not cek["siap"] and "berakun ani" in cek["pesan"]
     assert k.post(f"/api/onu-baru/{sn}/ganti-onu", json=dasar).status_code == 409
-    # perintah hapus PPPoE: hanya pemilik, wajib {port} {onu}, bukan ont delete / all
-    for salah in ("ont delete {port} {onu}", "ont ipconfig all ip-index 0", "ont ipconfig {port} {onu} x; reboot"):
-        assert o.put("/api/pengaturan", json={"nilai": {"OLT_HAPUS_PPPOE": salah}}).status_code == 400, salah
-    assert k.put("/api/pengaturan", json={"nilai": {"OLT_HAPUS_PPPOE": "ont ipconfig {port} {onu} ip-index 0 hapus-uji"}}).status_code == 403
-    assert o.put("/api/pengaturan", json={"nilai": {"OLT_HAPUS_PPPOE": "ont ipconfig {port} {onu} ip-index 0 hapus-uji"}}).json()["berubah"] == 1
-    assert k.get(f"/api/onu-baru/{sn}/periksa?username=budi").json()["siap"] is True
+    olt.akun_olt["1 1"] = "budi"
+    assert "OLT_HAPUS_PPPOE" not in o.get("/api/pengaturan").text                  # tidak perlu diisi lagi
+    # keluaran OLT memuat password apa adanya: selalu disamarkan bila ikut ke pesan galat
+    teks = main._samarkan("  PPPOE username           : budi\r\n  PPPOE password           : Budi2026\r\n"
+                          "  Acs user password       : RahasiaACS")
+    assert "Budi2026" not in teks and "RahasiaACS" not in teks and "budi" in teks
     assert "Ketik ulang" in k.post(f"/api/onu-baru/{sn}/ganti-onu", json=dict(dasar, konfirmasi="bud")).json()["detail"]
     assert m.post(f"/api/onu-baru/{sn}/ganti-onu", json=dasar).status_code == 403
     olt.perintah.clear()
@@ -2916,15 +2944,19 @@ def test_ganti_onu_rute_lengkap(siap, monkeypatch):
     g = k.get(f"/api/onu-baru/ganti/{gid}").json()
     assert g["status"] == "berjalan" and g["tahap"] == "tunggu_online", g
     assert g["pppoe_dihapus"] and g["direset"] and g["diaktifkan"]
-    assert [x["tahap"] for x in g["log"]] == ["periksa", "hapus PPPoE ONU lama", "reset ONU lama", "aktivasi ONU baru"]
+    assert [x["tahap"] for x in g["log"]] == ["periksa", "lepas PPPoE ONU lama", "reset ONU lama", "aktivasi ONU baru"]
     assert all(x["ok"] for x in g["log"]) and "dua band" in g["log"][-1]["pesan"]
     p = olt.perintah
-    hapus, reset = p.index("ont ipconfig 1 1 ip-index 0 hapus-uji"), p.index("ont restore-factory 1 1")
+    # urutan teruji di ONU 2/6: unbind TR-069 → hapus jalur internet → hapus ipconfig, dicek ulang, save, baru reset
+    unbind, inet = p.index("ont tr069 1 1 ip-index unbind"), p.index("no ont internet-config 1 1")
+    hapus, reset = p.index("no ont ipconfig 1 1 ip-index 0"), p.index("ont restore-factory 1 1")
     aktivasi = p.index("ont ipconfig 2 4 ip-index 0 pppoe username budi password Budi2026 vlan 1 priority 0")
-    assert p.index("show ont ipconfig 1 1") < hapus < reset < aktivasi
-    assert p[hapus + 1] == "show ont ipconfig 1 1" and "save" in p[hapus:reset]                 # dicek ulang lalu disimpan
+    assert p.index("show ont info 1 1") < unbind < inet < hapus < reset < aktivasi
+    assert p[hapus + 1] == "show ont info 1 1" and "save" in p[hapus:reset]                     # dicek ulang lalu disimpan
+    assert "1 1" not in olt.wan_olt and not any(c.startswith("ont delete") for c in p[:aktivasi])
     assert p[reset + 1] == "y" and p[reset + 2:reset + 4] == ["show ont info 1 1", "show ont info 1 1"]   # tunggu offline
     assert "ont ipconfig 2 4 ip-index 0 binding eth 3 wlan 1,5" in p and not any(c.startswith("ont delete") for c in p)
+    assert not any(c.startswith("show ont ipconfig") for c in p)                  # ONU offline: tidak bisa diandalkan
     assert not any(c.startswith("ont wifi") for c in p) and not any("all" in c.split() for c in p)
     assert mt.active.get("budi") == []                          # sesi ONU lama diputus sebelum aktivasi (only-one)
     assert main._wifi_tertunda[sn]["ssid"] == "Rumah Budi"
@@ -2947,7 +2979,8 @@ def test_ganti_onu_rute_lengkap(siap, monkeypatch):
     conn.close()
     log = o.get("/api/aktivitas").text
     assert "Ganti ONU #" in log and "bersihkan ONU lama: ok" in log
-    assert "Budi2026" not in log and "sandi wifi 1" not in log and "Budi2026" not in str(g)
+    assert "Budi2026" not in log and "sandi wifi 1" not in log and "Budi2026" not in str(g) and "RahasiaPPPoE" not in log
+    assert "Secret MikroTik tidak diubah" in g["log"][1]["pesan"] and "budi" in main._mt.secret
     # ONU lama menyala lagi (OLT mendaftarkannya ulang): tercatat ONU baru bertanda bekas akun budi
     kembali = main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, serial_number="ZTEGD33C6275", model="F609",
                              olt_rx_dbm=-20.0, online=True, status="OK")
@@ -2970,23 +3003,31 @@ def test_ganti_onu_gagal_berhenti_dan_dilanjutkan(siap, monkeypatch):
     """Tiap tahap berhasil atau gagal dan berhenti di situ; Lanjutkan mengulang dari tahap yang gagal saja."""
     main, o, k, m = siap
     mt = main._mt
-    olt, lama, baru = _siap_ganti_onu(main, k, o, monkeypatch, hapus_gagal=True, mati_setelah=999)
-    main.CONFIG["OLT_HAPUS_PPPOE"] = "ont ipconfig {port} {onu} ip-index 0 hapus-uji"
+    olt, lama, baru = _siap_ganti_onu(main, k, o, monkeypatch, tolak_awalan=("ont tr069 1 1 ip-index unbind",),
+                                      mati_setelah=999)
     sn, dasar = "ZTEGD0525891", {"username": "budi", "konfirmasi": "BUDI"}
     olt.tanpa_run = True                     # format show ont info tak dikenal: berhenti di periksa, OLT tidak diubah
     cek = k.get(f"/api/onu-baru/{sn}/periksa?username=budi").json()
     assert cek["mode"] == "ganti" and not cek["siap"] and "show ont info" in cek["pesan"]
     assert k.post(f"/api/onu-baru/{sn}/ganti-onu", json=dasar).status_code == 409
-    assert not any(c.endswith("hapus-uji") or c.startswith("ont restore-factory") for c in olt.perintah)
+    assert not any(c.startswith("no ont ipconfig") or c.startswith("ont restore-factory") for c in olt.perintah)
     olt.tanpa_run = False
     gid = k.post(f"/api/onu-baru/{sn}/ganti-onu", json=dasar).json()["id"]
     g = k.get(f"/api/onu-baru/ganti/{gid}").json()
-    # 1) perintah hapus diterima OLT tapi PPPoE masih ada → berhenti, ONU lama tidak direset, ONU baru tidak disentuh
-    assert g["status"] == "gagal" and g["tahap"] == "hapus_pppoe" and "masih tersimpan" in g["pesan"]
+    # 1) TR-069 tidak bisa dilepas → OLT menolak `no ont ipconfig` ("has been used") → berhenti, ONU lama tidak direset,
+    #    ONU baru tidak disentuh
+    assert g["status"] == "gagal" and g["tahap"] == "hapus_pppoe" and "has been used" in g["pesan"], g
     assert not any(c.startswith("ont restore-factory") or c.startswith("ont ipconfig 2 4") for c in olt.perintah)
+    assert "1 1" in olt.wan_olt
     assert k.post(f"/api/onu-baru/{sn}/ganti-onu", json=dasar).status_code == 200        # yang gagal tidak mengunci
     gid2 = max(x["id"] for x in k.get("/api/onu-baru/ganti").json()["ganti"])
     assert gid2 != gid
+    # 1b) perintah diterima tapi PPPoE masih tersimpan (dicek ulang lewat show ont info) → tetap berhenti
+    olt.tolak_awalan, olt.hapus_gagal = (), True
+    k.post(f"/api/onu-baru/ganti/{gid}/lanjut", json={})
+    g = k.get(f"/api/onu-baru/ganti/{gid}").json()
+    assert g["status"] == "gagal" and g["tahap"] == "hapus_pppoe" and "masih tersimpan" in g["pesan"]
+    assert not any(c.startswith("ont restore-factory") for c in olt.perintah)
     # 2) diperbaiki, Lanjutkan: ONU lama tidak juga offline setelah reset → berhenti sebelum aktivasi ONU baru
     olt.hapus_gagal = False
     assert k.post(f"/api/onu-baru/ganti/{gid}/lanjut", json={}).json()["id"] == gid
@@ -3000,7 +3041,7 @@ def test_ganti_onu_gagal_berhenti_dan_dilanjutkan(siap, monkeypatch):
     k.post(f"/api/onu-baru/ganti/{gid}/lanjut", json={"password": "Manual99"})
     g = k.get(f"/api/onu-baru/ganti/{gid}").json()
     assert g["status"] == "berjalan" and g["tahap"] == "tunggu_online" and g["direset"] == "lewati", g
-    assert not any(c.endswith("hapus-uji") or c.startswith("ont restore-factory") for c in olt.perintah)
+    assert not any(c.startswith("no ont ipconfig") or c.startswith("ont restore-factory") for c in olt.perintah)
     assert any(c.startswith("ont ipconfig 2 4 ip-index 0 pppoe username budi password Manual99") for c in olt.perintah)
     assert "reset dilewati" in g["log"][-2]["pesan"]
     assert k.post(f"/api/onu-baru/ganti/{gid}/lanjut", json={}).status_code == 409        # bukan yang gagal

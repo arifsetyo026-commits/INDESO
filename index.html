@@ -1971,7 +1971,7 @@ async function ambilSecretOb(i,btn){
  catch(e){ $('obAkunInfo'+i).textContent='Gagal: '+e.message; }
  btn.disabled=false; btn.textContent=t;
 }
-const GANTI_TAHAP=[['hapus_pppoe','Hapus PPPoE di ONU lama (OLT, dicek ulang)'],['reset','Reset pabrik ONU lama & tunggu benar-benar offline'],['aktivasi','Aktivasi ONU baru (OLT; WiFi lewat ACS)'],['tunggu_online','Tunggu akun online lewat ONU baru'],['bersih','Hapus ONU lama dari OLT']];
+const GANTI_TAHAP=[['hapus_pppoe','Lepas PPPoE dari ONU lama (OLT, dicek ulang)'],['reset','Reset pabrik ONU lama & tunggu benar-benar offline'],['aktivasi','Aktivasi ONU baru (OLT; WiFi lewat ACS)'],['tunggu_online','Tunggu akun online lewat ONU baru'],['bersih','Hapus ONU lama dari OLT']];
 function panelGanti(g){
  const beres={hapus_pppoe:g.pppoe_dihapus,reset:g.direset,aktivasi:g.diaktifkan,tunggu_online:g.status==='selesai'||g.tahap==='bersih',bersih:g.status==='selesai'};
  const baris=GANTI_TAHAP.map(([k,t])=>{ const ik=beres[k]?'<b style="color:#0b7a3b">✓</b>':g.tahap===k&&g.status==='gagal'?'<b style="color:#b42318">✗</b>':g.tahap===k&&g.status==='berjalan'?'⏳':'<b style="color:#8a5a00">·</b>';
@@ -2081,7 +2081,7 @@ async function periksaAkunOb(sn,i,reset){
   if(c.mode==='ganti'){
    const x=c.lama;
    el.innerHTML=`<div class="kuPanel" style="margin:8px 0 0;border-color:#f3c98b;background:#fffaf0;font-size:var(--fs-xs)"><b>Rute Ganti ONU</b> — akun ${esc(u)} masih terpasang di ONU lama <b>${esc(x.sn)}</b> (PON ${esc(x.pon)} ONU ${esc(x.onu_id)}, ${x.online?'online':'offline'}${x.wan_olt?', PPPoE dari OLT':x.wan_olt===false?', PPPoE bukan dari OLT':''}).<br>
-    Urutan otomatis: 1) hapus PPPoE di ONU lama lewat OLT (dicek ulang) → 2) reset pabrik ONU lama &amp; tunggu sampai benar-benar offline${x.run&&x.run!=='online'?' (dilewati: ONU lama sedang '+esc(x.run)+')':''} → 3) aktivasi ONU ini → 4) begitu akun online lewat ONU ini, ONU lama dihapus dari OLT (online atau tidak). Internet pelanggan putus selama tahap 1–3 (±3–5 menit). Bila ONU lama kelak menyala lagi, ia muncul di sini bertanda bekas.
+    Urutan otomatis: 1) lepas PPPoE dari ONU lama di OLT (hanya dari SN itu; secret MikroTik tetap, dicek ulang) → 2) reset pabrik ONU lama &amp; tunggu sampai benar-benar offline${x.run&&x.run!=='online'?' (dilewati: ONU lama sedang '+esc(x.run)+')':''} → 3) aktivasi ONU ini → 4) begitu akun online lewat ONU ini, ONU lama dihapus dari OLT (online atau tidak). Internet pelanggan putus selama tahap 1–3 (±3–5 menit). Bila ONU lama kelak menyala lagi, ia muncul di sini bertanda bekas.
     ${c.siap?'':`<div style="color:#b42318;margin-top:6px;font-weight:700">✖ ${esc(c.pesan)}</div>`}</div>`;
    kn.innerHTML=`<label>Ketik ulang username PPPoE untuk konfirmasi Ganti ONU</label><input id="obGKonf${i}" autocapitalize="off" autocomplete="off">`;
    btn.textContent='Mulai Ganti ONU'; btn.disabled=!c.siap;

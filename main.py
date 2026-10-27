@@ -254,6 +254,9 @@ def _samarkan(teks: str) -> str:
             teks = teks.replace(f"bot{rahasia}", "bot***")
             if len(rahasia) >= 6:
                 teks = teks.replace(rahasia, "***")
+    # Keluaran OLT menampilkan password apa adanya (show ont info: "PPPOE password : X", show ont tr069:
+    # "Acs user password : X"); bisa ikut ke pesan galat telnet.
+    teks = re.sub(r"(?i)(password\s*:\s*)\S+", r"\1***", teks)
     return re.sub(r"bot\d+:[A-Za-z0-9_-]{20,}", "bot***", teks)
 
 
@@ -2945,11 +2948,6 @@ def _oleh(request: Request) -> str:
     return getattr(request.state, "user", None) or "-"
 
 
-# Perintah hapus PPPoE satu ONU: wajib {port} lalu {onu}, tanpa "all", tanpa ;/baris baru, dan bukan perintah yang
-# menghapus / mereset / me-restart ONU (rute Ganti ONU mereset ONU lama sendiri, setelah PPPoE-nya terbukti hilang).
-_POLA_HAPUS_PPPOE = (r"^(?!.*\ball\b)(?!\s*(no\s+)?ont\s+(delete|restore-factory|reboot|add|deactivate)\b)"
-                     r"\s*([A-Za-z0-9 ._-]*\{port\}[A-Za-z0-9 ._-]*\{onu\}[A-Za-z0-9 ._-]*)?\s*$")
-
 # --- Pengaturan yang bisa diubah admin dari dashboard (tersimpan di tabel
 # pengaturan, menimpa nilai default CONFIG). Hanya daftar ini yang boleh diubah. ---
 _PENGATURAN = {
@@ -3016,12 +3014,6 @@ _PENGATURAN = {
                         "pola": r"^\s*[1-8](-[1-8])?(\s*,\s*[1-8](-[1-8])?)*\s*$", "owner": True, "contoh": "3",
                         "bantuan": "Dipakai di perintah OLT `binding eth <port> wlan 1,5` (ONU dua band: SSID 1 + SSID 5 "
                                    "GHz) atau `wlan 1` (ONU satu band). Contoh: 3, 1-4, 1,3."},
-    "OLT_HAPUS_PPPOE": {"label": "Perintah OLT untuk menghapus PPPoE satu ONU (rute Ganti ONU)", "tipe": "teks", "mode": "text",
-                        "pola": _POLA_HAPUS_PPPOE,
-                        "owner": True, "contoh": "ont ipconfig {port} {onu} ip-index 0 ...",
-                        "bantuan": "Ditulis persis seperti diketik di CLI OLT (mode interface gpon), dengan {port} dan "
-                                   "{onu} sebagai pengganti nomor. Kosong = Ganti ONU menolak ONU lama yang PPPoE-nya "
-                                   "tersimpan di OLT. Hasilnya selalu dicek ulang dengan show ont ipconfig."},
     "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID tujuan laporan keuangan: grup internal owner dan/atau chat pribadi (pisahkan koma)",
                                "tipe": "teks", "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
                                "bantuan": "Grup: tambahkan bot ke grup internal owner, lalu kirim /id di grup itu "
@@ -10938,9 +10930,6 @@ CONFIG.update({
     "OLT_PPPOE_VLAN": int(_env("OLT_PPPOE_VLAN", "1")),
     # Port LAN yang diikat ke WAN PPPoE saat aktivasi: `binding eth <LAN> wlan 1,5` (dua band) / `wlan 1` (satu band).
     "OLT_BINDING_LAN": _env("OLT_BINDING_LAN", "3"),
-    # Perintah OLT untuk menghapus WAN PPPoE satu ONU (rute Ganti ONU), memakai {port} dan {onu}. Sintaksnya beda
-    # antar-firmware C-Data, jadi tidak ditebak: kosong = Ganti ONU menolak bila ONU lama punya WAN dari OLT.
-    "OLT_HAPUS_PPPOE": _env("OLT_HAPUS_PPPOE", ""),
     "OLT_TUNGGU_OFFLINE_DETIK": int(_env("OLT_TUNGGU_OFFLINE_DETIK", "180")),   # batas tunggu ONU lama mati setelah reset
     "ACS_ONU_URL": _env("ACS_ONU_URL", "http://10.99.0.1:7547"),
     "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
@@ -11080,7 +11069,7 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
     `ont reboot`, dengan jeda antarperintah seperti saat diketik tangan. Tanpa jeda, unbind tiba
     sebelum ONU menerima ikatannya lewat OMCI dan tidak ada yang berubah. Dikerjakan per tahap untuk
     semua ONU sekaligus supaya jeda tidak dikalikan jumlah ONU. Konfigurasi akhir tanpa ip-index, kecuali ONU
-    yang WAN-nya dibuat OLT (`show ont ipconfig` berisi PPPoE/DHCP/static): ONU itu (mis. Huawei HG8145V5) hanya
+    yang WAN-nya dibuat OLT (`show ont info` berisi config type PPPoE/DHCP/static): ONU itu (mis. Huawei HG8145V5) hanya
     melapor lewat WAN tersebut, jadi ikatan `ip-index 0` dibiarkan. Tanpa ikatan itu Huawei diam sama sekali."""
     if not onus:
         return
@@ -11124,10 +11113,14 @@ def _ulang_jalur_tr069(t: "_TelnetOLT", onus: list, hasil: list) -> None:
                        else " Restart ONU gagal.") + (f" Catatan OLT: {'; '.join(cat)}" if cat else "")
 
 
+_POLA_WAN_OLT = re.compile(r"(?i)config type\s*:\s*(pppoe|dhcp|static)")
+
+
 def _wan_dari_olt(t: "_TelnetOLT", port: int, onu_id: int) -> bool:
-    """True bila OLT menyimpan WAN (ont ipconfig ip-index 0) untuk ONU ini."""
-    out = t.kirim(f"show ont ipconfig {port} {onu_id}")
-    return bool(re.search(r"(?i)config type\s*:\s*(pppoe|dhcp|static)", out))
+    """True bila OLT menyimpan WAN (ont ipconfig ip-index 0) untuk ONU ini. Dibaca dari `show ont info` (bagian
+    "ONT config type"), bukan `show ont ipconfig`: untuk ONU offline yang terakhir menjawab "The ONT does not configure
+    IP information" walau OLT menyimpan PPPoE-nya (ONU uji 2/6, 27 Okt 2026)."""
+    return bool(_POLA_WAN_OLT.search(t.kirim(f"show ont info {port} {onu_id}")))
 
 
 def _olt_masuk(t: "_TelnetOLT") -> None:
@@ -11244,16 +11237,11 @@ def _lan_binding() -> str:
     return lan
 
 
-def _perintah_hapus_pppoe(port: int, onu_id: int) -> Optional[str]:
-    """Perintah OLT_HAPUS_PPPOE untuk satu ONU, atau None bila belum diisi. Dicek ulang di sini karena nilai dari .env
-    tidak melewati validasi Pengaturan."""
-    pola = (CONFIG.get("OLT_HAPUS_PPPOE") or "").strip()
-    if not pola:
-        return None
-    if not re.fullmatch(_POLA_HAPUS_PPPOE, pola):
-        raise HTTPException(status_code=500, detail="OLT_HAPUS_PPPOE tidak valid: wajib berisi {port} lalu {onu}, tanpa "
-                                                    "'all', bukan ont delete/restore-factory/reboot. Perbaiki di Pengaturan.")
-    return pola.replace("{port}", str(int(port))).replace("{onu}", str(int(onu_id)))
+# Lepas PPPoE dari satu ONU di OLT (rute Ganti ONU), tanpa menghapus ONU-nya; secret MikroTik tidak disentuh.
+# Teruji di FD1602S-B1 (ONU uji 2/6, 27 Okt 2026): `no ont ipconfig ... ip-index 0` saja ditolak "The IP interface has
+# been used" selama index 0 masih dipakai TR-069 dan jalur internet, jadi keduanya dilepas dulu.
+_LEPAS_PPPOE = ("ont tr069 {port} {onu} ip-index unbind", "no ont internet-config {port} {onu}",
+                "no ont ipconfig {port} {onu} ip-index 0")
 
 
 def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, tr069: bool = True) -> dict:
@@ -12268,14 +12256,17 @@ def onu_baru_akun(request: Request):
 
 _POLA_RUN = re.compile(r"(?i)run\s*state\s*:\s*(\S+)")
 _POLA_SN_INFO = re.compile(r"(?i)\b(?:SN|serial[ -]?number)\s*:\s*\"?([A-Za-z0-9]{8,16})")
+_POLA_AKUN_OLT = re.compile(r"(?i)pppoe\s+username\s*:\s*(\S+)")
 
 
 def _info_onu_telnet(t: "_TelnetOLT", port: int, onu_id: int) -> dict:
-    """`show ont info P O` (mode interface gpon): run state & nomor seri bila tercantum. ada=False bila OLT menolak."""
+    """`show ont info P O` (mode interface gpon): run state, nomor seri, dan WAN PPPoE yang disimpan OLT (akunnya).
+    ada=False bila OLT menolak. Keluaran mentahnya memuat password PPPoE, jadi tidak pernah diteruskan."""
     out = t.kirim(f"show ont info {port} {onu_id}")
-    run, sn = _POLA_RUN.search(out), _POLA_SN_INFO.search(out)
+    run, sn, akun = _POLA_RUN.search(out), _POLA_SN_INFO.search(out), _POLA_AKUN_OLT.search(out)
     return {"ada": _galat_cli(out) is None and not re.search(r"(?i)not exist|does not exist", out),
-            "run": run.group(1).lower() if run else None, "sn": _sn_gpon(sn.group(1)) if sn else None}
+            "run": run.group(1).lower() if run else None, "sn": _sn_gpon(sn.group(1)) if sn else None,
+            "wan": bool(_POLA_WAN_OLT.search(out)), "akun": akun.group(1) if akun and akun.group(1) != "-" else None}
 
 
 def _masuk_antarmuka(pon: str) -> tuple["_TelnetOLT", int]:
@@ -12308,7 +12299,6 @@ def _baca_onu_olt(pon: str, onu_id: int) -> dict:
     t, port = _masuk_antarmuka(pon)
     try:
         info = _info_onu_telnet(t, port, onu_id)
-        info["wan"] = _wan_dari_olt(t, port, onu_id)
         t.kirim("exit")
         t.kirim("end")
     except (OSError, TimeoutError, ConnectionError) as e:
@@ -12363,9 +12353,9 @@ def _periksa_aktivasi(sn: str, user: str, baca_olt: bool = True) -> dict:
                 hasil.update(siap=False, pesan=hasil["pesan"] + " Status ONU dari `show ont info` tidak terbaca (format OLT "
                                                                "berbeda), jadi Ganti ONU belum bisa menunggu ONU lama offline.")
                 return hasil
-            if info["wan"] and _perintah_hapus_pppoe(1, 1) is None:
-                hasil.update(siap=False, pesan=hasil["pesan"] + " PPPoE ONU lama tersimpan di OLT, tetapi perintah hapus "
-                                                               "PPPoE belum diisi (Pengaturan → Perintah OLT untuk menghapus PPPoE).")
+            if info["wan"] and info["akun"] and info["akun"].lower() != user.lower():
+                hasil.update(siap=False, pesan=hasil["pesan"] + f" Tetapi PPPoE yang tersimpan di OLT untuk ONU lama itu "
+                                                               f"berakun {info['akun']}, bukan {user}: periksa dulu.")
     elif lain:
         hasil.update(mode="tolak", siap=False, pesan=(
             f"Akun {user} sedang dipakai perangkat lain ({', '.join(lain)}) yang tidak terbaca sebagai ONU di OLT (mis. "
@@ -12464,7 +12454,7 @@ def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
 
 # ------------------------------------------------------------
 # GANTI ONU — akun PPPoE pindah dari ONU lama ke ONU baru:
-#   0 periksa (baca saja) → 1 hapus PPPoE ONU lama dari OLT (dicek ulang) → 2 reset pabrik ONU lama & tunggu benar-benar
+#   0 periksa (baca saja) → 1 lepas PPPoE dari ONU lama di OLT (dicek ulang) → 2 reset pabrik ONU lama & tunggu benar-benar
 #   offline → 3 aktivasi ONU baru (OLT; WiFi lewat ACS) → 4 begitu akun online lewat ONU baru, ONU lama dihapus dari OLT
 #   (online atau tidak). Bila ONU lama menyala lagi, OLT (authmode auto) mendaftarkannya ulang → muncul di ONU Baru
 #   bertanda "bekas akun X".
@@ -12475,7 +12465,7 @@ GANTI_PANTAU_DETIK = 600         # lama thread memantau tahap 4 sendiri; sesudah
 GANTI_JEDA_CEK = 3.0             # detik antarcek (run state ONU lama, sesi PPPoE ONU baru)
 _ganti_aktif: set = set()        # id Ganti ONU yang sedang dikerjakan thread
 _ganti_kunci = threading.RLock()
-_LABEL_TAHAP = {"periksa": "periksa", "hapus_pppoe": "hapus PPPoE ONU lama", "reset": "reset ONU lama",
+_LABEL_TAHAP = {"periksa": "periksa", "hapus_pppoe": "lepas PPPoE ONU lama", "reset": "reset ONU lama",
                 "aktivasi": "aktivasi ONU baru", "tunggu_online": "tunggu ONU baru online", "bersih": "bersihkan ONU lama"}
 
 
@@ -12531,39 +12521,48 @@ def _cek_sn_telnet(info: dict, g: sqlite3.Row) -> None:
 
 
 def _ganti_hapus_pppoe(g: sqlite3.Row) -> str:
+    """Tahap 1: lepas PPPoE dari ONU lama di OLT (_LEPAS_PPPOE), lalu pastikan lewat `show ont info` bahwa WAN-nya
+    hilang dan ONU-nya masih terdaftar, baru save."""
     _cek_alamat_lama(g)
     t, port = _masuk_antarmuka(g["pon_lama"])
     onu = int(g["onu_id_lama"])
     try:
-        _cek_sn_telnet(_info_onu_telnet(t, port, onu), g)
-        if not _wan_dari_olt(t, port, onu):
+        info = _info_onu_telnet(t, port, onu)
+        _cek_sn_telnet(info, g)
+        if not info["wan"]:
             t.kirim("exit")
             t.kirim("end")
             return "ONU lama tidak punya PPPoE dari OLT (diisi di ONU sendiri): dibersihkan oleh reset pabrik."
-        perintah = _perintah_hapus_pppoe(port, onu)
-        if not perintah:
-            raise _GagalGanti("Perintah hapus PPPoE belum diisi (Pengaturan → Perintah OLT untuk menghapus PPPoE).")
-        out = t.kirim(perintah, r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
-        if re.search(_POLA_KONFIRMASI, out):
-            out = t.kirim("y")
-        galat = _galat_cli(out)
-        if galat:
-            raise _GagalGanti(f"OLT menolak perintah hapus PPPoE ({galat}). ONU lama tidak diubah.")
-        if _wan_dari_olt(t, port, onu):
-            raise _GagalGanti("PPPoE ONU lama masih tersimpan di OLT setelah perintah hapus (show ont ipconfig): perintah "
-                              "hapus PPPoE di Pengaturan belum tepat. ONU lama belum direset.")
-        if not _info_onu_telnet(t, port, onu)["ada"]:
-            raise _GagalGanti("ONU lama hilang dari OLT setelah perintah hapus PPPoE: perintah di Pengaturan menghapus "
-                              "ONU, bukan PPPoE-nya. Periksa OLT.")
+        if info["akun"] and info["akun"].lower() != g["username"].lower():
+            raise _GagalGanti(f"PPPoE yang tersimpan di OLT untuk ONU lama berakun {info['akun']}, bukan {g['username']}. "
+                              "Tidak ada yang diubah.")
+        catatan = []
+        for pola in _LEPAS_PPPOE:
+            perintah = pola.format(port=port, onu=onu)
+            out = t.kirim(perintah, r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            if re.search(_POLA_KONFIRMASI, out):
+                out = t.kirim("y")
+            galat = _galat_cli(out)
+            if galat and perintah.startswith("no ont ipconfig"):
+                raise _GagalGanti(f"OLT menolak melepas PPPoE ONU lama ({_samarkan(galat)}). ONU lama belum direset.")
+            if galat:
+                catatan.append(f"{perintah.split(' ' + str(port))[0]}: {_samarkan(galat)}")   # mis. memang belum terpasang
+        info = _info_onu_telnet(t, port, onu)
+        if not info["ada"]:
+            raise _GagalGanti("ONU lama tidak lagi terbaca di OLT setelah PPPoE dilepas. Periksa OLT; ONU lama belum direset.")
+        if info["wan"]:
+            raise _GagalGanti("PPPoE ONU lama masih tersimpan di OLT (show ont info) setelah dilepas. ONU lama belum direset.")
         t.kirim("exit")
         tersimpan = _simpan_olt(t)
         t.kirim("end")
     except (OSError, TimeoutError, ConnectionError) as e:
-        raise _GagalGanti(f"Sesi telnet OLT terputus: {e}")
+        raise _GagalGanti(f"Sesi telnet OLT terputus: {_samarkan(str(e))}")
     finally:
         t.tutup()
-    return "PPPoE ONU lama dihapus dari OLT (dicek ulang: show ont ipconfig kosong)" + \
-        ("." if tersimpan else " — konfigurasi OLT BELUM tersimpan permanen.")
+    return ("PPPoE dilepas dari ONU lama di OLT (TR-069 unbind, jalur internet & ipconfig dihapus; dicek ulang: "
+            "show ont info tanpa PPPoE). Secret MikroTik tidak diubah"
+            + (f". Catatan OLT: {'; '.join(catatan)}" if catatan else "")
+            + ("." if tersimpan else " — konfigurasi OLT BELUM tersimpan permanen."))
 
 
 def _ganti_reset(g: sqlite3.Row) -> tuple[str, str]:
@@ -12652,7 +12651,7 @@ def _ganti_tahap_1_3(gid: int, rahasia: dict) -> bool:
         if not g["pppoe_dihapus"]:
             _ganti_ubah(gid, tahap="hapus_pppoe")
             pesan = _ganti_hapus_pppoe(g)
-            _ganti_ubah(gid, ("hapus PPPoE ONU lama", True, pesan), pppoe_dihapus=datetime.now().isoformat(timespec="seconds"))
+            _ganti_ubah(gid, ("lepas PPPoE ONU lama", True, pesan), pppoe_dihapus=datetime.now().isoformat(timespec="seconds"))
         if not g["direset"]:
             _ganti_ubah(gid, tahap="reset")
             status, pesan = _ganti_reset(g)
