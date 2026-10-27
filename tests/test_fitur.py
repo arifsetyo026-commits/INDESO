@@ -3230,3 +3230,22 @@ def test_diagnosa_baru_tersambung_ulang(siap):
         mt.mati = False
         mt.ping = []
         main._latest_data = None
+
+
+def test_segarkan_onu_tidak_menumpuk(siap, monkeypatch):
+    """ONU yang tidak menjawab ketukan: setiap 'Ambil data terbaru' tidak menambah 5 perintah baca baru;
+    perintah baca lama dihapus dulu. Perintah ubah (reboot) dan tes ping tidak ikut terhapus."""
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    acs.antre = True
+    assert k.post("/api/acs/budi/reboot").json()["status"] == "antre"
+    acs.antrean["ping1"] = {"name": "getParameterValues",
+                            "parameterNames": ["InternetGatewayDevice.IPPingDiagnostics.DiagnosticsState"]}
+    for _ in range(3):
+        k.get("/api/acs/budi?segarkan=true")
+    baca = [t for t in acs.antrean.values() if t["name"] in ("refreshObject", "getParameterValues")
+            and not any("Diagnostics" in x for x in t.get("parameterNames") or [])]
+    assert 0 < len(baca) <= 5                                    # satu set saja, bukan 3 set
+    assert {"name": "reboot"} in acs.antrean.values() and "ping1" in acs.antrean

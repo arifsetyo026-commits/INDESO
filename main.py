@@ -9445,9 +9445,32 @@ def _segarkan_perangkat(doc: dict) -> dict:
     if params:
         tugas.insert(0, {"name": "getParameterValues", "parameterNames": params})
     _bersihkan_tertahan(doc["_id"])
+    _hapus_baca_antre(doc["_id"])
     for t in tugas[:-1]:
         _acs("POST", f"/devices/{quote(doc['_id'], safe='')}/tasks", json=t, timeout=15)
     return _tugas_acs(doc["_id"], tugas[-1], tunggu=25)
+
+
+def _hapus_baca_antre(acs_id: str) -> int:
+    """Perintah baca data perangkat (refreshObject / getParameterValues LANDevice & WANDevice) yang masih
+    antre untuk ONU ini dihapus sebelum diantrekan lagi. ONU yang tidak menjawab ketukan (mis. WAN TR-069-nya
+    berubah) tidak menumpuk 5 perintah baru setiap Diagnosa dibuka; perintah ubah dan tes ping tidak disentuh."""
+    try:
+        r = _acs("GET", "/tasks/", params={"query": json.dumps({"device": acs_id}),
+                                            "projection": "_id,name,objectName,parameterNames"}, timeout=10)
+    except HTTPException:
+        return 0
+    n = 0
+    for t in (r.json() if r.ok else []):
+        jalur = [str(t.get("objectName") or "")] + [str(x) for x in (t.get("parameterNames") or [])]
+        if t.get("name") not in ("refreshObject", "getParameterValues") or any("Diagnostics" in j for j in jalur):
+            continue
+        try:
+            _acs("DELETE", f"/tasks/{t['_id']}")
+            n += 1
+        except HTTPException:
+            pass
+    return n
 
 
 def _info_acs(username: str, segarkan: bool = False) -> dict:
