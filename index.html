@@ -1908,7 +1908,7 @@ async function segarkanOnu(diam){
   const el=$('dgAcs'), sibuk=diam&&el&&(el.contains(document.activeElement)&&document.activeElement.tagName!=='BUTTON'
    ||[...el.querySelectorAll('.plForm')].some(f=>f.style.display!=='none'&&[...f.querySelectorAll('input')].some(i=>i.value)));
   if(!sibuk) gambarAcs(a);
-  if(!diam) dgPesan(a.segarkan&&a.segarkan.status==='antre'?a.segarkan.pesan:'Data ONU diperbarui.',!(a.segarkan&&a.segarkan.status==='antre')); }
+  if(!diam){ const st=a.segarkan&&a.segarkan.status; dgPesan(st&&st!=='selesai'&&a.segarkan.pesan?a.segarkan.pesan:'Data ONU diperbarui.',!(st==='antre'||st==='diam')); } }
  catch(e){ dg.segarPerangkat=false; if(dg.user!==user) return; if(!diam) dgPesan('Gagal: '+e.message); gambarAcs(dg.data.acs); }
 }
 async function amankanOnu(btn){
