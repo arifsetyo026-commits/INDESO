@@ -2022,20 +2022,23 @@ async function resetPabrikOnu(sn,btn){
 function kartuOnuBaru(o,i){
  const L=o.langkah, sn=esc(o.sn), dbm=v=>v==null?'—':Number(v).toFixed(1);
  const status=!o.terbaca?'<span class="chip off">Tidak terbaca</span>':o.online?'<span class="chip ok">Online</span>':'<span class="chip bad">Offline</span>';
- const ceklis=OB_LANGKAH.map(([k,t])=>{ const v=L[k]; const ik=v===true?'<b style="color:#0b7a3b">✓</b>':v===false?'<b style="color:#b42318">✗</b>':'<b style="color:#8a5a00">?</b>';
+ const ceklis=OB_LANGKAH.map(([k,t])=>{ const v=L[k]; let ik=v===true?'<b style="color:#0b7a3b">✓</b>':v===false?'<b style="color:#b42318">✗</b>':'<b style="color:#8a5a00">?</b>';
+  if(k==='sinyal'&&v===true&&o.redaman==='WARNING'){ ik='<b style="color:#b45309">!</b>'; t='Sinyal fiber cukup (perlu dicek, aktivasi tetap bisa)'; }
   return `<div style="display:flex;gap:8px;align-items:center;font-size:var(--fs-xs);padding:2px 0">${ik}<span>${t}${k==='internet'&&o.pppoe_username?` <span class="plSub">· ${esc(o.pppoe_username)}</span>`:''}${k==='pelanggan'&&o.nama?` <span class="plSub">· ${esc(o.nama)}</span>`:''}${k==='acs'&&o.tr069?` <span class="plSub">· TR-069 dikirim ${esc(obWaktu(o.tr069))}</span>`:''}</span></div>`; }).join('');
  const aktif=ob.tab==='aktif', D=ob.data||{}, olt=o.online&&D.olt_telnet?'':' disabled';
- const pilihUntuk=(aktif&&!o.pppoe_username&&ob.akun)?`<div style="margin-top:8px"><label class="plSub" for="obUntuk${i}">Dipasang untuk pelanggan</label><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><select id="obUntuk${i}" class="btnS" style="flex:1;min-width:0" onchange="untukOnuBaru('${sn}',this.value)"><option value="">— pilih —</option>${ob.akun.map(a=>`<option value="${esc(a.username)}"${a.username===o.untuk?' selected':''}>${esc(a.nama||a.username)} (${esc(a.username)})${a.di_indeso?'':' · baru'}</option>`).join('')}</select><button class="btnS" onclick="closeModal('onuBaruModal');openPelanggan().then(()=>bukaPasangBaru())">+ Pasang baru</button></div></div>`
+ const pilihUntuk=(aktif&&!o.pppoe_username&&ob.akun)?`<div style="margin-top:8px"><label class="plSub" for="obUntuk${i}">Dipasang untuk pelanggan</label><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><select id="obUntuk${i}" class="btnS" style="flex:1;min-width:0" onchange="untukOnuBaru('${sn}',this.value,${i})"><option value="">— pilih —</option>${ob.akun.map(a=>`<option value="${esc(a.username)}"${a.username===o.untuk?' selected':''}>${esc(a.nama||a.username)} (${esc(a.username)})${a.di_indeso?'':' · baru'}</option>`).join('')}</select><button class="btnS" onclick="closeModal('onuBaruModal');openPelanggan().then(()=>bukaPasangBaru())">+ Pasang baru</button></div></div>`
   :(o.untuk&&!o.pppoe_username?`<div class="plSub" style="margin-top:6px">Dipasang untuk: <b>${esc(o.nama_untuk||o.untuk)}</b></div>`:'');
- const tombol=aktif?`<div class="blAksi" style="justify-content:flex-start;margin-top:10px">
-   ${!o.pppoe_username?`<button class="btnS go" onclick="bukaAktivasiOlt('${sn}',${i})"${olt}>⚙ Aktivasi dari OLT</button>`
-     :`<button class="btnS" onclick="bukaAktivasiOlt('${sn}',${i},true)"${olt}>♻ Reset &amp; isi ulang dari OLT</button>`}
-   <button class="btnS${o.pppoe_username?' go':''}" onclick="tr069OnuBaru('${sn}',true,this)"${olt}>Kirim TR-069 + restart ONU</button>
+ // Selama ONU belum diaktifkan, tombol TR-069/restart/WiFi hanya membingungkan teknisi baru: disimpan di "Tombol lain".
+ const lain=`<button class="btnS${o.pppoe_username?' go':''}" onclick="tr069OnuBaru('${sn}',true,this)"${olt}>Kirim TR-069 + restart ONU</button>
    <button class="btnS" onclick="tr069OnuBaru('${sn}',false,this)"${olt}>Kirim TR-069 saja</button>
    <button class="btnS" onclick="restartOnuBaru('${sn}',this)"${o.terbaca&&D.olt_telnet?'':' disabled'}>Restart ONU</button>
-   <button class="btnS" onclick="bukaWifiOnuBaru('${sn}',${i})"${D.acs_aktif?'':' disabled'}>Atur WiFi</button>
+   <button class="btnS" onclick="bukaWifiOnuBaru('${sn}',${i})"${D.acs_aktif?'':' disabled'}>Atur WiFi</button>`;
+ const tombol=aktif?`<div class="blAksi" style="justify-content:flex-start;margin-top:10px">
+   ${!o.pppoe_username?`<button class="btnS go" onclick="bukaAktivasiOlt('${sn}',${i})"${olt}>⚙ Aktivasi dari OLT</button>`
+     :`<button class="btnS" onclick="bukaAktivasiOlt('${sn}',${i},true)"${olt}>♻ Reset &amp; isi ulang dari OLT</button>${lain}`}
    <button class="btnS" onclick="tandaiOnuBaru('${sn}','selesai')">✓ Tandai selesai</button>
    <button class="btnS" onclick="tandaiOnuBaru('${sn}','abaikan')">Abaikan</button></div>
+   ${!o.pppoe_username?`<details style="margin-top:6px"><summary class="plSub" style="cursor:pointer">Tombol lain (hanya bila aktivasi bermasalah)</summary><div class="blAksi" style="justify-content:flex-start;margin-top:6px">${lain}</div></details>`:''}
    <div id="obOlt${i}"></div><div id="obWifi${i}"></div>`
   :`<div class="plSub" style="margin-top:6px">${o.status==='abaikan'?'Diabaikan':'Selesai'} ${esc(obWaktu(o.selesai))}${o.oleh?' oleh '+esc(o.oleh):''} · <a href="#" onclick="tandaiOnuBaru('${sn}','buka');return false">kembalikan ke daftar</a></div>`;
  return `<div class="kuPanel" style="margin-bottom:10px">
@@ -2043,7 +2046,7 @@ function kartuOnuBaru(o,i){
   <div class="plSub">PON ${esc(o.pon||'—')} · ONU ${esc(o.onu_id??'—')} · terdeteksi ${esc(obWaktu(o.pertama))}</div>
   <div class="plSub">OLT-RX ${dbm(o.olt_rx)} dBm · ONU-RX ${dbm(o.onu_rx)} dBm${o.redaman&&o.redaman!=='OK'&&o.redaman!=='UNKNOWN'?' · <b style="color:#b42318">'+esc(o.redaman==='CRITICAL'?'kritis':'perlu dicek')+'</b>':''}</div></div>${status}</div>
   <div style="margin-top:8px">${ceklis}</div>
-  ${aktif?`<div style="margin-top:8px;background:#f7faf8;border-radius:9px;padding:8px 10px;font-size:var(--fs-xs)"><b>Langkah berikutnya:</b> ${esc(o.saran)}</div>`:''}
+  ${aktif?`<div style="margin-top:8px;background:#f7faf8;border-radius:9px;padding:8px 10px;font-size:var(--fs-xs)"><b>Langkah berikutnya:</b> <span id="obSaran${i}">${esc(o.saran)}</span></div>`:''}
   ${o.bekas?`<div class="kuPanel" style="margin-top:8px;border-color:#f3b4ab;background:#fff6f5;font-size:var(--fs-xs)"><b style="color:#b42318">⚠ ONU bekas akun ${esc(o.bekas.username)}</b> (dipindah ke ONU ${esc(o.bekas.sn_baru)}, ${esc(obWaktu(o.bekas.tanggal))}). Reset pabrik lewat OLT sebelum dipakai pelanggan lain, supaya sisa pengaturan lama tidak ikut terbawa.${aktif?`<div style="margin-top:6px"><button class="btnS" onclick="resetPabrikOnu('${sn}',this)"${o.online&&D.olt_telnet?'':' disabled'}>Reset pabrik lewat OLT</button></div>`:''}</div>`:''}
   <div id="obGanti_${sn}">${o.ganti?panelGanti(o.ganti):''}</div>
   ${pilihUntuk}${tombol}</div>`;
@@ -2053,7 +2056,7 @@ function bukaAktivasiOlt(sn,i,reset){
  const o=ob.data.onu[i];
  el.innerHTML=`<div class="plForm" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
   ${reset?`<div class="kuPanel" style="margin:0 0 8px;border-color:#f3b4ab;background:#fff6f5;font-size:var(--fs-xs)"><b style="color:#b42318">Reset pabrik ONU pelanggan</b><br>Urutan: PPPoE, port LAN &amp; WiFi ke internet, dan TR-069 disimpan di OLT → bila PPPoE diterima &amp; tersimpan, ONU direset pabrik → ONU menyala dan menerima semuanya dari OLT → nama &amp; password WiFi dikirim lewat ACS begitu ONU lapor. Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, nama WiFi tambahan, sandi admin) hilang.<br><b>Isi nama &amp; password WiFi yang dipakai pelanggan sekarang</b> supaya HP di rumah tersambung sendiri.</div>`
-   :`<div class="plSub">Satu rute, tanpa web ONU: PPPoE, port LAN &amp; WiFi ke internet, dan TR-069 dikirim lewat OLT; nama &amp; password WiFi lewat ACS begitu ONU lapor. Bila akun masih terpasang di ONU lain, otomatis memakai rute <b>Ganti ONU</b>.</div>`}
+   :`<div style="font-size:var(--fs-xs);margin-bottom:4px"><b>Isi nama &amp; password WiFi pelanggan</b> (boleh dikosongkan), lalu tekan <b>Kirim ke ONU lewat OLT</b> di paling bawah. Tunggu ±2 menit, lalu tekan Muat ulang.</div><div class="plSub">Yang dikirim: akun internet, port LAN 3 &amp; WiFi ke internet, dan lapor ke ACS (lewat OLT); nama &amp; password WiFi lewat ACS. Tidak perlu membuka web ONU. Bila akun masih terpasang di ONU lain, otomatis memakai rute <b>Ganti ONU</b>.</div>`}
   <label>Akun PPPoE (secret MikroTik)</label>
   <div style="display:flex;gap:6px;flex-wrap:wrap"><input id="obUser${i}" list="obUserL${i}" style="flex:1 1 200px;min-width:0" autocapitalize="off" value="${esc(o.pppoe_username||o.untuk||'')}" placeholder="username PPPoE" onchange="periksaAkunOb('${esc(sn)}',${i},${reset?'true':'false'})"><button class="btnS" type="button" style="flex:1 1 auto" onclick="ambilSecretOb(${i},this)">🔄 Ambil secret baru dari MikroTik</button></div>
   <datalist id="obUserL${i}">${opsiAkunOb()}</datalist>
@@ -2147,9 +2150,19 @@ async function kirimGantiOnu(sn,i,btn,body,c,salah){
   pantauGanti(r.id,ob.data.onu[i].sn);
  }catch(e){ salah(e.message); btn.disabled=false; btn.textContent='Mulai Ganti ONU'; }
 }
-async function untukOnuBaru(sn,u){
- try{ await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/untuk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u||null})})); obPesan(u?'Dicatat: ONU '+sn+' untuk '+u+'.':'Catatan pelanggan dihapus.',true); }
- catch(e){ obPesan('Gagal: '+e.message); }
+async function untukOnuBaru(sn,u,i){
+ try{ await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/untuk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u||null})})); }
+ catch(e){ obPesan('Gagal: '+e.message); return; }
+ const o=ob.data&&ob.data.onu[i];
+ if(!o||!u){ obPesan(u?'Dicatat: ONU '+sn+' untuk '+u+'.':'Catatan pelanggan dihapus.',true); return; }
+ o.untuk=u;
+ // Langkah berikutnya langsung di depan mata: formulir aktivasi terbuka dengan akun terisi.
+ if(!(o.online&&ob.data.olt_telnet)){ obPesan('Dicatat: ONU '+sn+' untuk '+u+'. Aktivasi menunggu ONU online.',true); return; }
+ $('obSaran'+i).textContent='Pelanggan '+u+' dipilih. Isi nama & password WiFi di formulir di bawah, lalu tekan Kirim.';
+ if($('obOlt'+i).innerHTML){ $('obUser'+i).value=u; periksaAkunOb(sn,i,false); }
+ else bukaAktivasiOlt(sn,i);
+ obPesan('');
+ $('obOlt'+i).scrollIntoView({behavior:'smooth',block:'start'});
 }
 async function tr069OnuBaru(sn,restart,btn){
  if(!confirm('Kirim pengaturan TR-069 dari OLT ke ONU '+sn+(restart?'\nlalu restart ONU (internet di ONU ini putus ±2 menit)':'')+'?')) return;

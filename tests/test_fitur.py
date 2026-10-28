@@ -2525,7 +2525,7 @@ def test_onu_baru_deteksi_dan_aktivasi(siap, monkeypatch):
     d = k.get("/api/onu-baru").json()
     (x,) = d["onu"]
     assert x["sn"] == "ZTEGD08EDD99" and x["online"] and x["langkah"]["sinyal"] and not x["langkah"]["internet"]
-    assert x["langkah"]["acs"] is None and "PPPoE" in x["saran"]               # ACS belum diatur
+    assert x["langkah"]["acs"] is None and "Langkah 1: pilih pelanggan" in x["saran"]   # ACS belum diatur
     assert k.post("/api/onu-baru/ZTEGD08EDD99/untuk", json={"username": "dwi"}).status_code == 200
     assert k.post("/api/onu-baru/ZTEGD08EDD99/untuk", json={"username": "hantu"}).status_code == 404
     assert k.get("/api/onu-baru").json()["onu"][0]["untuk"] == "dwi"
@@ -3080,10 +3080,14 @@ def test_saran_tanpa_web_onu(siap):
     for model, sn in (("F609", "ZTEGC0000001"), ("F670L", "ZTEGC0000002"), ("HG8145V5", "HWTC00000001"), ("AN5506", "FHTT00000001")):
         assert "web ONU" not in main._saran_onu_tanpa_acs({"online": True, "model": model, "sn": sn})
         onu = O(pon="0/0/1", onu_id=1, snmp_index=1, serial_number=sn, model=model, olt_rx_dbm=-20.0, online=True, status="OK")
-        r = {"sn": sn, "wifi_ssid": "X", "wifi": None}
+        r = {"sn": sn, "wifi_ssid": "X", "wifi": None, "untuk": None}
         for langkah in ({"sinyal": True, "internet": False}, {"sinyal": True, "internet": True, "pelanggan": True, "acs": False},
                         {"sinyal": True, "internet": True, "pelanggan": True, "acs": True, "wifi": False}):
             assert "web ONU" not in main._saran_onu_baru(onu, langkah, r)
+    # bahasa teknisi: langkah bernomor; setelah pelanggan dipilih, langkah berikutnya menyebut namanya
+    belum = {"sinyal": True, "internet": False}
+    assert "Langkah 1: pilih pelanggan" in main._saran_onu_baru(onu, belum, r)
+    assert "Pelanggan ARGA sudah dipilih. Langkah 2" in main._saran_onu_baru(onu, belum, dict(r, untuk="ARGA"))
     w = {"ssid": "ZTE-abc", "klien": 20, "channel": 3, "band": "2,4 GHz", "standar": "g"}
     b = "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"
     for tipe, dasar in (("Basic", "WEP"), ("WPA", "")):
