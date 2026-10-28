@@ -12030,8 +12030,12 @@ def _saran_onu_baru(o: Optional[ONUStatus], langkah: dict, r: sqlite3.Row) -> st
     if not langkah["sinyal"]:
         return "Redaman buruk: periksa konektor / sambungan fiber sebelum aktivasi."
     if not langkah["internet"]:
-        return ("Aktivasi dari OLT (tombol '⚙ Aktivasi dari OLT' di bawah): PPPoE, LAN & WiFi ke WAN, dan TR-069 dari "
-                "OLT, WiFi lewat ACS. Lalu tunggu ±1–2 menit sampai PPPoE tersambung.")
+        # Bahasa teknisi lapangan: langkah bernomor, tanpa istilah OLT/ACS.
+        if r["untuk"]:
+            return (f"Pelanggan {r['untuk']} sudah dipilih. Langkah 2: tekan ⚙ Aktivasi dari OLT, isi nama & password "
+                    "WiFi pelanggan, lalu tekan Kirim. Langkah 3: tunggu ±2 menit, lalu tekan Muat ulang.")
+        return ("Langkah 1: pilih pelanggan di kolom 'Dipasang untuk pelanggan' di bawah (belum ada? tekan + Pasang baru). "
+                "Langkah 2: isi nama & password WiFi di formulir yang muncul, lalu tekan Kirim.")
     if not langkah["pelanggan"]:
         return "PPPoE sudah tersambung tapi belum ada di data pelanggan: Impor dari MikroTik / Pasang baru."
     if langkah["acs"] is False:
