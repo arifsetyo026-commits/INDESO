@@ -32,6 +32,9 @@ class FakeRes:
         self.mt, self.path = mt, path
 
     def get(self, **kw):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:          # /ip/hotspot... : tabel umum, saring per kolom
+            return [dict(r) for r in hs[self.path] if all(r.get(k) == v for k, v in kw.items())]
         if self.path == "/ppp/secret":
             rows = [dict(v, name=k) for k, v in self.mt.secret.items()]
         elif self.path == "/ppp/active":
@@ -61,16 +64,32 @@ class FakeRes:
         return rows
 
     def add(self, **kw):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:
+            if self.mt.hs_tolak and self.path == "/ip/hotspot/user" and len(hs[self.path]) >= self.mt.hs_tolak:
+                raise Exception("failure: tolak uji")
+            hs[self.path].append(dict(kw, id=f"*H{len(hs[self.path]) + 100}"))
+            return
         if self.path == "/ppp/secret":
             self.mt.secret[kw["name"]] = dict({k: v for k, v in kw.items() if k != "name"}, id=f"*{len(self.mt.secret) + 10}",
                                               disabled="no")
 
     def set(self, id, **kw):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:
+            for r in hs[self.path]:
+                if r["id"] == id:
+                    r.update(kw)
+            return
         for v in self.mt.secret.values():
             if v["id"] == id:
                 v.update(kw)
 
     def remove(self, id):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:
+            hs[self.path] = [r for r in hs[self.path] if r["id"] != id]
+            return
         for k in list(self.mt.active):
             self.mt.active[k] = [x for x in self.mt.active[k] if x["id"] != id]
 
@@ -101,6 +120,8 @@ class FakeMikroTik:
         }
         self.active = {"budi": [{"id": "*A1", "address": "10.0.0.2", "uptime": "1h", "caller-id": "AA:BB:CC:00:00:01"}]}
         self.profiles = ["default", "paket-10mbps", "paket-20mbps", "ISOLIR"]
+        self.hs = {"/ip/hotspot": [], "/ip/hotspot/user": [], "/ip/hotspot/user/profile": [], "/ip/hotspot/active": []}
+        self.hs_tolak = 0                                 # >0: user hotspot ke-N berikutnya ditolak (uji batal utuh)
         self.log = []
         self.resource = {"cpu-load": "10", "free-memory": "80000000", "total-memory": "100000000",
                          "uptime": "3d", "version": "7.14", "board-name": "RB4011"}
@@ -3674,3 +3695,123 @@ def test_onu_berhenti_lapor_tidak_diantrekan(siap, monkeypatch):
     r = o.post("/api/wifi-kesehatan/segarkan", json={"id": dev["_id"]})
     assert r.status_code == 409 and "tidak lapor" in r.json()["detail"]
     assert not acs.antrean and not acs.tugas
+
+
+# ------------------------------------------------------------
+# Hotspot (voucher)
+# ------------------------------------------------------------
+
+def test_hotspot_paket_dan_jual_voucher(siap):
+    """Paket diatur owner; admin menjual voucher: user hotspot dibuat di MikroTik (profil kecepatan & perangkat,
+    komentar INDESO), satu bukti kas BKM; kode voucher tidak dicatat di log aktivitas."""
+    main, o, k, m = siap
+    mt = main._mt
+    paket = {"nama": "1 Hari", "durasi_menit": 1440, "harga": 5000, "kecepatan_mbps": 5, "perangkat": 1}
+    assert k.post("/api/hotspot/paket", json=paket).status_code == 403              # harga diatur owner
+    assert m.get("/api/hotspot/paket").status_code == 403
+    assert o.post("/api/hotspot/paket", json=dict(paket, durasi_menit=10)).status_code == 400
+    pid = o.post("/api/hotspot/paket", json=paket).json()["id"]
+    assert o.post("/api/hotspot/paket", json=paket).status_code == 409             # nama kembar
+    prof = mt.hs["/ip/hotspot/user/profile"]
+    assert prof == [{"name": f"INDESO-HS-{pid}", "rate-limit": "5M/5M", "shared-users": "1", "id": prof[0]["id"]}]
+    p2 = o.post("/api/hotspot/paket", json={"nama": "3 Jam", "durasi_menit": 180, "harga": 2000, "kecepatan_mbps": 2.5,
+                                            "perangkat": 2}).json()["id"]
+    assert mt.hs["/ip/hotspot/user/profile"][1]["rate-limit"] == "2500k/2500k"
+    d = k.get("/api/hotspot/paket").json()
+    assert [x["durasi_teks"] for x in d["paket"]] == ["3 jam", "1 hari"] and d["ssid"] == "INTERNET DESA"
+    r = k.post("/api/hotspot/jual", json={"paket_id": pid, "jumlah": 3, "metode": "tunai"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    kode = [v["kode"] for v in j["voucher"]]
+    assert len(set(kode)) == 3 and all(len(x) == 8 and set(x) <= set(main._HURUF_VOUCHER) for x in kode)
+    assert j["total"] == 15000 and j["nomor"].startswith("BKM-")
+    users = mt.hs["/ip/hotspot/user"]
+    assert sorted(u["name"] for u in users) == sorted(kode)
+    assert all(u["password"] == u["name"] and u["profile"] == f"INDESO-HS-{pid}" and u["comment"].startswith("INDESO voucher")
+               for u in users)
+    conn = main._billing_conn()
+    t = conn.execute("SELECT t.*, k.nama AS kat FROM transaksi t JOIN kategori_kas k ON k.id=t.kategori_id "
+                     "WHERE t.hotspot_jual_id=?", (j["id"],)).fetchone()
+    conn.close()
+    assert t["kat"] == "Pendapatan voucher hotspot" and t["jumlah"] == 15000 and t["qty"] == 3
+    log = o.get("/api/aktivitas").text
+    assert "#H" in log and not any(x in log for x in kode)
+    # Kas penjualan voucher hanya lewat menu Hotspot
+    assert "menu Hotspot" in o.post(f"/api/keuangan/transaksi/{t['id']}/batal", json={"alasan": "uji"}).json()["detail"]
+    kat = next(x for x in o.get("/api/keuangan/kategori").json()["kategori"] if x["nama"] == "Pendapatan voucher hotspot")
+    assert "menu Hotspot" in o.post("/api/keuangan/transaksi", json={"tanggal": datetime.now().strftime("%Y-%m-%d"),
+        "jenis": "masuk", "kategori_id": kat["id"], "jumlah": 1000, "metode": "tunai"}).json()["detail"]
+    v = k.get("/api/hotspot/voucher?status=baru").json()["voucher"]
+    assert len(v) == 3 and v[0]["paket"] == "1 Hari" and v[0]["durasi_teks"] == "1 hari"
+    rk = k.get("/api/hotspot/ringkas").json()
+    assert rk["hari_ini"] == {"total": 15000, "voucher": 3} and rk["voucher"] == {"baru": 3}
+    assert rk["mikrotik"]["terbaca"] and rk["mikrotik"]["server"] == []        # hotspot belum disiapkan di MikroTik
+    # MikroTik menolak di tengah: user yang sudah dibuat dihapus lagi, tidak ada voucher/kas tercatat
+    mt.hs_tolak = len(users) + 1
+    r = k.post("/api/hotspot/jual", json={"paket_id": p2, "jumlah": 3})
+    assert r.status_code == 502 and len(mt.hs["/ip/hotspot/user"]) == 3
+    assert k.get("/api/hotspot/ringkas").json()["voucher"] == {"baru": 3}
+    mt.hs_tolak = 0
+    # paket nonaktif tidak bisa dijual; voucher gratis (harga 0) tanpa bukti kas
+    o.put(f"/api/hotspot/paket/{p2}", json={"nama": "3 Jam", "durasi_menit": 180, "harga": 0, "kecepatan_mbps": 2.5,
+                                            "perangkat": 2, "aktif": False})
+    assert k.post("/api/hotspot/jual", json={"paket_id": p2}).status_code == 404
+    o.put(f"/api/hotspot/paket/{p2}", json={"nama": "3 Jam", "durasi_menit": 180, "harga": 0, "kecepatan_mbps": 2.5,
+                                            "perangkat": 2, "aktif": True})
+    g = k.post("/api/hotspot/jual", json={"paket_id": p2}).json()
+    assert g["nomor"] is None and g["total"] == 0
+    assert mt.hs["/ip/hotspot/user/profile"][1]["shared-users"] == "2"
+
+
+def test_hotspot_masa_aktif_kalender_dan_batal(siap):
+    """Masa aktif dihitung sejak login pertama (dari sesi MikroTik), lalu user hotspot dihapus & sesinya diputus.
+    User hotspot di luar INDESO tidak disentuh. Penjualan dibatalkan hanya bila semua vouchernya belum dipakai."""
+    main, o, k, m = siap
+    mt = main._mt
+    pid = o.post("/api/hotspot/paket", json={"nama": "3 Jam", "durasi_menit": 180, "harga": 2000, "kecepatan_mbps": 5}).json()["id"]
+    a = k.post("/api/hotspot/jual", json={"paket_id": pid, "jumlah": 2}).json()
+    b = k.post("/api/hotspot/jual", json={"paket_id": pid, "jumlah": 1}).json()
+    k1, k2 = a["voucher"][0]["kode"], a["voucher"][1]["kode"]
+    mt.hs["/ip/hotspot/user"].append({"id": "*LAIN", "name": "tamu", "password": "x", "comment": "buatan teknisi"})
+    main.proses_hotspot()                                               # belum ada yang login
+    assert k.get("/api/hotspot/ringkas").json()["voucher"] == {"baru": 3}
+    mt.hs["/ip/hotspot/active"].append({"id": "*S1", "user": k1, "address": "10.20.0.5", "mac-address": "AA:00:00:00:00:01",
+                                        "uptime": "10m", "bytes-in": "1000000", "bytes-out": "25000000"})
+    main.proses_hotspot()
+    v = {x["kode"]: x for x in k.get("/api/hotspot/voucher").json()["voucher"]}
+    login = datetime.fromisoformat(v[k1]["pertama_login"])
+    assert v[k1]["status"] == "aktif" and abs((datetime.now() - login).total_seconds() - 600) < 30
+    assert datetime.fromisoformat(v[k1]["berlaku_sampai"]) - login == timedelta(hours=3)
+    assert v[k2]["status"] == "baru"
+    akt = k.get("/api/hotspot/aktif").json()["aktif"]
+    assert akt[0]["user"] == k1 and akt[0]["paket"] == "3 Jam" and akt[0]["unduh_mb"] == 25.0
+    # sudah pernah dipakai lalu keluar sebelum dicek: dihitung dari total waktu pakai di MikroTik
+    next(u for u in mt.hs["/ip/hotspot/user"] if u["name"] == k2)["uptime"] = "1h"
+    main.proses_hotspot()
+    v = {x["kode"]: x for x in k.get("/api/hotspot/voucher").json()["voucher"]}
+    assert v[k2]["status"] == "aktif"
+    # penjualan a sudah terpakai: tidak bisa dibatalkan; penjualan b masih utuh: bisa, kas ikut batal
+    assert k.post(f"/api/hotspot/jual/{a['id']}/batal", json={"alasan": "salah paket"}).status_code == 409
+    assert k.post(f"/api/hotspot/jual/{b['id']}/batal", json={"alasan": "x"}).status_code == 400
+    assert k.post(f"/api/hotspot/jual/{b['id']}/batal", json={"alasan": "pembeli batal"}).json()["ok"]
+    assert b["voucher"][0]["kode"] not in [u["name"] for u in mt.hs["/ip/hotspot/user"]]
+    conn = main._billing_conn()
+    assert conn.execute("SELECT status FROM transaksi WHERE hotspot_jual_id=?", (b["id"],)).fetchone()[0] == "batal"
+    # masa aktif habis: sesi diputus, user dihapus, voucher habis
+    conn.execute("UPDATE hotspot_voucher SET berlaku_sampai=? WHERE kode=?",
+                 ((datetime.now() - timedelta(minutes=1)).isoformat(timespec="seconds"), k1))
+    conn.commit()
+    conn.close()
+    main.proses_hotspot()
+    v = {x["kode"]: x for x in k.get("/api/hotspot/voucher").json()["voucher"]}
+    assert v[k1]["status"] == "habis" and v[k2]["status"] == "aktif"
+    assert mt.hs["/ip/hotspot/active"] == [] and k1 not in [u["name"] for u in mt.hs["/ip/hotspot/user"]]
+    assert any(u["name"] == "tamu" for u in mt.hs["/ip/hotspot/user"])         # bukan milik INDESO: dibiarkan
+    assert k.get("/api/hotspot/ringkas").json()["voucher"] == {"aktif": 1, "habis": 1, "batal": 1}
+    # tanpa voucher yang menunggu, MikroTik tidak dihubungi
+    conn = main._billing_conn()
+    conn.execute("UPDATE hotspot_voucher SET status='habis'")
+    conn.commit()
+    conn.close()
+    mt.mati = True
+    main.proses_hotspot()

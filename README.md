@@ -30,6 +30,9 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   dan kesimpulan otomatis penyebab yang paling mungkin. Dengan server **GenieACS (TR-069)**
   di VPS: lihat perangkat di rumah pelanggan, ganti nama/password WiFi, dan reboot ONU dari
   pusat (tercatat di log). Setup VPS: `deploy/genieacs/install.sh`, panduan `docs/genieacs.md`.
+- **Hotspot (voucher)** — paket hotspot dari WiFi kedua di ONU pelanggan: paket (owner), jual & cetak voucher
+  (admin), kas masuk otomatis, masa aktif kalender sejak login pertama lalu dihapus otomatis dari MikroTik.
+  Tahap jaringan (VLAN, WiFi kedua di ONU) menyusul; panduan `docs/hotspot.md`.
 - **Jalan di VPS** — INDESO bisa dipindah dari HP ke VPS (HTTPS, bisa dibuka dari mana saja):
   `deploy/indeso/install.sh` + `deploy/indeso/impor-data.sh`, panduan `docs/vps-indeso.md`.
 - **Data pelanggan & paket** — kelola paket, impor pelanggan dari PPP secret MikroTik,
