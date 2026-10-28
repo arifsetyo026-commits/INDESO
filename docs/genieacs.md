@@ -89,8 +89,9 @@ sehingga bentrok dengan `indeso-default` (900 detik, kredensial bersama) dan sal
 
 ## 5. Arahkan TR-069 di setiap ONU
 
-Ini dilakukan **sekali per ONU**. Pakai kesempatan saat pasang baru atau kunjungan teknisi,
-atau buka web ONU dari kantor. Nama menu bisa sedikit berbeda antar firmware.
+**Mulai 27 Okt 2026 tidak lagi lewat web ONU.** ONU baru dan ONU yang dirapikan diaktifkan satu rute dari INDESO:
+WAN PPPoE, binding, dan TR-069 lewat OLT, sisanya lewat ACS (lihat *Menu "ONU Baru"* di bawah). Tabel di bawah hanya
+catatan isian lama, untuk mengenali ONU yang dulu diatur manual. Nama menu bisa sedikit berbeda antar firmware.
 
 **ZTE (F609, F660, F670L, dll.)**: *Administration → TR-069* (kadang *Remote Management → TR-069*)
 
@@ -132,7 +133,7 @@ sudo /opt/indeso/.venv/bin/python /opt/indeso/deploy/indeso/push-tr069.py --kiri
 
 **ZTE F609 (dan ONU lain yang punya WAN bawaan "TR-069" yang tidak bisa dihapus)** menerima pengaturan dari OLT,
 tapi baru melapor ke ACS setelah restart. Sebelum restart, ONU melapor lewat WAN "TR-069" yang kosong.
-Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `ont reboot <port> <onu>`, lalu `save`, dengan jeda 5 detik antartahap (`OLT_JEDA_DETIK`). Tanpa jeda, `unbind` tiba sebelum ONU menerima ikatannya dan tidak ada yang berubah. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. ONU yang WAN-nya disimpan OLT (`show ont ipconfig` berisi PPPoE, mis. hasil aktivasi ONU Baru) dilewati dari `unbind`, karena ONU seperti Huawei hanya melapor lewat WAN itu. Internet pelanggan putus ±1–2 menit:
+Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont tr069 <port> <onu> ip-index unbind`, `ont reboot <port> <onu>`, lalu `save`, dengan jeda 5 detik antartahap (`OLT_JEDA_DETIK`). Tanpa jeda, `unbind` tiba sebelum ONU menerima ikatannya dan tidak ada yang berubah. Urutan ini terbukti di ONU Gunawan (1/23) dan Endah (1/9). Unbind saja atau restart saja tidak cukup. ONU yang WAN-nya disimpan OLT (`show ont info` berisi `ONT config type : PPPOE`, mis. hasil aktivasi ONU Baru) dilewati dari `unbind`, karena ONU seperti Huawei hanya melapor lewat WAN itu. Internet pelanggan putus ±1–2 menit:
 - **Diagnosa**: tombol *Kirim TR-069 dari OLT + restart ONU*.
 - **Pengaturan → Sistem → TR-069 ONU lewat OLT**: centang *Restart ONU setelah dikirim*.
 - **Terminal**, untuk ONU yang sudah pernah dikirimi tapi belum muncul di ACS:
@@ -143,7 +144,7 @@ Pakai opsi restart, yang menjalankan `ont tr069 <port> <onu> ip-index 0`, `ont t
 INDESO tidak pernah memakai `ont reboot <port> all`.
 Pilihan: `--onu 2/5` (hanya ONU tertentu), `--semua-merek`, `--ulang`.
 
-Atau dari dashboard: **Pengaturan → Sistem → TR-069 ONU lewat OLT** (pilih banyak ONU sekaligus), atau tombol **Kirim pengaturan TR-069 dari OLT** di Diagnosa pelanggan yang ONU-nya belum terdaftar. Setelah itu INDESO menjalankan `save` supaya tetap ada saat OLT restart. ONU ZTE tetap perlu WAN PPPoE berjenis `INTERNET_TR069`.
+Atau dari dashboard: **Pengaturan → Sistem → TR-069 ONU lewat OLT** (pilih banyak ONU sekaligus), atau tombol **Kirim pengaturan TR-069 dari OLT** di Diagnosa pelanggan yang ONU-nya belum terdaftar. Setelah itu INDESO menjalankan `save` supaya tetap ada saat OLT restart. Bila ONU tetap tidak lapor, pakai **ONU Baru → ♻ Reset & isi ulang dari OLT** (WAN dan TR-069 dari OLT, TR-069 diikat ke WAN PPPoE).
 
 ### Menu "ONU Baru" (aktivasi ONU yang baru dicolok)
 
@@ -160,17 +161,32 @@ lapor ke ACS → WiFi diatur. Tombol yang tersedia:
 - **Dipasang untuk pelanggan**: catatan sebelum PPPoE ONU tersambung. **Tandai selesai** / **Abaikan** memindahkan
   ONU ke Riwayat 30 hari.
 
-**Isi PPPoE & WiFi dari OLT** (tanpa web ONU atau kunjungan) mengirim dalam satu sesi telnet:
+**⚙ Aktivasi dari OLT: satu rute, tanpa web ONU.** Yang hanya bisa lewat OLT dikirim lewat OLT, sisanya lewat ACS:
+
+| Lewat OLT (telnet, satu ONU, lalu `save`) | Lewat ACS (begitu ONU lapor) |
+|---|---|
+| WAN PPPoE, route, NAT, binding LAN & SSID, jalur internet, TR-069 | Nama & password WiFi (spasi boleh), dan semua perintah lain |
+
 ```
 ont ipconfig P O ip-index 0 pppoe username U password P vlan 1 priority 0
 ont ipconfig P O ip-index 0 connection-type route
 ont ipconfig P O ip-index 0 nat enable
-ont ipconfig P O ip-index 0 binding eth 1-4 wlan 1,5   (port LAN + SSID utama 2,4 GHz & 5 GHz; ONU satu band: wlan 1)
+ont ipconfig P O ip-index 0 binding eth 3 wlan 1,5     (ONU dua band: LAN 3 + SSID 1 & SSID 5 GHz)
+ont ipconfig P O ip-index 0 binding eth 3 wlan 1       (bila ditolak = ONU satu band: LAN 3 + SSID 1)
 ont internet-config P O ip-index 0
-ont wifi P O 2.4g 1 enable username NAMA password SANDI authentication wpa2-psk encryption aes
-ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk encryption aes
-(+ pengaturan TR-069, lalu save)
+(+ ont tr069 … termasuk ip-index 0, lalu save)
 ```
+- Port LAN yang diikat diatur di **Pengaturan → Port LAN ONU yang diikat ke internet** (`OLT_BINDING_LAN`, bawaan `3`;
+  contoh lain `1-4`, `1,3`). Hasil aktivasi menyebut ONU-nya dua band atau satu band.
+- `ont wifi` tidak dipakai lagi: WiFi selalu lewat ACS (Huawei mengabaikan WiFi dari OLT, dan CLI OLT tidak bisa membawa
+  spasi). WiFi disimpan **di memori** (tidak ditulis ke disk) dan dikirim satu kali begitu ONU lapor setelah aktivasi
+  (±1–15 menit; batas 60 menit). Bila gagal atau INDESO restart sebelum terkirim, tercatat di Aktivitas: atur lewat
+  **Atur WiFi**. Karena itu WiFi mewajibkan centang TR-069.
+- **Pilihan akun dibaca langsung dari MikroTik** setiap kali ONU Baru dimuat, jadi secret yang baru dibuat langsung muncul
+  (ditandai *baru di MikroTik*). Akun yang belum ada di data pelanggan **diimpor otomatis** saat dipakai aktivasi atau
+  *Dipasang untuk*. Tombol **🔄 Ambil secret baru dari MikroTik** di formulir mengimpor semua secret baru sekaligus.
+- Sebelum mengirim apa pun, INDESO memeriksa akunnya (hanya membaca): bebas → aktivasi biasa; masih terpasang di ONU
+  lain → **rute Ganti ONU** (di bawah); dipakai perangkat yang tidak terbaca sebagai ONU (mis. router) → ditolak.
 
 **Hasil uji di ONU uji ZTE F670L V9 (PON 0/0/2, ONU 4):**
 - PPPoE login dari OLT;
@@ -180,15 +196,14 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
 **Catatan:**
 - Perintah WAN khusus C-Data (`ont wan …`) **diabaikan** ONU ZTE, jadi tidak dipakai.
 - Password PPPoE diambil dari secret MikroTik. Password tidak pernah dikirim ke browser dan tidak dicatat di log.
-- Akun yang sedang dipakai ONU lain ditolak, karena profil memakai `only-one`.
-- Nama dan password WiFi lewat OLT tidak boleh berisi spasi.
+- Akun yang masih terpasang di ONU lain tidak diaktifkan lewat jalur biasa (profil memakai `only-one`): pakai rute Ganti ONU.
 - VLAN bisa diubah lewat `OLT_PPPOE_VLAN` di `.env` (bawaan 1, untuk jaringan tanpa tag).
 - **Huawei HG8145V5** (uji 23 Okt 2026, PON 0/0/2, ONU 5):
   - PPPoE dari OLT berhasil, dan internet jalan;
   - **TR-069 wajib diikat ke WAN PPPoE dari OLT** (`ont tr069 P O ip-index 0`). Dengan `TR069 IP index : unbind`
     (lihat `show ont tr069 P O`), Huawei tidak mengirim laporan sama sekali: penghitung MikroTik dan tcpdump di VPS
     sama-sama nol, walau internetnya jalan. ZTE yang WAN-nya dibuat di web ONU justru butuh `unbind`. Karena itu
-    INDESO kini memeriksa `show ont ipconfig P O`: bila OLT menyimpan WAN untuk ONU itu, ikatan `ip-index 0`
+    INDESO kini memeriksa `show ont info P O` (bagian `ONT config type`): bila OLT menyimpan WAN untuk ONU itu, ikatan `ip-index 0`
     dibiarkan. Aktivasi di ONU Baru juga langsung mengikat TR-069 ke WAN PPPoE yang dibuatnya;
   - password WiFi lewat ACS: Huawei menolak `KeyPassphrase` (`9007 Invalid parameter value`), jadi INDESO mengisi
     `PreSharedKey.1.PreSharedKey` untuk ONU Huawei. SSID `BackhaulSSID…` (jalur mesh) disembunyikan dari daftar WiFi;
@@ -203,14 +218,56 @@ ont wifi P O 5g 1 enable username NAMA-5G password SANDI authentication wpa2-psk
     restart GenieACS):
     `sudo mongosh --quiet genieacs --eval 'db.config.updateOne({_id: "cwmp.sessionTimeout"}, {$set: {value: "120"}}, {upsert: true})'`
     lalu picu sesi baru (tombol **Restart ONU**, atau `POST /devices/<id>/tasks?connection_request` lewat NBI);
-  - **WiFi dari OLT diabaikan** (SSID tidak muncul). Atur WiFi lewat **Atur WiFi** (jalur ACS), yang juga menyalakan WiFi
-    bila mati;
+  - **WiFi dari OLT diabaikan** (SSID tidak muncul). Ini salah satu alasan WiFi kini selalu lewat ACS, yang juga
+    menyalakan WiFi bila mati;
   - Huawei menolak ping dari arah WAN secara bawaan, jadi ping dari MikroTik ke IP PPPoE-nya selalu "loss". Itu bukan
     gangguan. Pakai **Ping dari ONU ke Google** atau **Tes kecepatan**.
 - Ceklis **WiFi diatur** di ONU Baru dicek dari laporan ONU ke ACS: tercentang hanya bila SSID yang dikirim benar-benar
   menyala di ONU.
 - Model lain (mis. F609, FiberHome) belum diuji. Bila PPPoE belum tersambung 2 menit setelah dikirim, tekan
-  **Restart ONU** sekali. Bila tetap belum, isi lewat web ONU.
+  **Restart ONU** sekali. Bila tetap belum, catat model & hasil langkahnya (Aktivitas) untuk diperiksa; web ONU tidak
+  dipakai lagi.
+
+### Ganti ONU: akun lama dipasang di ONU baru
+
+Dipakai otomatis saat akun yang dipilih di **⚙ Aktivasi dari OLT** masih terpasang di ONU lain (ONU yang sedang online
+dengan akun itu, atau yang terakhir terlihat memakainya dan masih terdaftar di OLT). Satu konfirmasi (ketik ulang
+username), lalu INDESO mengerjakan tahapnya sendiri; progresnya tampil di kartu ONU dan setiap tahap tercatat di
+Aktivitas. Tiap tahap **berhasil atau gagal lalu berhenti** (tanpa antre):
+
+0. **Periksa** (hanya membaca): ONU lama, alamatnya, SN-nya, dan WAN PPPoE yang tersimpan di OLT beserta akunnya
+   (`show ont info`, bagian `ONT config type` / `PPPOE username`). Akun PPPoE di ONU lama harus sama dengan akun yang
+   dipindah. `show ont ipconfig` tidak dipakai: untuk ONU offline ia menjawab "does not configure IP information" walau
+   OLT menyimpan PPPoE-nya.
+1. **Lepas PPPoE dari ONU lama** di OLT, hanya dari SN itu (ONU tetap terdaftar, secret MikroTik tidak disentuh):
+   ```
+   ont tr069 P O ip-index unbind
+   no ont internet-config P O
+   no ont ipconfig P O ip-index 0
+   ```
+   `no ont ipconfig` saja ditolak OLT ("The IP interface has been used") selama index 0 masih dipakai TR-069 dan jalur
+   internet, jadi keduanya dilepas dulu. Teruji di ONU uji 2/6 (27 Okt 2026). Lalu dicek ulang: `show ont info` harus
+   tanpa PPPoE dan ONU masih terdaftar; baru `save`. ONU lama yang PPPoE-nya bukan dari OLT melewati langkah ini
+   (dibersihkan oleh reset).
+2. **Reset pabrik ONU lama** (`ont restore-factory P O`) lalu **tunggu sampai OLT melihatnya offline** (`show ont info`,
+   batas `OLT_TUNGGU_OFFLINE_DETIK`, bawaan 180 detik). ONU lama yang sedang offline dilewati.
+3. **Aktivasi ONU baru** (rute di atas). Sisa sesi PPPoE ONU lama di MikroTik diputus dulu.
+4. **Begitu akun online lewat ONU baru** (caller-id = MAC ONU baru), ONU lama **dihapus dari OLT** (`ont delete P O`,
+   SN dicek ulang, lalu `save`), baik ONU lama itu sedang online maupun tidak. Catatannya di ONU Baru dan dokumen
+   ACS-nya ikut dihapus. Bila akun belum online lewat ONU baru dalam 60 menit, berhenti: ONU lama **tidak** dihapus.
+
+Gagal di tengah → tombol **Lanjutkan dari tahap ini**: tahap yang sudah beres tidak diulang. Password tidak pernah disimpan,
+jadi bila INDESO restart di tengah tahap 1–3, Ganti ONU ditandai gagal dan dilanjutkan manual dengan tombol itu.
+
+**Pengaman:** semua perintah OLT hanya untuk satu ONU (tidak pernah `all`), dengan SN dicek ulang sebelum perintah ke
+ONU lama. Keluaran `show ont info` / `show ont tr069` memuat password PPPoE dan ACS apa adanya; INDESO tidak pernah
+meneruskan keluaran mentah itu, dan pesan galat telnet selalu disamarkan (`password : ***`).
+
+**ONU lama yang menyala lagi** didaftarkan ulang oleh OLT (authmode auto) dan muncul di ONU Baru bertanda
+**⚠ ONU bekas akun X**, dengan tombol **Reset pabrik lewat OLT** (ketik ulang SN). Tombol itu menolak ONU yang sedang
+dipakai pelanggan.
+
+ONU yang sudah terlanjur diatur dengan cara lama dibiarkan; dirapikan pelan-pelan lewat **Reset & isi ulang dari OLT**.
 
 ### ONU bekas & pelanggan ganti ONU
 
@@ -230,21 +287,20 @@ Bila ONU yang dihapus menyala lagi, OLT mendaftarkannya ulang (authmode auto) da
 
 ### ONU pelanggan lama yang belum lapor ACS: reset & isi ulang dari OLT
 
-Untuk ONU yang PPPoE-nya diisi di web ONU dengan WAN bertipe INTERNET saja (mis. F670L), sehingga urutan
+Untuk ONU lama yang PPPoE-nya dulu diisi di web ONU dengan WAN bertipe INTERNET saja (mis. F670L), sehingga urutan
 `ip-index 0` → `unbind` → restart tidak membuatnya melapor:
 
 1. Buka **ONU Baru → ♻ Isi ulang ONU pelanggan lama**, ketik username PPPoE atau SN, lalu tekan **Masukkan ke daftar**.
 2. Pada kartunya, tekan **♻ Reset & isi ulang dari OLT**. Isi nama dan password WiFi **yang dipakai pelanggan
-   sekarang** (tanpa spasi), supaya HP di rumah tersambung sendiri, lalu ketik ulang username sebagai konfirmasi.
-3. INDESO mengirim PPPoE, binding, WiFi, dan TR-069 (`ip-index 0`) lewat OLT, lalu `save`. **Hanya bila PPPoE
+   sekarang** (spasi boleh), supaya HP di rumah tersambung sendiri, lalu ketik ulang username sebagai konfirmasi.
+3. INDESO mengirim PPPoE, binding, dan TR-069 (`ip-index 0`) lewat OLT, lalu `save`. **Hanya bila PPPoE
    diterima dan tersimpan**, INDESO menjalankan `ont restore-factory P O` (tidak pernah `all`). ONU menyala dalam
-   kondisi pabrik dan menerima semuanya dari OLT. WAN lama dari web ikut terhapus, jadi tidak ada akun ganda.
+   kondisi pabrik dan menerima semuanya dari OLT; WiFi dikirim lewat ACS begitu ONU lapor. WAN lama dari web ikut
+   terhapus, jadi tidak ada akun ganda.
 4. Tunggu ±3 menit lalu **Muat ulang**: PPPoE, ACS, dan WiFi harus tercentang.
 
-Nama atau password WiFi yang berisi spasi atau tanda di luar `A-Z a-z 0-9 . _ @ + -` tidak bisa dibawa CLI OLT (OLT memisah
-kata di spasi). INDESO lalu tidak mengirim WiFi lewat OLT, tetapi menyimpannya **di memori** (tidak ditulis ke disk) dan
-mengirimnya lewat ACS begitu ONU lapor setelah perintah (±1–15 menit; batas 60 menit). Huawei selalu lewat jalur ini
-karena mengabaikan WiFi dari OLT. Bila INDESO restart sebelum terkirim, atur lewat tombol **Atur WiFi**.
+WiFi dikirim lewat ACS seperti pada aktivasi: satu kali, begitu ONU lapor setelah reset. Bila INDESO restart sebelum
+terkirim, atur lewat tombol **Atur WiFi**.
 
 Internet pelanggan putus ±3 menit. Pengaturan lain di ONU (port forwarding, SSID tambahan, sandi admin) hilang.
 
@@ -395,7 +451,7 @@ dan tidak dicatat di INDESO. Setelah ganti password, ada tombol untuk mengirimka
 | Ping/perintah ke satu ONU selalu ditolak (mis. `cwmp.9003 Invalid arguments`), padahal ONU lain normal | Perintah lama yang pernah gagal masih tertahan dan **digabung** dengan perintah baru, jadi ikut ditolak (terjadi pada ZTE F609). INDESO kini membersihkan perintah ping lama otomatis | Lihat `retries` di daftar fault di bawah; hapus tugas & fault-nya (tombol Batalkan di dashboard, atau `DELETE /tasks/<id>` dan `DELETE /faults/<id>` lewat NBI) |
 | Perintah ke ONU tertentu selalu gagal | Ada *fault* tertahan | `curl -s http://127.0.0.1:7557/faults/ \| python3 -m json.tool` di VPS. Fault tugas bisa dihapus dari dashboard (tombol Batalkan) |
 | Dashboard: "Server ACS tidak terjangkau" | HP Termux tidak bisa mencapai 10.99.0.1 | Dari Termux: `curl -u indeso:PASSWORD http://10.99.0.1:7557/devices/?projection=_id`. Pastikan `LAN_SUBNET` di skrip sesuai |
-| "Model ONU ini tidak membuka pengaturan password" | Firmware ONU tidak menyediakan parameter password lewat TR-069 | Tekan *Ambil data terbaru dari ONU* sekali; kalau tetap, ganti lewat web ONU |
+| "Model ONU ini tidak membuka pengaturan password" | Firmware ONU tidak menyediakan parameter password lewat TR-069 | Tekan *Ambil data terbaru dari ONU* sekali; kalau tetap, model ini belum bisa diatur dari INDESO (catat modelnya) |
 | "Server ACS menolak login" | Isi `GENIEACS_USER/PASS` salah | Bandingkan dengan `/root/genieacs-nbi-password.txt` di VPS |
 
 ## Keamanan & perawatan
