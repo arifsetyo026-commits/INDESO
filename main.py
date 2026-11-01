@@ -39,7 +39,6 @@ import sys
 import re
 import sqlite3
 import subprocess
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -1324,14 +1323,6 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat deteksi ONU baru: {e}")
         try:
-            await asyncio.to_thread(terapkan_wifi_tertunda)
-        except Exception as e:
-            logger.error(f"Error saat mengirim WiFi tertunda: {e}")
-        try:
-            await asyncio.to_thread(proses_ganti_onu)
-        except Exception as e:
-            logger.error(f"Error saat memantau Ganti ONU: {e}")
-        try:
             await asyncio.to_thread(proses_tagihan_harian)
         except Exception as e:
             logger.error(f"Error saat proses tagihan harian: {e}")
@@ -1546,17 +1537,6 @@ def init_history_db() -> None:
         # pengguna: akun PPPoE terakhir yang terlihat lewat ONU ini, untuk mengenali pelanggan yang ganti ONU.
         if "pengguna" not in kolom_ob:
             conn.execute("ALTER TABLE onu_baru ADD COLUMN pengguna TEXT")
-        # Rute Ganti ONU (akun PPPoE pindah dari ONU lama ke ONU baru). Kolom tanggal per tahap = tahap itu sudah selesai,
-        # supaya Lanjutkan setelah gagal tidak mengulang tahap yang sudah beres. Password tidak pernah disimpan.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS ganti_onu (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, dibuat TEXT NOT NULL, oleh TEXT, username TEXT NOT NULL,
-                sn_baru TEXT NOT NULL, pon_baru TEXT, onu_id_baru INTEGER,
-                sn_lama TEXT NOT NULL, pon_lama TEXT, onu_id_lama INTEGER, mac_lama TEXT,
-                tahap TEXT NOT NULL, status TEXT NOT NULL, pesan TEXT, log TEXT NOT NULL DEFAULT '[]',
-                pppoe_dihapus TEXT, direset TEXT, diaktifkan TEXT, diperbarui TEXT, selesai TEXT
-            )
-        """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -3010,10 +2990,6 @@ _PENGATURAN = {
     "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
                      "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
                      "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
-    "OLT_BINDING_LAN": {"label": "Port LAN ONU yang diikat ke internet saat aktivasi dari OLT", "tipe": "teks",
-                        "pola": r"^\s*[1-8](-[1-8])?(\s*,\s*[1-8](-[1-8])?)*\s*$", "owner": True, "contoh": "3",
-                        "bantuan": "Dipakai di perintah OLT `binding eth <port> wlan 1,5` (ONU dua band: SSID 1 + SSID 5 "
-                                   "GHz) atau `wlan 1` (ONU satu band). Contoh: 3, 1-4, 1,3."},
     "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID tujuan laporan keuangan: grup internal owner dan/atau chat pribadi (pisahkan koma)",
                                "tipe": "teks", "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
                                "bantuan": "Grup: tambahkan bot ke grup internal owner, lalu kirim /id di grup itu "
@@ -10928,9 +10904,6 @@ CONFIG.update({
     "OLT_JEDA_DETIK": float(_env("OLT_JEDA_DETIK", "5")),          # jeda antartahap ip-index/restart (OMCI butuh waktu)
     # VLAN PPPoE yang dikirim OLT ke ONU (ont ipconfig ... vlan N). Jaringan tanpa tag: 1 (teruji di ZTE F670L).
     "OLT_PPPOE_VLAN": int(_env("OLT_PPPOE_VLAN", "1")),
-    # Port LAN yang diikat ke WAN PPPoE saat aktivasi: `binding eth <LAN> wlan 1,5` (dua band) / `wlan 1` (satu band).
-    "OLT_BINDING_LAN": _env("OLT_BINDING_LAN", "3"),
-    "OLT_TUNGGU_OFFLINE_DETIK": int(_env("OLT_TUNGGU_OFFLINE_DETIK", "180")),   # batas tunggu ONU lama mati setelah reset
     "ACS_ONU_URL": _env("ACS_ONU_URL", "http://10.99.0.1:7547"),
     "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
     "ACS_ONU_PASS": _env("ACS_ONU_PASS", ""),
@@ -11137,11 +11110,9 @@ def _olt_masuk(t: "_TelnetOLT") -> None:
     t.kirim("config")
 
 
-def olt_reboot_onu(pon: str, onu_id: int, pabrik: bool = False) -> None:
+def olt_reboot_onu(pon: str, onu_id: int) -> None:
     """Restart satu ONU lewat OLT (`ont reboot P O`), tidak bergantung pada ACS. Tidak ada konfigurasi
-    yang berubah, jadi tidak perlu save. Tidak pernah 'all'.
-    pabrik=True: `ont restore-factory P O` (reset pabrik: pengaturan di dalam ONU hilang; yang disimpan OLT,
-    seperti `ont ipconfig`/`ont wifi`/`ont tr069`, dikirim ulang ke ONU saat menyala)."""
+    yang berubah, jadi tidak perlu save. Tidak pernah 'all'."""
     if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
         raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
     m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
@@ -11155,8 +11126,7 @@ def olt_reboot_onu(pon: str, onu_id: int, pabrik: bool = False) -> None:
         _olt_masuk(t)
         galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
         if not galat:
-            perintah = "restore-factory" if pabrik else "reboot"
-            out = t.kirim(f"ont {perintah} {int(m.group(2))} {int(onu_id)}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
+            out = t.kirim(f"ont reboot {int(m.group(2))} {int(onu_id)}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
             if re.search(_POLA_KONFIRMASI, out):
                 out = t.kirim("y")
             galat = _galat_cli(out)
@@ -11167,7 +11137,7 @@ def olt_reboot_onu(pon: str, onu_id: int, pabrik: bool = False) -> None:
     finally:
         t.tutup()
     if galat:
-        raise HTTPException(status_code=502, detail=f"OLT menolak {'reset pabrik' if pabrik else 'restart'} ONU: {galat}")
+        raise HTTPException(status_code=502, detail=f"OLT menolak restart ONU: {galat}")
 
 
 def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
@@ -11225,105 +11195,6 @@ def olt_kirim_tr069(daftar: list, reboot: bool = False) -> dict:
     finally:
         t.tutup()
     return {"hasil": hasil, "tersimpan": tersimpan}
-
-
-_POLA_SANDI_OLT = re.compile(r"^[A-Za-z0-9._@+!#$%&*=?~^-]{4,63}$")
-
-
-def _lan_binding() -> str:
-    lan = re.sub(r"\s+", "", str(CONFIG.get("OLT_BINDING_LAN") or "3"))
-    if not re.fullmatch(r"[1-8](-[1-8])?(,[1-8](-[1-8])?)*", lan):
-        raise HTTPException(status_code=500, detail="OLT_BINDING_LAN tidak valid (contoh: 3, 1-4, 1,3). Perbaiki di Pengaturan.")
-    return lan
-
-
-# Lepas PPPoE dari satu ONU di OLT (rute Ganti ONU), tanpa menghapus ONU-nya; secret MikroTik tidak disentuh.
-# Teruji di FD1602S-B1 (ONU uji 2/6, 27 Okt 2026): `no ont ipconfig ... ip-index 0` saja ditolak "The IP interface has
-# been used" selama index 0 masih dipakai TR-069 dan jalur internet, jadi keduanya dilepas dulu.
-_LEPAS_PPPOE = ("ont tr069 {port} {onu} ip-index unbind", "no ont internet-config {port} {onu}",
-                "no ont ipconfig {port} {onu} ip-index 0")
-
-
-def olt_aktivasi_onu(pon: str, onu_id: int, pppoe_user: str, pppoe_pass: str, tr069: bool = True) -> dict:
-    """Satu sesi telnet: PPPoE (ont ipconfig ip-index 0, route + NAT), binding LAN & SSID ke WAN, internet-config,
-    TR-069, lalu save. Urutan ini teruji di ZTE F670L V9 (ONU uji 0/0/2/4): PPPoE login dari OLT, ONU lapor ke ACS.
-    `ont wan ...` (perintah WAN khusus C-Data) diabaikan ONU ZTE. WiFi TIDAK lewat OLT: selalu lewat ACS (spasi boleh,
-    dan Huawei mengabaikan `ont wifi`). Langkah PPPoE wajib berhasil.
-    Binding: ONU dua band `binding eth <LAN> wlan 1,5` (SSID 1 + SSID 5 GHz); ditolak (ONU satu band) → `wlan 1`."""
-    m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
-    if not m or not 1 <= int(onu_id) <= 256:
-        raise HTTPException(status_code=400, detail=f"Alamat ONU tidak valid: {pon} {onu_id}")
-    if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
-        raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
-    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,40}", pppoe_user or "") or not _POLA_SANDI_OLT.match(pppoe_pass or ""):
-        raise HTTPException(status_code=400, detail="Username/password PPPoE berisi spasi atau tanda yang tidak bisa "
-                                                    "dikirim lewat OLT. Ganti password akun ini di MikroTik (huruf, angka, "
-                                                    "tanda biasa tanpa spasi/kutip), lalu ulangi.")
-    port, onu, vlan = int(m.group(2)), int(onu_id), int(CONFIG.get("OLT_PPPOE_VLAN") or 1)
-    lan = _lan_binding()
-
-    def samar(teks: str) -> str:
-        return _samarkan(teks.replace(pppoe_pass, "***"))
-
-    langkah = [("PPPoE", f"ont ipconfig {port} {onu} ip-index 0 pppoe username {pppoe_user} password {pppoe_pass} "
-                         f"vlan {vlan} priority 0", True),
-               ("PPPoE: mode route", f"ont ipconfig {port} {onu} ip-index 0 connection-type route", True),
-               ("PPPoE: NAT", f"ont ipconfig {port} {onu} ip-index 0 nat enable", True),
-               # Ikat port LAN & SSID utama (WLAN 1 = 2,4 GHz, WLAN 5 = 5 GHz) ke WAN ini supaya perangkat pelanggan
-               # dapat internet, bukan hanya ONU. ONU satu band (mis. F609) tidak punya WLAN 5: cukup WLAN 1.
-               ("Port LAN & WiFi ke WAN", [f"ont ipconfig {port} {onu} ip-index 0 binding eth {lan} wlan 1,5",
-                                           f"ont ipconfig {port} {onu} ip-index 0 binding eth {lan} wlan 1"], False),
-               ("PPPoE: jalur internet", f"ont internet-config {port} {onu} ip-index 0", True)]
-    if tr069 and _olt_telnet_aktif():
-        url, user, sandi = CONFIG["ACS_ONU_URL"], CONFIG["ACS_ONU_USER"], CONFIG["ACS_ONU_PASS"]
-        if all(_POLA_AMAN.match(x) for x in (url, user, sandi)):
-            interval = max(60, min(int(CONFIG["ACS_ONU_INTERVAL"]), 86400))
-            langkah += [("TR-069", f"ont tr069 {port} {onu} tr069-management enable", False),
-                        ("TR-069: alamat ACS", f"ont tr069 {port} {onu} acs-url {url} acs-username {user} acs-password {sandi}", False),
-                        ("TR-069: lapor rutin", f"ont tr069 {port} {onu} inform enable interval {interval}", False),
-                        # Lapor lewat WAN PPPoE yang baru dibuat. Tanpa ikatan ini Huawei HG8145V5 tidak pernah
-                        # melapor (`TR069 IP index: unbind`), walau internetnya jalan.
-                        ("TR-069: lewat WAN PPPoE", f"ont tr069 {port} {onu} ip-index 0", False)]
-    hasil, tersimpan = [], None
-    try:
-        t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
-    except OSError as e:
-        raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
-    try:
-        _olt_masuk(t)
-        galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
-        if galat:
-            raise HTTPException(status_code=502, detail=f"OLT menolak masuk ke port {m.group(1)}: {galat}")
-        for nama, perintah, wajib in langkah:
-            pilihan = [perintah] if isinstance(perintah, str) else perintah
-            for ke, coba in enumerate(pilihan):
-                galat = _galat_cli(t.kirim(coba))
-                if galat is None:
-                    break
-            h = {"langkah": nama, "ok": galat is None, "pesan": samar(galat) if galat else "diterima OLT"}
-            if nama == "Port LAN & WiFi ke WAN" and galat is None:
-                h["band"] = "dua" if ke == 0 else "satu"
-                h["pesan"] = (f"LAN {lan} + SSID 1 (2,4 GHz) & SSID 5 (5 GHz)" if ke == 0
-                              else f"LAN {lan} + SSID 1 (ONU satu band)")
-            hasil.append(h)
-            if galat and wajib:
-                break
-        t.kirim("exit")
-        if any(h["ok"] for h in hasil):
-            tersimpan = _simpan_olt(t)
-        t.kirim("end")
-    except (OSError, TimeoutError, ConnectionError) as e:
-        raise HTTPException(status_code=502, detail=samar(f"Sesi telnet OLT terputus: {e}"))
-    finally:
-        t.tutup()
-    pppoe_ok = all(h["ok"] for h in hasil if h["langkah"].startswith("PPPoE")) and \
-        sum(1 for h in hasil if h["langkah"].startswith("PPPoE")) == 4
-    binding = next((h for h in hasil if h["langkah"] == "Port LAN & WiFi ke WAN"), None)
-    if binding and not binding["ok"]:
-        binding["pesan"] += (f" — perangkat pelanggan mungkin belum dapat internet (hanya ONU). Ulangi aktivasi, atau "
-                             f"periksa Port LAN di Pengaturan (sekarang {lan}).")
-    return {"pppoe": pppoe_ok, "langkah": hasil, "tersimpan": tersimpan,
-            "band": binding.get("band") if binding else None}
 
 
 def _sn_terdaftar_acs() -> Optional[set]:
@@ -11407,8 +11278,8 @@ def _saran_onu_tanpa_acs(o: dict) -> str:
     if "F609" in model:
         return "ZTE F609: Kirim TR-069 dari OLT + restart ONU"
     if sn.startswith("ZTEG"):
-        return "ZTE: Kirim TR-069 dari OLT + restart; bila tetap belum lapor, ONU Baru → Reset & isi ulang dari OLT"
-    return "Bukan ZTE: ONU Baru → Reset & isi ulang dari OLT (WAN & TR-069 dari OLT, diikat ke WAN PPPoE)"
+        return "ZTE: Kirim TR-069 dari OLT + restart; bila tetap belum lapor, pastikan WAN PPPoE di ONU membawa TR-069"
+    return "Bukan ZTE: Kirim TR-069 dari OLT + restart; pastikan WAN PPPoE di ONU membawa TR-069"
 
 
 @app.get("/api/acs-kesehatan")   # bukan /api/acs/...: akan tertangkap rute /api/acs/{username}
@@ -11724,11 +11595,10 @@ def _masalah_wifi(doc: dict, b: str, w: dict) -> list[dict]:
     elif tipe.lower() == "basic" and "wep" in dasar.lower():
         hasil.append({"tingkat": "kritis", "kode": "wep", "judul": "Keamanan WEP (mudah dibobol)",
                       "saran": "Ganti password lewat Diagnosa → WiFi. Ubah keamanan ke WPA2 lewat ACS belum ada tombolnya "
-                               "(menyusul); jalan pintas: ONU Baru → Reset & isi ulang dari OLT (bawaan pabrik WPA2)."})
+                               "(menyusul)."})
     elif tipe.upper() == "WPA":
         hasil.append({"tingkat": "perhatian", "kode": "wpa_lama", "judul": "Masih WPA lama",
-                      "saran": "WPA2 lebih aman dan lebih cepat. Ubah lewat ACS belum ada tombolnya (menyusul); jalan pintas: "
-                               "ONU Baru → Reset & isi ulang dari OLT (bawaan pabrik WPA2)."})
+                      "saran": "WPA2 lebih aman dan lebih cepat. Ubah lewat ACS belum ada tombolnya (menyusul)."})
     if _SSID_BAWAAN.match(w["ssid"] or ""):
         hasil.append({"tingkat": "perhatian", "kode": "bawaan", "judul": "Nama WiFi masih bawaan pabrik",
                       "saran": "Password-nya kemungkinan juga bawaan (tertera di stiker ONU, mudah ditebak). "
@@ -11967,8 +11837,7 @@ def _doc_acs_onu(sn: str, username: Optional[str]) -> Optional[dict]:
     return None
 
 
-def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict, bekas: Optional[dict] = None,
-                     ganti: Optional[dict] = None) -> dict:
+def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict) -> dict:
     o = _onu_live(r["sn"])
     user = o.pppoe_username if o else None
     di_acs = None
@@ -12016,9 +11885,6 @@ def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict, bekas: Op
         "untuk": r["untuk"], "nama_untuk": nama.get(r["untuk"]) if r["untuk"] else None,
         "tr069": r["tr069"], "wifi": r["wifi"], "selesai": r["selesai"], "oleh": r["oleh"],
         "langkah": langkah, "saran": _saran_onu_baru(o, langkah, r),
-        # ONU lama dari Ganti ONU yang menyala lagi: bersihkan (reset pabrik) sebelum dipakai pelanggan lain.
-        "bekas": (bekas or {}).get(r["sn"]),
-        "ganti": (ganti or {}).get(r["sn"]),
     }
 
 
@@ -12030,20 +11896,19 @@ def _saran_onu_baru(o: Optional[ONUStatus], langkah: dict, r: sqlite3.Row) -> st
     if not langkah["sinyal"]:
         return "Redaman buruk: periksa konektor / sambungan fiber sebelum aktivasi."
     if not langkah["internet"]:
-        # Bahasa teknisi lapangan: langkah bernomor, tanpa istilah OLT/ACS.
         if r["untuk"]:
-            return (f"Pelanggan {r['untuk']} sudah dipilih. Langkah 2: tekan ⚙ Aktivasi dari OLT, isi nama & password "
-                    "WiFi pelanggan, lalu tekan Kirim. Langkah 3: tunggu ±2 menit, lalu tekan Muat ulang.")
-        return ("Langkah 1: pilih pelanggan di kolom 'Dipasang untuk pelanggan' di bawah (belum ada? tekan + Pasang baru). "
-                "Langkah 2: isi nama & password WiFi di formulir yang muncul, lalu tekan Kirim.")
+            return (f"PPPoE belum tersambung: isi PPPoE akun {r['untuk']} di ONU ini, lalu tunggu ±2 menit dan tekan "
+                    "Muat ulang.")
+        return ("PPPoE belum tersambung. Pilih pelanggannya di kolom 'Dipasang untuk pelanggan' di bawah (belum ada? "
+                "tekan + Pasang baru), isi PPPoE-nya di ONU ini, lalu tunggu ±2 menit dan tekan Muat ulang.")
     if not langkah["pelanggan"]:
         return "PPPoE sudah tersambung tapi belum ada di data pelanggan: Impor dari MikroTik / Pasang baru."
     if langkah["acs"] is False:
         sn = (r["sn"] or "").upper()
         if "F609" in (o.model or "").upper() or sn.startswith("ZTEG"):
             return "Kirim TR-069 dari OLT + restart ONU, lalu tunggu ±3 menit sampai ONU lapor ke ACS."
-        return ("Kirim TR-069 dari OLT + restart ONU. Bila tetap tidak lapor, pakai Reset & isi ulang dari OLT: WAN dan "
-                "TR-069 dari OLT, TR-069 diikat ke WAN PPPoE.")
+        return ("Kirim TR-069 dari OLT + restart ONU. Bila tetap tidak lapor, pastikan WAN PPPoE di ONU ikut membawa "
+                "TR-069.")
     if langkah["acs"] and langkah["wifi"] is False:
         return (f"WiFi '{r['wifi_ssid']}' belum memancar di ONU. Atur ulang lewat tombol Atur WiFi (jalur ACS), "
                 "yang juga menyalakan WiFi bila mati.")
@@ -12078,17 +11943,7 @@ def onu_baru_daftar(request: Request, riwayat: bool = False):
     finally:
         c2.close()
     acs = _onu_di_acs() if rows and not riwayat else None
-    bekas = _bekas_ganti()
-    conn = _history_conn()
-    try:
-        # Ganti ONU terakhir per ONU baru (berjalan / gagal / selesai 30 hari), untuk progres di kartunya.
-        ganti = {}
-        for g in conn.execute("SELECT * FROM ganti_onu WHERE status<>'selesai' OR dibuat>=? ORDER BY id",
-                              ((datetime.now() - timedelta(days=30)).isoformat(timespec="seconds"),)).fetchall():
-            ganti[g["sn_baru"]] = dict(_ringkas_ganti(g), berjalan=g["id"] in _ganti_aktif)
-    finally:
-        conn.close()
-    return {"onu": [_ringkas_onu_baru(r, acs, nama, bekas, ganti) for r in rows], "dipantau": dipantau,
+    return {"onu": [_ringkas_onu_baru(r, acs, nama) for r in rows], "dipantau": dipantau,
             "acs_aktif": _acs_aktif(), "acs_terjangkau": acs is not None if rows and not riwayat else None,
             "olt_telnet": bool(CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")),
             "tr069_siap": _olt_telnet_aktif()}
@@ -12135,17 +11990,6 @@ def onu_baru_restart(sn: str, request: Request):
     return {"ok": True}
 
 
-class AktivasiOltIn(BaseModel):
-    username: str                      # akun PPPoE (secret MikroTik)
-    password: Optional[str] = None     # kosong = diambil dari secret MikroTik (tidak pernah dikirim ke browser)
-    ssid: Optional[str] = None         # kosong = WiFi tidak diubah; selalu dikirim lewat ACS
-    wifi_password: Optional[str] = None
-    akhiran_5g: str = "-5G"
-    tr069: bool = True
-    reset: bool = False                # ONU pelanggan lama: reset pabrik setelah pengaturan OLT tersimpan
-    konfirmasi: Optional[str] = None   # wajib = username saat reset / Ganti ONU
-
-
 def _baca_akun_mikrotik(user: str) -> tuple[list, list]:
     """(secret, sesi aktif) satu akun PPPoE, langsung dari MikroTik."""
     try:
@@ -12159,23 +12003,6 @@ def _baca_akun_mikrotik(user: str) -> tuple[list, list]:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"MikroTik tidak terbaca: {e}")
     return secret, aktif
-
-
-def _putus_sesi_pppoe(user: str, kecuali_mac: Optional[str] = None) -> int:
-    """Putus sesi PPPoE akun ini di MikroTik, kecuali yang caller-id-nya kecuali_mac (ONU baru)."""
-    pool = _mikrotik_pool()
-    try:
-        api = pool.get_api()
-        aktif = api.get_resource("/ppp/active")
-        putus = 0
-        for sesi in aktif.get(name=user):
-            if kecuali_mac and (sesi.get("caller-id") or "").upper() == kecuali_mac.upper():
-                continue
-            aktif.remove(id=sesi["id"])
-            putus += 1
-        return putus
-    finally:
-        pool.disconnect()
 
 
 def _peta_pemakai_onu() -> dict:
@@ -12258,682 +12085,6 @@ def onu_baru_akun(request: Request):
     return {"mikrotik": True, "akun": akun, "baru": sum(1 for a in akun if not a["di_indeso"])}
 
 
-_POLA_RUN = re.compile(r"(?i)run\s*state\s*:\s*(\S+)")
-_POLA_SN_INFO = re.compile(r"(?i)\b(?:SN|serial[ -]?number)\s*:\s*\"?([A-Za-z0-9]{8,16})")
-_POLA_AKUN_OLT = re.compile(r"(?i)pppoe\s+username\s*:\s*(\S+)")
-
-
-def _info_onu_telnet(t: "_TelnetOLT", port: int, onu_id: int) -> dict:
-    """`show ont info P O` (mode interface gpon): run state, nomor seri, dan WAN PPPoE yang disimpan OLT (akunnya).
-    ada=False bila OLT menolak. Keluaran mentahnya memuat password PPPoE, jadi tidak pernah diteruskan."""
-    out = t.kirim(f"show ont info {port} {onu_id}")
-    run, sn, akun = _POLA_RUN.search(out), _POLA_SN_INFO.search(out), _POLA_AKUN_OLT.search(out)
-    return {"ada": _galat_cli(out) is None and not re.search(r"(?i)not exist|does not exist", out),
-            "run": run.group(1).lower() if run else None, "sn": _sn_gpon(sn.group(1)) if sn else None,
-            "wan": bool(_POLA_WAN_OLT.search(out)), "akun": akun.group(1) if akun and akun.group(1) != "-" else None}
-
-
-def _masuk_antarmuka(pon: str) -> tuple["_TelnetOLT", int]:
-    """Telnet + login + `interface gpon` untuk alamat PON ini. Kembalikan (sesi, port)."""
-    m = re.fullmatch(r"(\d{1,2}/\d{1,2})/(\d{1,2})", str(pon))
-    if not m:
-        raise HTTPException(status_code=400, detail=f"Alamat PON tidak valid: {pon}")
-    if not (CONFIG.get("OLT_TELNET_USER") and CONFIG.get("OLT_TELNET_PASS")):
-        raise HTTPException(status_code=503, detail="Login telnet OLT belum diisi di .env (OLT_TELNET_USER, OLT_TELNET_PASS).")
-    try:
-        t = _TelnetOLT(CONFIG["OLT_HOST"], CONFIG["OLT_TELNET_PORT"])
-    except OSError as e:
-        raise HTTPException(status_code=502, detail=f"Tidak bisa telnet ke OLT {CONFIG['OLT_HOST']}: {e}")
-    try:
-        _olt_masuk(t)
-        galat = _galat_cli(t.kirim(f"interface gpon {m.group(1)}"))
-        if galat:
-            raise HTTPException(status_code=502, detail=f"OLT menolak masuk ke port {m.group(1)}: {galat}")
-    except (OSError, TimeoutError, ConnectionError) as e:
-        t.tutup()
-        raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
-    except HTTPException:
-        t.tutup()
-        raise
-    return t, int(m.group(2))
-
-
-def _baca_onu_olt(pon: str, onu_id: int) -> dict:
-    """Baca saja (tanpa mengubah apa pun): WAN PPPoE tersimpan di OLT, run state, nomor seri."""
-    t, port = _masuk_antarmuka(pon)
-    try:
-        info = _info_onu_telnet(t, port, onu_id)
-        t.kirim("exit")
-        t.kirim("end")
-    except (OSError, TimeoutError, ConnectionError) as e:
-        raise HTTPException(status_code=502, detail=f"Sesi telnet OLT terputus: {e}")
-    finally:
-        t.tutup()
-    return info
-
-
-def _periksa_aktivasi(sn: str, user: str, baca_olt: bool = True) -> dict:
-    """Tahap 0 (hanya membaca): akun ini bebas, sudah lewat ONU ini, atau masih terpasang di ONU lama (rute Ganti ONU)."""
-    o = _alamat_onu_baru(sn)
-    sn = sn.upper()
-    secret, aktif = _baca_akun_mikrotik(user)
-    if not secret:
-        raise HTTPException(status_code=404, detail=f"Akun PPPoE {user} tidak ada di MikroTik. Buat dulu (mis. lewat Pasang baru).")
-    if str(secret[0].get("disabled", "no")).lower() in ("yes", "true"):
-        raise HTTPException(status_code=409, detail=f"Akun PPPoE {user} sedang nonaktif di MikroTik.")
-    conn = _billing_conn()
-    try:
-        p = conn.execute("SELECT nama FROM pelanggan WHERE username=?", (user,)).fetchone()
-    finally:
-        conn.close()
-    lama = [x for x in _peta_pemakai_onu().get(user.lower(), []) if x["sn"] != sn]
-    mac_lama = {(x["mac"] or "").upper(): x["sn"] for x in lama if x["mac"]}
-    sesi = []
-    for a in aktif:
-        cid = (a.get("caller-id") or "").upper()
-        ini = (o.mac_address and cid == o.mac_address.upper()) or (o.pppoe_username or "").lower() == user.lower()
-        sesi.append({"caller_id": cid or "?", "milik": "onu_ini" if ini else mac_lama.get(cid, "lain")})
-    hasil = {"username": user, "nama": p["nama"] if p else None, "di_indeso": bool(p), "profil": secret[0].get("profile"),
-             "sesi": sesi, "lama": lama[0] if len(lama) == 1 else None, "siap": True}
-    lain = [s["caller_id"] for s in sesi if s["milik"] == "lain"]
-    if len(lama) > 1:
-        daftar_lama = ", ".join(f"{x['sn']} PON {x['pon']} ONU {x['onu_id']}" for x in lama)
-        hasil.update(mode="tolak", siap=False, pesan=(
-            f"Akun {user} tercatat di {len(lama)} ONU lain ({daftar_lama}). "
-            "Rapikan dulu: hapus ONU yang sudah tidak dipakai lewat Bersihkan ONU mati, lalu ulangi."))
-    elif lama:
-        x = lama[0]
-        hasil.update(mode="ganti", pesan=(f"Akun {user} masih terpasang di ONU lama {x['sn']} (PON {x['pon']} ONU "
-                                          f"{x['onu_id']}, {'online' if x['online'] else 'offline'}): pakai rute Ganti ONU."))
-        if baca_olt:
-            info = _baca_onu_olt(x["pon"], x["onu_id"])
-            if info["sn"] and info["sn"] != x["sn"]:
-                hasil.update(mode="tolak", siap=False, pesan=f"PON {x['pon']} ONU {x['onu_id']} di OLT kini berisi SN "
-                                                             f"{info['sn']}, bukan {x['sn']}. Muat ulang daftar.")
-                return hasil
-            x["wan_olt"], x["run"] = info["wan"], info["run"]
-            if not info["run"]:
-                # Tanpa run state, tahap 2 tidak bisa memastikan ONU lama benar-benar offline: berhenti sebelum apa pun diubah.
-                hasil.update(siap=False, pesan=hasil["pesan"] + " Status ONU dari `show ont info` tidak terbaca (format OLT "
-                                                               "berbeda), jadi Ganti ONU belum bisa menunggu ONU lama offline.")
-                return hasil
-            if info["wan"] and info["akun"] and info["akun"].lower() != user.lower():
-                hasil.update(siap=False, pesan=hasil["pesan"] + f" Tetapi PPPoE yang tersimpan di OLT untuk ONU lama itu "
-                                                               f"berakun {info['akun']}, bukan {user}: periksa dulu.")
-    elif lain:
-        hasil.update(mode="tolak", siap=False, pesan=(
-            f"Akun {user} sedang dipakai perangkat lain ({', '.join(lain)}) yang tidak terbaca sebagai ONU di OLT (mis. "
-            "router pelanggan). Profil paket memakai only-one, jadi keduanya akan saling memutus. Lepas dulu dari "
-            "perangkat itu."))
-    else:
-        hasil.update(mode="sendiri" if any(s["milik"] == "onu_ini" for s in sesi) else "baru",
-                     pesan=None if p else f"Akun {user} belum ada di data pelanggan INDESO: diimpor otomatis saat aktivasi.")
-    return hasil
-
-
-@app.get("/api/onu-baru/{sn}/periksa")
-def onu_baru_periksa(sn: str, username: str, request: Request):
-    """Tahap 0 sebelum aktivasi (hanya membaca): rute biasa atau Ganti ONU."""
-    _wajib_admin(request)
-    _baris_onu_baru(sn)
-    return _periksa_aktivasi(sn, (username or "").strip())
-
-
-def _cek_wifi_baru(d) -> tuple[Optional[str], str]:
-    ssid, akhir = (d.ssid or "").strip() or None, (d.akhiran_5g or "").rstrip()   # spasi depan akhiran dipertahankan: "Rumah" + " 5G"
-    if ssid:
-        _cek_wifi_acs(ssid, d.wifi_password or "", akhir)
-        if not d.tr069:
-            raise HTTPException(status_code=400, detail="WiFi dikirim lewat ACS (tidak lewat OLT): centang juga pengaturan TR-069.")
-    return ssid, akhir
-
-
-def _aktivasi_onu_baru(sn: str, o: ONUStatus, user: str, sandi: str, ssid: Optional[str], wifi_pw: Optional[str],
-                       akhir: str, tr069: bool, oleh: str) -> dict:
-    """Aktivasi satu ONU: WAN PPPoE + binding + TR-069 dari OLT, lalu WiFi lewat ACS satu kali begitu ONU lapor."""
-    sejak = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
-    hasil = olt_aktivasi_onu(o.pon, o.onu_id, user, sandi, tr069)
-    if ssid and hasil["pppoe"]:
-        _wifi_tertunda[sn.upper()] = {"ssid": ssid, "pw": wifi_pw, "akhir": akhir, "sejak": sejak,
-                                      "mulai": time.monotonic(), "oleh": oleh}
-        hasil["wifi_acs"] = (f"WiFi {ssid} dikirim lewat ACS satu kali, otomatis begitu ONU lapor (±1–15 menit; maks. "
-                             f"{WIFI_TERTUNDA_MENIT} menit). Bila gagal, tercatat di Aktivitas: atur lewat tombol Atur WiFi.")
-    kolom = {"untuk": user}
-    if any(h["ok"] and h["langkah"].startswith("TR-069") for h in hasil["langkah"]):
-        kolom["tr069"] = datetime.now().isoformat(timespec="seconds")
-    _ubah_onu_baru(sn, **kolom)
-    ringkas = ", ".join(f"{h['langkah']} {'ok' if h['ok'] else 'GAGAL'}" for h in hasil["langkah"])
-    band = {"dua": " (dua band: SSID 1 + 5 GHz)", "satu": " (satu band: SSID 1)"}.get(hasil.get("band"), "")
-    catat_aktivitas(oleh, "onu_aktivasi_olt",
-                    f"ONU baru {sn.upper()} ({o.pon} onu {o.onu_id}) akun {user}" + (f", WiFi {ssid} lewat ACS" if ssid else "")
-                    + f": {ringkas}{band}" + ("" if hasil["tersimpan"] is not False else " (belum tersimpan permanen di OLT)"))
-    return hasil
-
-
-@app.post("/api/onu-baru/{sn}/aktivasi-olt")
-def onu_baru_aktivasi_olt(sn: str, d: AktivasiOltIn, request: Request):
-    """Aktivasi ONU baru, satu rute tanpa web ONU: PPPoE, binding, TR-069 dari OLT; WiFi lewat ACS. Akun yang masih
-    terpasang di ONU lain ditolak di sini: pakai rute Ganti ONU."""
-    _wajib_admin(request)
-    _baris_onu_baru(sn)
-    o = _alamat_onu_baru(sn)
-    user = (d.username or "").strip()
-    if d.reset:
-        # Reset pabrik menghapus WiFi di ONU: nama & password lama wajib dikirim ulang supaya HP pelanggan
-        # tersambung sendiri. Ketik ulang username sebagai pengaman salah ONU.
-        if (d.konfirmasi or "").strip().lower() != user.lower():
-            raise HTTPException(status_code=400, detail="Ketik ulang username PPPoE untuk memastikan reset ONU yang benar.")
-        if not (d.ssid or "").strip() or not d.wifi_password:
-            raise HTTPException(status_code=400, detail="Reset pabrik menghapus WiFi ONU: isi nama & password WiFi "
-                                                        "yang dipakai pelanggan sekarang.")
-    ssid, akhir = _cek_wifi_baru(d)
-    cek = _periksa_aktivasi(sn, user, baca_olt=False)
-    if cek["mode"] in ("ganti", "tolak"):
-        raise HTTPException(status_code=409, detail=cek["pesan"])
-    secret, _ = _baca_akun_mikrotik(user)
-    sandi = d.password or secret[0].get("password")
-    if not sandi:
-        raise HTTPException(status_code=400, detail="Password PPPoE tidak terbaca dari MikroTik; isi password-nya di formulir.")
-    oleh = _oleh(request)
-    diimpor = _impor_akun(user, secret[0].get("profile"), sn, oleh)
-    hasil = _aktivasi_onu_baru(sn, o, user, sandi, ssid, d.wifi_password, akhir, d.tr069, oleh)
-    hasil["diimpor"] = diimpor
-    if d.reset:
-        # Hanya bila PPPoE diterima dan konfigurasi OLT tersimpan: setelah reset, ONU hanya punya apa yang disimpan OLT.
-        if not hasil["pppoe"] or hasil["tersimpan"] is not True:
-            hasil["reset"] = {"ok": False, "pesan": "Reset pabrik dibatalkan: PPPoE ditolak OLT atau konfigurasi belum "
-                                                    "tersimpan. ONU tidak diubah, internet pelanggan tetap lewat WAN lama."}
-        else:
-            try:
-                olt_reboot_onu(o.pon, o.onu_id, pabrik=True)
-                hasil["reset"] = {"ok": True, "pesan": "ONU direset pabrik. Internet pelanggan kembali ±2–3 menit lewat "
-                                                       "WAN dari OLT."}
-            except HTTPException as e:
-                hasil["reset"] = {"ok": False, "pesan": f"{e.detail}. Pengaturan OLT sudah tersimpan; tekan Restart ONU "
-                                                        "atau reset ulang."}
-        catat_aktivitas(oleh, "onu_aktivasi_olt", f"ONU {sn.upper()} akun {user}: reset pabrik "
-                        + ("ok" if hasil["reset"]["ok"] else "TIDAK — " + hasil["reset"]["pesan"]))
-    return hasil
-
-
-# ------------------------------------------------------------
-# GANTI ONU — akun PPPoE pindah dari ONU lama ke ONU baru:
-#   0 periksa (baca saja) → 1 lepas PPPoE dari ONU lama di OLT (dicek ulang) → 2 reset pabrik ONU lama & tunggu benar-benar
-#   offline → 3 aktivasi ONU baru (OLT; WiFi lewat ACS) → 4 begitu akun online lewat ONU baru, ONU lama dihapus dari OLT
-#   (online atau tidak). Bila ONU lama menyala lagi, OLT (authmode auto) mendaftarkannya ulang → muncul di ONU Baru
-#   bertanda "bekas akun X".
-# ------------------------------------------------------------
-
-GANTI_TUNGGU_MENIT = 60          # batas tunggu akun online lewat ONU baru sebelum ONU lama dihapus
-GANTI_PANTAU_DETIK = 600         # lama thread memantau tahap 4 sendiri; sesudahnya loop pemantau yang melanjutkan
-GANTI_JEDA_CEK = 3.0             # detik antarcek (run state ONU lama, sesi PPPoE ONU baru)
-_ganti_aktif: set = set()        # id Ganti ONU yang sedang dikerjakan thread
-_ganti_kunci = threading.RLock()
-_LABEL_TAHAP = {"periksa": "periksa", "hapus_pppoe": "lepas PPPoE ONU lama", "reset": "reset ONU lama",
-                "aktivasi": "aktivasi ONU baru", "tunggu_online": "tunggu ONU baru online", "bersih": "bersihkan ONU lama"}
-
-
-class _GagalGanti(Exception):
-    pass
-
-
-def _mulai_latar(fn, *args) -> None:
-    threading.Thread(target=fn, args=args, daemon=True).start()
-
-
-def _ganti_baca(gid: int) -> Optional[sqlite3.Row]:
-    conn = _history_conn()
-    try:
-        return conn.execute("SELECT * FROM ganti_onu WHERE id=?", (gid,)).fetchone()
-    finally:
-        conn.close()
-
-
-def _ganti_ubah(gid: int, catat: Optional[tuple] = None, **kolom) -> None:
-    """Ubah kolom Ganti ONU; catat = (tahap, ok, pesan) ditambahkan ke log tahap dan ke Aktivitas."""
-    conn = _history_conn()
-    try:
-        g = conn.execute("SELECT username, sn_baru, sn_lama, oleh, log FROM ganti_onu WHERE id=?", (gid,)).fetchone()
-        kolom["diperbarui"] = datetime.now().isoformat(timespec="seconds")
-        if catat:
-            log = json.loads(g["log"] or "[]")
-            log.append({"waktu": kolom["diperbarui"], "tahap": catat[0], "ok": catat[1], "pesan": catat[2]})
-            kolom["log"] = json.dumps(log, ensure_ascii=False)
-        conn.execute(f"UPDATE ganti_onu SET {', '.join(k + '=?' for k in kolom)} WHERE id=?", (*kolom.values(), gid))
-        conn.commit()
-    finally:
-        conn.close()
-    if catat:
-        catat_aktivitas(g["oleh"] or "sistem", "onu_ganti", f"Ganti ONU #{gid} {g['username']} {g['sn_lama']} → "
-                                                            f"{g['sn_baru']} · {catat[0]}: {'ok' if catat[1] else 'GAGAL'} — {catat[2]}")
-
-
-def _cek_alamat_lama(g: sqlite3.Row) -> ONUStatus:
-    o = _onu_live(g["sn_lama"])
-    if not o or o.pon != g["pon_lama"] or int(o.onu_id) != int(g["onu_id_lama"]):
-        raise _GagalGanti(f"ONU lama {g['sn_lama']} tidak lagi terbaca di PON {g['pon_lama']} ONU {g['onu_id_lama']}. "
-                          "Tidak ada perintah dikirim; muat ulang lalu Lanjutkan.")
-    return o
-
-
-def _cek_sn_telnet(info: dict, g: sqlite3.Row) -> None:
-    if not info["ada"]:
-        raise _GagalGanti(f"OLT tidak mengenali ONU PON {g['pon_lama']} ONU {g['onu_id_lama']}. Tidak ada perintah dikirim.")
-    if info["sn"] and info["sn"] != g["sn_lama"]:
-        raise _GagalGanti(f"PON {g['pon_lama']} ONU {g['onu_id_lama']} di OLT berisi SN {info['sn']}, bukan "
-                          f"{g['sn_lama']}. Tidak ada perintah dikirim.")
-
-
-def _ganti_hapus_pppoe(g: sqlite3.Row) -> str:
-    """Tahap 1: lepas PPPoE dari ONU lama di OLT (_LEPAS_PPPOE), lalu pastikan lewat `show ont info` bahwa WAN-nya
-    hilang dan ONU-nya masih terdaftar, baru save."""
-    _cek_alamat_lama(g)
-    t, port = _masuk_antarmuka(g["pon_lama"])
-    onu = int(g["onu_id_lama"])
-    try:
-        info = _info_onu_telnet(t, port, onu)
-        _cek_sn_telnet(info, g)
-        if not info["wan"]:
-            t.kirim("exit")
-            t.kirim("end")
-            return "ONU lama tidak punya PPPoE dari OLT (diisi di ONU sendiri): dibersihkan oleh reset pabrik."
-        if info["akun"] and info["akun"].lower() != g["username"].lower():
-            raise _GagalGanti(f"PPPoE yang tersimpan di OLT untuk ONU lama berakun {info['akun']}, bukan {g['username']}. "
-                              "Tidak ada yang diubah.")
-        catatan = []
-        for pola in _LEPAS_PPPOE:
-            perintah = pola.format(port=port, onu=onu)
-            out = t.kirim(perintah, r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
-            if re.search(_POLA_KONFIRMASI, out):
-                out = t.kirim("y")
-            galat = _galat_cli(out)
-            if galat and perintah.startswith("no ont ipconfig"):
-                raise _GagalGanti(f"OLT menolak melepas PPPoE ONU lama ({_samarkan(galat)}). ONU lama belum direset.")
-            if galat:
-                catatan.append(f"{perintah.split(' ' + str(port))[0]}: {_samarkan(galat)}")   # mis. memang belum terpasang
-        info = _info_onu_telnet(t, port, onu)
-        if not info["ada"]:
-            raise _GagalGanti("ONU lama tidak lagi terbaca di OLT setelah PPPoE dilepas. Periksa OLT; ONU lama belum direset.")
-        if info["wan"]:
-            raise _GagalGanti("PPPoE ONU lama masih tersimpan di OLT (show ont info) setelah dilepas. ONU lama belum direset.")
-        t.kirim("exit")
-        tersimpan = _simpan_olt(t)
-        t.kirim("end")
-    except (OSError, TimeoutError, ConnectionError) as e:
-        raise _GagalGanti(f"Sesi telnet OLT terputus: {_samarkan(str(e))}")
-    finally:
-        t.tutup()
-    return ("PPPoE dilepas dari ONU lama di OLT (TR-069 unbind, jalur internet & ipconfig dihapus; dicek ulang: "
-            "show ont info tanpa PPPoE). Secret MikroTik tidak diubah"
-            + (f". Catatan OLT: {'; '.join(catatan)}" if catatan else "")
-            + ("." if tersimpan else " — konfigurasi OLT BELUM tersimpan permanen."))
-
-
-def _ganti_reset(g: sqlite3.Row) -> tuple[str, str]:
-    """Reset pabrik ONU lama lalu tunggu sampai OLT melihatnya offline. Kembalikan (status direset, pesan)."""
-    _cek_alamat_lama(g)
-    t, port = _masuk_antarmuka(g["pon_lama"])
-    onu = int(g["onu_id_lama"])
-    try:
-        info = _info_onu_telnet(t, port, onu)
-        _cek_sn_telnet(info, g)
-        if info["run"] and info["run"] != "online":
-            t.kirim("exit")
-            t.kirim("end")
-            return "lewati", (f"ONU lama sedang {info['run']}: reset dilewati (tidak bisa menerima perintah). Begitu ONU "
-                              "baru online, ONU lama dihapus dari OLT; bila kelak menyala, muncul di ONU Baru.")
-        out = t.kirim(f"ont restore-factory {port} {onu}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
-        if re.search(_POLA_KONFIRMASI, out):
-            out = t.kirim("y")
-        galat = _galat_cli(out)
-        if galat:
-            raise _GagalGanti(f"OLT menolak reset pabrik ONU lama ({galat}). ONU baru belum diaktifkan.")
-        mulai, batas = time.monotonic(), max(1, int(CONFIG.get("OLT_TUNGGU_OFFLINE_DETIK") or 180))
-        while True:
-            time.sleep(GANTI_JEDA_CEK)
-            run = _info_onu_telnet(t, port, onu)["run"]
-            if run and run != "online":
-                break
-            if time.monotonic() - mulai > batas:
-                raise _GagalGanti(f"ONU lama belum juga offline {batas} detik setelah reset pabrik. ONU baru belum "
-                                  "diaktifkan; periksa ONU lama, lalu Lanjutkan.")
-        t.kirim("exit")
-        t.kirim("end")
-    except (OSError, TimeoutError, ConnectionError) as e:
-        raise _GagalGanti(f"Sesi telnet OLT terputus: {e}")
-    finally:
-        t.tutup()
-    return datetime.now().isoformat(timespec="seconds"), \
-        f"ONU lama direset pabrik dan sudah offline menurut OLT ({int(time.monotonic() - mulai)} detik)."
-
-
-def _ganti_aktivasi(g: sqlite3.Row, rahasia: dict) -> str:
-    o = _onu_live(g["sn_baru"])
-    if not o or not o.online or o.pon != g["pon_baru"] or int(o.onu_id) != int(g["onu_id_baru"]):
-        raise _GagalGanti(f"ONU baru {g['sn_baru']} tidak online di PON {g['pon_baru']} ONU {g['onu_id_baru']}. Pelanggan offline "
-                          "sampai ONU baru diaktifkan: nyalakan ONU baru lalu Lanjutkan.")
-    secret, _ = _baca_akun_mikrotik(g["username"])
-    if not secret:
-        raise _GagalGanti(f"Akun {g['username']} tidak ada lagi di MikroTik.")
-    putus = _putus_sesi_pppoe(g["username"], o.mac_address)      # sisa sesi ONU lama (only-one)
-    sandi = rahasia.get("sandi") or secret[0].get("password")
-    if not sandi:
-        raise _GagalGanti("Password PPPoE tidak terbaca dari MikroTik: Lanjutkan dengan mengisi password-nya.")
-    _impor_akun(g["username"], secret[0].get("profile"), g["sn_baru"], g["oleh"] or "sistem")
-    hasil = _aktivasi_onu_baru(g["sn_baru"], o, g["username"], sandi, rahasia.get("ssid"), rahasia.get("pw"),
-                               rahasia.get("akhir") or "", rahasia.get("tr069", True), g["oleh"] or "sistem")
-    if not hasil["pppoe"]:
-        gagal = next((h for h in hasil["langkah"] if not h["ok"]), {"langkah": "PPPoE", "pesan": "?"})
-        raise _GagalGanti(f"PPPoE ditolak OLT di ONU baru ({gagal['langkah']}: {gagal['pesan']}). Pelanggan offline "
-                          "sampai aktivasi berhasil: Lanjutkan.")
-    band = {"dua": "dua band (LAN + SSID 1 & 5 GHz)", "satu": "satu band (LAN + SSID 1)"}.get(hasil.get("band"),
-                                                                                         "binding GAGAL")
-    return (f"ONU baru diaktifkan dari OLT: PPPoE ok, {band}"
-            + (", TR-069 ok" if any(h["ok"] and h["langkah"] == "TR-069" for h in hasil["langkah"]) else "")
-            + (f", sesi lama diputus ({putus})" if putus else "")
-            + (", WiFi menyusul lewat ACS" if hasil.get("wifi_acs") else "")
-            + ("" if hasil["tersimpan"] is not False else " — konfigurasi OLT BELUM tersimpan permanen") + ".")
-
-
-def _jalankan_ganti_onu(gid: int, rahasia: dict) -> None:
-    """Tahap 1–3 berurutan (thread), lalu tahap 4 dipantau sebentar. Tahap yang sudah selesai (Lanjutkan setelah
-    gagal) dilewati."""
-    try:
-        if _ganti_tahap_1_3(gid, rahasia):
-            batas = time.monotonic() + GANTI_PANTAU_DETIK
-            while not _cek_ganti_online(gid) and time.monotonic() < batas:
-                time.sleep(max(GANTI_JEDA_CEK, 10))
-    finally:
-        rahasia.clear()                          # password tidak disimpan lebih lama dari perlu
-        _ganti_aktif.discard(gid)
-
-
-def _ganti_tahap_1_3(gid: int, rahasia: dict) -> bool:
-    """True bila tahap 1–3 beres (lanjut ke tahap 4), False bila gagal (tercatat, berhenti)."""
-    try:
-        g = _ganti_baca(gid)
-        if not g["pppoe_dihapus"]:
-            _ganti_ubah(gid, tahap="hapus_pppoe")
-            pesan = _ganti_hapus_pppoe(g)
-            _ganti_ubah(gid, ("lepas PPPoE ONU lama", True, pesan), pppoe_dihapus=datetime.now().isoformat(timespec="seconds"))
-        if not g["direset"]:
-            _ganti_ubah(gid, tahap="reset")
-            status, pesan = _ganti_reset(g)
-            _ganti_ubah(gid, ("reset ONU lama", True, pesan), direset=status)
-        if not g["diaktifkan"]:
-            _ganti_ubah(gid, tahap="aktivasi")
-            pesan = _ganti_aktivasi(_ganti_baca(gid), rahasia)
-            _ganti_ubah(gid, ("aktivasi ONU baru", True, pesan), diaktifkan=datetime.now().isoformat(timespec="seconds"))
-        _ganti_ubah(gid, tahap="tunggu_online", pesan="Menunggu akun online lewat ONU baru, lalu ONU lama dihapus dari OLT.")
-        return True
-    except Exception as e:
-        if isinstance(e, (_GagalGanti, HTTPException)):
-            pesan = str(e.detail if isinstance(e, HTTPException) else e)
-        else:
-            logger.exception(f"Ganti ONU #{gid} galat")
-            pesan = f"Galat tak terduga: {e}"
-        tahap = _ganti_baca(gid)["tahap"]
-        _ganti_ubah(gid, (_LABEL_TAHAP.get(tahap, tahap), False, pesan), status="gagal", pesan=pesan)
-        return False
-
-
-def _sesi_lewat_onu_baru(g: sqlite3.Row) -> bool:
-    _, aktif = _baca_akun_mikrotik(g["username"])
-    baru = _onu_live(g["sn_baru"])
-    mac_baru = (baru.mac_address or "").upper() if baru else ""
-    for a in aktif:
-        cid = (a.get("caller-id") or "").upper()
-        if (mac_baru and cid == mac_baru) or (not mac_baru and cid and cid != (g["mac_lama"] or "").upper()):
-            return True
-    return False
-
-
-def _ganti_hapus_onu_lama(g: sqlite3.Row) -> str:
-    """Tahap 4: `ont delete` ONU lama (SN dicek ulang di data OLT & telnet), save, buang catatan & dokumen ACS-nya."""
-    from urllib.parse import quote
-    o = _onu_live(g["sn_lama"])
-    pesan = []
-    if not o or o.pon != g["pon_lama"] or int(o.onu_id) != int(g["onu_id_lama"]):
-        pesan.append("ONU lama sudah tidak terdaftar di alamat lamanya: tidak ada yang dihapus dari OLT")
-    else:
-        t, port = _masuk_antarmuka(g["pon_lama"])
-        onu = int(g["onu_id_lama"])
-        try:
-            _cek_sn_telnet(_info_onu_telnet(t, port, onu), g)
-            out = t.kirim(f"ont delete {port} {onu}", r"(?i)[>#]\s*$|" + _POLA_KONFIRMASI[4:])
-            if re.search(_POLA_KONFIRMASI, out):
-                out = t.kirim("y")
-            galat = _galat_cli(out)
-            if galat:
-                raise _GagalGanti(f"OLT menolak menghapus ONU lama ({galat}).")
-            t.kirim("exit")
-            tersimpan = _simpan_olt(t)
-            t.kirim("end")
-        except (OSError, TimeoutError, ConnectionError) as e:
-            raise _GagalGanti(f"Sesi telnet OLT terputus: {e}")
-        finally:
-            t.tutup()
-        pesan.append(f"ONU lama PON {g['pon_lama']} ONU {g['onu_id_lama']} dihapus dari OLT"
-                     + ("" if tersimpan else " (konfigurasi BELUM tersimpan permanen)"))
-    conn = _history_conn()
-    try:
-        conn.execute("DELETE FROM onu_baru WHERE sn=?", (g["sn_lama"],))
-        conn.commit()
-    finally:
-        conn.close()
-    if _acs_aktif():
-        try:
-            r = _acs("GET", "/devices/", params={"query": json.dumps(_query_sn(g["sn_lama"])), "projection": "_id"}, timeout=10)
-            ids = [d["_id"] for d in r.json()] if r.ok else []
-            for i in ids:
-                _acs("DELETE", f"/devices/{quote(i, safe='')}")
-            if ids:
-                c2 = _billing_conn()
-                try:
-                    c2.executemany("UPDATE pelanggan SET acs_id=NULL WHERE acs_id=?", [(i,) for i in ids])
-                    c2.commit()
-                finally:
-                    c2.close()
-                pesan.append(f"dokumen ACS ONU lama dihapus ({len(ids)})")
-        except HTTPException as e:
-            pesan.append(f"dokumen ACS ONU lama belum terhapus ({e.detail})")
-    return "; ".join(pesan) + "."
-
-
-def _cek_ganti_online(gid: int) -> bool:
-    """Tahap 4. True bila Ganti ONU ini sudah tidak menunggu (selesai / gagal / bukan tahap 4)."""
-    with _ganti_kunci:
-        g = _ganti_baca(gid)
-        if not g or g["status"] != "berjalan" or g["tahap"] not in ("tunggu_online", "bersih"):
-            return True
-        try:
-            online = _sesi_lewat_onu_baru(g)
-        except HTTPException as e:
-            logger.warning(f"Ganti ONU #{gid}: sesi PPPoE belum terbaca: {e.detail}")
-            online = False
-        if not online:
-            if datetime.now() - datetime.fromisoformat(g["diaktifkan"]) > timedelta(minutes=GANTI_TUNGGU_MENIT):
-                pesan = (f"Akun {g['username']} belum online lewat ONU baru dalam {GANTI_TUNGGU_MENIT} menit. ONU lama TIDAK "
-                         "dihapus dari OLT. Periksa ONU baru (sinyal, PPPoE), lalu Lanjutkan.")
-                _ganti_ubah(gid, ("tunggu ONU baru online", False, pesan), status="gagal", pesan=pesan)
-                return True
-            return False
-        _ganti_ubah(gid, tahap="bersih")
-        try:
-            pesan = _ganti_hapus_onu_lama(g)
-        except (_GagalGanti, HTTPException) as e:
-            pesan = str(e.detail if isinstance(e, HTTPException) else e)
-            pesan = f"ONU baru sudah online, tetapi ONU lama gagal dihapus: {pesan} Lanjutkan untuk mencoba lagi."
-            _ganti_ubah(gid, ("bersihkan ONU lama", False, pesan), status="gagal", pesan=pesan)
-            return True
-        _ganti_ubah(gid, ("bersihkan ONU lama", True, f"Akun online lewat ONU baru. {pesan}"), tahap="selesai",
-                    status="selesai", pesan="Selesai.", selesai=datetime.now().isoformat(timespec="seconds"))
-        return True
-
-
-def proses_ganti_onu() -> None:
-    """Loop pemantau: lanjutkan tahap 4 yang tidak lagi dipantau thread, dan tandai Ganti ONU yang terhenti karena
-    INDESO dinyalakan ulang di tengah tahap 1–3 (password tidak disimpan, jadi tidak dilanjutkan otomatis)."""
-    conn = _history_conn()
-    try:
-        rows = conn.execute("SELECT id, tahap FROM ganti_onu WHERE status='berjalan'").fetchall()
-    finally:
-        conn.close()
-    for r in rows:
-        if r["id"] in _ganti_aktif:
-            continue
-        if r["tahap"] in ("tunggu_online", "bersih"):
-            _cek_ganti_online(r["id"])
-        else:
-            with _ganti_kunci:
-                if r["id"] in _ganti_aktif:
-                    continue
-                pesan = "Terhenti karena INDESO dinyalakan ulang di tengah proses. Buka ONU Baru → Lanjutkan."
-                _ganti_ubah(r["id"], (_LABEL_TAHAP.get(r["tahap"], r["tahap"]), False, pesan), status="gagal", pesan=pesan)
-
-
-def _ringkas_ganti(g: sqlite3.Row) -> dict:
-    return {k: g[k] for k in ("id", "dibuat", "oleh", "username", "sn_baru", "pon_baru", "onu_id_baru", "sn_lama", "pon_lama",
-                              "onu_id_lama", "tahap", "status", "pesan", "pppoe_dihapus", "direset", "diaktifkan",
-                              "diperbarui", "selesai")} | {"log": json.loads(g["log"] or "[]")}
-
-
-class GantiOnuIn(BaseModel):
-    username: str
-    password: Optional[str] = None
-    ssid: Optional[str] = None
-    wifi_password: Optional[str] = None
-    akhiran_5g: str = "-5G"
-    tr069: bool = True
-    konfirmasi: Optional[str] = None
-
-
-@app.post("/api/onu-baru/{sn}/ganti-onu")
-def onu_baru_ganti(sn: str, d: GantiOnuIn, request: Request):
-    """Mulai rute Ganti ONU (tahap 1–4 berjalan di latar; pantau lewat GET /api/onu-baru/ganti/{id})."""
-    _wajib_admin(request)
-    _baris_onu_baru(sn)
-    user = (d.username or "").strip()
-    if (d.konfirmasi or "").strip().lower() != user.lower() or not user:
-        raise HTTPException(status_code=400, detail="Ketik ulang username PPPoE untuk memastikan akun yang dipindah.")
-    ssid, akhir = _cek_wifi_baru(d)
-    cek = _periksa_aktivasi(sn, user)
-    if cek["mode"] != "ganti":
-        raise HTTPException(status_code=409, detail=cek["pesan"] or "Akun ini tidak terpasang di ONU lain: pakai aktivasi biasa.")
-    if not cek["siap"]:
-        raise HTTPException(status_code=409, detail=cek["pesan"])
-    o, x = _alamat_onu_baru(sn), cek["lama"]
-    sekarang = datetime.now().isoformat(timespec="seconds")
-    with _ganti_kunci:
-        conn = _history_conn()
-        try:
-            if conn.execute("SELECT 1 FROM ganti_onu WHERE status='berjalan' AND (lower(username)=lower(?) OR sn_baru IN (?,?) "
-                            "OR sn_lama IN (?,?))", (user, sn.upper(), x["sn"], sn.upper(), x["sn"])).fetchone():
-                raise HTTPException(status_code=409, detail="Ganti ONU untuk akun / ONU ini sedang berjalan.")
-            gid = conn.execute(
-                "INSERT INTO ganti_onu (dibuat, oleh, username, sn_baru, pon_baru, onu_id_baru, sn_lama, pon_lama, "
-                "onu_id_lama, mac_lama, tahap, status, pesan, diperbarui) VALUES (?,?,?,?,?,?,?,?,?,?,'periksa','berjalan',?,?)",
-                (sekarang, _oleh(request), user, sn.upper(), o.pon, o.onu_id, x["sn"], x["pon"], x["onu_id"], x["mac"],
-                 "Dimulai.", sekarang)).lastrowid
-            _ganti_aktif.add(gid)                # sebelum commit: loop pemantau tidak mengira ini sisa INDESO restart
-            conn.commit()
-        finally:
-            conn.close()
-    _ganti_ubah(gid, ("periksa", True, f"ONU lama {x['sn']} (PON {x['pon']} ONU {x['onu_id']}, "
-                                       f"{'online' if x['online'] else 'offline'}, PPPoE "
-                                       f"{'tersimpan di OLT' if x.get('wan_olt') else 'tidak dari OLT'}) → ONU baru "
-                                       f"{sn.upper()} (PON {o.pon} ONU {o.onu_id})."))
-    _mulai_latar(_jalankan_ganti_onu, gid, {"sandi": d.password or None, "ssid": ssid, "pw": d.wifi_password,
-                                            "akhir": akhir, "tr069": d.tr069})
-    return {"id": gid}
-
-
-@app.get("/api/onu-baru/ganti")
-def onu_baru_ganti_daftar(request: Request):
-    _wajib_admin(request)
-    batas = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
-    conn = _history_conn()
-    try:
-        rows = conn.execute("SELECT * FROM ganti_onu WHERE status<>'selesai' OR dibuat>=? ORDER BY id DESC LIMIT 50",
-                            (batas,)).fetchall()
-    finally:
-        conn.close()
-    return {"ganti": [_ringkas_ganti(g) for g in rows]}
-
-
-@app.get("/api/onu-baru/ganti/{gid}")
-def onu_baru_ganti_status(gid: int, request: Request):
-    _wajib_admin(request)
-    g = _ganti_baca(gid)
-    if not g:
-        raise HTTPException(status_code=404, detail="Ganti ONU tidak ditemukan.")
-    return dict(_ringkas_ganti(g), berjalan=gid in _ganti_aktif)
-
-
-class LanjutGantiIn(BaseModel):
-    password: Optional[str] = None
-    ssid: Optional[str] = None
-    wifi_password: Optional[str] = None
-    akhiran_5g: str = "-5G"
-    tr069: bool = True
-
-
-@app.post("/api/onu-baru/ganti/{gid}/lanjut")
-def onu_baru_ganti_lanjut(gid: int, d: LanjutGantiIn, request: Request):
-    """Lanjutkan Ganti ONU yang gagal dari tahap yang gagal (tahap yang sudah beres tidak diulang)."""
-    _wajib_admin(request)
-    ssid, akhir = _cek_wifi_baru(d)
-    with _ganti_kunci:
-        g = _ganti_baca(gid)
-        if not g:
-            raise HTTPException(status_code=404, detail="Ganti ONU tidak ditemukan.")
-        if g["status"] != "gagal" or gid in _ganti_aktif:
-            raise HTTPException(status_code=409, detail="Hanya Ganti ONU yang gagal yang bisa dilanjutkan.")
-        _ganti_aktif.add(gid)
-        _ganti_ubah(gid, ("lanjutkan", True, f"Dilanjutkan oleh {_oleh(request)}."), status="berjalan", pesan="Dilanjutkan.")
-    if g["diaktifkan"]:
-        # Tahap 4 saja: hitungan 60 menit dimulai lagi dari sekarang.
-        _ganti_ubah(gid, tahap="tunggu_online", diaktifkan=datetime.now().isoformat(timespec="seconds"))
-    _mulai_latar(_jalankan_ganti_onu, gid, {"sandi": d.password or None, "ssid": ssid, "pw": d.wifi_password,
-                                            "akhir": akhir, "tr069": d.tr069})
-    return {"id": gid}
-
-
-class ResetPabrikIn(BaseModel):
-    konfirmasi: str          # nomor seri ONU, diketik ulang
-
-
-@app.post("/api/onu-baru/{sn}/reset-pabrik")
-def onu_baru_reset_pabrik(sn: str, d: ResetPabrikIn, request: Request):
-    """ONU bekas (mis. ONU lama dari Ganti ONU yang menyala lagi): reset pabrik lewat OLT sebelum dipakai ulang.
-    ONU yang sedang dipakai pelanggan ditolak: pakai Reset & isi ulang dari OLT."""
-    _wajib_admin(request)
-    _baris_onu_baru(sn)
-    o = _alamat_onu_baru(sn)
-    if (d.konfirmasi or "").strip().upper() != sn.upper():
-        raise HTTPException(status_code=400, detail="Ketik ulang nomor seri ONU untuk konfirmasi reset pabrik.")
-    if not o.online:
-        raise HTTPException(status_code=409, detail="ONU offline: reset pabrik hanya bisa saat ONU menyala.")
-    bekas = _bekas_ganti().get(sn.upper())
-    if o.pppoe_username and not (bekas and bekas["username"].lower() == o.pppoe_username.lower()):
-        raise HTTPException(status_code=409, detail=f"ONU ini sedang dipakai akun {o.pppoe_username}: pakai Reset & isi "
-                                                    "ulang dari OLT supaya pelanggan tidak kehilangan internet.")
-    olt_reboot_onu(o.pon, o.onu_id, pabrik=True)
-    catat_aktivitas(_oleh(request), "onu_reset_pabrik", f"ONU {sn.upper()} ({o.pon} onu {o.onu_id}) reset pabrik lewat OLT"
-                    + (f" — bekas akun {bekas['username']}" if bekas else ""))
-    return {"ok": True}
-
-
-def _bekas_ganti() -> dict:
-    """SN ONU lama dari Ganti ONU -> {username, tanggal, sn_baru} (yang terbaru)."""
-    conn = _history_conn()
-    try:
-        rows = conn.execute("SELECT sn_lama, username, dibuat, sn_baru FROM ganti_onu ORDER BY id").fetchall()
-    finally:
-        conn.close()
-    return {r["sn_lama"]: {"username": r["username"], "tanggal": r["dibuat"], "sn_baru": r["sn_baru"]} for r in rows}
-
-
 class AmbilOnuIn(BaseModel):
     cari: str      # username PPPoE atau nomor seri ONU
 
@@ -12941,7 +12092,7 @@ class AmbilOnuIn(BaseModel):
 @app.post("/api/onu-baru/ambil")
 def onu_baru_ambil(d: AmbilOnuIn, request: Request):
     """Masukkan ONU pelanggan lama (mis. PPPoE diisi di web ONU, belum lapor ACS) ke daftar ONU Baru supaya
-    bisa diisi ulang dari OLT."""
+    bisa dikirimi TR-069 / diatur WiFi-nya dari daftar itu."""
     _wajib_admin(request)
     cari = (d.cari or "").strip().lower()
     o = next((x for x in (_latest_data.onu_list if _latest_data else [])
@@ -12962,7 +12113,7 @@ def onu_baru_ambil(d: AmbilOnuIn, request: Request):
     finally:
         conn.close()
     catat_aktivitas(_oleh(request), "onu_baru_ambil", f"ONU {sn} ({o.pon} onu {o.onu_id}"
-                    + (f", {o.pppoe_username}" if o.pppoe_username else "") + ") dimasukkan ke ONU Baru untuk diisi ulang")
+                    + (f", {o.pppoe_username}" if o.pppoe_username else "") + ") dimasukkan ke ONU Baru")
     return {"sn": sn, "username": o.pppoe_username}
 
 
@@ -13031,47 +12182,6 @@ def _nilai_wifi_utama(doc: dict, ssid: str, pw: str, akhir: str) -> tuple[list, 
     return nilai, diatur
 
 
-# WiFi ONU baru yang menunggu ONU lapor ke ACS. WiFi selalu lewat ACS, tidak lewat OLT (`ont wifi`): spasi & tanda
-# khusus boleh, dan Huawei mengabaikan WiFi dari OLT. Hanya di memori: password tidak pernah ditulis ke disk. Hilang
-# bila INDESO restart; ceklis "WiFi diatur" lalu tetap ✗ dan WiFi bisa diatur lewat tombol Atur WiFi.
-_wifi_tertunda: dict = {}
-WIFI_TERTUNDA_MENIT = 60
-
-
-def terapkan_wifi_tertunda() -> None:
-    """Dipanggil loop pemantau: kirim WiFi tertunda begitu ONU lapor ke ACS setelah perintah dari OLT."""
-    if not _wifi_tertunda or not _acs_aktif():
-        return
-    for sn, t in list(_wifi_tertunda.items()):
-        if time.monotonic() - t["mulai"] > WIFI_TERTUNDA_MENIT * 60:
-            _wifi_tertunda.pop(sn, None)
-            catat_aktivitas(t["oleh"], "onu_wifi", f"ONU {sn}: WiFi {t['ssid']} tidak terkirim — ONU belum lapor ke ACS "
-                                                   f"dalam {WIFI_TERTUNDA_MENIT} menit. Atur lewat tombol Atur WiFi.")
-            continue
-        try:
-            o = _onu_live(sn)
-            doc = _doc_acs_onu(sn, o.pppoe_username if o else None)
-        except HTTPException as e:
-            logger.warning(f"WiFi tertunda {sn}: ONU belum terbaca di ACS: {e.detail}")
-            continue
-        # Hanya laporan SETELAH perintah dikirim (ONU yang direset melapor ulang dengan WiFi bawaan pabrik), dan
-        # ±1 menit setelahnya supaya sesi lapor pertama (provision memasang kredensial ketukan) sudah selesai.
-        if not doc or str(doc.get("_lastInform") or "") < t["sejak"] or (_lapor_terakhir_detik(doc.get("_lastInform")) or 0) < 60:
-            continue
-        # Satu kali kirim, tanpa antre dan tanpa diulang otomatis: gagal → admin mengulang lewat tombol Atur WiFi.
-        _wifi_tertunda.pop(sn, None)
-        try:
-            nilai, diatur = _nilai_wifi_utama(doc, t["ssid"], t["pw"], t["akhir"])
-            _bersihkan_tertahan(doc["_id"])
-            _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai}, tunggu=15)
-        except HTTPException as e:
-            catat_aktivitas(t["oleh"], "onu_wifi", f"ONU baru {sn} ({doc['_id']}): WiFi {t['ssid']} GAGAL dikirim lewat "
-                                                   f"ACS ({e.detail}). Atur lewat tombol Atur WiFi.")
-            continue
-        _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=t["ssid"])
-        catat_aktivitas(t["oleh"], "onu_wifi", f"ONU baru {sn} ({doc['_id']}) WiFi lewat ACS: {', '.join(diatur)}")
-
-
 @app.post("/api/onu-baru/{sn}/wifi")
 def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
     """Atur nama & password semua WiFi yang aktif di ONU sekaligus (2,4 GHz dan 5 GHz)."""
@@ -13086,7 +12196,6 @@ def onu_baru_wifi(sn: str, d: WifiBaruIn, request: Request):
     nilai, diatur = _nilai_wifi_utama(doc, ssid, pw, akhir)
     _bersihkan_tertahan(doc["_id"])
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
-    _wifi_tertunda.pop(sn.upper(), None)
     _ubah_onu_baru(sn, wifi=datetime.now().isoformat(timespec="seconds"), wifi_ssid=ssid)
     catat_aktivitas(_oleh(request), "onu_wifi", f"ONU baru {sn.upper()} ({doc['_id']}) WiFi: {', '.join(diatur)}")
     return dict(hasil, diatur=diatur)
