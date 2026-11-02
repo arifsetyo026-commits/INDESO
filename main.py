@@ -2136,7 +2136,8 @@ _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 
 # Alamat yang boleh dibuka tanpa login, dan yang boleh dibuka akun mitra.
 # Selain itu: tanpa login -> 401/ke halaman login, mitra -> 403.
-_JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|api/login|api/setup|api/setup-status|healthz)$")
+_JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|api/login|api/setup|api/setup-status|healthz"
+                           r"|portal|api/portal/login|api/portal/daftar)$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
 
 
@@ -2195,6 +2196,28 @@ def init_akun_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sesi_user ON sesi(username)")
+        # Akun portal pelanggan: terpisah dari akun staf (tabel, sesi, dan cookie sendiri), jadi sesi
+        # pelanggan tidak pernah bisa membuka API staf. status: menunggu (belum disetujui admin) / aktif / nonaktif.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portal_akun (
+                login TEXT PRIMARY KEY COLLATE NOCASE,
+                pelanggan TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'menunggu',
+                no_hp TEXT,
+                dibuat TEXT NOT NULL,
+                disetujui TEXT,
+                login_terakhir TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS portal_sesi (
+                token_hash TEXT PRIMARY KEY,
+                login TEXT NOT NULL,
+                dibuat TEXT NOT NULL,
+                terakhir_aktif TEXT NOT NULL
+            )
+        """)
         # Impor sekali dari .env (cara lama). Setelah tabel akun terisi, akun
         # dikelola dari menu Pengaturan dan isian akun di .env tidak dipakai lagi.
         if conn.execute("SELECT COUNT(*) FROM akun").fetchone()[0] == 0:
@@ -2340,7 +2363,15 @@ async def wajib_login(request: Request, call_next):
     if request.method not in ("GET", "HEAD", "OPTIONS") and not _asal_sah(request):
         return JSONResponse({"detail": "Permintaan ditolak (asal tidak sah)."}, status_code=403)
 
-    if not _JALUR_PUBLIK.match(jalur):
+    if jalur.startswith("/api/portal/") and not _JALUR_PUBLIK.match(jalur):
+        # Portal pelanggan: hanya sesi portal (cookie sendiri) yang berlaku di sini, dan sesi portal tidak
+        # berlaku di jalur lain mana pun.
+        akun = await asyncio.to_thread(_ambil_sesi_portal, request.cookies.get(_COOKIE_PORTAL, ""))
+        if akun is None:
+            return JSONResponse({"detail": "Sesi berakhir, silakan masuk lagi."}, status_code=401)
+        request.state.portal = akun
+        request.state.user = "portal:" + akun["login"]
+    elif not _JALUR_PUBLIK.match(jalur):
         sesi = await asyncio.to_thread(_ambil_sesi, request.state.token)
         if sesi is None:
             if jalur.startswith("/api/"):
@@ -7001,6 +7032,95 @@ def mitra_list_pelanggan(periode: str, request: Request):
             "awal": awal_mitra}
 
 
+def _xlsx(baris: list, lebar: list, tebal: set) -> bytes:
+    """Berkas Excel (.xlsx) satu lembar tanpa pustaka tambahan. Semua teks disimpan sebagai teks (bukan rumus),
+    jadi isi sel seperti '=...' tidak pernah dijalankan Excel. `tebal` = nomor baris (0-based) yang dicetak tebal."""
+    import zipfile
+    from xml.sax.saxutils import escape as x
+
+    def kolom(i):
+        n = ""
+        i += 1
+        while i:
+            i, r = divmod(i - 1, 26)
+            n = chr(65 + r) + n
+        return n
+    isi = []
+    for ri, b in enumerate(baris):
+        sel = []
+        for ci, v in enumerate(b):
+            ref, st = f"{kolom(ci)}{ri + 1}", ' s="1"' if ri in tebal else ""
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                sel.append(f'<c r="{ref}"{st}><v>{v}</v></c>')
+            elif v not in (None, ""):
+                t = x(str(v)).replace("\r", "")
+                sel.append(f'<c r="{ref}" t="inlineStr"{st}><is><t xml:space="preserve">{t}</t></is></c>')
+        isi.append(f'<row r="{ri + 1}">{"".join(sel)}</row>')
+    cols = "".join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(lebar))
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    berkas = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        "xl/workbook.xml": f'<?xml version="1.0" encoding="UTF-8"?><workbook {ns} xmlns:r="{rel}"><sheets>'
+        '<sheet name="Pelanggan" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels": '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/>'
+        f'<Relationship Id="rId2" Type="{rel}/styles" Target="styles.xml"/></Relationships>',
+        "xl/styles.xml": f'<?xml version="1.0" encoding="UTF-8"?><styleSheet {ns}>'
+        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+        '<borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>'
+        '<cellXfs count="2"><xf fontId="0" xfId="0"/><xf fontId="1" xfId="0" applyFont="1"/></cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
+        "xl/worksheets/sheet1.xml": f'<?xml version="1.0" encoding="UTF-8"?><worksheet {ns}><cols>{cols}</cols>'
+        f'<sheetData>{"".join(isi)}</sheetData></worksheet>',
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for nama, data in berkas.items():
+            z.writestr(nama, data)
+    return buf.getvalue()
+
+
+@app.get("/api/mitra/ekspor")
+def mitra_ekspor(periode: str, request: Request):
+    """Daftar pelanggan mitra satu bulan + ringkasan komisi sebagai berkas Excel. Isinya sama persis dengan yang
+    tampil di HP mitra (pelanggan gratis yang dihitung komisi tetap tampil lunas, tanpa catatan internal)."""
+    d = mitra_list_pelanggan(periode, request)
+    periode, ins, hari = d["periode"], d["insentif"], datetime.now().strftime("%Y-%m-%d")
+    baris = [[f"Pelanggan mitra {d['akun']}: tagihan {_nama_periode(periode)}"],
+             [f"Diekspor {datetime.now().strftime('%Y-%m-%d %H:%M')}"], [],
+             ["No", "Nama", "Username", "Paket", "Alamat", "No. HP", "Status bayar", "Tanggal bayar", "Jatuh tempo",
+              "Keterangan"]]
+    lunas = belum = 0
+    for i, p in enumerate(d["pelanggan"], 1):
+        if p["status_bayar"] == "lunas":
+            status, lunas = "Lunas", lunas + 1
+        elif p["status_bayar"] == "belum":
+            status, belum = ("Terlambat" if (p["jatuh_tempo"] or "") < hari else "Belum bayar"), belum + 1
+        else:
+            status = "Gratis" if p["gratis"] else "Belum ada tagihan"
+        ket = ", ".join(k for k, ya in (("Berhenti", p["status"] == "berhenti"), ("Isolir", p["terisolir"])) if ya)
+        baris.append([i, p["nama"], p["username"], p["paket"], p["alamat"], p["no_hp"], status,
+                      p["tgl_bayar"] or "", p["jatuh_tempo"] or "", ket])
+    awal_ringkas = len(baris) + 1
+    baris += [[], ["Ringkasan"], ["Sudah bayar", lunas], ["Belum bayar", belum],
+              [f"Komisi hasil kerja {_nama_periode(ins['kerja_bulan'])}", ins["total"]],
+              ["Komisi sudah dibayar", ins["dibayar"]], ["Komisi belum dibayar", ins["sisa"]],
+              ["Status komisi", "final" if ins["final"] else "masih berjalan, final saat tutup buku"]]
+    catat_aktivitas(_oleh(request), "ekspor", f"Excel pelanggan mitra {periode} ({len(d['pelanggan'])} baris)")
+    isi = _xlsx(baris, [5, 26, 16, 12, 30, 15, 13, 13, 12, 16], {0, 3, awal_ringkas})
+    return Response(isi, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="pelanggan-mitra-{periode}.xlsx"'})
+
+
 class KontakIn(BaseModel):
     nama: str
     alamat: Optional[str] = None
@@ -7402,6 +7522,343 @@ class TiketMitraIn(BaseModel):
 def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
     return _buat_tiket(TiketIn(username=d.username, kategori=d.kategori, keterangan=d.keterangan),
                        _oleh(request), hanya_mitra=True)
+
+
+# ============================================================
+# PORTAL PELANGGAN (/portal)
+# ============================================================
+# Pelanggan mendaftar sendiri (ID pelanggan = username internet + nomor HP yang tercatat), lalu admin menyetujui
+# di menu Pelanggan → Akun portal. Akun, sesi, dan cookie terpisah dari akun staf. Pelanggan hanya melihat
+# datanya sendiri: tagihan, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi), gangguan.
+# Sandi WiFi tidak pernah ditampilkan: ONU tidak mengirimkannya balik ke ACS.
+
+_COOKIE_PORTAL = "indeso_portal"
+_PORTAL_SESI_HARI = 30
+_BATAS_GANTI_WIFI = 5            # per pelanggan per jam
+_ganti_wifi_portal: dict[str, list[datetime]] = {}
+
+
+def _hp_baku(hp: Optional[str]) -> str:
+    n = re.sub(r"\D", "", hp or "")
+    return "0" + n[2:] if n.startswith("62") else ("0" + n if n.startswith("8") else n)
+
+
+def _ambil_sesi_portal(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    sekarang = datetime.now()
+    th = _hash_token(token)
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT s.login, s.terakhir_aktif, a.pelanggan FROM portal_sesi s JOIN portal_akun a "
+                         "ON a.login = s.login WHERE s.token_hash = ? AND a.status = 'aktif'", (th,)).fetchone()
+        if not r:
+            return None
+        if sekarang - datetime.fromisoformat(r["terakhir_aktif"]) > timedelta(days=_PORTAL_SESI_HARI):
+            conn.execute("DELETE FROM portal_sesi WHERE token_hash = ?", (th,))
+            conn.commit()
+            return None
+        if sekarang - datetime.fromisoformat(r["terakhir_aktif"]) > timedelta(hours=1):
+            conn.execute("UPDATE portal_sesi SET terakhir_aktif = ? WHERE token_hash = ?",
+                         (sekarang.isoformat(timespec="seconds"), th))
+            conn.commit()
+        return {"login": r["login"], "pelanggan": r["pelanggan"]}
+    finally:
+        conn.close()
+
+
+def _cabut_sesi_portal(login: str, kecuali: Optional[str] = None) -> int:
+    conn = _billing_conn()
+    try:
+        n = conn.execute("DELETE FROM portal_sesi WHERE login = ? AND token_hash != ?",
+                         (login, _hash_token(kecuali) if kecuali else "")).rowcount
+        conn.commit()
+        return n
+    finally:
+        conn.close()
+
+
+@app.get("/portal")
+async def halaman_portal():
+    return FileResponse(os.path.join(BASE_DIR, "portal.html"), headers={"Cache-Control": "no-cache"})
+
+
+class PortalDaftarIn(BaseModel):
+    pelanggan: str
+    no_hp: str
+    login: str
+    password: str
+
+
+@app.post("/api/portal/daftar")
+def portal_daftar(d: PortalDaftarIn, request: Request):
+    sekarang, kunci = datetime.now(), f"portal-daftar:{_ip(request)}"
+    menit = _terkunci(kunci, 5, sekarang)
+    if menit:
+        raise HTTPException(status_code=429, detail=f"Terlalu banyak percobaan. Coba lagi dalam {menit} menit.")
+    login = d.login.strip()
+    if not _POLA_USERNAME.match(login):
+        raise HTTPException(status_code=400, detail="Nama login 3-32 karakter: huruf, angka, titik, minus, garis bawah.")
+    _cek_password_baru(d.password)
+    conn = _billing_conn()
+    try:
+        p = conn.execute("SELECT username, nama, no_hp FROM pelanggan WHERE username = ? COLLATE NOCASE "
+                         "AND status = 'aktif'", (d.pelanggan.strip(),)).fetchone()
+        # Pesan sama untuk ID salah maupun nomor HP salah, supaya data pelanggan tidak bisa ditebak.
+        if not p or not _hp_baku(p["no_hp"]) or _hp_baku(p["no_hp"]) != _hp_baku(d.no_hp):
+            _catat_gagal(kunci, sekarang)
+            raise HTTPException(status_code=400, detail="Data tidak cocok dengan catatan kami. Periksa ID pelanggan "
+                                                        "(username internet) dan nomor HP, atau hubungi admin.")
+        if conn.execute("SELECT 1 FROM portal_akun WHERE pelanggan = ?", (p["username"],)).fetchone():
+            raise HTTPException(status_code=409, detail="Pelanggan ini sudah punya akun (atau sedang menunggu "
+                                                        "persetujuan). Hubungi admin bila lupa password.")
+        try:
+            conn.execute("INSERT INTO portal_akun (login, pelanggan, password_hash, status, no_hp, dibuat) "
+                         "VALUES (?,?,?,'menunggu',?,?)", (login, p["username"], _hash_password(d.password),
+                                                           _hp_baku(d.no_hp), _sekarang_str()))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="Nama login sudah dipakai, pilih yang lain.")
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas("portal:" + login, "portal_daftar", f"untuk pelanggan {p['username']} dari {_ip(request)}")
+    kirim_telegram_ke(str(CONFIG["TELEGRAM_CHAT_ID"]),
+                      f"👤 <b>Pendaftaran akun portal</b>\n{_esc(p['nama'] or p['username'])} ({_esc(p['username'])}) "
+                      f"mendaftar dengan login <b>{_esc(login)}</b>.\nSetujui di menu Pelanggan → Akun portal.")
+    return {"ok": True, "pesan": "Pendaftaran terkirim. Akun bisa dipakai setelah disetujui admin."}
+
+
+@app.post("/api/portal/login")
+def portal_login(d: LoginIn, request: Request):
+    login, sekarang, ip = d.username.strip(), datetime.now(), _ip(request)
+    for kunci, batas in ((f"portal-ip:{ip}", _BATAS_GAGAL["ip"]), (f"portal-user:{login.lower()}", _BATAS_GAGAL["user"])):
+        menit = _terkunci(kunci, batas, sekarang)
+        if menit:
+            raise HTTPException(status_code=429, detail=f"Terlalu banyak percobaan gagal. Coba lagi dalam {menit} menit.")
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT login, password_hash, status FROM portal_akun WHERE login = ?", (login,)).fetchone()
+    finally:
+        conn.close()
+    if not (_cek_password(d.password, r["password_hash"] if r else _HASH_PALSU) and r is not None):
+        _catat_gagal(f"portal-ip:{ip}", sekarang)
+        _catat_gagal(f"portal-user:{login.lower()}", sekarang)
+        raise HTTPException(status_code=401, detail="Nama login atau password salah.")
+    if r["status"] != "aktif":
+        raise HTTPException(status_code=403, detail="Akun belum disetujui admin." if r["status"] == "menunggu"
+                            else "Akun ini sedang dinonaktifkan. Hubungi admin.")
+    _gagal_login.pop(f"portal-user:{login.lower()}", None)
+    token, waktu = secrets.token_urlsafe(32), sekarang.isoformat(timespec="seconds")
+    conn = _billing_conn()
+    try:
+        conn.execute("DELETE FROM portal_sesi WHERE terakhir_aktif < ?",
+                     ((sekarang - timedelta(days=_PORTAL_SESI_HARI)).isoformat(timespec="seconds"),))
+        conn.execute("INSERT INTO portal_sesi (token_hash, login, dibuat, terakhir_aktif) VALUES (?,?,?,?)",
+                     (_hash_token(token), r["login"], waktu, waktu))
+        conn.execute("UPDATE portal_akun SET login_terakhir = ? WHERE login = ?", (_sekarang_str(), r["login"]))
+        conn.commit()
+    finally:
+        conn.close()
+    resp = JSONResponse({"ok": True})
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    resp.set_cookie(_COOKIE_PORTAL, token, httponly=True, samesite="strict", secure=https,
+                    max_age=_PORTAL_SESI_HARI * 86400, path="/")
+    return resp
+
+
+@app.post("/api/portal/logout")
+def portal_logout(request: Request):
+    conn = _billing_conn()
+    try:
+        conn.execute("DELETE FROM portal_sesi WHERE token_hash = ?",
+                     (_hash_token(request.cookies.get(_COOKIE_PORTAL, "")),))
+        conn.commit()
+    finally:
+        conn.close()
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_COOKIE_PORTAL, path="/")
+    return resp
+
+
+@app.post("/api/portal/password")
+def portal_ganti_password(d: GantiPasswordIn, request: Request):
+    _cek_password_baru(d.baru)
+    login = request.state.portal["login"]
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT password_hash FROM portal_akun WHERE login = ?", (login,)).fetchone()
+        if not r or not _cek_password(d.lama, r["password_hash"]):
+            raise HTTPException(status_code=400, detail="Password lama salah.")
+        conn.execute("UPDATE portal_akun SET password_hash = ? WHERE login = ?", (_hash_password(d.baru), login))
+        conn.commit()
+    finally:
+        conn.close()
+    _cabut_sesi_portal(login, kecuali=request.cookies.get(_COOKIE_PORTAL, ""))
+    return {"ok": True}
+
+
+@app.get("/api/portal/saya")
+def portal_saya(request: Request):
+    u = request.state.portal["pelanggan"]
+    _siapkan_tabel_isolir()
+    conn = _billing_conn()
+    try:
+        p = conn.execute("SELECT p.username, p.nama, p.alamat, k.nama AS paket, k.kecepatan_mbps FROM pelanggan p "
+                         "LEFT JOIN paket k ON k.id = p.paket_id WHERE p.username = ?", (u,)).fetchone()
+        tagihan = conn.execute("SELECT periode, jumlah, status, jatuh_tempo, tgl_bayar, metode_bayar FROM tagihan "
+                               "WHERE username = ? ORDER BY periode DESC LIMIT 12", (u,)).fetchall()
+        isolir = conn.execute("SELECT 1 FROM isolir WHERE username = ?", (u,)).fetchone() is not None
+    finally:
+        conn.close()
+    if not p:
+        raise HTTPException(status_code=404, detail="Data pelanggan tidak ditemukan. Hubungi admin.")
+    sesi = next((x for x in (_latest_data.pppoe_users if _latest_data else []) if x.username == u), None)
+    hari = datetime.now().strftime("%Y-%m-%d")
+    daftar = [{"periode": t["periode"], "jumlah": t["jumlah"], "lunas": t["status"] == "lunas",
+               "terlambat": t["status"] != "lunas" and t["jatuh_tempo"] < hari, "jatuh_tempo": t["jatuh_tempo"],
+               "tgl_bayar": t["tgl_bayar"], "metode": _METODE_LABEL.get(t["metode_bayar"] or "", t["metode_bayar"])
+               if t["status"] == "lunas" else None} for t in tagihan]
+    return {"login": request.state.portal["login"], "nama": p["nama"], "username": p["username"],
+            "alamat": p["alamat"], "paket": p["paket"], "kecepatan_mbps": p["kecepatan_mbps"],
+            "internet": {"diketahui": _latest_data is not None, "online": sesi is not None,
+                         "uptime": sesi.uptime if sesi else None, "isolir": isolir},
+            "tagihan": daftar, "belum_bayar": sum(t["jumlah"] for t in daftar if not t["lunas"]),
+            "usaha": CONFIG["NAMA_USAHA"], "info_bayar": CONFIG["INFO_BAYAR"]}
+
+
+@app.get("/api/portal/wifi")
+def portal_wifi(request: Request):
+    """Ringkas: nama WiFi, menyala/tidak, jumlah perangkat tersambung. Tanpa sandi, MAC, atau data teknis."""
+    if not _acs_aktif():
+        return {"tersedia": False, "pesan": "Pengaturan WiFi dari sini belum tersedia."}
+    doc = _cari_perangkat(request.state.portal["pelanggan"])
+    if not doc:
+        return {"tersedia": False, "pesan": "Modem Anda belum terhubung ke sistem kami. Hubungi admin."}
+    info = _ringkas_perangkat(doc)
+    menit = _lapor_terakhir_menit(info["lapor_terakhir"])
+    wifi = [{"index": w["index"], "nama": w["ssid"], "band": w["band"], "aktif": w["aktif"], "perangkat": w["klien"] or 0,
+             "bisa_ganti_sandi": w["bisa_ganti_password"]} for w in info["wifi"]]
+    return {"tersedia": True, "wifi": wifi, "perangkat": sum(w["perangkat"] for w in wifi if w["aktif"]),
+            "menit_lalu": menit, "diam": menit is not None and menit > _batas_diam_menit()}
+
+
+class PortalWifiIn(BaseModel):
+    index: int
+    nama: Optional[str] = None
+    sandi: Optional[str] = None
+
+
+@app.post("/api/portal/wifi")
+def portal_ganti_wifi(d: PortalWifiIn, request: Request):
+    u, sekarang = request.state.portal["pelanggan"], datetime.now()
+    riwayat = [t for t in _ganti_wifi_portal.get(u, []) if sekarang - t < timedelta(hours=1)]
+    if len(riwayat) >= _BATAS_GANTI_WIFI:
+        raise HTTPException(status_code=429, detail="Terlalu sering mengganti WiFi. Coba lagi satu jam lagi.")
+    hasil = _ganti_wifi(u, WifiIn(index=d.index, ssid=d.nama, password=d.sandi), _oleh(request))
+    _ganti_wifi_portal[u] = riwayat + [sekarang]
+    return hasil
+
+
+@app.get("/api/portal/tiket")
+def portal_tiket(request: Request):
+    conn = _billing_conn()
+    try:
+        rows = conn.execute("SELECT id, kategori, keterangan, status, dibuat_pada, selesai_pada, solusi FROM tiket "
+                            "WHERE username = ? AND (status IN ('baru','dikerjakan') OR dibuat_pada >= ?) "
+                            "ORDER BY id DESC LIMIT 20",
+                            (request.state.portal["pelanggan"],
+                             (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S"))).fetchall()
+    finally:
+        conn.close()
+    # Catatan pembatalan bisa berisi catatan internal: pelanggan hanya melihat solusi tiket yang selesai.
+    return {"kategori": list(_KATEGORI_TIKET),
+            "tiket": [{**dict(r), "solusi": r["solusi"] if r["status"] == "selesai" else None} for r in rows]}
+
+
+class PortalTiketIn(BaseModel):
+    kategori: str
+    keterangan: Optional[str] = None
+
+
+@app.post("/api/portal/tiket")
+def portal_lapor(d: PortalTiketIn, request: Request):
+    return _buat_tiket(TiketIn(username=request.state.portal["pelanggan"], kategori=d.kategori,
+                               keterangan=d.keterangan), _oleh(request))
+
+
+# --- Kelola akun portal (admin) ---
+
+@app.get("/api/portal-akun")
+def list_portal_akun(request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        rows = conn.execute("SELECT a.login, a.pelanggan, a.status, a.no_hp, a.dibuat, a.disetujui, a.login_terakhir, "
+                            "p.nama FROM portal_akun a LEFT JOIN pelanggan p ON p.username = a.pelanggan "
+                            "ORDER BY CASE a.status WHEN 'menunggu' THEN 0 ELSE 1 END, a.dibuat DESC").fetchall()
+    finally:
+        conn.close()
+    return {"akun": [dict(r) for r in rows]}
+
+
+class PortalStatusIn(BaseModel):
+    status: str
+
+
+@app.post("/api/portal-akun/{login}/status")
+def ubah_portal_akun(login: str, d: PortalStatusIn, request: Request):
+    _wajib_admin(request)
+    if d.status not in ("aktif", "nonaktif"):
+        raise HTTPException(status_code=400, detail="Status harus aktif atau nonaktif.")
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT login, status, pelanggan FROM portal_akun WHERE login = ?", (login,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Akun portal tidak ditemukan.")
+        setuju = r["status"] == "menunggu" and d.status == "aktif"
+        conn.execute("UPDATE portal_akun SET status = ?" + (", disetujui = ?" if setuju else "") + " WHERE login = ?",
+                     (d.status, f"{_sekarang_str()} oleh {_oleh(request)}", r["login"]) if setuju else (d.status, r["login"]))
+        conn.commit()
+    finally:
+        conn.close()
+    if d.status != "aktif":
+        _cabut_sesi_portal(r["login"])
+    catat_aktivitas(_oleh(request), "portal_akun", f"{r['login']} ({r['pelanggan']}): "
+                    + ("disetujui" if setuju else d.status))
+    return {"ok": True}
+
+
+@app.post("/api/portal-akun/{login}/password")
+def reset_portal_password(login: str, d: ResetPasswordIn, request: Request):
+    _wajib_admin(request)
+    _cek_password_baru(d.baru)
+    conn = _billing_conn()
+    try:
+        n = conn.execute("UPDATE portal_akun SET password_hash = ? WHERE login = ?", (_hash_password(d.baru), login)).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not n:
+        raise HTTPException(status_code=404, detail="Akun portal tidak ditemukan.")
+    _cabut_sesi_portal(login)
+    catat_aktivitas(_oleh(request), "portal_akun", f"{login}: reset password")
+    return {"ok": True}
+
+
+@app.delete("/api/portal-akun/{login}")
+def hapus_portal_akun(login: str, request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        n = conn.execute("DELETE FROM portal_akun WHERE login = ?", (login,)).rowcount
+        conn.execute("DELETE FROM portal_sesi WHERE login = ?", (login,))
+        conn.commit()
+    finally:
+        conn.close()
+    if not n:
+        raise HTTPException(status_code=404, detail="Akun portal tidak ditemukan.")
+    catat_aktivitas(_oleh(request), "portal_akun", f"{login}: dihapus")
+    return {"ok": True}
 
 
 # --- Pengingat: tiket terbuka terlalu lama ---
@@ -9620,6 +10077,11 @@ def _lebar_kanal(doc: dict, b: str) -> tuple[list[tuple[str, Optional[dict]]], O
 @app.post("/api/acs/{username}/wifi")
 def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     _wajib_admin(request)
+    return _ganti_wifi(username, d, _oleh(request))
+
+
+def _ganti_wifi(username: str, d: WifiIn, oleh: str) -> dict:
+    """Ganti nama/password/lebar kanal satu WiFi lewat ACS (dipakai admin dan portal pelanggan)."""
     ssid = (d.ssid or "").strip()
     pw = d.password or ""
     lebar = (d.lebar or "").strip() or None
@@ -9658,7 +10120,7 @@ def acs_ganti_wifi(username: str, d: WifiIn, request: Request):
     hasil = _tugas_acs(doc["_id"], {"name": "setParameterValues", "parameterValues": nilai})
     ubah = (["nama WiFi → " + ssid] if ssid else []) + (["password WiFi diganti"] if pw else []) \
         + ([f"lebar kanal → {lebar}"] if lebar else [])
-    catat_aktivitas(_oleh(request), "onu_wifi", f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}")
+    catat_aktivitas(oleh, "onu_wifi", f"{username} ({doc['_id']}) WiFi #{d.index}: {', '.join(ubah)}")
     return hasil
 
 

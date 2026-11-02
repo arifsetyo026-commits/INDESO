@@ -368,6 +368,32 @@ def test_mitra_dan_insentif(siap):
     assert m.get("/api/mitra/pelanggan?periode=2026-10").json()["insentif"]["pembayaran"][0]["jumlah"] == 10000
 
 
+def test_mitra_ekspor_excel(siap):
+    """Ekspor Excel di menu mitra: .xlsx asli berisi pelanggan bulan itu + ringkasan komisi, sama dengan tampilan HP
+    mitra (pelanggan gratis yang dihitung komisi tampil lunas, tanpa kata 'gratis'); teks '=...' tidak jadi rumus."""
+    import io, zipfile, re as _re
+    main, o, k, m = siap
+    o.post("/api/tagihan/buat?periode=2026-10")
+    for t in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]:
+        if t["username"] == "budi":
+            o.post(f"/api/tagihan/{t['id']}/lunas")
+    o.put("/api/data-pelanggan/server", json={"nama": "Server", "paket_id": 1, "gratis": True, "status": "aktif",
+                                              "insentif_gratis": True, "atur_secret": False})
+    assert m.put("/api/mitra/pelanggan/ani", json={"nama": "Ani", "alamat": "=HYPERLINK(\"x\")"}).status_code == 200
+    r = m.get("/api/mitra/ekspor?periode=2026-10")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/vnd.openxmlformats")
+    assert 'filename="pelanggan-mitra-2026-10.xlsx"' in r.headers["content-disposition"]
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    lembar = z.read("xl/worksheets/sheet1.xml").decode()
+    teks = " ".join(_re.findall(r"<t[^>]*>([^<]*)</t>", lembar))
+    assert "budi" in teks and "Lunas" in teks and "Terlambat" in teks          # Oktober sudah lewat jatuh tempo
+    assert "Server" in teks and "gratis" not in teks.lower()          # tetap rahasia seperti di HP mitra
+    assert "<f>" not in lembar and "=HYPERLINK" in teks                # disimpan sebagai teks, bukan rumus
+    assert "Ringkasan" in teks and "<v>20000</v>" in lembar            # komisi: budi + server (gratis dihitung)
+    assert "ekspor" in o.get("/api/aktivitas").text
+    assert m.get("/api/mitra/ekspor?periode=2026-13").status_code == 400
+
+
 # ------------------------------------------------------------------
 # Keuangan
 # ------------------------------------------------------------------
@@ -3243,3 +3269,61 @@ def test_onu_berhenti_lapor_tidak_diantrekan(siap, monkeypatch):
     r = o.post("/api/wifi-kesehatan/segarkan", json={"id": dev["_id"]})
     assert r.status_code == 409 and "tidak lapor" in r.json()["detail"]
     assert not acs.antrean and not acs.tugas
+
+
+def test_portal_pelanggan(siap, monkeypatch):
+    """Portal pelanggan: daftar sendiri (ID + no. HP tercatat) → admin menyetujui → masuk. Sesi portal terpisah
+    dari staf, hanya melihat data sendiri; WiFi tanpa sandi tapi bisa diganti; lapor gangguan masuk Tiket."""
+    from fastapi.testclient import TestClient
+    main, o, k, m = siap
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                            "no_hp": "0812-3456-7890"})
+    o.post("/api/tagihan/buat?periode=2026-10")
+    p = TestClient(main.app)
+    assert p.get("/portal").status_code == 200
+    assert p.get("/api/portal/saya").status_code == 401
+    daftar = lambda **kw: p.post("/api/portal/daftar", json={"pelanggan": "budi", "no_hp": "+62 812 3456 7890",
+                                                             "login": "budisaja", "password": "rahasia123", **kw})
+    # nomor HP salah / pelanggan tanpa HP: pesan sama (tidak membocorkan data)
+    salah = daftar(no_hp="0899")
+    assert salah.status_code == 400 and salah.json()["detail"] == daftar(pelanggan="ani").json()["detail"]
+    assert daftar().status_code == 200
+    assert daftar(login="budi2").status_code == 409                       # satu akun per pelanggan
+    assert "Pendaftaran akun portal" in str(main._terkirim[-1]["data"])
+    # belum disetujui: belum bisa masuk; staf/mitra tidak bisa membuka API portal maupun sebaliknya
+    assert p.post("/api/portal/login", json={"username": "budisaja", "password": "rahasia123"}).status_code == 403
+    assert m.get("/api/portal-akun").status_code == 403 and o.get("/api/portal/saya").status_code == 401
+    a = o.get("/api/portal-akun").json()["akun"][0]
+    assert a["status"] == "menunggu" and a["pelanggan"] == "budi" and a["nama"] == "Budi"
+    assert o.post("/api/portal-akun/budisaja/status", json={"status": "aktif"}).status_code == 200
+    assert p.post("/api/portal/login", json={"username": "budisaja", "password": "salah1234"}).status_code == 401
+    assert p.post("/api/portal/login", json={"username": "BudiSaja", "password": "rahasia123"}).status_code == 200
+    assert p.get("/api/akun").status_code == 401 and p.get("/api/tiket").status_code == 401   # bukan sesi staf
+    assert p.get("/").status_code == 200 and "/login" in str(p.get("/").url)                # dashboard → login
+    d = p.get("/api/portal/saya").json()
+    assert d["username"] == "budi" and d["internet"]["online"] in (True, False)
+    assert [t["periode"] for t in d["tagihan"]] == ["2026-10"] and d["belum_bayar"] == d["tagihan"][0]["jumlah"]
+    # WiFi: nama & jumlah perangkat, tanpa sandi/MAC
+    w = p.get("/api/portal/wifi").json()
+    assert w["tersedia"] and [(x["index"], x["nama"]) for x in w["wifi"]] == [(1, "RUMAH_BUDI"), (5, "RUMAH_BUDI_5G")]
+    assert "mac" not in str(w).lower() and "pass" not in str(w).lower()
+    assert p.post("/api/portal/wifi", json={"index": 1, "nama": "BUDI_BARU", "sandi": "rahasia999"}).json()["status"] == "selesai"
+    assert acs.tugas[-1]["parameterValues"][0] == ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.SSID", "BUDI_BARU", "xsd:string"]
+    assert p.post("/api/portal/wifi", json={"index": 1, "sandi": "pendek"}).status_code == 400
+    log = o.get("/api/aktivitas").text
+    assert "portal:budisaja" in log and "rahasia999" not in log
+    for _ in range(4):
+        p.post("/api/portal/wifi", json={"index": 1, "nama": "X"})
+    assert p.post("/api/portal/wifi", json={"index": 1, "nama": "Y"}).status_code == 429     # dibatasi per jam
+    # lapor gangguan → masuk Tiket admin atas nama pelanggan ini
+    r = p.post("/api/portal/tiket", json={"kategori": "Internet mati", "keterangan": "LOS merah"}).json()
+    assert any(t["id"] == r["id"] and t["username"] == "budi" for t in o.get("/api/tiket").json()["tiket"])
+    assert p.get("/api/portal/tiket").json()["tiket"][0]["kategori"] == "Internet mati"
+    # ganti password sendiri, lalu admin nonaktifkan → sesi langsung berakhir
+    assert p.post("/api/portal/password", json={"lama": "rahasia123", "baru": "barubaru1"}).status_code == 200
+    assert o.post("/api/portal-akun/budisaja/status", json={"status": "nonaktif"}).status_code == 200
+    assert p.get("/api/portal/saya").status_code == 401
+    assert o.delete("/api/portal-akun/budisaja").status_code == 200 and daftar().status_code == 200   # boleh daftar ulang
