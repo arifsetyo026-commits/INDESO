@@ -368,6 +368,32 @@ def test_mitra_dan_insentif(siap):
     assert m.get("/api/mitra/pelanggan?periode=2026-10").json()["insentif"]["pembayaran"][0]["jumlah"] == 10000
 
 
+def test_mitra_ekspor_excel(siap):
+    """Ekspor Excel di menu mitra: .xlsx asli berisi pelanggan bulan itu + ringkasan komisi, sama dengan tampilan HP
+    mitra (pelanggan gratis yang dihitung komisi tampil lunas, tanpa kata 'gratis'); teks '=...' tidak jadi rumus."""
+    import io, zipfile, re as _re
+    main, o, k, m = siap
+    o.post("/api/tagihan/buat?periode=2026-10")
+    for t in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]:
+        if t["username"] == "budi":
+            o.post(f"/api/tagihan/{t['id']}/lunas")
+    o.put("/api/data-pelanggan/server", json={"nama": "Server", "paket_id": 1, "gratis": True, "status": "aktif",
+                                              "insentif_gratis": True, "atur_secret": False})
+    assert m.put("/api/mitra/pelanggan/ani", json={"nama": "Ani", "alamat": "=HYPERLINK(\"x\")"}).status_code == 200
+    r = m.get("/api/mitra/ekspor?periode=2026-10")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/vnd.openxmlformats")
+    assert 'filename="pelanggan-mitra-2026-10.xlsx"' in r.headers["content-disposition"]
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    lembar = z.read("xl/worksheets/sheet1.xml").decode()
+    teks = " ".join(_re.findall(r"<t[^>]*>([^<]*)</t>", lembar))
+    assert "budi" in teks and "Lunas" in teks and "Terlambat" in teks          # Oktober sudah lewat jatuh tempo
+    assert "Server" in teks and "gratis" not in teks.lower()          # tetap rahasia seperti di HP mitra
+    assert "<f>" not in lembar and "=HYPERLINK" in teks                # disimpan sebagai teks, bukan rumus
+    assert "Ringkasan" in teks and "<v>20000</v>" in lembar            # komisi: budi + server (gratis dihitung)
+    assert "ekspor" in o.get("/api/aktivitas").text
+    assert m.get("/api/mitra/ekspor?periode=2026-13").status_code == 400
+
+
 # ------------------------------------------------------------------
 # Keuangan
 # ------------------------------------------------------------------

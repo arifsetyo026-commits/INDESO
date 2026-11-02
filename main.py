@@ -7001,6 +7001,95 @@ def mitra_list_pelanggan(periode: str, request: Request):
             "awal": awal_mitra}
 
 
+def _xlsx(baris: list, lebar: list, tebal: set) -> bytes:
+    """Berkas Excel (.xlsx) satu lembar tanpa pustaka tambahan. Semua teks disimpan sebagai teks (bukan rumus),
+    jadi isi sel seperti '=...' tidak pernah dijalankan Excel. `tebal` = nomor baris (0-based) yang dicetak tebal."""
+    import zipfile
+    from xml.sax.saxutils import escape as x
+
+    def kolom(i):
+        n = ""
+        i += 1
+        while i:
+            i, r = divmod(i - 1, 26)
+            n = chr(65 + r) + n
+        return n
+    isi = []
+    for ri, b in enumerate(baris):
+        sel = []
+        for ci, v in enumerate(b):
+            ref, st = f"{kolom(ci)}{ri + 1}", ' s="1"' if ri in tebal else ""
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                sel.append(f'<c r="{ref}"{st}><v>{v}</v></c>')
+            elif v not in (None, ""):
+                t = x(str(v)).replace("\r", "")
+                sel.append(f'<c r="{ref}" t="inlineStr"{st}><is><t xml:space="preserve">{t}</t></is></c>')
+        isi.append(f'<row r="{ri + 1}">{"".join(sel)}</row>')
+    cols = "".join(f'<col min="{i + 1}" max="{i + 1}" width="{w}" customWidth="1"/>' for i, w in enumerate(lebar))
+    ns = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    berkas = {
+        "[Content_Types].xml": '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>',
+        "_rels/.rels": '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        "xl/workbook.xml": f'<?xml version="1.0" encoding="UTF-8"?><workbook {ns} xmlns:r="{rel}"><sheets>'
+        '<sheet name="Pelanggan" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels": '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/>'
+        f'<Relationship Id="rId2" Type="{rel}/styles" Target="styles.xml"/></Relationships>',
+        "xl/styles.xml": f'<?xml version="1.0" encoding="UTF-8"?><styleSheet {ns}>'
+        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+        '<borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs>'
+        '<cellXfs count="2"><xf fontId="0" xfId="0"/><xf fontId="1" xfId="0" applyFont="1"/></cellXfs>'
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>',
+        "xl/worksheets/sheet1.xml": f'<?xml version="1.0" encoding="UTF-8"?><worksheet {ns}><cols>{cols}</cols>'
+        f'<sheetData>{"".join(isi)}</sheetData></worksheet>',
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for nama, data in berkas.items():
+            z.writestr(nama, data)
+    return buf.getvalue()
+
+
+@app.get("/api/mitra/ekspor")
+def mitra_ekspor(periode: str, request: Request):
+    """Daftar pelanggan mitra satu bulan + ringkasan komisi sebagai berkas Excel. Isinya sama persis dengan yang
+    tampil di HP mitra (pelanggan gratis yang dihitung komisi tetap tampil lunas, tanpa catatan internal)."""
+    d = mitra_list_pelanggan(periode, request)
+    periode, ins, hari = d["periode"], d["insentif"], datetime.now().strftime("%Y-%m-%d")
+    baris = [[f"Pelanggan mitra {d['akun']}: tagihan {_nama_periode(periode)}"],
+             [f"Diekspor {datetime.now().strftime('%Y-%m-%d %H:%M')}"], [],
+             ["No", "Nama", "Username", "Paket", "Alamat", "No. HP", "Status bayar", "Tanggal bayar", "Jatuh tempo",
+              "Keterangan"]]
+    lunas = belum = 0
+    for i, p in enumerate(d["pelanggan"], 1):
+        if p["status_bayar"] == "lunas":
+            status, lunas = "Lunas", lunas + 1
+        elif p["status_bayar"] == "belum":
+            status, belum = ("Terlambat" if (p["jatuh_tempo"] or "") < hari else "Belum bayar"), belum + 1
+        else:
+            status = "Gratis" if p["gratis"] else "Belum ada tagihan"
+        ket = ", ".join(k for k, ya in (("Berhenti", p["status"] == "berhenti"), ("Isolir", p["terisolir"])) if ya)
+        baris.append([i, p["nama"], p["username"], p["paket"], p["alamat"], p["no_hp"], status,
+                      p["tgl_bayar"] or "", p["jatuh_tempo"] or "", ket])
+    awal_ringkas = len(baris) + 1
+    baris += [[], ["Ringkasan"], ["Sudah bayar", lunas], ["Belum bayar", belum],
+              [f"Komisi hasil kerja {_nama_periode(ins['kerja_bulan'])}", ins["total"]],
+              ["Komisi sudah dibayar", ins["dibayar"]], ["Komisi belum dibayar", ins["sisa"]],
+              ["Status komisi", "final" if ins["final"] else "masih berjalan, final saat tutup buku"]]
+    catat_aktivitas(_oleh(request), "ekspor", f"Excel pelanggan mitra {periode} ({len(d['pelanggan'])} baris)")
+    isi = _xlsx(baris, [5, 26, 16, 12, 30, 15, 13, 13, 12, 16], {0, 3, awal_ringkas})
+    return Response(isi, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="pelanggan-mitra-{periode}.xlsx"'})
+
+
 class KontakIn(BaseModel):
     nama: str
     alamat: Optional[str] = None
