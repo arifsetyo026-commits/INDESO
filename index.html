@@ -222,7 +222,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU &amp; Diagnosa</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan / username untuk diagnosa, atau PON, nomor ONU, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div class="blAksi" id="onuMatiAksi" style="justify-content:flex-start;margin:0 0 8px;display:none"><button class="btnS" onclick="bukaOnuMati()">🧹 Bersihkan ONU mati</button></div><div id="onuMatiBox"></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
-<div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
+<div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="bukaPortal()">Akun portal <span id="portalBadge" class="badge" style="display:none">0</span></button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"></div>
 <div class="blFilters plFilters"><button data-f="aktif" class="on" onclick="setFilterPelanggan('aktif')">Aktif</button><button data-f="belum" onclick="setFilterPelanggan('belum')">Belum lengkap</button><button data-f="berhenti" onclick="setFilterPelanggan('berhenti')">Berhenti</button><button data-f="semua" onclick="setFilterPelanggan('semua')">Semua</button></div>
 <div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
@@ -260,6 +260,10 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung komisi mitra tiap bulan</label>
 <div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button><button class="plCancel" onclick="const u=$('plUser').value;closeModal('pelangganModal');openDiagnosa(u)">Diagnosa</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
+<div id="plPortalView" style="display:none">
+<div class="blNav"><button class="btnS" onclick="backPelanggan()">‹ Kembali</button></div>
+<div class="plSub">Pelanggan mendaftar sendiri di <b id="portalAlamat">/portal</b> dengan ID pelanggan (username PPPoE) dan nomor HP yang tercatat di data pelanggan. Periksa dulu, lalu setujui. Pelanggan melihat tagihan, status internet, WiFi (nama &amp; jumlah perangkat; bisa ganti nama/sandi), dan bisa lapor gangguan.</div>
+<div class="plMsg" id="portalMsg"></div><div id="portalList"></div></div>
 <div id="plPaketView" style="display:none">
 <div id="pkList"></div>
 <div class="plForm" style="margin-top:14px"><b id="pkJudul" style="font-size:var(--fs-sm)">Tambah paket</b>
@@ -1204,9 +1208,11 @@ async function bukaIsolir(id){
 async function openPelanggan(){
  $('pelangganModal').classList.add('show');
  pl.filter=pl.filter||'aktif'; $('plListMsg').textContent='';
- backPelanggan();
+ backPelanggan(); badgePortal();
  await loadPelanggan();
 }
+async function badgePortal(){ try{ const d=await jsonAtauError(await fetch('/api/portal-akun',{cache:'no-store'}));
+ const n=d.akun.filter(a=>a.status==='menunggu').length; $('portalBadge').textContent=n; $('portalBadge').style.display=n?'':'none'; }catch(e){} }
 async function loadPelanggan(){
  $('plList').innerHTML='<div class="muted">Memuat…</div>';
  try{
@@ -1238,6 +1244,7 @@ function tampilkanView(v){
  $('plFormView').style.display=v==='form'?'block':'none';
  $('plBaruView').style.display=v==='baru'?'block':'none';
  $('plPaketView').style.display=v==='paket'?'block':'none';
+ $('plPortalView').style.display=v==='portal'?'block':'none';
 }
 function editPelanggan(i){
  const p=pl.data[i]; pl.cur=p.username;
@@ -1358,6 +1365,30 @@ async function simpanPasangBaru(){
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
 }
 // ===== Paket =====
+// --- Akun portal pelanggan ---
+async function bukaPortal(){ $('plTitle').textContent='Akun Portal Pelanggan'; tampilkanView('portal'); $('portalMsg').textContent='';
+ $('portalAlamat').textContent=location.origin+'/portal'; await muatPortal(); }
+async function muatPortal(){
+ const el=$('portalList'); el.innerHTML='<div class="muted">Memuat…</div>';
+ try{ const d=await jsonAtauError(await fetch('/api/portal-akun',{cache:'no-store'}));
+  const n=d.akun.filter(a=>a.status==='menunggu').length; $('portalBadge').textContent=n; $('portalBadge').style.display=n?'':'none';
+  el.innerHTML=d.akun.length?d.akun.map(a=>{ const L=esc(JSON.stringify(a.login));
+   return `<div class="blRow"><div><b>${esc(a.nama||a.pelanggan)}</b> <span class="muted">(${esc(a.pelanggan)})</span><div class="plSub">login <b>${esc(a.login)}</b> · HP ${esc(a.no_hp||'—')} · daftar ${esc((a.dibuat||'').slice(0,16))}${a.login_terakhir?' · terakhir masuk '+esc(a.login_terakhir.slice(0,16)):''}</div></div>
+   <div class="blAksi">${a.status==='menunggu'?`<span class="chip warn">Menunggu</span><button class="btnS go" onclick='statusPortal(${L},"aktif")'>Setujui</button><button class="btnS" onclick='hapusPortal(${L},true)'>Tolak</button>`
+    :`<span class="chip ${a.status==='aktif'?'ok':'off'}">${a.status==='aktif'?'Aktif':'Nonaktif'}</span><button class="btnS" onclick='statusPortal(${L},"${a.status==='aktif'?'nonaktif':'aktif'}")'>${a.status==='aktif'?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick='resetPortal(${L})'>Reset password</button><button class="btnS" onclick='hapusPortal(${L})'>Hapus</button>`}</div></div>`; }).join('')
+   :'<div class="muted">Belum ada pelanggan yang mendaftar.</div>';
+ }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function aksiPortal(url,opsi,pesanOk){
+ try{ await jsonAtauError(await fetch(url,opsi)); $('portalMsg').style.color='#0b7a3b'; $('portalMsg').textContent=pesanOk; await muatPortal(); }
+ catch(e){ $('portalMsg').style.color='#b42318'; $('portalMsg').textContent='Gagal: '+e.message; }
+}
+function statusPortal(login,status){ aksiPortal('/api/portal-akun/'+encodeURIComponent(login)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})},
+ 'Akun '+login+(status==='aktif'?' aktif.':' dinonaktifkan.')); }
+function hapusPortal(login,tolak){ if(!confirm((tolak?'Tolak pendaftaran ':'Hapus akun portal ')+login+'? Pelanggan bisa mendaftar ulang.')) return;
+ aksiPortal('/api/portal-akun/'+encodeURIComponent(login),{method:'DELETE'},tolak?'Pendaftaran ditolak.':'Akun dihapus.'); }
+function resetPortal(login){ const baru=prompt('Password baru untuk '+login+' (min. 8 karakter). Kirimkan ke pelanggan lewat WA:'); if(!baru) return;
+ aksiPortal('/api/portal-akun/'+encodeURIComponent(login)+'/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({baru})},'Password '+login+' diganti; minta pelanggan menggantinya lagi setelah masuk.'); }
 async function bukaPaket(){
  $('plTitle').textContent='Kelola Paket'; tampilkanView('paket'); batalPaket(true);
  await loadPaket();
