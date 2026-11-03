@@ -165,7 +165,7 @@ CONFIG = {
     "NAMA_USAHA": _env("NAMA_USAHA", "Internet Desa"),   # dipakai di kwitansi & pesan WA
     # Pesan WA ke pelanggan (bisa diubah di Pengaturan). Penanda {..} diisi otomatis.
     "INFO_BAYAR": "Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.",
-    "TEMPLATE_PENGINGAT": ("Yth. Bapak/Ibu {nama},\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n"
+    "TEMPLATE_PENGINGAT": ("Yth. Bapak/Ibu {nama} (ID pelanggan {id}),\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n"
                            "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
                            "Terima kasih."),
     "PENGINGAT_JEDA_HARI": 3,           # pengingat massal melewati pelanggan yang baru diingatkan
@@ -1619,6 +1619,21 @@ def init_billing_db() -> None:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN tgl_pasang TEXT")
         if "diskon" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN diskon INTEGER NOT NULL DEFAULT 0")
+        # ID pelanggan 463376-L-NNNN ("INDESO" di tombol HP, kode lokasi, nomor urut per lokasi).
+        # jaringan = 1: MikroTik lokasi ini dipantau & dikendalikan INDESO (isolir, sinkron secret, pantauan putus).
+        # jaringan = 0: hanya penagihan & data pelanggan (wilayah yang jaringannya belum tersambung ke INDESO).
+        conn.execute("CREATE TABLE IF NOT EXISTS lokasi (kode INTEGER PRIMARY KEY, nama TEXT NOT NULL, "
+                     "jaringan INTEGER NOT NULL DEFAULT 0)")
+        if "jaringan" not in [r[1] for r in conn.execute("PRAGMA table_info(lokasi)").fetchall()]:
+            conn.execute("ALTER TABLE lokasi ADD COLUMN jaringan INTEGER NOT NULL DEFAULT 0")
+            conn.execute("UPDATE lokasi SET jaringan = 1 WHERE kode = 1")
+        conn.execute("INSERT OR IGNORE INTO lokasi (kode, nama, jaringan) VALUES (1, 'Lokasi 1', 1)")
+        if "lokasi" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN lokasi INTEGER NOT NULL DEFAULT 1")
+        if "no_urut" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN no_urut INTEGER")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pelanggan_id ON pelanggan(lokasi, no_urut)")
+        _nomori_pelanggan(conn)
         # Pelunasan: metode (untuk rekonsiliasi kas vs bank), siapa & kapan mencatat.
         kol_tg = [r[1] for r in conn.execute("PRAGMA table_info(tagihan)").fetchall()]
         for kol in ("metode_bayar", "lunas_oleh", "lunas_pada", "catatan"):
@@ -1637,6 +1652,31 @@ def init_billing_db() -> None:
         conn.commit()
     finally:
         conn.close()
+
+# ID pelanggan: 463376 = "INDESO" di tombol HP (I=4 N=6 D=3 E=3 S=7 O=6), lalu kode lokasi dan nomor urut 4 angka
+# per lokasi. Nomor diberikan sekali (urut tanggal pasang) dan tidak berubah walau username/no. HP diganti.
+_AWALAN_ID = "463376"
+# Bentuk SQL-nya untuk tabel pelanggan beralias p.
+_SQL_ID = f"('{_AWALAN_ID}-' || p.lokasi || '-' || substr('0000' || p.no_urut, -4))"
+# Pelanggan yang jaringannya dikendalikan INDESO (lokasi dengan jaringan = 1), juga untuk tabel beralias p.
+_SQL_DIPANTAU = "p.lokasi IN (SELECT kode FROM lokasi WHERE jaringan = 1)"
+
+
+def _dipantau(conn, username: str) -> bool:
+    return conn.execute(f"SELECT 1 FROM pelanggan p WHERE p.username = ? AND {_SQL_DIPANTAU}", (username,)).fetchone() is not None
+
+
+def _id_pelanggan(lokasi, no_urut) -> Optional[str]:
+    return f"{_AWALAN_ID}-{lokasi}-{int(no_urut):04d}" if no_urut else None
+
+
+def _nomori_pelanggan(conn) -> None:
+    """Beri nomor urut ke pelanggan yang belum punya, per lokasi, urut tanggal pasang (lalu urutan dicatat)."""
+    for r in conn.execute("SELECT username, lokasi FROM pelanggan WHERE no_urut IS NULL "
+                          "ORDER BY COALESCE(tgl_pasang, '9999'), rowid").fetchall():
+        n = conn.execute("SELECT COALESCE(MAX(no_urut), 0) + 1 FROM pelanggan WHERE lokasi = ?", (r[1],)).fetchone()[0]
+        conn.execute("UPDATE pelanggan SET no_urut = ? WHERE username = ?", (n, r[0]))
+
 
 def log_history_snapshot(dashboard: DashboardData) -> None:
     """Simpan satu snapshot ke SQLite. Dipanggil dari thread terpisah
@@ -2196,6 +2236,10 @@ def init_akun_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sesi_user ON sesi(username)")
+        # Akun mitra diikat ke satu lokasi: hanya melihat pelanggan, tiket, dan komisi lokasinya (data lama: lokasi 1).
+        if "lokasi" not in [r[1] for r in conn.execute("PRAGMA table_info(akun)").fetchall()]:
+            conn.execute("ALTER TABLE akun ADD COLUMN lokasi INTEGER")
+        conn.execute("UPDATE akun SET lokasi = 1 WHERE peran = 'mitra' AND lokasi IS NULL")
         # Akun portal pelanggan: terpisah dari akun staf (tabel, sesi, dan cookie sendiri), jadi sesi
         # pelanggan tidak pernah bisa membuka API staf. status: menunggu (belum disetujui admin) / aktif / nonaktif.
         conn.execute("""
@@ -2391,6 +2435,15 @@ async def wajib_login(request: Request, call_next):
     return response
 
 
+def _lokasi_mitra(request: Request) -> int:
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"], timeout=15)
+    try:
+        r = conn.execute("SELECT lokasi FROM akun WHERE username = ?", (request.state.user,)).fetchone()
+    finally:
+        conn.close()
+    return (r[0] if r else None) or 1
+
+
 def _wajib_admin(request: Request) -> None:
     if request.state.peran not in _PERAN_PENUH:
         raise HTTPException(status_code=403, detail="Khusus admin.")
@@ -2559,11 +2612,13 @@ class AkunIn(BaseModel):
     username: str
     password: str
     peran: str = "admin"
+    lokasi: Optional[int] = None       # wajib berarti untuk mitra; bawaan lokasi 1
 
 
 class AkunUbahIn(BaseModel):
     peran: Optional[str] = None
     aktif: Optional[bool] = None
+    lokasi: Optional[int] = None
 
 
 class ResetPasswordIn(BaseModel):
@@ -2600,7 +2655,7 @@ def list_akun(request: Request):
     conn = _billing_conn()
     try:
         rows = conn.execute(
-            "SELECT a.username, a.peran, a.aktif, a.dibuat, a.login_terakhir, "
+            "SELECT a.username, a.peran, a.aktif, a.dibuat, a.login_terakhir, a.lokasi, "
             "(SELECT COUNT(*) FROM sesi s WHERE s.username = a.username AND s.terakhir_aktif >= ?) AS sesi_aktif "
             "FROM akun a ORDER BY a.peran, a.username COLLATE NOCASE", (batas,)
         ).fetchall()
@@ -2621,15 +2676,16 @@ def tambah_akun(d: AkunIn, request: Request):
     conn = _billing_conn()
     try:
         _cek_hak_owner(conn, request, None, d.peran)
+        lokasi = _cek_lokasi(conn, d.lokasi or 1) if d.peran == "mitra" else None
         try:
-            conn.execute("INSERT INTO akun (username, password_hash, peran, dibuat) VALUES (?,?,?,?)",
-                         (username, _hash_password(d.password), d.peran, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.execute("INSERT INTO akun (username, password_hash, peran, dibuat, lokasi) VALUES (?,?,?,?,?)",
+                         (username, _hash_password(d.password), d.peran, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), lokasi))
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=409, detail="Username sudah dipakai.")
         conn.commit()
     finally:
         conn.close()
-    catat_aktivitas(request.state.user, "akun_tambah", f"{username} ({d.peran})")
+    catat_aktivitas(request.state.user, "akun_tambah", f"{username} ({d.peran}" + (f", lokasi {lokasi})" if lokasi else ")"))
     return {"ok": True}
 
 
@@ -2640,10 +2696,11 @@ def ubah_akun(username: str, d: AkunUbahIn, request: Request):
         raise HTTPException(status_code=400, detail="Peran harus owner, admin, atau mitra.")
     conn = _billing_conn()
     try:
-        r = conn.execute("SELECT peran, aktif FROM akun WHERE username = ?", (username,)).fetchone()
+        r = conn.execute("SELECT peran, aktif, lokasi FROM akun WHERE username = ?", (username,)).fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
         peran = d.peran if d.peran is not None else r["peran"]
+        lokasi = (_cek_lokasi(conn, d.lokasi) if d.lokasi is not None else (r["lokasi"] or 1)) if peran == "mitra" else None
         aktif = int(d.aktif) if d.aktif is not None else r["aktif"]
         _cek_hak_owner(conn, request, r["peran"], peran)
         if r["peran"] == "owner" and request.state.peran != "owner":
@@ -2653,7 +2710,7 @@ def ubah_akun(username: str, d: AkunUbahIn, request: Request):
         if (r["peran"] in _PERAN_PENUH and r["aktif"] and (peran not in _PERAN_PENUH or not aktif)
                 and _admin_aktif_lain(conn, username) == 0):
             raise HTTPException(status_code=400, detail="Harus ada minimal satu admin aktif.")
-        conn.execute("UPDATE akun SET peran = ?, aktif = ? WHERE username = ?", (peran, aktif, username))
+        conn.execute("UPDATE akun SET peran = ?, aktif = ?, lokasi = ? WHERE username = ?", (peran, aktif, lokasi, username))
         conn.commit()
     finally:
         conn.close()
@@ -2662,6 +2719,8 @@ def ubah_akun(username: str, d: AkunUbahIn, request: Request):
         ubah.append(f"peran {r['peran']} → {peran}")
     if aktif != r["aktif"]:
         ubah.append("diaktifkan" if aktif else "dinonaktifkan")
+    if peran == "mitra" and lokasi != r["lokasi"]:
+        ubah.append(f"lokasi {r['lokasi'] or '-'} → {lokasi}")
     if ubah:
         # Perubahan hak akses langsung berlaku: paksa login ulang.
         _cabut_sesi(username)
@@ -3001,7 +3060,7 @@ _PENGATURAN = {
                                           "Kirim bukti ke nomor ini."},
     "TEMPLATE_PENGINGAT": {"label": "Teks pengingat tagihan WA", "tipe": "teksbebas", "maks": 1500, "baris": 8,
                            "bantuan": "Penanda yang diisi otomatis: {nama} {usaha} {rincian} (daftar bulan & jumlah) "
-                                      "{total} {cara_bayar} {username}. Huruf di antara *bintang* jadi tebal di WA."},
+                                      "{total} {cara_bayar} {username} {id} (ID pelanggan). Huruf di antara *bintang* jadi tebal di WA."},
     "PENGINGAT_JEDA_HARI": {"label": "Pengingat massal: lewati pelanggan yang sudah diingatkan dalam (hari)", "tipe": "int",
                             "min": 0, "max": 30},
     "ONU_SANDI_ADMIN": {"label": "Password admin web ONU (dipasang tombol 🔒 Amankan ONU)", "tipe": "rahasia",
@@ -3297,6 +3356,8 @@ def _simpan_secret_pelanggan(conn: sqlite3.Connection, secrets: list[dict]) -> t
                     "UPDATE pelanggan SET paket_id=? WHERE username=? AND paket_id IS NULL",
                     (paket_id, s["name"]),
                 )
+    if baru:
+        _nomori_pelanggan(conn)
     return baru, sudah_ada, tanpa_paket
 
 
@@ -3356,6 +3417,64 @@ class PelangganIn(BaseModel):
     atur_secret: bool = True   # saat status berubah: nonaktifkan/aktifkan secret PPPoE di MikroTik
     tgl_pasang: Optional[str] = None   # None = tidak diubah, "" = dikosongkan
     diskon: Optional[int] = None       # None = tidak diubah
+    lokasi: Optional[int] = None       # None = tidak diubah; pindah lokasi = nomor urut baru di lokasi itu
+
+
+def _cek_lokasi(conn, kode) -> int:
+    if not conn.execute("SELECT 1 FROM lokasi WHERE kode = ?", (kode,)).fetchone():
+        raise HTTPException(status_code=400, detail="Lokasi tidak ditemukan.")
+    return int(kode)
+
+
+@app.get("/api/lokasi")
+def list_lokasi():
+    conn = _billing_conn()
+    try:
+        rows = conn.execute("SELECT l.kode, l.nama, l.jaringan, (SELECT COUNT(*) FROM pelanggan p WHERE p.lokasi = l.kode "
+                            "AND p.status = 'aktif') AS pelanggan FROM lokasi l ORDER BY l.kode").fetchall()
+    finally:
+        conn.close()
+    return {"awalan": _AWALAN_ID, "lokasi": [dict(r) for r in rows]}
+
+
+class LokasiIn(BaseModel):
+    nama: str
+
+
+@app.post("/api/lokasi")
+def tambah_lokasi(d: LokasiIn, request: Request):
+    _wajib_admin(request)
+    nama = d.nama.strip()[:60]
+    if not nama:
+        raise HTTPException(status_code=400, detail="Nama lokasi wajib diisi.")
+    conn = _billing_conn()
+    try:
+        kode = conn.execute("SELECT COALESCE(MAX(kode), 0) + 1 FROM lokasi").fetchone()[0]
+        if kode > 9:
+            raise HTTPException(status_code=400, detail="Kode lokasi maksimal 9.")
+        conn.execute("INSERT INTO lokasi (kode, nama) VALUES (?, ?)", (kode, nama))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "lokasi", f"lokasi {kode} ditambah: {nama}")
+    return {"ok": True, "kode": kode}
+
+
+@app.put("/api/lokasi/{kode}")
+def ubah_lokasi(kode: int, d: LokasiIn, request: Request):
+    _wajib_admin(request)
+    nama = d.nama.strip()[:60]
+    if not nama:
+        raise HTTPException(status_code=400, detail="Nama lokasi wajib diisi.")
+    conn = _billing_conn()
+    try:
+        if not conn.execute("UPDATE lokasi SET nama = ? WHERE kode = ?", (nama, kode)).rowcount:
+            raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan.")
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "lokasi", f"lokasi {kode} diubah: {nama}")
+    return {"ok": True}
 
 
 @app.get("/api/data-pelanggan")
@@ -3365,7 +3484,7 @@ def list_data_pelanggan():
         rows = conn.execute(
             "SELECT p.username, p.nama, p.alamat, p.no_hp, p.paket_id, p.gratis, "
             "p.status, p.berhenti_sejak, p.tampil_mitra, p.insentif_gratis, p.secret_target, p.secret_nonaktif, "
-            "p.tgl_pasang, p.diskon, k.nama AS paket, k.harga "
+            f"p.tgl_pasang, p.diskon, p.lokasi, {_SQL_ID} AS id_pelanggan, k.nama AS paket, k.harga "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "ORDER BY p.nama COLLATE NOCASE"
         ).fetchall()
@@ -3425,7 +3544,7 @@ def mikrotik_profil(request: Request):
     return {"profil": [{"nama": n, "mbps": _kecepatan_dari_profil(n)} for n in nama]}
 
 
-class PasangBaruIn(BaseModel):
+class TambahPelangganIn(BaseModel):
     username: str
     nama: str
     alamat: Optional[str] = None
@@ -3433,19 +3552,14 @@ class PasangBaruIn(BaseModel):
     paket_id: int
     tgl_pasang: str
     diskon: int = 0
-    buat_secret: bool = False          # buat akun PPPoE di MikroTik sekalian
-    password_pppoe: Optional[str] = None
-    profil: Optional[str] = None       # profil PPPoE MikroTik; kosong = dicocokkan dari kecepatan paket
-    biaya_pasang: int = 0              # uang pemasangan yang diterima (0 = tidak ada / belum dibayar)
-    metode_bayar: str = "tunai"
+    lokasi: int = 1
     tagih_bulan_ini: bool = True       # langsung buat tagihan prorata bulan pasang
-    barang: list[dict] = []            # pemakaian gudang: [{"barang_id": 1, "jumlah": 1}, ...]
 
 
-@app.post("/api/pasang-baru")
-def pasang_baru(d: PasangBaruIn, request: Request):
-    """Pelanggan baru dalam satu langkah: data pelanggan, akun PPPoE (opsional), biaya pasang ke
-    Keuangan (opsional), dan tagihan bulan pertama yang dihitung prorata."""
+@app.post("/api/data-pelanggan")
+def tambah_pelanggan(d: TambahPelangganIn, request: Request):
+    """Catat pelanggan baru untuk penagihan (data saja). Pemasangan, akun PPPoE di MikroTik, biaya pasang, dan
+    pemakaian barang dikerjakan manual di luar formulir ini."""
     _wajib_admin(request)
     username = d.username.strip()
     if not re.fullmatch(r"[A-Za-z0-9._@-]{2,40}", username):
@@ -3459,112 +3573,34 @@ def pasang_baru(d: PasangBaruIn, request: Request):
     if tgl > datetime.now().strftime("%Y-%m-%d"):
         raise HTTPException(status_code=400, detail="Tanggal pasang tidak boleh di masa depan.")
     diskon = _cek_diskon(d.diskon)
-    if d.biaya_pasang < 0 or d.metode_bayar not in _METODE:
-        raise HTTPException(status_code=400, detail="Biaya pasang / metode bayar tidak valid.")
-    conn = _billing_conn()
-    try:
-        paket = conn.execute("SELECT * FROM paket WHERE id = ?", (d.paket_id,)).fetchone()
-        if not paket:
-            raise HTTPException(status_code=400, detail="Paket tidak ditemukan.")
-        if conn.execute("SELECT 1 FROM pelanggan WHERE username = ?", (username,)).fetchone():
-            raise HTTPException(status_code=409, detail=f"Username {username} sudah terdaftar di INDESO.")
-        if d.barang:
-            # Cek stok dulu, sebelum apa pun dibuat (MikroTik/data pelanggan): stok kurang = tidak ada yang tersimpan.
-            _siapkan_gudang(conn)
-            conn.execute("BEGIN")
-            try:
-                _gudang_keluar(conn, d.barang, None, "cek", tgl, None)
-            finally:
-                conn.rollback()
-    finally:
-        conn.close()
-
-    # 1. Akun PPPoE di MikroTik (dulu, supaya data INDESO tidak tercatat bila MikroTik gagal)
-    profil = None
-    if d.buat_secret:
-        sandi = (d.password_pppoe or "").strip()
-        if not re.fullmatch(r"[^\s\"';\\]{4,64}", sandi):
-            raise HTTPException(status_code=400, detail="Password PPPoE 4–64 karakter, tanpa spasi atau tanda kutip.")
-        connection = _mikrotik_pool()
-        try:
-            api = connection.get_api()
-            if api.get_resource("/ppp/secret").get(name=username):
-                raise HTTPException(status_code=409, detail=f"Akun PPPoE {username} sudah ada di MikroTik. "
-                                                            "Hilangkan centang 'buat akun PPPoE' atau pakai username lain.")
-            daftar = [r.get("name") for r in api.get_resource("/ppp/profile").get() if r.get("name")]
-            profil = (d.profil or "").strip() or next(
-                (n for n in daftar if _kecepatan_dari_profil(n) == paket["kecepatan_mbps"]), None)
-            if not profil or profil not in daftar:
-                raise HTTPException(status_code=400, detail=f"Profil PPPoE untuk paket {paket['nama']} tidak ditemukan "
-                                                            "di MikroTik. Pilih profilnya di formulir.")
-            api.get_resource("/ppp/secret").add(name=username, password=sandi, service="pppoe", profile=profil,
-                                                comment=f"INDESO {nama[:40]} pasang {tgl}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Gagal membuat akun PPPoE di MikroTik: {e}")
-        finally:
-            try:
-                connection.disconnect()
-            except Exception:
-                pass
-
-    # 2. Data pelanggan + tagihan bulan pertama + pemakaian gudang (satu transaksi)
     periode = tgl[:7]
-    pakai, pakai_galat = [], None
     conn = _billing_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("INSERT INTO pelanggan (username, nama, alamat, no_hp, paket_id, tgl_pasang, diskon) VALUES (?,?,?,?,?,?,?)",
-                     (username, nama, (d.alamat or "").strip() or None, (d.no_hp or "").strip() or None,
-                      d.paket_id, tgl, diskon))
+        paket = conn.execute("SELECT * FROM paket WHERE id = ?", (d.paket_id,)).fetchone()
+        if not paket:
+            raise HTTPException(status_code=400, detail="Paket tidak ditemukan.")
+        lokasi = _cek_lokasi(conn, d.lokasi)
+        if conn.execute("SELECT 1 FROM pelanggan WHERE username = ? COLLATE NOCASE", (username,)).fetchone():
+            raise HTTPException(status_code=409, detail=f"Username {username} sudah terdaftar di INDESO. "
+                                                        "Username harus unik di semua lokasi.")
+        conn.execute("INSERT INTO pelanggan (username, nama, alamat, no_hp, paket_id, tgl_pasang, diskon, lokasi) "
+                     "VALUES (?,?,?,?,?,?,?,?)", (username, nama, (d.alamat or "").strip() or None,
+                                                  (d.no_hp or "").strip() or None, d.paket_id, tgl, diskon, lokasi))
+        _nomori_pelanggan(conn)
         tagihan = None
         if d.tagih_bulan_ini and _buat_tagihan_satu(conn, username, periode):
             tagihan = dict(conn.execute("SELECT id, periode, jumlah, jatuh_tempo, catatan FROM tagihan "
                                         "WHERE username = ? AND periode = ?", (username, periode)).fetchone())
-        if d.barang:
-            conn.execute("SAVEPOINT gudang")
-            try:
-                pakai = _gudang_keluar(conn, d.barang, username, _oleh(request), tgl, "Pasang baru")
-                conn.execute("RELEASE gudang")
-            except HTTPException as e:
-                # Stok habis dipakai orang lain di sela pengecekan: pelanggan tetap tersimpan, pemakaian dicatat manual.
-                conn.execute("ROLLBACK TO gudang")
-                conn.execute("RELEASE gudang")
-                pakai_galat = e.detail
+        id_pel = conn.execute(f"SELECT {_SQL_ID} FROM pelanggan p WHERE p.username = ?", (username,)).fetchone()[0]
         conn.commit()
     finally:
         conn.close()
-
-    # 3. Biaya pasang ke Keuangan (nomor bukti, buku tertutup, dll. lewat jalur pencatatan biasa)
-    transaksi = None
-    if d.biaya_pasang > 0:
-        conn = _billing_conn()
-        try:
-            k = conn.execute("SELECT id FROM kategori_kas WHERE jenis = 'masuk' AND nama IN "
-                             "('Pendapatan jasa pemasangan', 'Biaya pemasangan baru') ORDER BY id LIMIT 1").fetchone()
-        finally:
-            conn.close()
-        if k:
-            try:
-                transaksi = keuangan_tambah(TransaksiIn(tanggal=tgl, jenis="masuk", kategori_id=k[0], jumlah=d.biaya_pasang,
-                                                        metode=d.metode_bayar, keterangan=f"Pasang baru {nama} ({username})"),
-                                            request)
-            except HTTPException as e:
-                transaksi = {"galat": e.detail}
-
-    catat_aktivitas(_oleh(request), "pasang_baru",
-                    f"{username} ({nama}) paket {paket['nama']} pasang {tgl}"
+    catat_aktivitas(_oleh(request), "pelanggan_tambah",
+                    f"{id_pel} {username} ({nama}) lokasi {lokasi}, paket {paket['nama']}, pasang {tgl}"
                     + (f", diskon {_rp(diskon)}/bln" if diskon else "")
-                    + (f", akun PPPoE dibuat (profil {profil})" if profil else "")
-                    + (f", tagihan {periode} {_rp(tagihan['jumlah'])}" if tagihan else "")
-                    + (f", biaya pasang {_rp(d.biaya_pasang)}" if d.biaya_pasang else "")
-                    + (", pakai " + ", ".join(f"{h['nama']} {_angka_stok(h['jumlah'])} {h['satuan']}" for h in pakai) if pakai else "")
-                    + (f" (pemakaian warehouse GAGAL: {pakai_galat})" if pakai_galat else ""))
-    if pakai:
-        _kabar_stok_menipis(pakai)
-    return {"ok": True, "username": username, "profil": profil, "tagihan": tagihan, "transaksi": transaksi,
-            "gudang": pakai, "gudang_galat": pakai_galat}
+                    + (f", tagihan {periode} {_rp(tagihan['jumlah'])}" if tagihan else ""))
+    return {"ok": True, "username": username, "id_pelanggan": id_pel, "tagihan": tagihan}
 
 
 # ============================================================
@@ -3977,6 +4013,11 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
             (nama, (d.alamat or "").strip() or None, (d.no_hp or "").strip() or None,
              d.paket_id, int(d.gratis), status, berhenti_sejak, tampil_mitra, insentif_gratis, tgl_pasang, diskon, username),
         )
+        if d.lokasi is not None and int(d.lokasi) != lama["lokasi"]:
+            # Pindah lokasi: nomor urut baru di lokasi tujuan (ID pelanggan ikut berubah).
+            conn.execute("UPDATE pelanggan SET lokasi = ?, no_urut = NULL WHERE username = ?",
+                         (_cek_lokasi(conn, d.lokasi), username))
+            _nomori_pelanggan(conn)
         terhapus, hapus_rinci = 0, []
         syarat = None
         if d.gratis:
@@ -4011,6 +4052,8 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
         perubahan.append(f"tanggal pasang {lama['tgl_pasang'] or '-'} → {tgl_pasang or '-'}")
     if (lama["diskon"] or 0) != diskon:
         perubahan.append(f"diskon {_rp(lama['diskon'] or 0)} → {_rp(diskon)}/bulan")
+    if d.lokasi is not None and int(d.lokasi) != lama["lokasi"]:
+        perubahan.append(f"lokasi {lama['lokasi']} → {d.lokasi} (ID {_id_pelanggan(lama['lokasi'], lama['no_urut'])} diganti)")
     if (lama["alamat"] or "") != (d.alamat or "").strip() or (lama["no_hp"] or "") != (d.no_hp or "").strip():
         perubahan.append("kontak/alamat diubah")
     if terhapus:
@@ -4021,7 +4064,12 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
 
     # Status berubah -> nonaktifkan / aktifkan secret PPPoE di MikroTik
     secret = None
-    if lama["status"] != status:
+    conn = _billing_conn()
+    try:
+        dipantau = _dipantau(conn, username)
+    finally:
+        conn.close()
+    if lama["status"] != status and dipantau:
         if d.atur_secret:
             secret = _terapkan_secret(username, "nonaktif" if status == "berhenti" else "aktif", _oleh(request))
         elif lama["secret_target"]:
@@ -4195,7 +4243,7 @@ def list_tagihan(periode: str):
     try:
         rows = conn.execute(
             "SELECT t.id, t.username, p.nama, p.no_hp, t.jumlah, t.jatuh_tempo, t.status, t.tgl_bayar, "
-            "t.metode_bayar, t.lunas_oleh, t.lunas_pada, t.catatan "
+            f"t.metode_bayar, t.lunas_oleh, t.lunas_pada, t.catatan, {_SQL_ID} AS id_pelanggan, p.lokasi "
             "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
             "WHERE t.periode = ? ORDER BY t.status ASC, p.nama COLLATE NOCASE",
             (periode,),
@@ -4205,7 +4253,7 @@ def list_tagihan(periode: str):
         # Pelanggan tanpa tagihan di periode ini (gratis, belum punya paket, atau
         # tagihannya belum dibuat) tetap dikirim supaya bisa diisolir manual.
         tanpa_tagihan = conn.execute(
-            "SELECT p.username, p.nama, p.no_hp, p.gratis, p.paket_id, p.status FROM pelanggan p "
+            "SELECT p.username, p.nama, p.no_hp, p.gratis, p.paket_id, p.status, p.lokasi FROM pelanggan p "
             "WHERE p.username NOT IN (SELECT username FROM tagihan WHERE periode = ?) "
             "AND (p.status = 'aktif' OR p.username IN (SELECT username FROM isolir)) "
             "ORDER BY p.gratis DESC, p.nama COLLATE NOCASE",
@@ -4241,7 +4289,7 @@ def list_tunggakan():
     try:
         rows = conn.execute(
             "SELECT t.id, t.username, t.periode, t.jumlah, t.jatuh_tempo, p.nama, p.no_hp, p.status AS status_pelanggan, "
-            "k.nama AS paket, (i.username IS NOT NULL) AS isolir "
+            f"k.nama AS paket, (i.username IS NOT NULL) AS isolir, {_SQL_ID} AS id_pelanggan, p.lokasi "
             "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
             "LEFT JOIN paket k ON k.id = p.paket_id LEFT JOIN isolir i ON i.username = t.username "
             "WHERE t.status != 'lunas' ORDER BY t.username, t.periode"
@@ -4253,7 +4301,7 @@ def list_tunggakan():
     for r in rows:
         telat = (hari_ini - datetime.strptime(r["jatuh_tempo"], "%Y-%m-%d").date()).days
         g = per.setdefault(r["username"], {
-            "username": r["username"], "nama": r["nama"], "no_hp": r["no_hp"], "paket": r["paket"],
+            "username": r["username"], "id_pelanggan": r["id_pelanggan"], "lokasi": r["lokasi"], "nama": r["nama"], "no_hp": r["no_hp"], "paket": r["paket"],
             "status_pelanggan": r["status_pelanggan"], "isolir": bool(r["isolir"]), "tagihan": [],
             "total": 0, "hari_telat": telat, "diingatkan": diingatkan.get(r["username"]),
         })
@@ -4598,6 +4646,8 @@ def init_keuangan_db() -> None:
         # biasanya dibayar November). Data lama tanpa periode dianggap periode bulan tanggalnya.
         if "insentif_periode" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
             conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_periode TEXT")
+        if "insentif_lokasi" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+            conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_lokasi INTEGER")     # NULL = lokasi 1 (data lama)
         # Banyaknya barang (mis. 10 pcs, 150 meter) — opsional, untuk keterangan & harga satuan.
         for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT"), ("nomor", "TEXT")):
             if kol not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
@@ -5698,8 +5748,10 @@ def tutup_buku(periode: str, d: TutupBukuIn, request: Request):
         p_komisi = _geser_periode(periode, 1)
         # Periode tanpa tagihan di INDESO (sebelum Penagihan dipakai) tidak dikunci otomatis di Rp0;
         # komisinya dikunci manual oleh owner dengan angka yang disepakati.
-        if _ada_tagihan(conn, p_komisi) and not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ?", (p_komisi,)).fetchone():
-            _kunci_komisi(conn, p_komisi, "tutup_buku", _oleh(request))
+        if _ada_tagihan(conn, p_komisi):
+            for lok in _kode_lokasi(conn):
+                if not conn.execute("SELECT 1 FROM komisi_kunci WHERE periode = ? AND lokasi = ?", (p_komisi, lok)).fetchone():
+                    _kunci_komisi(conn, p_komisi, lok, "tutup_buku", _oleh(request))
         conn.execute("INSERT INTO tutup_buku (periode, oleh, pada, catatan) VALUES (?,?,?,?)",
                      (periode, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                       (d.catatan or "").strip()[:300] or None))
@@ -6058,11 +6110,12 @@ def _nama_kerja(periode: str) -> str:
     return "hasil kerja " + _nama_periode(_geser_periode(periode, -1))
 
 
-def _insentif_dibayar(conn, periode: str) -> int:
+def _insentif_dibayar(conn, periode: str, lokasi: Optional[int] = None) -> int:
     return conn.execute(
         "SELECT COALESCE(SUM(t.jumlah),0) FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id "
-        "WHERE t.status='aktif' AND k.nama = ? AND COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) = ?",
-        (_KAT_INSENTIF, periode),
+        "WHERE t.status='aktif' AND k.nama = ? AND COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) = ?"
+        + ("" if lokasi is None else " AND COALESCE(t.insentif_lokasi, 1) = ?"),
+        (_KAT_INSENTIF, periode) + (() if lokasi is None else (lokasi,)),
     ).fetchone()[0]
 
 
@@ -6082,7 +6135,7 @@ def _ada_tagihan(conn, periode: str) -> bool:
     return conn.execute("SELECT 1 FROM tagihan WHERE periode = ? LIMIT 1", (periode,)).fetchone() is not None
 
 
-def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
+def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24, lokasi: Optional[int] = None) -> list[dict]:
     """Rekap per bulan dari bulan pertama ada data (maks. 24 bulan terakhir) s/d `sampai`, ditambah
     periode tagihan yang sudah dibuat lebih dulu (mis. tagihan bulan depan)."""
     awal = _periode_insentif_awal(conn)
@@ -6092,8 +6145,8 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
     awal = max(awal, _geser_periode(akhir, -(maks_bulan - 1)), CONFIG.get("KOMISI_MULAI") or "")
     hasil, p = [], awal
     while p <= akhir:
-        ins = _hitung_insentif(conn, p)
-        dibayar = _insentif_dibayar(conn, p)
+        ins = _hitung_insentif(conn, p, lokasi)
+        dibayar = _insentif_dibayar(conn, p, lokasi)
         sisa = ins["total"] - dibayar
         hasil.append({"periode": p, "jumlah_pelanggan": ins["jumlah"], "jumlah_lunas": ins["jumlah_lunas"],
                       "jumlah_gratis": ins["jumlah_gratis"], "per_pelanggan": ins["per_pelanggan"],
@@ -6105,12 +6158,12 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24) -> list[dict]:
     return hasil
 
 
-def _insentif_tertunggak(conn, sampai: str) -> dict:
-    bulan = [b for b in _rekap_insentif(conn, sampai) if b["sisa"] > 0]
+def _insentif_tertunggak(conn, sampai: str, lokasi: Optional[int] = None) -> dict:
+    bulan = [b for b in _rekap_insentif(conn, sampai, lokasi=lokasi) if b["sisa"] > 0]
     return {"total": sum(b["sisa"] for b in bulan), "bulan": [{"periode": b["periode"], "sisa": b["sisa"]} for b in bulan]}
 
 
-def _pembayaran_insentif(conn, periode_list: list[str]) -> dict[str, list[dict]]:
+def _pembayaran_insentif(conn, periode_list: list[str], lokasi: Optional[int] = None) -> dict[str, list[dict]]:
     if not periode_list:
         return {}
     tanda = ",".join("?" * len(periode_list))
@@ -6119,8 +6172,9 @@ def _pembayaran_insentif(conn, periode_list: list[str]) -> dict[str, list[dict]]
         f"SELECT t.id, t.tanggal, t.jumlah, t.metode, t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.status, "
         f"t.batal_alasan, COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) AS periode "
         f"FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE k.nama = ? "
-        f"AND COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) IN ({tanda}) ORDER BY t.tanggal, t.id",
-        [_KAT_INSENTIF, *periode_list],
+        f"AND COALESCE(t.insentif_periode, substr(t.tanggal,1,7)) IN ({tanda}) "
+        + ("" if lokasi is None else "AND COALESCE(t.insentif_lokasi, 1) = ? ") + "ORDER BY t.tanggal, t.id",
+        [_KAT_INSENTIF, *periode_list] + ([] if lokasi is None else [lokasi]),
     ):
         hasil.setdefault(r["periode"], []).append(dict(r))
     return hasil
@@ -6132,7 +6186,7 @@ class KunciKomisiIn(BaseModel):
 
 
 @app.post("/api/keuangan/insentif/{periode}/kunci")
-def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
+def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request, lokasi: int = 1):
     _wajib_owner(request, "Hanya owner yang bisa mengunci komisi mitra.")
     if not _periode_valid(periode) or periode > _geser_periode(datetime.now().strftime("%Y-%m"), 1):
         raise HTTPException(status_code=400, detail="Periode tidak valid.")
@@ -6141,12 +6195,13 @@ def keuangan_kunci_komisi(periode: str, d: KunciKomisiIn, request: Request):
     conn = _billing_conn()
     try:
         _siapkan_kunci_komisi(conn)
-        ins = _kunci_komisi(conn, periode, "manual", _oleh(request), d.total, (d.catatan or "").strip()[:200] or None)
+        lokasi = _cek_lokasi(conn, lokasi)
+        ins = _kunci_komisi(conn, periode, lokasi, "manual", _oleh(request), d.total, (d.catatan or "").strip()[:200] or None)
         conn.commit()
     finally:
         conn.close()
     total = ins["total"] if d.total is None else d.total
-    catat_aktivitas(_oleh(request), "komisi_kunci", f"Komisi {_nama_kerja(periode)} dikunci {_rp(total)}"
+    catat_aktivitas(_oleh(request), "komisi_kunci", f"Komisi {_nama_kerja(periode)} lokasi {lokasi} dikunci {_rp(total)}"
                     + (f" (terhitung {_rp(ins['total'])})" if total != ins["total"] else "")
                     + (f" · {d.catatan.strip()[:100]}" if d.catatan and d.catatan.strip() else ""))
     return {"ok": True, "total": total, "terhitung": ins["total"]}
@@ -6172,35 +6227,37 @@ def keuangan_komisi_mulai(periode: str, request: Request):
 
 
 @app.delete("/api/keuangan/insentif/{periode}/kunci")
-def keuangan_buka_kunci_komisi(periode: str, request: Request):
+def keuangan_buka_kunci_komisi(periode: str, request: Request, lokasi: int = 1):
     _wajib_owner(request, "Hanya owner yang bisa membuka kunci komisi mitra.")
     conn = _billing_conn()
     try:
         _siapkan_kunci_komisi(conn)
-        n = conn.execute("DELETE FROM komisi_kunci WHERE periode = ?", (periode,)).rowcount
+        n = conn.execute("DELETE FROM komisi_kunci WHERE periode = ? AND lokasi = ?", (periode, lokasi)).rowcount
         conn.commit()
     finally:
         conn.close()
     if n:
-        catat_aktivitas(_oleh(request), "komisi_kunci", f"Kunci komisi {_nama_kerja(periode)} dibuka")
+        catat_aktivitas(_oleh(request), "komisi_kunci", f"Kunci komisi {_nama_kerja(periode)} lokasi {lokasi} dibuka")
     return {"ok": True}
 
 
 @app.get("/api/keuangan/insentif")
-def keuangan_insentif(request: Request, sampai: str = ""):
+def keuangan_insentif(request: Request, sampai: str = "", lokasi: int = 1):
     _wajib_admin(request)
     sampai = sampai if _periode_valid(sampai) else datetime.now().strftime("%Y-%m")
     conn = _billing_conn()
     try:
-        rekap = _rekap_insentif(conn, sampai)
-        bayar = _pembayaran_insentif(conn, [b["periode"] for b in rekap])
+        lokasi = _cek_lokasi(conn, lokasi)
+        daftar_lokasi = [dict(r) for r in conn.execute("SELECT kode, nama FROM lokasi ORDER BY kode")]
+        rekap = _rekap_insentif(conn, sampai, lokasi=lokasi)
+        bayar = _pembayaran_insentif(conn, [b["periode"] for b in rekap], lokasi)
         nota = _daftar_nota(conn, "transaksi", [p["id"] for ps in bayar.values() for p in ps])
     finally:
         conn.close()
     for b in rekap:
         b["pembayaran"] = [dict(p, nota=nota.get(p["id"], [])) for p in bayar.get(b["periode"], [])]
     rekap.reverse()      # terbaru di atas
-    return {"saya": request.state.user, "peran": request.state.peran,
+    return {"saya": request.state.user, "peran": request.state.peran, "lokasi": lokasi, "daftar_lokasi": daftar_lokasi,
             "ringkasan": {"tertunggak": sum(b["sisa"] for b in rekap),
                           "bulan_tertunggak": sum(1 for b in rekap if b["sisa"] > 0),
                           "dibayar_total": sum(b["dibayar"] for b in rekap)},
@@ -6216,7 +6273,7 @@ class BayarInsentifIn(BaseModel):
 
 
 @app.post("/api/keuangan/insentif/{periode}/bayar")
-def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
+def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request, lokasi: int = 1):
     _wajib_admin(request)
     if not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
@@ -6229,8 +6286,9 @@ def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
     try:
         conn.execute("BEGIN IMMEDIATE")  # kunci dulu: dua bayar bersamaan tidak bisa melebihi sisa
         _wajib_buku_terbuka(conn, d.tanggal)
-        ins = _hitung_insentif(conn, periode)
-        sisa = ins["total"] - _insentif_dibayar(conn, periode)
+        lokasi = _cek_lokasi(conn, lokasi)
+        ins = _hitung_insentif(conn, periode, lokasi)
+        sisa = ins["total"] - _insentif_dibayar(conn, periode, lokasi)
         if sisa <= 0:
             raise HTTPException(status_code=400, detail=f"Komisi {_nama_kerja(periode)} sudah lunas.")
         if not 0 < d.jumlah <= sisa:
@@ -6240,20 +6298,22 @@ def keuangan_bayar_insentif(periode: str, d: BayarInsentifIn, request: Request):
             kid = (conn.execute("INSERT INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'keluar', 1)",
                                 (_KAT_INSENTIF,)).lastrowid,)
         penerima = (d.penerima or "").strip()[:60]
-        ket = f"Komisi {_nama_kerja(periode)}" + (f" untuk {penerima}" if penerima else "") \
+        nama_lok = conn.execute("SELECT nama FROM lokasi WHERE kode = ?", (lokasi,)).fetchone()[0]
+        ket = f"Komisi {_nama_kerja(periode)}" + (f" {nama_lok}" if len(_kode_lokasi(conn)) > 1 else "") \
+            + (f" untuk {penerima}" if penerima else "") \
             + (f" · {d.keterangan.strip()[:300]}" if d.keterangan and d.keterangan.strip() else "")
         cur = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
-            "insentif_periode) VALUES (?, 'keluar', ?, ?, ?, ?, ?, ?, ?)",
+            "insentif_periode, insentif_lokasi) VALUES (?, 'keluar', ?, ?, ?, ?, ?, ?, ?, ?)",
             (d.tanggal, kid[0], d.jumlah, d.metode, ket, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             periode),
+             periode, lokasi),
         )
         nomor = _beri_nomor(conn, cur.lastrowid)
         conn.commit()
     finally:
         conn.close()
     catat_aktivitas(_oleh(request), "insentif_bayar",
-                    f"{nomor} {_nama_periode(periode)}: bayar {_rp(d.jumlah)} ({d.metode})"
+                    f"{nomor} {_nama_periode(periode)} lokasi {lokasi}: bayar {_rp(d.jumlah)} ({d.metode})"
                     + (f" ke {penerima}" if penerima else "") + f", sisa {_rp(sisa - d.jumlah)}")
     return {"ok": True, "transaksi_id": cur.lastrowid, "sisa": sisa - d.jumlah}
 
@@ -6620,7 +6680,7 @@ def ekspor_pelanggan(request: Request):
     conn = _billing_conn()
     try:
         rows = conn.execute(
-            "SELECT p.username, p.nama, p.alamat, p.no_hp, k.nama AS paket, k.harga, p.status, p.gratis, p.berhenti_sejak, "
+            f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.nama, p.alamat, p.no_hp, k.nama AS paket, k.harga, p.status, p.gratis, p.berhenti_sejak, "
             "(i.username IS NOT NULL) AS isolir, "
             "(SELECT COUNT(*) FROM tagihan t WHERE t.username = p.username AND t.status != 'lunas') AS bulan_tunggak, "
             "(SELECT COALESCE(SUM(jumlah),0) FROM tagihan t WHERE t.username = p.username AND t.status != 'lunas') AS total_tunggak "
@@ -6633,14 +6693,14 @@ def ekspor_pelanggan(request: Request):
     baris = []
     for r in rows:
         o = onu.get(r["username"])
-        baris.append([r["username"], r["nama"], r["alamat"], r["no_hp"], r["paket"], r["harga"], r["status"],
+        baris.append([r["id_pelanggan"], r["username"], r["nama"], r["alamat"], r["no_hp"], r["paket"], r["harga"], r["status"],
                       "ya" if r["gratis"] else "tidak", r["berhenti_sejak"], "ya" if r["isolir"] else "tidak",
                       "online" if r["username"] in online else "offline",
                       f"{o.pon} onu {o.onu_id}" if o else "", (o.serial_number if o else "") or "", (o.model or "").strip('"') if o else "",
                       o.onu_rx_dbm if o else "", r["bulan_tunggak"], r["total_tunggak"]])
     catat_aktivitas(_oleh(request), "ekspor", f"data pelanggan ({len(baris)} baris)")
     return _csv_respon(f"pelanggan-{datetime.now().strftime('%Y-%m-%d')}.csv",
-                       ["Username", "Nama", "Alamat", "No. HP", "Paket", "Harga paket", "Status", "Gratis", "Berhenti sejak",
+                       ["ID pelanggan", "Username", "Nama", "Alamat", "No. HP", "Paket", "Harga paket", "Status", "Gratis", "Berhenti sejak",
                         "Isolir", "PPPoE", "ONU (PON)", "SN ONU", "Model ONU", "Redaman ONU (dBm)",
                         "Bulan belum lunas", "Total belum lunas"], baris)
 
@@ -6654,14 +6714,14 @@ def ekspor_tagihan(periode: str, request: Request):
     try:
         rows = conn.execute(
             "SELECT t.username, p.nama, p.no_hp, t.periode, t.jumlah, t.jatuh_tempo, t.status, t.tgl_bayar, t.metode_bayar, "
-            "t.lunas_oleh FROM tagihan t JOIN pelanggan p ON p.username = t.username WHERE t.periode = ? "
+            f"t.lunas_oleh, {_SQL_ID} AS id_pelanggan FROM tagihan t JOIN pelanggan p ON p.username = t.username WHERE t.periode = ? "
             "ORDER BY t.status DESC, p.nama COLLATE NOCASE", (periode,)).fetchall()
     finally:
         conn.close()
-    baris = [[r["username"], r["nama"], r["no_hp"], r["periode"], r["jumlah"], r["jatuh_tempo"],
+    baris = [[r["id_pelanggan"], r["username"], r["nama"], r["no_hp"], r["periode"], r["jumlah"], r["jatuh_tempo"],
               "lunas" if r["status"] == "lunas" else "belum", r["tgl_bayar"], r["metode_bayar"], r["lunas_oleh"]] for r in rows]
     catat_aktivitas(_oleh(request), "ekspor", f"tagihan {periode} ({len(baris)} baris)")
-    return _csv_respon(f"tagihan-{periode}.csv", ["Username", "Nama", "No. HP", "Periode", "Jumlah", "Jatuh tempo", "Status",
+    return _csv_respon(f"tagihan-{periode}.csv", ["ID pelanggan", "Username", "Nama", "No. HP", "Periode", "Jumlah", "Jatuh tempo", "Status",
                                                   "Tanggal bayar", "Metode", "Dicatat oleh"], baris)
 
 
@@ -6671,11 +6731,11 @@ def ekspor_tunggakan(request: Request):
     d = list_tunggakan()
     label = {"belum_jatuh_tempo": "Belum jatuh tempo", "1_30": "Telat 1-30 hari", "31_60": "Telat 31-60 hari",
              "60_lebih": "Telat > 60 hari"}
-    baris = [[g["username"], g["nama"], g["no_hp"], g["paket"], g["bulan"], ", ".join(t["periode"] for t in g["tagihan"]),
+    baris = [[g["id_pelanggan"], g["username"], g["nama"], g["no_hp"], g["paket"], g["bulan"], ", ".join(t["periode"] for t in g["tagihan"]),
               g["total"], max(g["hari_telat"], 0), label[g["kelompok"]], "ya" if g["isolir"] else "tidak",
               (g["diingatkan"] or "")[:10]] for g in d["pelanggan"]]
     catat_aktivitas(_oleh(request), "ekspor", f"tunggakan ({len(baris)} pelanggan)")
-    return _csv_respon(f"tunggakan-{d['per']}.csv", ["Username", "Nama", "No. HP", "Paket", "Jumlah bulan", "Bulan",
+    return _csv_respon(f"tunggakan-{d['per']}.csv", ["ID pelanggan", "Username", "Nama", "No. HP", "Paket", "Jumlah bulan", "Bulan",
                                                      "Total", "Hari telat (tertua)", "Kelompok umur", "Isolir",
                                                      "Terakhir diingatkan"], baris)
 
@@ -6911,45 +6971,66 @@ def kirim_laporan_sekarang(periode: str, request: Request):
 # ============================================================
 
 def _siapkan_kunci_komisi(conn) -> None:
-    conn.execute("CREATE TABLE IF NOT EXISTS komisi_kunci (periode TEXT PRIMARY KEY, jumlah INTEGER, jumlah_lunas INTEGER, "
-                 "jumlah_gratis INTEGER, per_pelanggan INTEGER, total INTEGER NOT NULL, pelanggan TEXT, sumber TEXT NOT NULL, "
-                 "oleh TEXT, pada TEXT, catatan TEXT)")
+    """Kunci komisi per (bulan tagihan, lokasi): tiap lokasi punya mitra & komisinya sendiri."""
+    kolom = [r[1] for r in conn.execute("PRAGMA table_info(komisi_kunci)").fetchall()]
+    if kolom and "lokasi" not in kolom:
+        # Tabel lama (satu komisi per bulan, semuanya milik lokasi 1): susun ulang dengan kunci (periode, lokasi).
+        conn.execute("ALTER TABLE komisi_kunci RENAME TO komisi_kunci_lama")
+    conn.execute("CREATE TABLE IF NOT EXISTS komisi_kunci (periode TEXT NOT NULL, lokasi INTEGER NOT NULL DEFAULT 1, "
+                 "jumlah INTEGER, jumlah_lunas INTEGER, jumlah_gratis INTEGER, per_pelanggan INTEGER, total INTEGER NOT NULL, "
+                 "pelanggan TEXT, sumber TEXT NOT NULL, oleh TEXT, pada TEXT, catatan TEXT, PRIMARY KEY (periode, lokasi))")
+    if kolom and "lokasi" not in kolom:
+        conn.execute("INSERT INTO komisi_kunci (periode, lokasi, jumlah, jumlah_lunas, jumlah_gratis, per_pelanggan, total, "
+                     "pelanggan, sumber, oleh, pada, catatan) SELECT periode, 1, jumlah, jumlah_lunas, jumlah_gratis, "
+                     "per_pelanggan, total, pelanggan, sumber, oleh, pada, catatan FROM komisi_kunci_lama")
+        conn.execute("DROP TABLE komisi_kunci_lama")
 
 
-def _hitung_insentif(conn, periode: str) -> dict:
+def _kode_lokasi(conn) -> list[int]:
+    return [r[0] for r in conn.execute("SELECT kode FROM lokasi ORDER BY kode").fetchall()] or [1]
+
+
+def _hitung_insentif(conn, periode: str, lokasi: Optional[int] = None) -> dict:
     """Komisi mitra dari tagihan bulan `periode` = hasil kerja bulan sebelumnya, dibayar awal bulan `periode`
     (lihat _nama_kerja). Bila sudah dikunci
     (otomatis saat tutup buku bulan itu, atau manual oleh owner), angka kuncian yang dipakai, sehingga
     pembayaran susulan atau perubahan tarif tidak mengubah komisi yang sudah final."""
     _siapkan_kunci_komisi(conn)
-    k = conn.execute("SELECT * FROM komisi_kunci WHERE periode = ?", (periode,)).fetchone()
+    if lokasi is None:
+        bagian = [_hitung_insentif(conn, periode, x) for x in _kode_lokasi(conn)]
+        return {"periode": periode, "per_pelanggan": bagian[0]["per_pelanggan"],
+                **{f: sum(b[f] for b in bagian) for f in ("jumlah_lunas", "jumlah_gratis", "jumlah", "total")},
+                "pelanggan": [p for b in bagian for p in b["pelanggan"]],
+                "terkunci": bagian[-1]["terkunci"] if all(b["terkunci"] for b in bagian) else None}
+    k = conn.execute("SELECT * FROM komisi_kunci WHERE periode = ? AND lokasi = ?", (periode, lokasi)).fetchone()
     if k:
         return {"periode": periode, "per_pelanggan": k["per_pelanggan"], "jumlah_lunas": k["jumlah_lunas"],
                 "jumlah_gratis": k["jumlah_gratis"], "jumlah": k["jumlah"], "total": k["total"],
                 "pelanggan": json.loads(k["pelanggan"] or "[]"),
                 "terkunci": {"sumber": k["sumber"], "oleh": k["oleh"], "pada": k["pada"], "catatan": k["catatan"]}}
-    return {**_hitung_insentif_berjalan(conn, periode), "terkunci": None}
+    return {**_hitung_insentif_berjalan(conn, periode, lokasi), "terkunci": None}
 
 
-def _kunci_komisi(conn, periode: str, sumber: str, oleh: str, total: Optional[int] = None, catatan: Optional[str] = None) -> dict:
-    ins = _hitung_insentif_berjalan(conn, periode)
-    conn.execute("INSERT OR REPLACE INTO komisi_kunci (periode, jumlah, jumlah_lunas, jumlah_gratis, per_pelanggan, total, "
-                 "pelanggan, sumber, oleh, pada, catatan) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                 (periode, ins["jumlah"], ins["jumlah_lunas"], ins["jumlah_gratis"], ins["per_pelanggan"],
+def _kunci_komisi(conn, periode: str, lokasi: int, sumber: str, oleh: str, total: Optional[int] = None,
+                  catatan: Optional[str] = None) -> dict:
+    ins = _hitung_insentif_berjalan(conn, periode, lokasi)
+    conn.execute("INSERT OR REPLACE INTO komisi_kunci (periode, lokasi, jumlah, jumlah_lunas, jumlah_gratis, per_pelanggan, "
+                 "total, pelanggan, sumber, oleh, pada, catatan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (periode, lokasi, ins["jumlah"], ins["jumlah_lunas"], ins["jumlah_gratis"], ins["per_pelanggan"],
                   ins["total"] if total is None else total, json.dumps(ins["pelanggan"]), sumber, oleh,
                   datetime.now().strftime("%Y-%m-%d %H:%M:%S"), catatan))
     return ins
 
 
-def _hitung_insentif_berjalan(conn, periode: str) -> dict:
+def _hitung_insentif_berjalan(conn, periode: str, lokasi: int = 1) -> dict:
     """Insentif mitra = (pelanggan dengan tagihan periode itu LUNAS + pelanggan
     gratis yang ditandai insentif_gratis dan masih aktif di periode itu) x tarif.
     Hanya pelanggan yang ditampilkan ke mitra. Menunggak/berhenti tanpa
     pembayaran tidak terhitung."""
     lunas = conn.execute(
         "SELECT p.username, p.nama, t.tgl_bayar FROM tagihan t JOIN pelanggan p ON p.username = t.username "
-        "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 ORDER BY p.nama COLLATE NOCASE",
-        (periode,),
+        "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 AND p.lokasi = ? ORDER BY p.nama COLLATE NOCASE",
+        (periode, lokasi),
     ).fetchall()
     # Pelanggan gratis dihitung untuk periode selama ia belum berhenti sebelum awal periode tersebut, dan baru
     # mulai tanggal 1 bulan tagihannya (aturan owner): tagihan November dibayar di muka oleh pelanggan biasa,
@@ -6959,11 +7040,11 @@ def _hitung_insentif_berjalan(conn, periode: str) -> dict:
     else:
         gratis = conn.execute(
             "SELECT p.username, p.nama FROM pelanggan p "
-            "WHERE p.gratis = 1 AND p.insentif_gratis = 1 AND p.tampil_mitra = 1 "
+            "WHERE p.gratis = 1 AND p.insentif_gratis = 1 AND p.tampil_mitra = 1 AND p.lokasi = ? "
             "AND (p.status = 'aktif' OR p.berhenti_sejak >= ?) "
             "AND p.username NOT IN (SELECT username FROM tagihan WHERE periode = ? AND status = 'lunas') "
             "ORDER BY p.nama COLLATE NOCASE",
-            (f"{periode}-01", periode),
+            (lokasi, f"{periode}-01", periode),
         ).fetchall()
     tarif = CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
     jumlah = len(lunas) + len(gratis)
@@ -6976,6 +7057,8 @@ def _hitung_insentif_berjalan(conn, periode: str) -> dict:
 def mitra_list_pelanggan(periode: str, request: Request):
     if not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM.")
+    # Mitra hanya melihat lokasinya; admin/owner yang membuka halaman ini melihat lokasi 1.
+    lok = _lokasi_mitra(request) if request.state.peran == "mitra" else 1
     conn = _billing_conn()
     try:
         # Bulan pertama di akun mitra: tagihan pertama di INDESO (dan tidak sebelum KOMISI_MULAI). Bulan sebelum
@@ -6985,25 +7068,25 @@ def mitra_list_pelanggan(periode: str, request: Request):
         if periode < awal_mitra:
             periode = awal_mitra
         rows = conn.execute(
-            "SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, p.gratis, p.insentif_gratis, k.nama AS paket, "
+            f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.nama, p.alamat, p.no_hp, p.status, p.gratis, p.insentif_gratis, k.nama AS paket, "
             "t.status AS status_bayar, t.tgl_bayar, t.jatuh_tempo, "
             "(SELECT 1 FROM isolir i WHERE i.username = p.username) AS terisolir "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "LEFT JOIN tagihan t ON t.username = p.username AND t.periode = ? "
             # Pelanggan yang berhenti tetap tampil bila masih punya tagihan bulan itu,
             # supaya jumlahnya cocok dengan perhitungan insentif.
-            "WHERE p.tampil_mitra = 1 AND (p.status = 'aktif' OR t.id IS NOT NULL) "
+            "WHERE p.tampil_mitra = 1 AND p.lokasi = ? AND (p.status = 'aktif' OR t.id IS NOT NULL) "
             "ORDER BY p.nama COLLATE NOCASE",
-            (periode,),
+            (periode, lok),
         ).fetchall()
-        insentif = _hitung_insentif(conn, periode)
-        insentif["dibayar"] = _insentif_dibayar(conn, periode)
+        insentif = _hitung_insentif(conn, periode, lok)
+        insentif["dibayar"] = _insentif_dibayar(conn, periode, lok)
         insentif["sisa"] = max(0, insentif["total"] - insentif["dibayar"])
         # Mitra hanya melihat tanggal, jumlah, dan metode pembayaran (bukan catatan internal)
         insentif["pembayaran"] = [{"tanggal": p["tanggal"], "jumlah": p["jumlah"], "metode": p["metode"]}
-                                  for p in _pembayaran_insentif(conn, [periode]).get(periode, [])
+                                  for p in _pembayaran_insentif(conn, [periode], lok).get(periode, [])
                                   if p["status"] == "aktif"]
-        insentif["tertunggak_lain"] = [b for b in _insentif_tertunggak(conn, periode)["bulan"] if b["periode"] != periode]
+        insentif["tertunggak_lain"] = [b for b in _insentif_tertunggak(conn, periode, lok)["bulan"] if b["periode"] != periode]
     finally:
         conn.close()
     # Pelanggan gratis yang ikut dihitung komisi (mis. pengurus) ditampilkan ke mitra seperti pelanggan
@@ -7097,8 +7180,8 @@ def mitra_ekspor(periode: str, request: Request):
     periode, ins, hari = d["periode"], d["insentif"], datetime.now().strftime("%Y-%m-%d")
     baris = [[f"Pelanggan mitra {d['akun']}: tagihan {_nama_periode(periode)}"],
              [f"Diekspor {datetime.now().strftime('%Y-%m-%d %H:%M')}"], [],
-             ["No", "Nama", "Username", "Paket", "Alamat", "No. HP", "Status bayar", "Tanggal bayar", "Jatuh tempo",
-              "Keterangan"]]
+             ["No", "ID pelanggan", "Nama", "Username", "Paket", "Alamat", "No. HP", "Status bayar", "Tanggal bayar",
+              "Jatuh tempo", "Keterangan"]]
     lunas = belum = 0
     for i, p in enumerate(d["pelanggan"], 1):
         if p["status_bayar"] == "lunas":
@@ -7108,7 +7191,7 @@ def mitra_ekspor(periode: str, request: Request):
         else:
             status = "Gratis" if p["gratis"] else "Belum ada tagihan"
         ket = ", ".join(k for k, ya in (("Berhenti", p["status"] == "berhenti"), ("Isolir", p["terisolir"])) if ya)
-        baris.append([i, p["nama"], p["username"], p["paket"], p["alamat"], p["no_hp"], status,
+        baris.append([i, p["id_pelanggan"], p["nama"], p["username"], p["paket"], p["alamat"], p["no_hp"], status,
                       p["tgl_bayar"] or "", p["jatuh_tempo"] or "", ket])
     awal_ringkas = len(baris) + 1
     baris += [[], ["Ringkasan"], ["Sudah bayar", lunas], ["Belum bayar", belum],
@@ -7116,7 +7199,7 @@ def mitra_ekspor(periode: str, request: Request):
               ["Komisi sudah dibayar", ins["dibayar"]], ["Komisi belum dibayar", ins["sisa"]],
               ["Status komisi", "final" if ins["final"] else "masih berjalan, final saat tutup buku"]]
     catat_aktivitas(_oleh(request), "ekspor", f"Excel pelanggan mitra {periode} ({len(d['pelanggan'])} baris)")
-    isi = _xlsx(baris, [5, 26, 16, 12, 30, 15, 13, 13, 12, 16], {0, 3, awal_ringkas})
+    isi = _xlsx(baris, [5, 15, 26, 16, 12, 30, 15, 13, 13, 12, 16], {0, 3, awal_ringkas})
     return Response(isi, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="pelanggan-mitra-{periode}.xlsx"'})
 
@@ -7137,8 +7220,8 @@ def mitra_ubah_kontak(username: str, d: KontakIn, request: Request):
     conn = _billing_conn()
     try:
         lama = conn.execute(
-            "SELECT nama, alamat, no_hp FROM pelanggan WHERE username=? AND tampil_mitra=1 AND status='aktif'",
-            (username,),
+            "SELECT nama, alamat, no_hp FROM pelanggan WHERE username=? AND tampil_mitra=1 AND status='aktif' AND lokasi=?",
+            (username, _lokasi_mitra(request)),
         ).fetchone()
         if not lama:
             raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
@@ -7293,7 +7376,7 @@ class TiketIn(BaseModel):
     teknisi: Optional[str] = None
 
 
-def _buat_tiket(d: TiketIn, oleh: str, hanya_mitra: bool = False) -> dict:
+def _buat_tiket(d: TiketIn, oleh: str, hanya_mitra: bool = False, lokasi_mitra: int = 1) -> dict:
     kategori = d.kategori.strip()
     if kategori not in _KATEGORI_TIKET:
         raise HTTPException(status_code=400, detail="Jenis masalah tidak dikenal.")
@@ -7309,8 +7392,9 @@ def _buat_tiket(d: TiketIn, oleh: str, hanya_mitra: bool = False) -> dict:
     try:
         nama = None
         if username:
-            sql = "SELECT nama FROM pelanggan WHERE username=?" + (" AND tampil_mitra=1 AND status='aktif'" if hanya_mitra else "")
-            p = conn.execute(sql, (username,)).fetchone()
+            sql = "SELECT nama FROM pelanggan WHERE username=?" + (" AND tampil_mitra=1 AND status='aktif' AND lokasi=?"
+                                                                   if hanya_mitra else "")
+            p = conn.execute(sql, (username, lokasi_mitra) if hanya_mitra else (username,)).fetchone()
             if not p:
                 raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
             nama = p["nama"]
@@ -7504,9 +7588,9 @@ def mitra_list_tiket(request: Request):
         rows = conn.execute(
             "SELECT t.id, t.username, t.nama, t.kategori, t.keterangan, t.status, t.teknisi, t.dibuat_pada, "
             "t.selesai_pada, t.solusi, t.dibuat_oleh FROM tiket t JOIN pelanggan p ON p.username = t.username "
-            "WHERE p.tampil_mitra = 1 AND (t.status IN ('baru','dikerjakan') OR t.dibuat_pada >= ?) "
+            "WHERE p.tampil_mitra = 1 AND p.lokasi = ? AND (t.status IN ('baru','dikerjakan') OR t.dibuat_pada >= ?) "
             "ORDER BY CASE WHEN t.status IN ('baru','dikerjakan') THEN 0 ELSE 1 END, t.id DESC LIMIT 100",
-            ((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"),)).fetchall()
+            (_lokasi_mitra(request), (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S"))).fetchall()
     finally:
         conn.close()
     return {"kategori": list(_KATEGORI_TIKET), "tiket": [_baris_tiket(r) for r in rows]}
@@ -7521,13 +7605,13 @@ class TiketMitraIn(BaseModel):
 @app.post("/api/mitra/tiket")
 def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
     return _buat_tiket(TiketIn(username=d.username, kategori=d.kategori, keterangan=d.keterangan),
-                       _oleh(request), hanya_mitra=True)
+                       _oleh(request), hanya_mitra=True, lokasi_mitra=_lokasi_mitra(request))
 
 
 # ============================================================
 # PORTAL PELANGGAN (/portal)
 # ============================================================
-# Pelanggan mendaftar sendiri (ID pelanggan = username internet + nomor HP yang tercatat), lalu admin menyetujui
+# Pelanggan mendaftar sendiri dengan nomor HP yang tercatat di data pelanggan, lalu admin menyetujui
 # di menu Pelanggan → Akun portal. Akun, sesi, dan cookie terpisah dari akun staf. Pelanggan hanya melihat
 # datanya sendiri: tagihan, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi), gangguan.
 # Sandi WiFi tidak pernah ditampilkan: ONU tidak mengirimkannya balik ke ACS.
@@ -7584,8 +7668,8 @@ async def halaman_portal():
 
 
 class PortalDaftarIn(BaseModel):
-    pelanggan: str
     no_hp: str
+    id_pelanggan: Optional[str] = None     # wajib hanya bila nomor HP tercatat di lebih dari satu sambungan
     login: str
     password: str
 
@@ -7602,13 +7686,22 @@ def portal_daftar(d: PortalDaftarIn, request: Request):
     _cek_password_baru(d.password)
     conn = _billing_conn()
     try:
-        p = conn.execute("SELECT username, nama, no_hp FROM pelanggan WHERE username = ? COLLATE NOCASE "
-                         "AND status = 'aktif'", (d.pelanggan.strip(),)).fetchone()
-        # Pesan sama untuk ID salah maupun nomor HP salah, supaya data pelanggan tidak bisa ditebak.
-        if not p or not _hp_baku(p["no_hp"]) or _hp_baku(p["no_hp"]) != _hp_baku(d.no_hp):
+        hp = _hp_baku(d.no_hp)
+        cocok = [r for r in conn.execute(f"SELECT username, nama, no_hp, {_SQL_ID} AS id_pelanggan FROM pelanggan p "
+                                         "WHERE status = 'aktif' AND COALESCE(no_hp, '') != ''").fetchall()
+                 if len(hp) >= 9 and _hp_baku(r["no_hp"]) == hp]
+        idp = re.sub(r"\D", "", d.id_pelanggan or "")
+        if idp:
+            cocok = [r for r in cocok if re.sub(r"\D", "", r["id_pelanggan"] or "") == idp]
+        if not cocok:
             _catat_gagal(kunci, sekarang)
-            raise HTTPException(status_code=400, detail="Data tidak cocok dengan catatan kami. Periksa ID pelanggan "
-                                                        "(username internet) dan nomor HP, atau hubungi admin.")
+            raise HTTPException(status_code=400, detail="Nomor HP ini belum tercatat sebagai pelanggan. Periksa "
+                                                        "nomornya" + (" dan ID pelanggan" if idp else "")
+                                                        + ", atau hubungi admin untuk mencatatkannya.")
+        if len(cocok) > 1:
+            raise HTTPException(status_code=409, detail="Nomor HP ini tercatat untuk lebih dari satu sambungan. Isi "
+                                                        "juga ID pelanggan (463376-…) yang tertera di pesan tagihan.")
+        p = cocok[0]
         if conn.execute("SELECT 1 FROM portal_akun WHERE pelanggan = ?", (p["username"],)).fetchone():
             raise HTTPException(status_code=409, detail="Pelanggan ini sudah punya akun (atau sedang menunggu "
                                                         "persetujuan). Hubungi admin bila lupa password.")
@@ -7703,7 +7796,7 @@ def portal_saya(request: Request):
     _siapkan_tabel_isolir()
     conn = _billing_conn()
     try:
-        p = conn.execute("SELECT p.username, p.nama, p.alamat, k.nama AS paket, k.kecepatan_mbps FROM pelanggan p "
+        p = conn.execute(f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.nama, p.alamat, k.nama AS paket, k.kecepatan_mbps FROM pelanggan p "
                          "LEFT JOIN paket k ON k.id = p.paket_id WHERE p.username = ?", (u,)).fetchone()
         tagihan = conn.execute("SELECT periode, jumlah, status, jatuh_tempo, tgl_bayar, metode_bayar FROM tagihan "
                                "WHERE username = ? ORDER BY periode DESC LIMIT 12", (u,)).fetchall()
@@ -7718,7 +7811,7 @@ def portal_saya(request: Request):
                "terlambat": t["status"] != "lunas" and t["jatuh_tempo"] < hari, "jatuh_tempo": t["jatuh_tempo"],
                "tgl_bayar": t["tgl_bayar"], "metode": _METODE_LABEL.get(t["metode_bayar"] or "", t["metode_bayar"])
                if t["status"] == "lunas" else None} for t in tagihan]
-    return {"login": request.state.portal["login"], "nama": p["nama"], "username": p["username"],
+    return {"login": request.state.portal["login"], "nama": p["nama"], "username": p["username"], "id_pelanggan": p["id_pelanggan"],
             "alamat": p["alamat"], "paket": p["paket"], "kecepatan_mbps": p["kecepatan_mbps"],
             "internet": {"diketahui": _latest_data is not None, "online": sesi is not None,
                          "uptime": sesi.uptime if sesi else None, "isolir": isolir},
@@ -8387,7 +8480,7 @@ def _data_pelanggan() -> dict:
     try:
         return {
             r["username"]: dict(r)
-            for r in conn.execute("SELECT username, nama, alamat, no_hp FROM pelanggan WHERE status = 'aktif'")
+            for r in conn.execute(f"SELECT username, nama, alamat, no_hp FROM pelanggan p WHERE status = 'aktif' AND {_SQL_DIPANTAU}")
         }
     finally:
         conn.close()
@@ -8970,9 +9063,24 @@ def proses_isolir(sekarang=None) -> None:
             "SELECT p.username, p.nama, COUNT(*) AS n, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
             "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
             "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' "
-            "AND p.username NOT IN (SELECT username FROM isolir) "
+            f"AND p.username NOT IN (SELECT username FROM isolir) AND {_SQL_DIPANTAU} "
             "GROUP BY p.username ORDER BY p.nama COLLATE NOCASE", (batas,)
         ).fetchall()
+        # Lokasi yang jaringannya belum tersambung ke INDESO: tidak diisolir otomatis, cukup dikabarkan
+        # sekali sehari supaya diisolir manual di MikroTik lokasi itu.
+        manual = conn.execute(
+            "SELECT p.username, p.nama, p.lokasi, l.nama AS nama_lokasi, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
+            "FROM tagihan t JOIN pelanggan p ON p.username = t.username JOIN lokasi l ON l.kode = p.lokasi "
+            "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' AND l.jaringan = 0 "
+            "GROUP BY p.username ORDER BY p.lokasi, p.nama COLLATE NOCASE", (batas,)).fetchall()
+        if manual and not conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='isolir_manual'", (hari,)).fetchone():
+            conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, "isolir_manual"))
+            conn.commit()
+            send_telegram_message(
+                f"📋 <b>Perlu diisolir manual</b> (lokasi yang jaringannya belum tersambung ke INDESO): {len(manual)} pelanggan\n"
+                + "\n".join(f"• {_esc(r['nama'] or r['username'])} ({_esc(r['username'])}, {_esc(r['nama_lokasi'])}): "
+                            f"{_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}" for r in manual[:25])
+                + (f"\n… dan {len(manual) - 25} lainnya" if len(manual) > 25 else ""))
 
         def tandai():
             conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, "isolir"))
@@ -9047,6 +9155,9 @@ def isolir_manual(username: str, request: Request):
     conn = _billing_conn()
     try:
         ada = conn.execute("SELECT 1 FROM pelanggan WHERE username=?", (username,)).fetchone()
+        if ada and not _dipantau(conn, username):
+            raise HTTPException(status_code=400, detail="Jaringan lokasi pelanggan ini belum tersambung ke INDESO: "
+                                                        "isolir langsung di MikroTik lokasinya.")
     finally:
         conn.close()
     if not ada:
@@ -12362,9 +12473,9 @@ def _saran_onu_baru(o: Optional[ONUStatus], langkah: dict, r: sqlite3.Row) -> st
             return (f"PPPoE belum tersambung: isi PPPoE akun {r['untuk']} di ONU ini, lalu tunggu ±2 menit dan tekan "
                     "Muat ulang.")
         return ("PPPoE belum tersambung. Pilih pelanggannya di kolom 'Dipasang untuk pelanggan' di bawah (belum ada? "
-                "tekan + Pasang baru), isi PPPoE-nya di ONU ini, lalu tunggu ±2 menit dan tekan Muat ulang.")
+                "tekan + Tambah pelanggan), isi PPPoE-nya di ONU ini, lalu tunggu ±2 menit dan tekan Muat ulang.")
     if not langkah["pelanggan"]:
-        return "PPPoE sudah tersambung tapi belum ada di data pelanggan: Impor dari MikroTik / Pasang baru."
+        return "PPPoE sudah tersambung tapi belum ada di data pelanggan: Impor dari MikroTik / Tambah pelanggan."
     if langkah["acs"] is False:
         sn = (r["sn"] or "").upper()
         if "F609" in (o.model or "").upper() or sn.startswith("ZTEG"):

@@ -168,7 +168,7 @@ function render(){
   const iso=(p.status==='berhenti'?'<span class="chip off">Berhenti</span>':'')+(p.terisolir?'<span class="chip bad">Isolir</span>':'');
   const wa=nomorWA(p.no_hp);
   const tombolWA=wa?`<a class="btn" href="https://wa.me/${wa}" target="_blank" rel="noopener">WA</a>`:'';
-  const sub=esc(p.username)+' · '+esc(p.paket||'—')+(p.alamat?' · '+esc(p.alamat):'')+(!p.no_hp?' · <i>no HP belum diisi</i>':'');
+  const sub=(p.id_pelanggan?esc(p.id_pelanggan)+' · ':'')+esc(p.username)+' · '+esc(p.paket||'—')+(p.alamat?' · '+esc(p.alamat):'')+(!p.no_hp?' · <i>no HP belum diisi</i>':'');
   return `<div class="row"><div class="info" ${p.status==='berhenti'?'':`onclick="buka(${i})"`}><div class="name">${esc(p.nama)}</div><div class="sub">${sub}</div></div><div class="right">${iso}${chip}${tombolWA}</div></div>`;
  }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
 }

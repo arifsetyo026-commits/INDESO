@@ -94,8 +94,20 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   (pelanggan dengan tagihan lunas bulan itu, ditambah pelanggan gratis yang dicentang
   "Gratis, tetap dihitung insentif mitra", × tarif per pelanggan, default Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
   tidak terlihat dan tidak dihitung. Semua API lain ditolak untuk akun mitra.
-- **Portal pelanggan** (`/portal`) — pelanggan mendaftar sendiri dengan ID pelanggan (username PPPoE) dan
-  nomor HP yang tercatat, lalu admin menyetujui di **Pelanggan → Akun portal**. Pelanggan melihat tagihan &
+- **ID pelanggan & lokasi** — setiap pelanggan otomatis mendapat ID `463376-L-NNNN` (463376 = "INDESO" di
+  tombol HP, L = kode lokasi, NNNN = nomor urut per lokasi, urut tanggal pasang). ID tidak berubah walau username
+  atau nomor HP diganti; pindah lokasi memberi nomor baru. Lokasi dikelola di **Pelanggan → Lokasi**. ID tampil di
+  data pelanggan, pesan WA (`{id}`), halaman mitra, portal, dan semua ekspor.
+- **Lokasi hanya penagihan** — lokasi baru (mis. wilayah yang jaringannya belum tersambung ke INDESO) hanya
+  untuk penagihan & data pelanggan: tagihan, pengingat, portal, dan komisi mitra berjalan, tetapi isolir otomatis,
+  sinkron secret, dan pantauan putus tidak menyentuh MikroTik utama. Yang menunggak dikabarkan sekali sehari lewat
+  Telegram untuk diisolir manual di MikroTik lokasinya. Pelanggan baru dicatat lewat **Pelanggan → Tambah
+  pelanggan** (data saja; akun PPPoE, biaya pasang, dan pemakaian barang dikerjakan manual).
+- **Mitra & komisi per lokasi** — akun mitra diikat ke satu lokasi (Pengaturan → Pengguna) dan hanya melihat
+  pelanggan, tiket, Excel, dan komisi lokasinya. Komisi dihitung, dikunci (juga otomatis saat tutup buku), dan
+  dibayar per lokasi di **Keuangan → Komisi Mitra**; laporan keuangan memakai jumlah semua lokasi.
+- **Portal pelanggan** (`/portal`) — pelanggan mendaftar sendiri dengan nomor HP yang tercatat
+  di data pelanggan, lalu admin menyetujui di **Pelanggan → Akun portal**. Pelanggan melihat tagihan &
   riwayat bayar, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi, maks. 5× per jam), dan
   bisa lapor gangguan (masuk Tiket). Sandi WiFi tidak pernah ditampilkan. Akun, sesi, dan cookie portal terpisah
   dari akun staf, jadi sesi pelanggan tidak bisa membuka API staf.

@@ -222,33 +222,31 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="customerModal"><div class="modal"><div class="modalHead"><h3>ONU &amp; Diagnosa</h3><button class="close" onclick="closeModal('customerModal')">Tutup</button></div><div class="modalBody"><div class="search"><input id="customerSearch" placeholder="Cari pelanggan / username untuk diagnosa, atau PON, nomor ONU, serial…" oninput="searchCustomers()"><button onclick="searchCustomers()">Cari</button></div><div class="blFilters onuFilter"><button data-v="semua" class="on" onclick="onuFilter='semua';searchCustomers()">Semua</button><button data-v="masalah" onclick="onuFilter='masalah';searchCustomers()">Redaman bermasalah</button><button data-v="offline" onclick="onuFilter='offline';searchCustomers()">Offline</button><button data-v="tanpa" onclick="onuFilter='tanpa';searchCustomers()">Belum terpetakan</button><button data-v="trafik" onclick="onuFilter='trafik';searchCustomers()">Trafik tertinggi</button></div><div class="blAksi" id="onuMatiAksi" style="justify-content:flex-start;margin:0 0 8px;display:none"><button class="btnS" onclick="bukaOnuMati()">🧹 Bersihkan ONU mati</button></div><div id="onuMatiBox"></div><div id="customerResults"></div></div></div></div>
 <div class="overlay" id="pelangganModal"><div class="modal"><div class="modalHead"><h3 id="plTitle">Data Pelanggan</h3><button class="close" onclick="closeModal('pelangganModal')">Tutup</button></div><div class="modalBody">
 <div id="plListView">
-<div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Pasang baru</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="bukaPortal()">Akun portal <span id="portalBadge" class="badge" style="display:none">0</span></button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
+<div class="blNav"><button class="btnS go" onclick="bukaPasangBaru()">+ Tambah pelanggan</button><button class="btnS" onclick="bukaPaket()">Kelola paket</button><button class="btnS" onclick="bukaLokasi()">Lokasi</button><button class="btnS" onclick="bukaPortal()">Akun portal <span id="portalBadge" class="badge" style="display:none">0</span></button><button class="btnS" onclick="imporPelanggan()">Impor dari MikroTik</button><button class="btnS" onclick="closeModal('pelangganModal');openCustomers()">Cari ONU</button><a class="btnS" href="/api/ekspor/pelanggan" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="search"><input id="plSearch" placeholder="Cari nama atau username…" oninput="renderPelanggan()"></div>
 <div class="blFilters plFilters"><button data-f="aktif" class="on" onclick="setFilterPelanggan('aktif')">Aktif</button><button data-f="belum" onclick="setFilterPelanggan('belum')">Belum lengkap</button><button data-f="berhenti" onclick="setFilterPelanggan('berhenti')">Berhenti</button><button data-f="semua" onclick="setFilterPelanggan('semua')">Semua</button></div>
-<div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
+<select id="plLokasiF" onchange="pl.lokF=Number(this.value);renderPelanggan()" style="display:none;margin-bottom:6px"></select><div id="plSummary" class="muted"></div><div class="plMsg" id="plListMsg"></div><div id="plList"></div></div>
 <div id="plBaruView" style="display:none"><div class="plForm">
-<label>Username PPPoE</label><input id="pbUser" autocapitalize="off" autocomplete="off" placeholder="mis. budi.rt03">
+<div class="plSub" style="margin-bottom:6px">Mencatat pelanggan untuk penagihan saja. Pemasangan, akun PPPoE di MikroTik, biaya pasang (Keuangan → Pencatatan Transaksi), dan pemakaian barang (Warehouse) dikerjakan manual.</div>
+<label>Username PPPoE <span class="plSub">(sama persis dengan secret di MikroTik; unik di semua lokasi)</span></label><input id="pbUser" autocapitalize="off" autocomplete="off" placeholder="mis. budi.rt03">
 <label>Nama lengkap</label><input id="pbNama">
 <label>Alamat</label><textarea id="pbAlamat"></textarea>
 <label>Nomor HP / WhatsApp</label><input id="pbHp" type="tel" inputmode="tel">
-<label>Paket</label><select id="pbPaket" onchange="pratinjauPasang();pilihProfilPasang()"></select>
+<label>Lokasi</label><select id="pbLokasi"></select>
+<label>Paket</label><select id="pbPaket" onchange="pratinjauPasang()"></select>
 <label>Tanggal pasang</label><input id="pbTgl" type="date" onchange="pratinjauPasang()">
 <label>Diskon tetap per bulan (Rp)</label><input id="pbDiskon" type="number" min="0" step="1000" value="0" inputmode="numeric" oninput="pratinjauPasang()">
 <label class="plCek"><input type="checkbox" id="pbTagih" checked onchange="pratinjauPasang()"> Langsung buat tagihan bulan pertama (prorata)</label>
 <div class="kuPanel" id="pbPratinjau" style="margin:4px 0 10px;background:#f7faf8"></div>
-<label class="plCek"><input type="checkbox" id="pbSecret" onchange="$('pbSecretBox').style.display=this.checked?'block':'none';if(this.checked)muatProfilPasang()"> Buat akun PPPoE di MikroTik sekalian</label>
-<div id="pbSecretBox" style="display:none"><label>Password PPPoE</label><input id="pbSandi" autocomplete="new-password">
-<label>Profil PPPoE MikroTik</label><select id="pbProfil"><option value="">— dicocokkan otomatis dari kecepatan paket —</option></select></div>
-<label>Pemakaian barang warehouse <span class="plSub">(stok langsung berkurang atas nama pelanggan ini)</span></label><div id="pbBarang"></div><button type="button" class="btnS" style="margin:2px 0 8px" onclick="pbTambahBarang()">+ Tambah barang</button>
-<label>Biaya pasang yang diterima (Rp) <span class="plSub">(dicatat otomatis di Keuangan; 0 = tidak ada)</span></label><input id="pbBiaya" type="number" min="0" step="1000" value="0" inputmode="numeric">
-<label>Metode bayar biaya pasang</label><select id="pbMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
 <div class="plBtns"><button class="plSave" id="pbSimpan" onclick="simpanPasangBaru()">Simpan pelanggan baru</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
 <div class="plMsg" id="pbMsg"></div></div></div>
 <div id="plFormView" style="display:none"><div class="plForm">
+<label>ID pelanggan</label><input id="plId" disabled>
 <label>Username PPPoE</label><input id="plUser" disabled>
 <label>Nama lengkap</label><input id="plNama">
 <label>Alamat</label><textarea id="plAlamat"></textarea>
 <label>Nomor HP / WhatsApp</label><input id="plHp" type="tel" inputmode="tel">
+<label>Lokasi <span class="plSub">(pindah lokasi = ID pelanggan baru)</span></label><select id="plLokasi"></select>
 <label>Paket</label><select id="plPaket"></select>
 <label>Tanggal mulai berlangganan <span class="plSub">(untuk tagihan prorata bulan pertama)</span></label><input id="plTglPasang" type="date">
 <label>Diskon tetap per bulan (Rp) <span class="plSub">(0 = tanpa diskon)</span></label><input id="plDiskon" type="number" min="0" step="1000" inputmode="numeric">
@@ -260,9 +258,14 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung komisi mitra tiap bulan</label>
 <div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button><button class="plCancel" onclick="const u=$('plUser').value;closeModal('pelangganModal');openDiagnosa(u)">Diagnosa</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
+<div id="plLokasiView" style="display:none">
+<div class="blNav"><button class="btnS" onclick="backPelanggan()">‹ Kembali</button></div>
+<div class="plSub">Lokasi baru dicatat sebagai <b>hanya penagihan</b>: tagihan, pengingat, portal, dan komisi mitra berjalan; isolir otomatis, sinkron secret, dan pantauan putus tidak dijalankan (dikabarkan lewat Telegram siapa yang perlu diisolir manual). ID pelanggan: <b>463376</b> ("INDESO" di tombol HP) - <b>kode lokasi</b> - <b>nomor urut</b>, mis. 463376-2-0001 = pelanggan pertama di lokasi 2. Nomor diberikan otomatis dan tidak berubah walau username atau nomor HP diganti.</div>
+<div class="plMsg" id="lkMsg"></div><div id="lkList"></div>
+<div class="plForm"><label>Tambah lokasi baru</label><div style="display:flex;gap:8px"><input id="lkNama" placeholder="mis. Dusun Krajan" maxlength="60" style="flex:1;min-width:0"><button class="btnS go" onclick="tambahLokasi()">Tambah</button></div></div></div>
 <div id="plPortalView" style="display:none">
 <div class="blNav"><button class="btnS" onclick="backPelanggan()">‹ Kembali</button></div>
-<div class="plSub">Pelanggan mendaftar sendiri di <b id="portalAlamat">/portal</b> dengan ID pelanggan (username PPPoE) dan nomor HP yang tercatat di data pelanggan. Periksa dulu, lalu setujui. Pelanggan melihat tagihan, status internet, WiFi (nama &amp; jumlah perangkat; bisa ganti nama/sandi), dan bisa lapor gangguan.</div>
+<div class="plSub">Pelanggan mendaftar sendiri di <b id="portalAlamat">/portal</b> dengan nomor HP yang tercatat di data pelanggan (nomor yang tercatat di dua sambungan atau lebih tidak bisa mendaftar sendiri). Periksa dulu, lalu setujui. Pelanggan melihat tagihan, status internet, WiFi (nama &amp; jumlah perangkat; bisa ganti nama/sandi), dan bisa lapor gangguan.</div>
 <div class="plMsg" id="portalMsg"></div><div id="portalList"></div></div>
 <div id="plPaketView" style="display:none">
 <div id="pkList"></div>
@@ -280,7 +283,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div id="blBulan">
 <div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button><a class="btnS" id="blEkspor" href="#" download style="text-decoration:none">Ekspor CSV</a></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
-<div class="search"><input id="blSearch" placeholder="Cari nama atau username…" oninput="renderBilling()"></div>
+<div class="search" style="display:flex;gap:8px"><input id="blSearch" placeholder="Cari nama, username, atau ID…" oninput="renderBilling()" style="flex:1;min-width:0"><select id="blLokasi" onchange="bl.lok=Number(this.value);renderBilling();if(bl.tg)renderTunggakan()" style="display:none;max-width:45%"></select></div>
 <div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
 <div class="plMsg" id="blMsg"></div><div id="blList"></div>
 </div>
@@ -335,6 +338,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div id="utList"></div>
 </div>
 <div id="kuInsentif" style="display:none">
+ <div class="blFilters" id="inLokasi" style="display:none"></div>
  <div class="blSum"><div class="blBox"><small>Komisi belum dibayar</small><b id="inTunggak" style="color:#b45309">—</b><small id="inTunggakN"></small></div><div class="blBox"><small>Sudah dibayar (24 bln)</small><b id="inDibayar" style="color:#0b7a3b">—</b><small>total</small></div><div class="blBox"><small>Tarif</small><b id="inTarif">—</b><small>per pelanggan lunas</small></div></div>
  <div class="plSub" style="margin-bottom:8px">Komisi hasil kerja bulan X dihitung dari tagihan bulan X+1 yang sudah lunas (pelanggan membayar di muka; + pelanggan gratis yang ditandai) dan dibayar awal bulan X+1. Contoh: tagihan November = hasil kerja Oktober, dibayar awal November. Pelanggan gratis yang ditandai baru dihitung mulai tanggal 1 bulan tagihannya. Angkanya final (terkunci) saat buku bulan X ditutup; bulan sebelum Penagihan dipakai dikunci manual oleh owner.</div>
  <div id="inList"></div>
@@ -459,6 +463,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <label>Username</label><input id="akUser" autocapitalize="none" spellcheck="false" placeholder="mis. kasir1">
   <label>Password awal (min. 8 karakter)</label><input id="akPass" type="password" autocomplete="new-password">
   <label>Peran</label><select id="akPeran"><option value="admin">Admin — operasional (catat keuangan, billing, isolir)</option><option value="owner">Owner — akses penuh + laporan keuangan saat login</option><option value="mitra">Mitra — hanya halaman mitra</option></select>
+  <label>Lokasi mitra <span class="plSub">(mitra hanya melihat pelanggan, tiket, dan komisi lokasinya)</span></label><select id="akLokasi"></select>
   <div class="plBtns"><button class="plSave" onclick="tambahAkun()">Tambah pengguna</button></div>
  </div>
 </div>
@@ -552,7 +557,7 @@ function hariSejak(w){ return w?Math.floor((Date.now()-new Date(w.replace(' ','T
 function teksSejak(w){ const h=hariSejak(w); return h==null?'':h<=0?'hari ini':h===1?'kemarin':h+' hari lalu'; }
 function tgTersaring(){
  const d=bl.tg, q=($('tgCari')?$('tgCari').value:'').trim().toLowerCase();
- let rows=d.pelanggan.filter(g=>bl.tgFilter==='semua'||(bl.tgFilter==='telat'?g.kelompok!=='belum_jatuh_tempo':g.kelompok===bl.tgFilter));
+ let rows=d.pelanggan.filter(lokasiCocok).filter(g=>bl.tgFilter==='semua'||(bl.tgFilter==='telat'?g.kelompok!=='belum_jatuh_tempo':g.kelompok===bl.tgFilter));
  if(q) rows=rows.filter(g=>(g.nama||'').toLowerCase().includes(q)||g.username.toLowerCase().includes(q));
  return rows;
 }
@@ -572,7 +577,7 @@ function mulaiAntri(){
 }
 function kirimAntri(){
  const a=bl.antri, g=bl.tg.pelanggan.find(x=>x.username===a.daftar[a.i]); if(!g) return;
- window.open('https://wa.me/'+nomorWA(g.no_hp)+'?text='+encodeURIComponent(pesanPengingat(g.nama,g.username,g.tagihan)),'_blank');
+ window.open('https://wa.me/'+nomorWA(g.no_hp)+'?text='+encodeURIComponent(pesanPengingat(g.nama,g.username,g.tagihan,g.id_pelanggan)),'_blank');
  catatPengingat(g.username,g.total,g.bulan); g.diingatkan=sekarangStr();
  a.terkirim++; a.i++; renderTunggakan();
 }
@@ -586,7 +591,7 @@ function panelAntri(){
  return `<div class="kuPanel" style="margin:8px 0;border-color:#9fd3b2"><h4>Pengingat massal · ${a.i+1} dari ${n}</h4>
   <div style="height:6px;background:#eef3ef;border-radius:9px;overflow:hidden;margin:4px 0 10px"><div style="height:100%;width:${Math.round(a.i/n*100)}%;background:#0b7a3b"></div></div>
   <div style="display:flex;justify-content:space-between;gap:8px"><div><div class="plName">${esc(g.nama)}</div><div class="plSub">${esc(g.username)} · ${esc(g.no_hp||'')} · ${g.bulan} bulan${g.diingatkan?' · terakhir diingatkan '+teksSejak(g.diingatkan):''}</div></div><div class="blAmt">${rp(g.total)}</div></div>
-  <div style="white-space:pre-wrap;font-size:var(--fs-xs);background:#f7faf8;border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0;max-height:190px;overflow:auto">${esc(pesanPengingat(g.nama,g.username,g.tagihan))}</div>
+  <div style="white-space:pre-wrap;font-size:var(--fs-xs);background:#f7faf8;border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0;max-height:190px;overflow:auto">${esc(pesanPengingat(g.nama,g.username,g.tagihan,g.id_pelanggan))}</div>
   <div class="blAksi" style="justify-content:flex-start"><button class="btnS go" onclick="kirimAntri()">Kirim WA &amp; lanjut</button><button class="btnS" onclick="lewatiAntri()">Lewati</button><button class="btnS" onclick="bl.antri.i=bl.antri.daftar.length;renderTunggakan()">Berhenti</button></div>
   <div class="plSub" style="margin-top:6px">Setelah pesan terkirim di WhatsApp, kembali ke INDESO untuk pelanggan berikutnya.</div>${ringkas}</div>`;
 }
@@ -628,7 +633,7 @@ function ingatkanTunggakanWA(u){
  const g=bl.tg&&bl.tg.pelanggan.find(x=>x.username===u); if(!g) return;
  const n=nomorWA(g.no_hp);
  if(!n){ alert('Nomor HP '+g.nama+' belum diisi. Lengkapi dulu di menu Pelanggan.'); return; }
- window.open('https://wa.me/'+n+'?text='+encodeURIComponent(pesanPengingat(g.nama,g.username,g.tagihan)),'_blank');
+ window.open('https://wa.me/'+n+'?text='+encodeURIComponent(pesanPengingat(g.nama,g.username,g.tagihan,g.id_pelanggan)),'_blank');
  catatPengingat(g.username,g.total,g.bulan); g.diingatkan=sekarangStr(); renderTunggakan();
 }
 // ===== Kwitansi =====
@@ -663,14 +668,14 @@ async function ubahPeriode(n){ bl.periode=geserPeriode(bl.periode,n); await load
 function setFilterBilling(f){ bl.filter=f; renderBilling(); }
 // Teks pesan WA diatur di Pengaturan (nama usaha, cara bayar, template); ini cadangan bila belum termuat.
 bl.pesan={usaha:'Internet Desa',cara_bayar:'Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.',
- template:'Yth. Bapak/Ibu {nama},\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\nTerima kasih.'};
+ template:'Yth. Bapak/Ibu {nama} (ID pelanggan {id}),\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\nTerima kasih.'};
 async function muatPesanWA(){ try{ const r=await fetch('/api/pesan-wa',{cache:'no-store'}); if(r.ok) bl.pesan=await r.json(); }catch(e){} }
 // daftar = [{periode, jumlah, jatuh_tempo}]
-function pesanPengingat(nama,username,daftar){
+function pesanPengingat(nama,username,daftar,id){
  const total=daftar.reduce((a,t)=>a+t.jumlah,0);
  const rincian=daftar.map(t=>'- '+namaPeriode(t.periode)+': '+rp(t.jumlah)+' (jatuh tempo '+tglPendek(t.jatuh_tempo)+')').join('\n');
- const isi={nama,username,usaha:bl.pesan.usaha,rincian,total:rp(total),cara_bayar:bl.pesan.cara_bayar};
- return bl.pesan.template.replace(/\{(nama|username|usaha|rincian|total|cara_bayar)\}/g,(_,k)=>isi[k]);
+ const isi={nama,username,id:id||username,usaha:bl.pesan.usaha,rincian,total:rp(total),cara_bayar:bl.pesan.cara_bayar};
+ return bl.pesan.template.replace(/\{(nama|username|id|usaha|rincian|total|cara_bayar)\}/g,(_,k)=>isi[k]);
 }
 function catatPengingat(username,total,bulan){
  fetch('/api/tagihan/pengingat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,total,bulan})}).catch(()=>{});
@@ -681,7 +686,7 @@ function nomorWA(hp){
  if(n.startsWith('0')) n='62'+n.slice(1); else if(n.startsWith('8')) n='62'+n;
  return n;
 }
-function pesanTagihan(t){ return pesanPengingat(t.nama,t.username,[{periode:bl.periode,jumlah:t.jumlah,jatuh_tempo:t.jatuh_tempo}]); }
+function pesanTagihan(t){ return pesanPengingat(t.nama,t.username,[{periode:bl.periode,jumlah:t.jumlah,jatuh_tempo:t.jatuh_tempo}],t.id_pelanggan); }
 function ingatkanWA(id){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
  const n=nomorWA(t.no_hp);
@@ -1125,6 +1130,7 @@ async function loadBilling(diam){
   const [r,ri]=await Promise.all([fetch('/api/tagihan?periode='+bl.periode),fetch('/api/isolir')]);
   if(!r.ok) throw new Error('HTTP '+r.status);
   const d=await r.json(); bl.rows=d.tagihan||[]; bl.lain=d.tanpa_tagihan||[]; bl.ring=d.ringkasan; bl.insentif=d.insentif_mitra;
+  isiPilihanLokasiBilling();
   if(ri.ok){ const di=await ri.json(); bl.isolir=new Set((di.terisolir||[]).map(x=>x.username)); bl.modeIsolir=di.mode; }
   else { bl.isolir=new Set(); }
   renderBilling();
@@ -1140,19 +1146,32 @@ function infoIsolirSaja(){
  const mode=bl.modeIsolir==='aktif'?'<b style="color:#0b7a3b">AKTIF</b>':'<b style="color:#b45309">SIMULASI</b> (belum ada yang benar-benar diisolir)';
  return '<div class="plSub" style="margin:4px 0 8px">Isolir otomatis: '+mode+' · '+n+' pelanggan terisolir</div>';
 }
+// Filter lokasi di Penagihan (muncul bila ada lebih dari satu lokasi). 0 = semua lokasi.
+async function isiPilihanLokasiBilling(){
+ if(!bl.lokasiDaftar){ try{ const r=await fetch('/api/lokasi'); bl.lokasiDaftar=r.ok?(await r.json()).lokasi:[]; }catch(e){ bl.lokasiDaftar=[]; } }
+ const el=$('blLokasi'); if(bl.lokasiDaftar.length<2){ el.style.display='none'; bl.lok=0; return; }
+ el.style.display=''; el.innerHTML='<option value="0">Semua lokasi</option>'+bl.lokasiDaftar.map(l=>`<option value="${l.kode}" ${l.kode===bl.lok?'selected':''}>${l.kode} · ${esc(l.nama)}</option>`).join('');
+}
+const lokasiCocok=x=>!bl.lok||(x.lokasi||1)===bl.lok;
 function renderBilling(){
- const s=bl.ring||{jumlah_tagihan:0,total:0,terbayar:0,belum_bayar:0};
+ let s=bl.ring||{jumlah_tagihan:0,total:0,terbayar:0,belum_bayar:0};
+ const semuaRows=bl.rows; bl.rows=semuaRows.filter(lokasiCocok);
+ if(bl.lok){ const tot=bl.rows.reduce((a,t)=>a+t.jumlah,0), byr=bl.rows.filter(t=>t.status==='lunas').reduce((a,t)=>a+t.jumlah,0);
+  s={jumlah_tagihan:bl.rows.length,total:tot,terbayar:byr,belum_bayar:tot-byr}; }
+ try{ renderBillingIsi(s); } finally{ bl.rows=semuaRows; }
+}
+function renderBillingIsi(s){
  const iso=bl.isolir||new Set();
  const nLunas=bl.rows.filter(t=>t.status==='lunas').length;
  $('blTotal').textContent=rp(s.total); $('blTerbayar').textContent=rp(s.terbayar); $('blBelum').textContent=rp(s.belum_bayar);
  $('blTotalN').textContent=s.jumlah_tagihan+' tagihan'; $('blTerbayarN').textContent=nLunas+' tagihan'; $('blBelumN').textContent=(bl.rows.length-nLunas)+' tagihan';
  document.querySelectorAll('.blFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===bl.filter));
  const q=$('blSearch').value.trim().toLowerCase(), hari=new Date().toLocaleDateString('sv-SE');
- const cari=t=>!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q);
+ const cari=t=>!q||(t.nama||'').toLowerCase().includes(q)||(t.username||'').toLowerCase().includes(q)||(t.id_pelanggan||'').replace(/-/g,'').includes(q.replace(/-/g,''));
  const lolosFilter=t=>bl.filter==='semua'||(bl.filter==='lunas'?t.status==='lunas':(bl.filter==='isolir'?iso.has(t.username):(bl.filter==='belum'&&t.status!=='lunas')));
  const rows=bl.rows.filter(t=>lolosFilter(t)&&cari(t));
  // Pelanggan tanpa tagihan (gratis, belum punya paket, tagihan belum dibuat): tidak ditagih, tapi bisa diisolir manual
- const lain=(bl.lain||[]).filter(p=>(bl.filter==='semua'||bl.filter==='lain'||(bl.filter==='isolir'&&iso.has(p.username)))&&cari(p));
+ const lain=(bl.lain||[]).filter(lokasiCocok).filter(p=>(bl.filter==='semua'||bl.filter==='lain'||(bl.filter==='isolir'&&iso.has(p.username)))&&cari(p));
  const info=infoIsolir();
  const htmlTagihan=rows.map(t=>{
   const lunas=t.status==='lunas', telat=!lunas&&t.jatuh_tempo<hari, terisolir=iso.has(t.username);
@@ -1216,41 +1235,48 @@ async function badgePortal(){ try{ const d=await jsonAtauError(await fetch('/api
 async function loadPelanggan(){
  $('plList').innerHTML='<div class="muted">Memuat…</div>';
  try{
-  const [a,b,c]=await Promise.all([fetch('/api/data-pelanggan'),fetch('/api/paket'),fetch('/api/isolir')]);
+  const [a,b,c,l]=await Promise.all([fetch('/api/data-pelanggan'),fetch('/api/paket'),fetch('/api/isolir'),fetch('/api/lokasi')]);
   if(!a.ok||!b.ok) throw new Error('HTTP '+a.status+'/'+b.status);
   pl.data=(await a.json()).pelanggan||[];
   pl.paket=(await b.json()).paket||[];
   pl.isolir=new Set(c.ok?((await c.json()).terisolir||[]).map(x=>x.username):[]);
+  pl.lokasi=l.ok?(await l.json()).lokasi:[{kode:1,nama:'Lokasi 1'}];
+  $('plLokasiF').style.display=pl.lokasi.length>1?'':'none';
+  $('plLokasiF').innerHTML='<option value="0">Semua lokasi</option>'+pl.lokasi.map(x=>`<option value="${x.kode}" ${x.kode===pl.lokF?'selected':''}>${x.kode} · ${esc(x.nama)}</option>`).join('');
   renderPelanggan();
  }catch(e){ $('plList').innerHTML='<div class="muted">Gagal memuat data: '+esc(e.message)+'</div>'; }
 }
 function setFilterPelanggan(f){ pl.filter=f; renderPelanggan(); }
 function renderPelanggan(){
  const q=$('plSearch').value.trim().toLowerCase(), iso=pl.isolir||new Set(), f=pl.filter||'aktif';
- const aktif=pl.data.filter(p=>p.status!=='berhenti');
+ const data=pl.lokF?pl.data.filter(p=>p.lokasi===pl.lokF):pl.data;
+ const aktif=data.filter(p=>p.status!=='berhenti');
  const belum=aktif.filter(p=>!plLengkap(p)).length;
- $('plSummary').textContent=aktif.length+' aktif · '+belum+' belum lengkap · '+(pl.data.length-aktif.length)+' berhenti'+(iso.size?(' · '+iso.size+' terisolir'):'');
+ $('plSummary').textContent=aktif.length+' aktif · '+belum+' belum lengkap · '+(data.length-aktif.length)+' berhenti'+(iso.size?(' · '+iso.size+' terisolir'):'');
  document.querySelectorAll('.plFilters button').forEach(b=>b.classList.toggle('on',b.dataset.f===f));
  const lolos=p=>f==='semua'||(f==='berhenti'?p.status==='berhenti':(p.status!=='berhenti'&&(f!=='belum'||!plLengkap(p))));
- const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>lolos(p)&&(!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q)));
+ const rows=pl.data.map((p,i)=>({p,i})).filter(({p})=>(!pl.lokF||p.lokasi===pl.lokF)&&lolos(p)&&(!q||(p.nama||'').toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q)||(p.id_pelanggan||'').replace(/-/g,'').includes(q.replace(/-/g,''))));
  $('plList').innerHTML=rows.length?rows.map(({p,i})=>{
   const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':`<span class="chip ${plLengkap(p)?'ok':'warn'}">${plLengkap(p)?'Lengkap':'Belum lengkap'}</span>`;
-  const sub=esc(p.username)+' · '+esc(p.paket||'Belum ada paket')+(p.gratis?' · GRATIS':'')+(iso.has(p.username)?' · ISOLIR':'')+(p.status==='berhenti'&&p.berhenti_sejak?' · sejak '+tglPendek(p.berhenti_sejak):'')+(p.secret_target?' · ⏳ sinkron MikroTik':(p.secret_nonaktif?' · secret nonaktif':''));
+  const sub=(p.id_pelanggan?esc(p.id_pelanggan)+' · ':'')+esc(p.username)+(pl.lokasi&&pl.lokasi.length>1?' · '+esc(namaLokasi(p.lokasi)):'')+' · '+esc(p.paket||'Belum ada paket')+(p.gratis?' · GRATIS':'')+(iso.has(p.username)?' · ISOLIR':'')+(p.status==='berhenti'&&p.berhenti_sejak?' · sejak '+tglPendek(p.berhenti_sejak):'')+(p.secret_target?' · ⏳ sinkron MikroTik':(p.secret_nonaktif?' · secret nonaktif':''));
   return `<div class="plRow" onclick="editPelanggan(${i})"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${sub}</div></div>${chip}</div>`;
  }).join(''):'<div class="muted">Tidak ada yang cocok.</div>';
 }
+function namaLokasi(k){ const l=(pl.lokasi||[]).find(x=>x.kode===k); return l?l.nama:'Lokasi '+k; }
+function opsiLokasi(pilih){ return (pl.lokasi||[{kode:1,nama:'Lokasi 1'}]).map(l=>`<option value="${l.kode}" ${l.kode===pilih?'selected':''}>${l.kode} · ${esc(l.nama)}</option>`).join(''); }
 function tampilkanView(v){
  $('plListView').style.display=v==='list'?'block':'none';
  $('plFormView').style.display=v==='form'?'block':'none';
  $('plBaruView').style.display=v==='baru'?'block':'none';
  $('plPaketView').style.display=v==='paket'?'block':'none';
  $('plPortalView').style.display=v==='portal'?'block':'none';
+ $('plLokasiView').style.display=v==='lokasi'?'block':'none';
 }
 function editPelanggan(i){
  const p=pl.data[i]; pl.cur=p.username;
  $('plTitle').textContent='Ubah Data Pelanggan';
  $('plGratis').checked=!!p.gratis; $('plMitra').checked=p.tampil_mitra!==0; $('plInsGratis').checked=!!p.insentif_gratis; aturCentangGratis();
- $('plUser').value=p.username; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
+ $('plUser').value=p.username; $('plId').value=p.id_pelanggan||'—'; $('plLokasi').innerHTML=opsiLokasi(p.lokasi); pl.lokasiAwal=p.lokasi; $('plNama').value=p.nama||''; $('plAlamat').value=p.alamat||''; $('plHp').value=p.no_hp||'';
  $('plTglPasang').value=p.tgl_pasang||''; $('plDiskon').value=p.diskon||0;
  $('plStatus').value=p.status==='berhenti'?'berhenti':'aktif'; pl.statusAwal=$('plStatus').value; $('plSecret').checked=true; aturCentangSecret();
  $('plSecretInfo').innerHTML=p.secret_target?'<span style="color:#b45309">⏳ Menunggu sinkron MikroTik: secret akan '+(p.secret_target==='nonaktif'?'dinonaktifkan':'diaktifkan')+' begitu MikroTik terjangkau.</span>':(p.secret_nonaktif?'Secret PPPoE pelanggan ini sedang nonaktif di MikroTik.':'');
@@ -1263,7 +1289,8 @@ function backPelanggan(){
  tampilkanView('list');
 }
 async function savePelanggan(){
- const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,atur_secret:$('plSecret').checked,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked,tgl_pasang:$('plTglPasang').value||'',diskon:Number($('plDiskon').value||0)};
+ const body={nama:$('plNama').value.trim(),alamat:$('plAlamat').value.trim()||null,no_hp:$('plHp').value.trim()||null,paket_id:$('plPaket').value?Number($('plPaket').value):null,gratis:$('plGratis').checked,status:$('plStatus').value,atur_secret:$('plSecret').checked,tampil_mitra:$('plMitra').checked,insentif_gratis:$('plGratis').checked&&$('plInsGratis').checked,tgl_pasang:$('plTglPasang').value||'',diskon:Number($('plDiskon').value||0),lokasi:Number($('plLokasi').value||1)};
+ if(body.lokasi!==pl.lokasiAwal&&!confirm('Pindahkan '+body.nama+' ke '+namaLokasi(body.lokasi)+'? ID pelanggan akan diganti dengan nomor baru di lokasi itu.')) return;
  if(!body.nama){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Nama tidak boleh kosong.'; return }
  if(body.status==='berhenti'&&pl.statusAwal!=='berhenti'&&!confirm('Tandai '+body.nama+' BERHENTI berlangganan?\nTagihan bulan depan yang belum dibayar akan dihapus. Tunggakan sampai bulan ini tetap tercatat.\n'+(body.atur_secret?'Secret PPPoE di MikroTik DINONAKTIFKAN dan sesinya diputus (tidak dihapus, bisa diaktifkan lagi).':'Secret PPPoE di MikroTik TIDAK diubah.'))) return;
  if(body.status==='aktif'&&pl.statusAwal==='berhenti'&&body.atur_secret&&!confirm('Aktifkan kembali '+body.nama+'? Secret PPPoE di MikroTik akan diaktifkan lagi.')) return;
@@ -1296,7 +1323,7 @@ function aturCentangSecret(){
  $('plSecretWrap').style.display=berubah?'flex':'none';
  $('plSecretTeks').textContent=$('plStatus').value==='berhenti'?'Nonaktifkan juga secret PPPoE di MikroTik (sesi diputus, secret tidak dihapus)':'Aktifkan kembali secret PPPoE di MikroTik';
 }
-// ===== Pasang baru =====
+// ===== Tambah pelanggan (data untuk penagihan saja) =====
 function hitungProrata(harga,diskon,tgl){
  // sama dengan server: (harga − diskon) × sisa hari ÷ hari sebulan, dibulatkan ke Rp1.000
  const [y,m,d]=tgl.split('-').map(Number), hb=new Date(y,m,0).getDate(), dasar=Math.max(0,harga-diskon);
@@ -1304,24 +1331,12 @@ function hitungProrata(harga,diskon,tgl){
  const hari=hb-d+1; return {jumlah:Math.floor(dasar*hari/hb/1000+0.5)*1000,hari,hb};
 }
 function bukaPasangBaru(){
- $('plTitle').textContent='Pasang Baru';
- ['pbUser','pbNama','pbAlamat','pbHp','pbSandi'].forEach(i=>$(i).value='');
- $('pbDiskon').value=0; $('pbBiaya').value=0; $('pbTagih').checked=true; $('pbSecret').checked=false; $('pbSecretBox').style.display='none';
+ $('plTitle').textContent='Tambah Pelanggan';
+ ['pbUser','pbNama','pbAlamat','pbHp'].forEach(i=>$(i).value='');
+ $('pbDiskon').value=0; $('pbTagih').checked=true;
  const hari=new Date().toLocaleDateString('sv-SE'); $('pbTgl').value=hari; $('pbTgl').max=hari;
  $('pbPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}">${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
- $('pbMsg').textContent=''; pratinjauPasang(); tampilkanView('baru'); $('pbUser').focus();
- $('pbBarang').innerHTML=''; gdMuatData(true).then(()=>{ if(!$('pbBarang').children.length) pbTambahBarang(); });
-}
-// Baris pemakaian barang di Pasang baru (pilihan dari Warehouse, dengan sisa stok).
-function pbTambahBarang(){
- const aktif=(gd.data?gd.data.barang:[]).filter(b=>b.aktif);
- if(!aktif.length){ $('pbBarang').innerHTML='<div class="plSub" style="margin-bottom:6px">Belum ada barang di Warehouse.</div>'; return; }
- const d=document.createElement('div'); d.className='pbBrg'; d.style.cssText='display:flex;gap:6px;margin-bottom:6px';
- d.innerHTML=`<select class="pbBrgId" style="flex:1;min-width:0"><option value="">— tidak ada —</option>${aktif.map(b=>`<option value="${b.id}">${esc(b.nama)} (sisa ${b.stok} ${esc(b.satuan)})</option>`).join('')}</select><input class="pbBrgJml" type="number" min="0" step="any" inputmode="decimal" placeholder="jumlah" style="width:90px"><button type="button" class="btnS" onclick="this.parentNode.remove()" aria-label="Hapus baris">✕</button>`;
- $('pbBarang').appendChild(d);
-}
-function pbAmbilBarang(){
- return [...document.querySelectorAll('#pbBarang .pbBrg')].map(r=>({barang_id:Number(r.querySelector('.pbBrgId').value),jumlah:Number(r.querySelector('.pbBrgJml').value)})).filter(x=>x.barang_id&&x.jumlah>0);
+ $('pbLokasi').innerHTML=opsiLokasi(1); $('pbMsg').textContent=''; pratinjauPasang(); tampilkanView('baru'); $('pbUser').focus();
 }
 function pratinjauPasang(){
  const k=pl.paket.find(x=>x.id===Number($('pbPaket').value)), tgl=$('pbTgl').value, dis=Number($('pbDiskon').value||0), el=$('pbPratinjau');
@@ -1331,40 +1346,39 @@ function pratinjauPasang(){
   ?`<b>Tagihan ${esc(bln)}: ${rp(p.jumlah)}</b><div class="plSub">${p.hari<p.hb?`prorata ${p.hari} dari ${p.hb} hari (${rp(Math.max(0,k.harga-dis))} × ${p.hari}/${p.hb})`:'bulan penuh'}${dis?' · sudah dipotong diskon '+rp(dis):''}. Bulan berikutnya ${rp(Math.max(0,k.harga-dis))}.</div>`
   :`<span class="plSub">Tagihan ${esc(bln)} tidak dibuat sekarang. Mulai bulan berikutnya ${rp(Math.max(0,k.harga-dis))}/bulan.</span>`;
 }
-async function muatProfilPasang(){
- if(pl.profil) return pilihProfilPasang();
- try{ pl.profil=(await jsonAtauError(await fetch('/api/mikrotik/profil'))).profil; }catch(e){ $('pbMsg').style.color='#b45309'; $('pbMsg').textContent='Daftar profil MikroTik gagal dimuat: '+e.message; return; }
- $('pbProfil').innerHTML='<option value="">— dicocokkan otomatis dari kecepatan paket —</option>'+pl.profil.map(x=>`<option value="${esc(x.nama)}">${esc(x.nama)}</option>`).join('');
- pilihProfilPasang();
-}
-function pilihProfilPasang(){
- const k=pl.paket.find(x=>x.id===Number($('pbPaket').value)); if(!k||!pl.profil) return;
- const cocok=pl.profil.find(x=>x.mbps===k.kecepatan_mbps); if(cocok) $('pbProfil').value=cocok.nama;
-}
 async function simpanPasangBaru(){
  const body={username:$('pbUser').value.trim(),nama:$('pbNama').value.trim(),alamat:$('pbAlamat').value.trim()||null,no_hp:$('pbHp').value.trim()||null,
   paket_id:Number($('pbPaket').value||0),tgl_pasang:$('pbTgl').value,diskon:Number($('pbDiskon').value||0),tagih_bulan_ini:$('pbTagih').checked,
-  buat_secret:$('pbSecret').checked,password_pppoe:$('pbSandi').value,profil:$('pbProfil').value||null,biaya_pasang:Number($('pbBiaya').value||0),metode_bayar:$('pbMetode').value,
-  barang:pbAmbilBarang()};
+  lokasi:Number($('pbLokasi').value||1)};
  const msg=$('pbMsg'); msg.style.color='#b42318';
  if(!body.username||!body.nama||!body.paket_id||!body.tgl_pasang){ msg.textContent='Isi username, nama, paket, dan tanggal pasang.'; return; }
- if(body.buat_secret&&body.password_pppoe.length<4){ msg.textContent='Isi password PPPoE (minimal 4 karakter).'; return; }
  const b=$('pbSimpan'); b.disabled=true; b.textContent='Menyimpan…';
  try{
-  const d=await jsonAtauError(await fetch('/api/pasang-baru',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  const d=await jsonAtauError(await fetch('/api/data-pelanggan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
   await loadPelanggan(); backPelanggan();
-  const t=[ 'Pelanggan '+body.nama+' ('+d.username+') tersimpan' ];
-  if(d.profil) t.push('akun PPPoE dibuat di MikroTik (profil '+d.profil+')');
+  const t=[ 'Pelanggan '+body.nama+' ('+d.username+', ID '+d.id_pelanggan+') tersimpan' ];
   if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
-  if(d.transaksi&&d.transaksi.nomor) t.push('biaya pasang tercatat di Keuangan ('+d.transaksi.nomor+')');
-  if(d.transaksi&&d.transaksi.galat) t.push('⚠️ biaya pasang belum tercatat: '+d.transaksi.galat);
-  if(d.gudang&&d.gudang.length) t.push('stok warehouse dikurangi: '+d.gudang.map(g=>g.nama+' '+g.jumlah+' '+g.satuan).join(', '));
-  if(d.gudang_galat) t.push('⚠️ pemakaian warehouse belum tercatat ('+d.gudang_galat+'): catat lewat Warehouse → Pakai untuk pelanggan');
   $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
  }catch(e){ msg.textContent='Gagal: '+e.message; }
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
 }
 // ===== Paket =====
+// --- Lokasi (kode lokasi di ID pelanggan) ---
+async function bukaLokasi(){ $('plTitle').textContent='Lokasi'; tampilkanView('lokasi'); $('lkMsg').textContent=''; await muatLokasi(); }
+async function muatLokasi(){
+ try{ pl.lokasi=(await jsonAtauError(await fetch('/api/lokasi',{cache:'no-store'}))).lokasi;
+  $('lkList').innerHTML=pl.lokasi.map(l=>`<div class="blRow"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${l.jaringan?'jaringan dipantau INDESO':'<b>hanya penagihan</b> (isolir & akun PPPoE dikerjakan manual di MikroTik lokasi ini)'}</div></div>
+   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button></div></div>`).join('');
+ }catch(e){ $('lkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+async function simpanLokasi(url,metode,nama,pesanOk){
+ try{ await jsonAtauError(await fetch(url,{method:metode,headers:{'Content-Type':'application/json'},body:JSON.stringify({nama})}));
+  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent=pesanOk; await muatLokasi(); }
+ catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
+}
+async function tambahLokasi(){ const nama=$('lkNama').value.trim(); if(!nama) return;
+ await simpanLokasi('/api/lokasi','POST',nama,'Lokasi baru ditambahkan: '+nama+'.'); $('lkNama').value=''; }
+function ubahLokasi(k){ const nama=prompt('Nama lokasi '+k+':',namaLokasi(k)); if(nama&&nama.trim()) simpanLokasi('/api/lokasi/'+k,'PUT',nama.trim(),'Nama lokasi diganti.'); }
 // --- Akun portal pelanggan ---
 async function bukaPortal(){ $('plTitle').textContent='Akun Portal Pelanggan'; tampilkanView('portal'); $('portalMsg').textContent='';
  $('portalAlamat').textContent=location.origin+'/portal'; await muatPortal(); }
@@ -1432,7 +1446,7 @@ async function hapusPaket(i){
  }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
 }
 // ===== Log aktivitas (di menu Pengaturan) =====
-const AKSI_LABEL={mikrotik_cek:'Cek DNS & MTU MikroTik',pasang_baru:'Pasang baru',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+const AKSI_LABEL={mikrotik_cek:'Cek DNS & MTU MikroTik',pasang_baru:'Pasang baru',pelanggan_tambah:'Tambah pelanggan',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
 
 // ===== Pengaturan: akun saya, pengguna, sistem, log =====
 AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';
@@ -1464,12 +1478,16 @@ async function gantiPasswordSaya(){
 async function loadAkun(){
  $('akunList').innerHTML='<div class="muted">Memuat…</div>';
  try{
-  const d=await jsonAtauError(await fetch('/api/akun')); st.akun=d.akun;
+  const [d,l]=await Promise.all([jsonAtauError(await fetch('/api/akun')),fetch('/api/lokasi').then(r=>r.ok?r.json():{lokasi:[]})]); st.akun=d.akun;
+  st.lokasi=l.lokasi.length?l.lokasi:[{kode:1,nama:'Lokasi 1'}];
+  $('akLokasi').innerHTML=st.lokasi.map(x=>`<option value="${x.kode}">${x.kode} · ${esc(x.nama)}</option>`).join('');
   $('akunList').innerHTML=d.akun.map((a,i)=>{
    const diri=a.username===d.saya;
    const chip=({owner:'<span class="chip info">Owner</span>',admin:'<span class="chip ok">Admin</span>',mitra:'<span class="chip warn">Mitra</span>'}[a.peran]||'')+(a.aktif?'':'<span class="chip bad">Nonaktif</span>');
-   const sub='Login terakhir: '+(a.login_terakhir?esc(khWaktu(a.login_terakhir)):'belum pernah')+' · '+a.sesi_aktif+' sesi aktif'+(diri?' · <b>akun Anda</b>':'');
+   const lokM=a.peran==='mitra'?(st.lokasi.find(x=>x.kode===(a.lokasi||1))||{nama:'Lokasi '+(a.lokasi||1)}):null;
+   const sub=(lokM?'Lokasi: <b>'+esc(lokM.nama)+'</b> · ':'')+'Login terakhir: '+(a.login_terakhir?esc(khWaktu(a.login_terakhir)):'belum pernah')+' · '+a.sesi_aktif+' sesi aktif'+(diri?' · <b>akun Anda</b>':'');
    const tombol=`<button class="btnS" onclick="resetPassword(${i})">Reset password</button>`
+    +(a.peran==='mitra'&&st.lokasi.length>1?`<select class="btnS" onchange="ubahLokasiMitra(${i},this.value);this.value=''"><option value="">Pindah lokasi…</option>${st.lokasi.filter(x=>x.kode!==(a.lokasi||1)).map(x=>`<option value="${x.kode}">${esc(x.nama)}</option>`).join('')}</select>`:'')
     +(a.sesi_aktif&&!diri?`<button class="btnS" onclick="cabutSesi(${i})">Keluarkan</button>`:'')
     +(diri&&a.peran!=='admin'?'':`<select class="btnS" onchange="ubahPeran(${i},this.value);this.value=''"><option value="">Ubah peran…</option>${['owner','admin','mitra'].filter(p=>p!==a.peran&&!(diri&&p==='mitra')).map(p=>`<option value="${p}">Jadikan ${p}</option>`).join('')}</select>`)+(diri?'':`<button class="btnS" onclick="toggleAktif(${i})">${a.aktif?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick="hapusAkun(${i})">Hapus</button>`);
    return `<div class="blRow akRow"><div><div class="plName">${esc(a.username)}</div><div class="plSub">${sub}</div></div><div class="blKanan"><div class="blAksi">${chip}</div><div class="blAksi">${tombol}</div></div></div>`;
@@ -1480,7 +1498,7 @@ async function aksiAkun(url,opsi,pesan){
  try{ await jsonAtauError(await fetch(url,opsi)); await loadAkun(); stPesan(pesan,true); }catch(e){ stPesan('Gagal: '+e.message); }
 }
 async function tambahAkun(){
- const body={username:$('akUser').value.trim(),password:$('akPass').value,peran:$('akPeran').value};
+ const body={username:$('akUser').value.trim(),password:$('akPass').value,peran:$('akPeran').value,lokasi:Number($('akLokasi').value||1)};
  if(!body.username||!body.password){ stPesan('Isi username dan password.'); return; }
  await aksiAkun('/api/akun',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},'Pengguna '+body.username+' ditambahkan.');
  if($('stMsg').style.color!=='rgb(180, 35, 24)'){ $('akUser').value=''; $('akPass').value=''; }
@@ -1496,6 +1514,10 @@ async function cabutSesi(i){
 async function ubahPeran(i,peran){
  const a=st.akun[i]; if(!peran) return; if(!confirm('Ubah peran '+a.username+' menjadi '+peran+'?')) return;
  await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({peran})},'Peran '+a.username+' sekarang '+peran+'.');
+}
+async function ubahLokasiMitra(i,kode){
+ const a=st.akun[i], l=st.lokasi.find(x=>x.kode===Number(kode)); if(!l||!confirm('Pindahkan mitra '+a.username+' ke '+l.nama+'?')) return;
+ await aksiAkun('/api/akun/'+encodeURIComponent(a.username),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({lokasi:l.kode})},'Mitra '+a.username+' sekarang di '+l.nama+'.');
 }
 async function toggleAktif(i){
  const a=st.akun[i]; if(!confirm((a.aktif?'Nonaktifkan ':'Aktifkan ')+a.username+'?')) return;
@@ -1997,7 +2019,7 @@ function kartuOnuBaru(o,i){
   if(k==='sinyal'&&v===true&&o.redaman==='WARNING'){ ik='<b style="color:#b45309">!</b>'; t='Sinyal fiber cukup (perlu dicek)'; }
   return `<div style="display:flex;gap:8px;align-items:center;font-size:var(--fs-xs);padding:2px 0">${ik}<span>${t}${k==='internet'&&o.pppoe_username?` <span class="plSub">· ${esc(o.pppoe_username)}</span>`:''}${k==='pelanggan'&&o.nama?` <span class="plSub">· ${esc(o.nama)}</span>`:''}${k==='acs'&&o.tr069?` <span class="plSub">· TR-069 dikirim ${esc(obWaktu(o.tr069))}</span>`:''}</span></div>`; }).join('');
  const aktif=ob.tab==='aktif', D=ob.data||{}, olt=o.online&&D.olt_telnet?'':' disabled';
- const pilihUntuk=(aktif&&!o.pppoe_username&&ob.akun)?`<div style="margin-top:8px"><label class="plSub" for="obUntuk${i}">Dipasang untuk pelanggan</label><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><select id="obUntuk${i}" class="btnS" style="flex:1;min-width:0" onchange="untukOnuBaru('${sn}',this.value)"><option value="">— pilih —</option>${ob.akun.map(a=>`<option value="${esc(a.username)}"${a.username===o.untuk?' selected':''}>${esc(a.nama||a.username)} (${esc(a.username)})${a.di_indeso?'':' · baru'}</option>`).join('')}</select><button class="btnS" onclick="closeModal('onuBaruModal');openPelanggan().then(()=>bukaPasangBaru())">+ Pasang baru</button></div></div>`
+ const pilihUntuk=(aktif&&!o.pppoe_username&&ob.akun)?`<div style="margin-top:8px"><label class="plSub" for="obUntuk${i}">Dipasang untuk pelanggan</label><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><select id="obUntuk${i}" class="btnS" style="flex:1;min-width:0" onchange="untukOnuBaru('${sn}',this.value)"><option value="">— pilih —</option>${ob.akun.map(a=>`<option value="${esc(a.username)}"${a.username===o.untuk?' selected':''}>${esc(a.nama||a.username)} (${esc(a.username)})${a.di_indeso?'':' · baru'}</option>`).join('')}</select><button class="btnS" onclick="closeModal('onuBaruModal');openPelanggan().then(()=>bukaPasangBaru())">+ Tambah pelanggan</button></div></div>`
   :(o.untuk&&!o.pppoe_username?`<div class="plSub" style="margin-top:6px">Dipasang untuk: <b>${esc(o.nama_untuk||o.untuk)}</b></div>`:'');
  const lain=`<button class="btnS${o.pppoe_username?' go':''}" onclick="tr069OnuBaru('${sn}',true,this)"${olt}>Kirim TR-069 + restart ONU</button>
    <button class="btnS" onclick="tr069OnuBaru('${sn}',false,this)"${olt}>Kirim TR-069 saja</button>
@@ -2884,12 +2906,15 @@ async function hapusNota(id){
 AKSI_LABEL.nota_unggah='Unggah nota'; AKSI_LABEL.nota_hapus='Hapus nota';
 
 // ===== Komisi mitra: rekap per bulan + pembayaran =====
-ku.ins=null; ku.inBayar=null;
+ku.ins=null; ku.inBayar=null; ku.inLok=1;
 const IN_CHIP={lunas:'<span class="chip ok">Lunas</span>',sebagian:'<span class="chip warn">Sebagian</span>',belum:'<span class="chip bad">Belum dibayar</span>',nihil:'<span class="chip off">Tidak ada</span>'};
 async function muatInsentif(){
  $('inList').innerHTML='<div class="muted">Memuat…</div>';
  try{
-  const d=await jsonAtauError(await fetch('/api/keuangan/insentif?sampai='+kuPeriodeIni())); ku.ins=d;
+  const d=await jsonAtauError(await fetch('/api/keuangan/insentif?sampai='+kuPeriodeIni()+'&lokasi='+ku.inLok)); ku.ins=d;
+  // Tiap lokasi punya mitra & komisinya sendiri.
+  $('inLokasi').style.display=d.daftar_lokasi.length>1?'':'none';
+  $('inLokasi').innerHTML=d.daftar_lokasi.map(l=>`<button class="${l.kode===d.lokasi?'on':''}" onclick="ku.inLok=${l.kode};ku.inBayar=null;muatInsentif()">${l.kode} · ${esc(l.nama)}</button>`).join('');
   $('inTunggak').textContent=rp(d.ringkasan.tertunggak); $('inTunggakN').textContent=d.ringkasan.bulan_tertunggak+' bulan';
   $('inDibayar').textContent=rp(d.ringkasan.dibayar_total); $('inTarif').textContent=d.rekap.length?rp(d.rekap[0].per_pelanggan):'—';
   $('kuNIns').textContent=d.ringkasan.bulan_tertunggak?'('+d.ringkasan.bulan_tertunggak+')':'';
@@ -2916,7 +2941,7 @@ async function kunciKomisi(periode,terhitung){
  if(v==null) return;
  const total=v.trim()===''?null:Number(v.replace(/\D/g,''));
  if(total!==null&&!(total>=0)){ kuPesan('Jumlah tidak valid.'); return; }
- try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({total,catatan:total!==null&&total!==terhitung?'disepakati '+rp(total):null})}));
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci?lokasi='+ku.inLok,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({total,catatan:total!==null&&total!==terhitung?'disepakati '+rp(total):null})}));
   await muatInsentif(); kuPesan('Komisi hasil kerja '+namaPeriode(geserPeriode(periode,-1))+' dikunci '+rp(d.total)+'.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
@@ -2927,7 +2952,7 @@ async function komisiMulai(periode){
 }
 async function bukaKunciKomisi(periode){
  if(!confirm('Buka kunci komisi '+namaPeriode(periode)+'? Angkanya akan dihitung ulang dari data tagihan.')) return;
- try{ await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci',{method:'DELETE'})); await muatInsentif(); kuPesan('Kunci komisi '+namaPeriode(periode)+' dibuka.',true); }
+ try{ await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/kunci?lokasi='+ku.inLok,{method:'DELETE'})); await muatInsentif(); kuPesan('Kunci komisi '+namaPeriode(periode)+' dibuka.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 function bukaBayarInsentif(p){ ku.inBayar=ku.inBayar===p?null:p; muatInsentif(); }
@@ -2935,7 +2960,7 @@ async function simpanBayarInsentif(periode){
  const body={tanggal:$('ibTgl').value,jumlah:Number($('ibJml').value.replace(/\D/g,'')),metode:$('ibMetode').value,penerima:$('ibPenerima').value.trim()||null};
  if(!(body.jumlah>0)){ kuPesan('Isi jumlah pembayaran.'); return; }
  if(!confirm('Catat pembayaran komisi '+namaPeriode(periode)+' sebesar '+rp(body.jumlah)+'? Saldo kas akan berkurang.')) return;
- try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/bayar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+ try{ const d=await jsonAtauError(await fetch('/api/keuangan/insentif/'+periode+'/bayar?lokasi='+ku.inLok,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
   ku.inBayar=null; await muatInsentif(); kuPesan('Pembayaran komisi '+namaPeriode(periode)+' '+rp(body.jumlah)+' tercatat'+(d.sisa?(', sisa '+rp(d.sisa)):' — LUNAS')+'. Lampirkan bukti transfer dengan tombol + Nota.',true); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }

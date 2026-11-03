@@ -76,9 +76,9 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <div class="note">Lupa password? Hubungi admin untuk mengatur ulang.</div>
   </div>
   <div id="fDaftar" style="display:none">
-   <div class="note" style="margin-top:4px">Isi ID pelanggan (username internet Anda, tertera di nota/tagihan) dan nomor HP yang terdaftar. Akun bisa dipakai setelah disetujui admin.</div>
-   <label>ID pelanggan</label><input id="dPel" autocapitalize="off">
+   <div class="note" style="margin-top:4px">Isi nomor HP yang Anda berikan saat pemasangan internet. Akun bisa dipakai setelah disetujui admin.</div>
    <label>Nomor HP terdaftar</label><input id="dHp" type="tel" inputmode="tel" placeholder="08…">
+   <label>ID pelanggan <span style="font-weight:400">(opsional; isi bila satu nomor HP dipakai untuk lebih dari satu sambungan)</span></label><input id="dId" inputmode="numeric" placeholder="463376-…">
    <label>Buat nama login</label><input id="dLogin" autocapitalize="off" autocomplete="username" placeholder="3–32 huruf/angka">
    <label>Buat password</label><input id="dPw" type="password" autocomplete="new-password" placeholder="minimal 8 karakter">
    <label>Ulangi password</label><input id="dPw2" type="password" autocomplete="new-password">
@@ -136,8 +136,8 @@ async function masuk(){
 }
 async function daftar(){
  if($('dPw').value!==$('dPw2').value){ pesan('aMsg','Ulangi password tidak sama.'); return; }
- try{ const d=await api('/api/portal/daftar',{pelanggan:$('dPel').value.trim(),no_hp:$('dHp').value.trim(),login:$('dLogin').value.trim(),password:$('dPw').value});
-  $('mLogin').value=$('dLogin').value.trim(); ['dPel','dHp','dLogin','dPw','dPw2'].forEach(i=>$(i).value=''); modeAuth('masuk'); pesan('aMsg',d.pesan,true); }
+ try{ const d=await api('/api/portal/daftar',{no_hp:$('dHp').value.trim(),id_pelanggan:$('dId').value.trim()||null,login:$('dLogin').value.trim(),password:$('dPw').value});
+  $('mLogin').value=$('dLogin').value.trim(); ['dHp','dId','dLogin','dPw','dPw2'].forEach(i=>$(i).value=''); modeAuth('masuk'); pesan('aMsg',d.pesan,true); }
  catch(e){ pesan('aMsg',e.message); }
 }
 async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{ await api('/api/portal/logout',{}); }catch(e){} tampil('auth'); }
@@ -148,7 +148,7 @@ async function gantiPw(){
 }
 async function muat(){
  let d; try{ d=await api('/api/portal/saya'); }catch(e){ tampil('auth'); return; }
- tampil('utama'); $('akun').textContent=d.nama+' · '+d.username; if(d.usaha) $('usaha').textContent=d.usaha;
+ tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;
  const n=d.internet;
  $('cNet').innerHTML=n.isolir?'<b class="bad">Diisolir</b>':!n.diketahui?'—':n.online?'<b class="ok">Online</b>':'<b class="bad">Offline</b>';
  $('cPaket').textContent=(d.paket||'')+(d.kecepatan_mbps?' · '+d.kecepatan_mbps+' Mbps':'')+(n.online&&n.uptime?' · tersambung '+n.uptime:'')+(n.isolir?' · lunasi tagihan untuk membuka':'');
