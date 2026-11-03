@@ -104,7 +104,7 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   Telegram untuk diisolir manual di MikroTik lokasinya. Pelanggan baru dicatat lewat **Pelanggan → Tambah
   pelanggan** (data saja; akun PPPoE, biaya pasang, dan pemakaian barang dikerjakan manual).
 - **Hotspot voucher** — WiFi terbuka, login voucher (total waktu pakai) yang dijual warung/reseller lewat login
-  khusus: tombol **Jual** menampilkan QR sambung WiFi + QR login langsung. Titip stok, setoran ke kas, kartu QR
+  khusus: tombol **Jual** menampilkan QR login langsung (WiFi terbuka, tanpa sandi). Titip stok, setoran ke kas, kartu QR
   siap cetak, dan skrip MikroTik (v6/v7) untuk lokasi yang belum tersambung. Lihat `docs/hotspot.md`.
 - **Mitra & komisi per lokasi** — akun mitra diikat ke satu lokasi (Pengaturan → Pengguna) dan hanya melihat
   pelanggan, tiket, Excel, dan komisi lokasinya. Komisi dihitung, dikunci (juga otomatis saat tutup buku), dan

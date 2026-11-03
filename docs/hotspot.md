@@ -24,7 +24,8 @@ waktunya habis, jadi tetap berlaku walau MikroTik tidak tersambung ke INDESO. Se
    - Lokasi **hanya penagihan**: INDESO menampilkan **skrip** untuk ditempel di Terminal MikroTik lokasi itu
      (aman ditempel ulang). Setelah ditempel, tekan **Sudah ditempel di MikroTik**; baru setelah itu voucher bisa dijual.
 4. **Warung menjual** dari HP (login reseller): tekan **Jual** pada paketnya → layar menampilkan
-   **QR 1 sambung WiFi** dan **QR 2 login** (unik per voucher) + kode cadangan. Voucher tercatat terjual saat QR tampil.
+   nama WiFi (terbuka, tanpa sandi) dan **QR login** (unik per voucher) + kode cadangan. Pembeli tersambung ke WiFi,
+   lalu memindai QR untuk langsung masuk. Voucher tercatat terjual saat QR tampil.
    Kartu kertas bisa dicetak dari **Cetakan voucher → Cetak kartu QR**.
 5. **Setoran**: Hotspot → Reseller → **Terima setoran**: semua voucher terjual yang belum disetor × setoran reseller
    masuk kas sebagai *Pendapatan voucher hotspot* (bukti BKM). Kas ini tidak bisa diubah dari menu Keuangan; owner

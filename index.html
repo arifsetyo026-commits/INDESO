@@ -1382,7 +1382,6 @@ async function muatHotspot(){
  catch(e){ $('hsIsi').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 function hsQr(teks,ukuran){ const q=qrcode(0,'M'); q.addData(teks); q.make(); return q.createSvgTag({cellSize:ukuran||4,margin:1,scalable:true}); }
-function hsWifi(ssid){ return 'WIFI:T:nopass;S:'+ssid.replace(/([\;,:"])/g,'\\$1')+';;'; }
 function renderHotspot(){
  const d=hs.data; if(!d) return; const owner=d.peran==='owner', L=d.lokasi;
  $('hsLokasi').style.display=d.daftar_lokasi.length>1?'':'none';
@@ -1481,17 +1480,17 @@ async function hsSimpanLokasi(){
  catch(e){ hsPesan('Gagal: '+e.message); }
 }
 async function hsSkripAtur(){ try{ const d=await hsApi('/api/hotspot/skrip-pengaturan?lokasi='+hs.data.lokasi.kode); hsTampilSkrip(0,d.skrip,$('hsSkAtur')); }catch(e){ hsPesan('Gagal: '+e.message); } }
-// Kartu voucher siap cetak: QR 1 sambung WiFi (sama untuk semua), QR 2 login langsung (unik per voucher).
+// Kartu voucher siap cetak: WiFi terbuka, jadi cukup satu QR login langsung (unik per voucher).
 async function hsKartu(bid){
  const w=window.open('','_blank'); if(!w){ hsPesan('Izinkan jendela baru (pop-up) untuk mencetak.'); return; }
- try{ const d=await hsApi('/api/hotspot/batch/'+bid); const b=d.batch, L=d.lokasi, wifi=hsQr(hsWifi(L.ssid),3);
+ try{ const d=await hsApi('/api/hotspot/batch/'+bid); const b=d.batch, L=d.lokasi;
   const kartu=d.voucher.filter(v=>v.status!=='batal').map(v=>`<div class="k"><div class="a"><b>${esc(d.usaha||'Internet Desa')}</b><span>${esc(b.paket)} · ${esc(b.durasi)}</span><span class="h">${rp(b.harga)}</span></div>
-   <div class="q"><div>${wifi}<small>1. Sambung WiFi<br>${esc(L.ssid)}</small></div><div>${hsQr(v.login,3)}<small>2. Pindai untuk masuk</small></div></div>
+   <div class="q"><div class="qr1">${hsQr(v.login,3)}</div><small>1. Sambung ke WiFi <b>${esc(L.ssid)}</b> (tanpa sandi)<br>2. Pindai QR untuk masuk</small></div>
    <div class="c">${esc(v.kode)}</div></div>`).join('');
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Voucher B${b.id}</title><style>
    body{font-family:Arial,sans-serif;margin:8px}.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px}
    .k{border:1px dashed #555;border-radius:8px;padding:6px;break-inside:avoid}.a{display:flex;flex-direction:column;font-size:11px}.a b{font-size:12px}.h{font-weight:bold;font-size:13px}
-   .q{display:flex;gap:6px;margin-top:4px}.q div{flex:1;text-align:center}.q svg{width:100%;height:auto}.q small{font-size:9px;display:block}
+   .q{display:flex;gap:6px;margin-top:4px;align-items:center}.qr1{width:45%;flex:none}.q svg{width:100%;height:auto}.q small{font-size:10px;display:block}
    .c{text-align:center;font-family:monospace;font-size:16px;font-weight:bold;letter-spacing:2px}@media print{button{display:none}}</style></head>
    <body><button onclick="window.print()">Cetak</button> B${b.id} · ${esc(b.reseller||'')} · ${d.voucher.length} voucher<div class="g">${kartu}</div></body></html>`);
   w.document.close();

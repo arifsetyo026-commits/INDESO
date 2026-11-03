@@ -64,7 +64,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .langkah{border:1px solid var(--line);border-radius:12px;padding:10px;margin-top:10px}
 .langkah b{display:block;font-size:var(--fs-md);margin-bottom:6px}
 .qr svg{width:100%;height:auto;display:block;margin:0 auto}
-.qrBesar{max-width:280px;margin:0 auto}.qrKecil{max-width:150px;margin:0 auto}
+.qrBesar{max-width:280px;margin:0 auto}
 .kode{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--fs-2xl);font-weight:800;letter-spacing:.12em;margin-top:6px}
 </style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
@@ -81,7 +81,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   </div>
   <div class="msg" id="msg"></div>
   <div class="panel"><div class="nav"><b>Jual voucher</b></div><div id="stok"><div class="muted">Memuat…</div></div>
-   <div class="note">Tekan <b>Jual</b>, lalu tunjukkan layar ke pembeli: pindai QR 1 untuk tersambung ke WiFi, lalu QR 2 untuk langsung masuk. Voucher tercatat terjual begitu QR-nya tampil.</div></div>
+   <div class="note">Tekan <b>Jual</b>, lalu tunjukkan layar ke pembeli: setelah tersambung ke WiFi hotspot (tanpa sandi), pindai QR-nya untuk langsung masuk. Voucher tercatat terjual begitu QR-nya tampil.</div></div>
   <div class="panel" style="margin-top:12px"><div class="nav"><b>Penjualan terakhir</b></div><div id="riwayat"></div></div>
  </div>
  <div id="vPw" class="panel form" style="display:none;max-width:420px;margin:0 auto">
@@ -106,7 +106,6 @@ async function api(url,body){
 }
 // QR dibuat di HP sendiri (tanpa layanan luar).
 function qrSvg(teks){ const q=qrcode(0,'M'); q.addData(teks); q.make(); return q.createSvgTag({cellSize:6,margin:2,scalable:true}); }
-function wifiQr(ssid){ return 'WIFI:T:nopass;S:'+ssid.replace(/([\\;,:"])/g,'\\$1')+';;'; }
 function tampil(v){ $('vUtama').style.display=v==='utama'?'block':'none'; $('vPw').style.display=v==='pw'?'block':'none'; pesan('pMsg',''); }
 async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{ await fetch('/api/logout',{method:'POST'}); }catch(e){} location.replace('/login'); }
 async function gantiPw(){
@@ -127,8 +126,8 @@ async function muat(){
 }
 function kartu(v){
  $('kartu').innerHTML=`<h3>${esc(v.paket)}</h3><div class="harga">${rp(v.harga)}</div><div class="sub">${esc(v.durasi||'')} pemakaian</div>
-  <div class="langkah"><b>1. Sambung WiFi "${esc(v.ssid)}"</b><div class="qr qrKecil">${qrSvg(wifiQr(v.ssid))}</div><div class="sub">Tanpa sandi. Pindai dengan kamera HP.</div></div>
-  <div class="langkah"><b>2. Pindai untuk masuk</b><div class="qr qrBesar">${qrSvg(v.login)}</div><div class="kode">${esc(v.kode)}</div><div class="sub">Bila QR tidak bisa, ketik kode ini di halaman login hotspot.</div></div>
+  <div class="langkah"><b>1. Sambung ke WiFi "${esc(v.ssid)}"</b><div class="sub">WiFi terbuka, tanpa sandi.</div></div>
+  <div class="langkah"><b>2. Pindai QR ini untuk masuk</b><div class="qr qrBesar">${qrSvg(v.login)}</div><div class="kode">${esc(v.kode)}</div><div class="sub">Bila QR tidak bisa, ketik kode ini di halaman login hotspot.</div></div>
   <div class="btns" style="justify-content:center"><button class="btn go" onclick="$('lapis').classList.remove('on')">Selesai</button></div>`;
  $('lapis').classList.add('on'); window.scrollTo(0,0);
 }
