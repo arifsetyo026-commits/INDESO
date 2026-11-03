@@ -1816,31 +1816,25 @@ def test_prorata_diskon_dan_pasang_baru(siap):
     tb = next(t for t in o.get("/api/tagihan?periode=2026-10").json()["tagihan"] if t["username"] == "budi")
     assert tb["jumlah"] == 125000 and tb["catatan"] == "diskon Rp 25.000"
     assert o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "diskon": -5, "atur_secret": False}).status_code == 400
-    # pasang baru lengkap: akun PPPoE, tagihan prorata, biaya pasang ke keuangan
+    # tambah pelanggan (data saja): tagihan prorata; tidak menyentuh MikroTik maupun Keuangan
     hari = datetime.now()
     tgl = hari.strftime("%Y-%m-%d")
-    r = k.post("/api/pasang-baru", json={"username": "eko", "nama": "Eko Baru", "no_hp": "0812", "paket_id": 2,
-                                         "tgl_pasang": tgl, "buat_secret": True, "password_pppoe": "rahasia9",
-                                         "biaya_pasang": 250000, "metode_bayar": "tunai"})
+    r = k.post("/api/data-pelanggan", json={"username": "eko", "nama": "Eko Baru", "no_hp": "0812", "paket_id": 2,
+                                            "tgl_pasang": tgl})
     assert r.status_code == 200, r.text
     d = r.json()
-    assert d["profil"] == "paket-20mbps" and main._mt.secret["eko"]["password"] == "rahasia9"
-    assert main._mt.secret["eko"]["service"] == "pppoe"
+    assert d["id_pelanggan"].startswith("463376-1-") and "eko" not in main._mt.secret
     if hari.day > 1:
         assert d["tagihan"] and "prorata" in d["tagihan"]["catatan"] and d["tagihan"]["jumlah"] < 200000
-    trx = o.get("/api/keuangan/transaksi?periode=" + tgl[:7]).json()["transaksi"]
-    assert any(t["jumlah"] == 250000 and "Pasang baru Eko Baru" in (t["keterangan"] or "") for t in trx)
-    # ditolak: username sudah ada, secret sudah ada di MikroTik, tanggal masa depan, mitra
-    assert k.post("/api/pasang-baru", json={"username": "eko", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 409
-    assert k.post("/api/pasang-baru", json={"username": "ani2", "nama": "X", "paket_id": 1, "tgl_pasang": tgl,
-                                            "buat_secret": True, "password_pppoe": "a b"}).status_code == 400
+    assert not o.get("/api/keuangan/transaksi?periode=" + tgl[:7]).json()["transaksi"]
+    assert "eko" in o.get("/api/aktivitas").text
+    # ditolak: username sudah ada (juga beda huruf besar/kecil), tanggal masa depan, username tidak sah, mitra
+    assert k.post("/api/data-pelanggan", json={"username": "EKO", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 409
     besok = (hari + timedelta(days=1)).strftime("%Y-%m-%d")
-    assert k.post("/api/pasang-baru", json={"username": "fani", "nama": "X", "paket_id": 1, "tgl_pasang": besok}).status_code == 400
-    assert k.post("/api/pasang-baru", json={"username": "a b", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 400
-    assert m.post("/api/pasang-baru", json={"username": "gani", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 403
-    main._mt.secret["hadi"] = {"id": "*99", "profile": "default", "disabled": "no"}
-    assert k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": tgl,
-                                            "buat_secret": True, "password_pppoe": "rahasia9"}).status_code == 409
+    assert k.post("/api/data-pelanggan", json={"username": "fani", "nama": "X", "paket_id": 1, "tgl_pasang": besok}).status_code == 400
+    assert k.post("/api/data-pelanggan", json={"username": "a b", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 400
+    assert m.post("/api/data-pelanggan", json={"username": "gani", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code == 403
+    assert k.post("/api/pasang-baru", json={"username": "gani", "nama": "X", "paket_id": 1, "tgl_pasang": tgl}).status_code in (404, 405)
     assert k.get("/api/mikrotik/profil").json()["profil"][1] == {"nama": "paket-10mbps", "mbps": 10.0}
 
 
@@ -2996,19 +2990,13 @@ def test_gudang(siap):
     assert k.post("/api/gudang/mutasi", json={"barang_id": onu, "jenis": "masuk", "jumlah": 4, "tanggal": "2999-01-01"}).status_code == 400
     assert o.post("/api/gudang/mutasi", json={"barang_id": onu, "jenis": "masuk", "jumlah": 4,
                                               "keterangan": "beli 4"}).json()["stok"] == 6
-    # pasang baru langsung mengurangi stok atas nama pelanggan baru
-    r = k.post("/api/pasang-baru", json={"username": "gita", "nama": "Gita", "paket_id": 1, "tgl_pasang": hari,
-                                         "barang": [{"barang_id": onu, "jumlah": 1}, {"barang_id": kabel, "jumlah": 120}]})
-    assert r.status_code == 200 and [g["nama"] for g in r.json()["gudang"]] == ["ONU F670L", "Kabel dropcore"]
-    assert stok() == {"ONU F670L": 5, "Kabel dropcore": 304.5}
+    # pemakaian untuk pelanggan baru (dicatat manual di Warehouse)
+    assert k.post("/api/data-pelanggan", json={"username": "gita", "nama": "Gita", "paket_id": 1, "tgl_pasang": hari}).status_code == 200
+    r = k.post("/api/gudang/pakai", json={"username": "gita", "keterangan": "Pasang baru",
+                                         "item": [{"barang_id": onu, "jumlah": 1}, {"barang_id": kabel, "jumlah": 120}]})
+    assert r.status_code == 200 and stok() == {"ONU F670L": 5, "Kabel dropcore": 304.5}
     riw = o.get("/api/gudang?username=gita").json()["mutasi"]
     assert {(x["nama"], x["jumlah"], x["keterangan"]) for x in riw} == {("ONU F670L", 1, "Pasang baru"), ("Kabel dropcore", 120, "Pasang baru")}
-    # stok kurang saat pasang baru: ditolak sebelum apa pun tersimpan
-    r = k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": hari,
-                                         "barang": [{"barang_id": onu, "jumlah": 50}]})
-    assert r.status_code == 409 and not any(p["username"] == "hadi" for p in o.get("/api/data-pelanggan").json()["pelanggan"])
-    assert k.post("/api/pasang-baru", json={"username": "hadi", "nama": "Hadi", "paket_id": 1, "tgl_pasang": hari,
-                                            "barang": [{"jumlah": 1}]}).status_code == 400
     # hitung fisik: selisih dicatat sebagai koreksi
     assert o.post("/api/gudang/opname", json={"barang_id": kabel, "stok_fisik": 300, "keterangan": "gulungan"}).json()["selisih"] == -4.5
     assert stok()["Kabel dropcore"] == 300
@@ -3347,14 +3335,14 @@ def test_id_pelanggan_dan_lokasi(siap):
     o.put("/api/data-pelanggan/budi", json={"nama": "Budi Baru", "paket_id": 1, "status": "aktif", "atur_secret": False,
                                             "no_hp": "081111111111"})
     assert data()["budi"]["id_pelanggan"] == lama                      # nama/no. HP berubah, ID tetap
-    # lokasi baru (kode 2) dan pasang baru di sana: nomor urut mulai 0001
+    # lokasi baru (kode 2) dan tambah pelanggan di sana: nomor urut mulai 0001
     assert k.post("/api/lokasi", json={"nama": "Dusun Baru"}).json()["kode"] == 2
     assert m.post("/api/lokasi", json={"nama": "X"}).status_code == 403
-    r = k.post("/api/pasang-baru", json={"username": "eko", "nama": "Eko", "paket_id": 1, "lokasi": 2, "no_hp": "0822",
+    r = k.post("/api/data-pelanggan", json={"username": "eko", "nama": "Eko", "paket_id": 1, "lokasi": 2, "no_hp": "0822",
                                          "tgl_pasang": datetime.now().strftime("%Y-%m-%d"), "tagih_bulan_ini": False})
     assert r.status_code == 200, r.text
     assert data()["eko"]["id_pelanggan"] == "463376-2-0001"
-    assert k.post("/api/pasang-baru", json={"username": "x1", "nama": "X", "paket_id": 1, "lokasi": 7,
+    assert k.post("/api/data-pelanggan", json={"username": "x1", "nama": "X", "paket_id": 1, "lokasi": 7,
                                             "tgl_pasang": "2026-10-01"}).status_code == 400
     # pindah lokasi: nomor baru di lokasi tujuan, tercatat di aktivitas
     o.put("/api/data-pelanggan/dwi", json={"nama": "dwi", "paket_id": 1, "status": "aktif", "atur_secret": False, "lokasi": 2})
@@ -3379,3 +3367,95 @@ def test_id_pelanggan_dan_lokasi(siap):
     assert daftar(id_pelanggan="463376-9-9999").status_code == 400
     assert daftar(id_pelanggan=lama.replace("-", "")).status_code == 200
     assert o.get("/api/portal-akun").json()["akun"][0]["pelanggan"] == "budi"
+
+
+def test_wilayah_hanya_penagihan(siap):
+    """Lokasi baru = hanya penagihan: tagihan & pengingat berjalan, tapi isolir otomatis, isolir manual, sinkron
+    secret, dan pantauan putus tidak menyentuh MikroTik utama; yang menunggak dikabarkan untuk diisolir manual."""
+    main, o, k, m = siap
+    mt = main._mt
+    assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    lk = {x["kode"]: x for x in o.get("/api/lokasi").json()["lokasi"]}
+    assert lk[1]["jaringan"] == 1 and lk[2]["jaringan"] == 0
+    assert k.post("/api/data-pelanggan", json={"username": "w2.sari", "nama": "Sari", "paket_id": 1, "lokasi": 2,
+                                               "tgl_pasang": "2026-09-01"}).status_code == 200
+    mt.secret["w2.sari"] = {"id": "*77", "profile": "paket-10mbps", "disabled": "no"}   # nama kembar kebetulan di MikroTik 1
+    o.post("/api/tagihan/buat?periode=2026-10")
+    assert "w2.sari" in {x["username"] for x in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]}
+    main._terkirim.clear()
+    main.proses_isolir(datetime(2026, 10, 11, 9))
+    iso = {x["username"] for x in o.get("/api/isolir").json()["terisolir"]}
+    assert "budi" in iso and "w2.sari" not in iso and mt.secret["w2.sari"]["profile"] == "paket-10mbps"
+    pesan = " ".join(str(x["data"].get("text") or "") for x in main._terkirim)
+    assert "Perlu diisolir manual" in pesan and "w2.sari" in pesan and "Wilayah 2" in pesan
+    main._terkirim.clear()
+    main.proses_isolir(datetime(2026, 10, 11, 15))                 # sekali sehari saja
+    assert "Perlu diisolir manual" not in " ".join(str(x["data"].get("text") or "") for x in main._terkirim)
+    r = o.post("/api/isolir/w2.sari")
+    assert r.status_code == 400 and "MikroTik lokasinya" in r.json()["detail"]
+    # berhenti: secret di MikroTik utama tidak disentuh dan tidak ada sinkron tertunda
+    r = o.put("/api/data-pelanggan/w2.sari", json={"nama": "Sari", "paket_id": 1, "status": "berhenti", "atur_secret": True}).json()
+    assert r["secret"] is None and mt.secret["w2.sari"]["disabled"] == "no"
+    assert next(p for p in o.get("/api/data-pelanggan").json()["pelanggan"] if p["username"] == "w2.sari")["secret_target"] is None
+    # pantauan putus hanya pelanggan lokasi berjaringan
+    assert "w2.sari" not in main._data_pelanggan() and "budi" in main._data_pelanggan()
+
+
+def test_mitra_dan_komisi_per_lokasi(siap):
+    """Mitra diikat ke satu lokasi: hanya melihat pelanggan, tiket, dan komisi lokasinya. Komisi dihitung,
+    dikunci (juga saat tutup buku), dan dibayar per lokasi; data lama (kunci & pembayaran) menjadi milik lokasi 1."""
+    main, o, k, m = siap
+    from fastapi.testclient import TestClient
+    assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    assert o.post("/api/akun", json={"username": "rina", "password": "mitrapass2", "peran": "mitra", "lokasi": 2}).status_code == 200
+    m2 = TestClient(main.app)
+    assert m2.post("/api/login", json={"username": "rina", "password": "mitrapass2"}).status_code == 200
+    for u in ("w2.sari", "w2.tono"):
+        assert k.post("/api/data-pelanggan", json={"username": u, "nama": u, "paket_id": 1, "lokasi": 2,
+                                                   "tgl_pasang": "2026-09-01"}).status_code == 200
+    o.post("/api/tagihan/buat?periode=2026-10")
+    for t in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]:
+        if t["username"] in ("budi", "ani", "w2.sari"):
+            o.post(f"/api/tagihan/{t['id']}/lunas")
+    d1 = m.get("/api/mitra/pelanggan?periode=2026-10").json()
+    d2 = m2.get("/api/mitra/pelanggan?periode=2026-10").json()
+    assert {p["username"] for p in d2["pelanggan"]} == {"w2.sari", "w2.tono"}
+    assert not {"w2.sari", "w2.tono"} & {p["username"] for p in d1["pelanggan"]}
+    assert d1["insentif"]["total"] == 20000 and d2["insentif"]["total"] == 10000
+    # mitra lokasi 2 tidak bisa mengubah / melaporkan pelanggan lokasi 1
+    assert m2.put("/api/mitra/pelanggan/budi", json={"nama": "x"}).status_code == 404
+    assert m2.post("/api/mitra/tiket", json={"username": "budi", "kategori": "Internet mati"}).status_code == 404
+    assert m2.post("/api/mitra/tiket", json={"username": "w2.tono", "kategori": "Internet mati"}).status_code == 200
+    assert [t["username"] for t in m2.get("/api/mitra/tiket").json()["tiket"]] == ["w2.tono"]
+    assert not m.get("/api/mitra/tiket").json()["tiket"]
+    # keuangan: rekap & bayar per lokasi
+    r2 = o.get("/api/keuangan/insentif?sampai=2026-10&lokasi=2").json()
+    assert [l["kode"] for l in r2["daftar_lokasi"]] == [1, 2]
+    assert next(b for b in r2["rekap"] if b["periode"] == "2026-10")["terhitung"] == 10000
+    hari = datetime.now().strftime("%Y-%m-%d")
+    assert k.post("/api/keuangan/insentif/2026-10/bayar?lokasi=2", json={"tanggal": hari, "jumlah": 20000}).status_code == 400
+    assert k.post("/api/keuangan/insentif/2026-10/bayar?lokasi=2", json={"tanggal": hari, "jumlah": 10000}).json()["sisa"] == 0
+    assert m2.get("/api/mitra/pelanggan?periode=2026-10").json()["insentif"]["sisa"] == 0
+    assert m.get("/api/mitra/pelanggan?periode=2026-10").json()["insentif"]["sisa"] == 20000
+    # kunci per lokasi; gabungan untuk laporan keuangan
+    assert o.post("/api/keuangan/insentif/2026-10/kunci?lokasi=2", json={}).json()["total"] == 10000
+    conn = main._billing_conn()
+    try:
+        assert main._hitung_insentif(conn, "2026-10")["total"] == 30000
+        assert main._hitung_insentif(conn, "2026-10", 2)["terkunci"] and not main._hitung_insentif(conn, "2026-10", 1)["terkunci"]
+        # migrasi: tabel kunci lama (satu baris per bulan) jadi milik lokasi 1
+        conn.execute("DROP TABLE komisi_kunci")
+        conn.execute("CREATE TABLE komisi_kunci (periode TEXT PRIMARY KEY, jumlah INTEGER, jumlah_lunas INTEGER, "
+                     "jumlah_gratis INTEGER, per_pelanggan INTEGER, total INTEGER NOT NULL, pelanggan TEXT, sumber TEXT NOT NULL, "
+                     "oleh TEXT, pada TEXT, catatan TEXT)")
+        conn.execute("INSERT INTO komisi_kunci (periode, jumlah, total, sumber) VALUES ('2026-09', 3, 30000, 'manual')")
+        conn.commit()
+        main._siapkan_kunci_komisi(conn)
+        assert [tuple(r) for r in conn.execute("SELECT periode, lokasi, total FROM komisi_kunci")] == [("2026-09", 1, 30000)]
+    finally:
+        conn.close()
+    # pindah lokasi mitra
+    akun = {a["username"]: a for a in o.get("/api/akun").json()["akun"]}
+    assert akun["rina"]["lokasi"] == 2 and akun["joko"]["lokasi"] == 1 and akun["owner"]["lokasi"] is None
+    assert o.put("/api/akun/rina", json={"lokasi": 1}).status_code == 200
+    assert "lokasi 2 → 1" in o.get("/api/aktivitas").text

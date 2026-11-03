@@ -98,6 +98,14 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   tombol HP, L = kode lokasi, NNNN = nomor urut per lokasi, urut tanggal pasang). ID tidak berubah walau username
   atau nomor HP diganti; pindah lokasi memberi nomor baru. Lokasi dikelola di **Pelanggan → Lokasi**. ID tampil di
   data pelanggan, pesan WA (`{id}`), halaman mitra, portal, dan semua ekspor.
+- **Lokasi hanya penagihan** — lokasi baru (mis. wilayah yang jaringannya belum tersambung ke INDESO) hanya
+  untuk penagihan & data pelanggan: tagihan, pengingat, portal, dan komisi mitra berjalan, tetapi isolir otomatis,
+  sinkron secret, dan pantauan putus tidak menyentuh MikroTik utama. Yang menunggak dikabarkan sekali sehari lewat
+  Telegram untuk diisolir manual di MikroTik lokasinya. Pelanggan baru dicatat lewat **Pelanggan → Tambah
+  pelanggan** (data saja; akun PPPoE, biaya pasang, dan pemakaian barang dikerjakan manual).
+- **Mitra & komisi per lokasi** — akun mitra diikat ke satu lokasi (Pengaturan → Pengguna) dan hanya melihat
+  pelanggan, tiket, Excel, dan komisi lokasinya. Komisi dihitung, dikunci (juga otomatis saat tutup buku), dan
+  dibayar per lokasi di **Keuangan → Komisi Mitra**; laporan keuangan memakai jumlah semua lokasi.
 - **Portal pelanggan** (`/portal`) — pelanggan mendaftar sendiri dengan nomor HP yang tercatat
   di data pelanggan, lalu admin menyetujui di **Pelanggan → Akun portal**. Pelanggan melihat tagihan &
   riwayat bayar, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi, maks. 5× per jam), dan
