@@ -32,6 +32,9 @@ class FakeRes:
         self.mt, self.path = mt, path
 
     def get(self, **kw):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:          # /ip/hotspot... : tabel umum, saring per kolom
+            return [dict(r) for r in hs[self.path] if all(r.get(k) == v for k, v in kw.items())]
         if self.path == "/ppp/secret":
             rows = [dict(v, name=k) for k, v in self.mt.secret.items()]
         elif self.path == "/ppp/active":
@@ -61,16 +64,32 @@ class FakeRes:
         return rows
 
     def add(self, **kw):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:
+            if self.mt.hs_tolak and self.path == "/ip/hotspot/user" and len(hs[self.path]) >= self.mt.hs_tolak:
+                raise Exception("failure: tolak uji")
+            hs[self.path].append(dict(kw, id=f"*H{len(hs[self.path]) + 100}"))
+            return
         if self.path == "/ppp/secret":
             self.mt.secret[kw["name"]] = dict({k: v for k, v in kw.items() if k != "name"}, id=f"*{len(self.mt.secret) + 10}",
                                               disabled="no")
 
     def set(self, id, **kw):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:
+            for r in hs[self.path]:
+                if r["id"] == id:
+                    r.update(kw)
+            return
         for v in self.mt.secret.values():
             if v["id"] == id:
                 v.update(kw)
 
     def remove(self, id):
+        hs = getattr(self.mt, "hs", None)
+        if hs is not None and self.path in hs:
+            hs[self.path] = [r for r in hs[self.path] if r["id"] != id]
+            return
         for k in list(self.mt.active):
             self.mt.active[k] = [x for x in self.mt.active[k] if x["id"] != id]
 
@@ -104,6 +123,8 @@ class FakeMikroTik:
         self.log = []
         self.resource = {"cpu-load": "10", "free-memory": "80000000", "total-memory": "100000000",
                          "uptime": "3d", "version": "7.14", "board-name": "RB4011"}
+        self.hs = {"/ip/hotspot": [], "/ip/hotspot/user": [], "/ip/hotspot/user/profile": [], "/ip/hotspot/active": []}
+        self.hs_tolak = 0                                 # >0: user hotspot ke-N berikutnya ditolak (uji batal utuh)
 
     def pool(self):
         mt = self
@@ -3459,3 +3480,84 @@ def test_mitra_dan_komisi_per_lokasi(siap):
     assert akun["rina"]["lokasi"] == 2 and akun["joko"]["lokasi"] == 1 and akun["owner"]["lokasi"] is None
     assert o.put("/api/akun/rina", json={"lokasi": 1}).status_code == 200
     assert "lokasi 2 → 1" in o.get("/api/aktivitas").text
+
+
+# ------------------------------------------------------------
+# Hotspot (voucher, dijual reseller/warung)
+# ------------------------------------------------------------
+
+def test_hotspot_reseller_voucher(siap):
+    """Paket diatur owner per lokasi; voucher dititipkan ke reseller. Lokasi berjaringan: user hotspot langsung dibuat
+    di MikroTik (limit-uptime = total waktu pakai, profil kecepatan); gagal di tengah = dibersihkan. Lokasi hanya
+    penagihan: skrip tempel (v6/v7), voucher baru dijual setelah ditandai terpasang. Reseller hanya bisa membuka
+    halamannya, menjual dari stoknya (QR login), lalu admin menerima setoran (harga reseller) ke kas."""
+    main, o, k, m = siap
+    from fastapi.testclient import TestClient
+    mt = main._mt
+    assert o.post("/api/akun", json={"username": "warungsri", "password": "warungsri1", "peran": "reseller"}).status_code == 200
+    r = TestClient(main.app)
+    assert r.post("/api/login", json={"username": "warungsri", "password": "warungsri1"}).json()["peran"] == "reseller"
+    assert r.get("/").status_code == 200 and "reseller" in r.get("/").text.lower()
+    for jalur in ("/api/data-pelanggan", "/api/hotspot", "/api/mitra/pelanggan?periode=2026-10", "/api/tagihan?periode=2026-10"):
+        assert r.get(jalur).status_code == 403, jalur
+    assert r.get("/static/qrcode.js").status_code == 200
+    # paket (owner saja), harga reseller tidak boleh di atas eceran
+    pk = {"nama": "3 Jam", "lokasi": 1, "menit": 180, "mbps": 5, "perangkat": 1, "harga": 3000, "harga_reseller": 2500}
+    assert k.post("/api/hotspot/paket", json=pk).status_code == 403
+    assert o.post("/api/hotspot/paket", json=dict(pk, harga_reseller=4000)).status_code == 400
+    d = o.post("/api/hotspot/paket", json=pk).json()
+    pid = d["id"]
+    assert d["mikrotik"] is True and mt.hs["/ip/hotspot/user/profile"][0]["rate-limit"] == "5M/5M"
+    # titip 3 voucher (lokasi 1 berjaringan): langsung dibuat di MikroTik
+    b = k.post("/api/hotspot/batch", json={"paket_id": pid, "jumlah": 3, "reseller": "warungsri"}).json()
+    assert b["status"] == "siap" and b["skrip"] is None
+    users = mt.hs["/ip/hotspot/user"]
+    assert len(users) == 3 and all(u["password"] == u["name"] and u["limit-uptime"] == "3h"
+                                   and u["profile"] == f"INDESO-HS-{pid}" and u["comment"].startswith("INDESO voucher") for u in users)
+    # gagal di tengah: tidak ada yang tercatat, user yang sempat dibuat dihapus lagi
+    mt.hs_tolak = 4
+    assert k.post("/api/hotspot/batch", json={"paket_id": pid, "jumlah": 3, "reseller": "warungsri"}).status_code == 502
+    mt.hs_tolak = 0
+    assert len(mt.hs["/ip/hotspot/user"]) == 3
+    # reseller menjual: QR login berisi kode, stok berkurang
+    s0 = r.get("/api/reseller/ringkas").json()
+    assert s0["stok"][0]["stok"] == 3 and s0["ssid"]
+    j = r.post("/api/reseller/jual", json={"paket_id": pid}).json()
+    assert j["login"] == f"http://hotspot.desa/login?username={j['kode']}&password={j['kode']}" and j["harga"] == 3000
+    r.post("/api/reseller/jual", json={"paket_id": pid})
+    s1 = r.get("/api/reseller/ringkas").json()
+    assert s1["stok"][0]["stok"] == 1 and s1["belum_setor"] == {"voucher": 2, "setor": 5000, "eceran": 6000}
+    # setoran → kas masuk, tidak bisa diubah/dibatalkan dari Keuangan
+    st = k.post("/api/hotspot/setoran", json={"reseller": "warungsri"}).json()
+    assert st["nominal"] == 5000 and st["nomor"].startswith("BKM-")
+    assert k.post("/api/hotspot/setoran", json={"reseller": "warungsri"}).status_code == 400
+    trx = next(t for t in o.get("/api/keuangan/transaksi?periode=" + datetime.now().strftime("%Y-%m")).json()["transaksi"]
+               if t["jumlah"] == 5000)
+    assert o.post(f"/api/keuangan/transaksi/{trx['id']}/batal", json={"alasan": "coba"}).status_code == 400
+    assert r.get("/api/reseller/ringkas").json()["belum_setor"]["voucher"] == 0
+    # lokasi hanya penagihan: skrip tempel, baru dijual setelah ditandai terpasang
+    assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    assert o.put("/api/hotspot/lokasi/2", json={"ssid": "DESA2 HOTSPOT", "dns": "hs.desa2"}).status_code == 200
+    assert o.post("/api/akun", json={"username": "warungtono", "password": "warungtono1", "peran": "reseller", "lokasi": 2}).status_code == 200
+    p2 = o.post("/api/hotspot/paket", json=dict(pk, lokasi=2, nama="5 Jam", menit=300)).json()["id"]
+    assert k.post("/api/hotspot/batch", json={"paket_id": p2, "jumlah": 2, "reseller": "warungsri"}).status_code == 400  # beda lokasi
+    b2 = k.post("/api/hotspot/batch", json={"paket_id": p2, "jumlah": 2, "reseller": "warungtono"}).json()
+    assert b2["status"] == "menunggu" and len(mt.hs["/ip/hotspot/user"]) == 3
+    assert "limit-uptime=5h" in b2["skrip"] and "/ip hotspot user profile" in b2["skrip"] and b2["skrip"].count("add name=") == 3
+    rt = TestClient(main.app)
+    rt.post("/api/login", json={"username": "warungtono", "password": "warungtono1"})
+    assert rt.post("/api/reseller/jual", json={"paket_id": p2}).status_code == 409                  # belum terpasang
+    assert k.post(f"/api/hotspot/batch/{b2['id']}/terpasang").status_code == 200
+    j2 = rt.post("/api/reseller/jual", json={"paket_id": p2}).json()
+    assert j2["login"].startswith("http://hs.desa2/login?username=") and j2["ssid"] == "DESA2 HOTSPOT"
+    rinci = k.get(f"/api/hotspot/batch/{b2['id']}").json()
+    assert len(rinci["voucher"]) == 2 and rinci["skrip"].count("password=") == 1               # hanya sisa
+    # tarik sisa: skrip hapus untuk lokasi tanpa jaringan
+    t = k.post(f"/api/hotspot/batch/{b2['id']}/batal", json={"alasan": "warung tutup"}).json()
+    assert t["ditarik"] == 1 and "remove [find name=" in t["skrip_hapus"]
+    ring = o.get("/api/hotspot?lokasi=2").json()
+    assert ring["reseller"][0]["username"] == "warungtono" and ring["reseller"][0]["belum_setor"] == 1
+    sk = o.get("/api/hotspot/skrip-pengaturan?lokasi=2").json()["skrip"]
+    assert 'dns-name="hs.desa2"' in sk and "login-by=http-pap" in sk
+    # kode voucher tidak pernah masuk log aktivitas
+    assert j["kode"] not in o.get("/api/aktivitas").text
