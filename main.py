@@ -1628,6 +1628,10 @@ def init_billing_db() -> None:
             conn.execute("ALTER TABLE lokasi ADD COLUMN jaringan INTEGER NOT NULL DEFAULT 0")
             conn.execute("UPDATE lokasi SET jaringan = 1 WHERE kode = 1")
         conn.execute("INSERT OR IGNORE INTO lokasi (kode, nama, jaringan) VALUES (1, 'Lokasi 1', 1)")
+        kol_lok = [r[1] for r in conn.execute("PRAGMA table_info(lokasi)").fetchall()]
+        for kol in ("hs_ssid", "hs_dns"):
+            if kol not in kol_lok:
+                conn.execute(f"ALTER TABLE lokasi ADD COLUMN {kol} TEXT")
         if "lokasi" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN lokasi INTEGER NOT NULL DEFAULT 1")
         if "no_urut" not in kolom:
@@ -2171,14 +2175,16 @@ app = FastAPI(title="ISP Monitoring Dashboard", docs_url=None, redoc_url=None, o
 _COOKIE_SESI = "indeso_sesi"
 _PBKDF2_ITERASI = 600_000   # rekomendasi OWASP untuk PBKDF2-SHA256; hash lama di-upgrade saat login
 _POLA_USERNAME = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
-_PERAN = ("owner", "admin", "mitra")
+_PERAN = ("owner", "admin", "mitra", "reseller")
 _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 
 # Alamat yang boleh dibuka tanpa login, dan yang boleh dibuka akun mitra.
 # Selain itu: tanpa login -> 401/ke halaman login, mitra -> 403.
 _JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|api/login|api/setup|api/setup-status|healthz"
-                           r"|portal|api/portal/login|api/portal/daftar)$")
+                           r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js)$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
+# Reseller (warung) voucher hotspot: hanya halaman jual vouchernya sendiri.
+_JALUR_RESELLER = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/reseller/.*)$")
 
 
 def _hash_password(pw: str) -> str:
@@ -2422,6 +2428,10 @@ async def wajib_login(request: Request, call_next):
                 return JSONResponse({"detail": "Sesi berakhir, silakan login lagi."}, status_code=401)
             return RedirectResponse("/login", status_code=303)
         request.state.user, request.state.peran = sesi
+        if request.state.peran == "reseller" and not _JALUR_RESELLER.match(jalur):
+            if jalur.startswith("/api/"):
+                return JSONResponse({"detail": "Akun reseller hanya untuk menjual voucher hotspot."}, status_code=403)
+            return RedirectResponse("/", status_code=303)
         if request.state.peran == "mitra" and not _JALUR_MITRA.match(jalur):
             if jalur.startswith("/api/"):
                 return JSONResponse({"detail": "Akun mitra tidak punya akses ke fitur ini."}, status_code=403)
@@ -2486,6 +2496,13 @@ class LoginIn(BaseModel):
 @app.get("/login")
 async def halaman_login():
     return FileResponse(os.path.join(BASE_DIR, "login.html"), headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/static/qrcode.js", include_in_schema=False)
+def qrcode_js():
+    """Pembuat kode QR (qrcode-generator, Kazuhiko Arase, lisensi MIT) untuk kartu & jual voucher hotspot."""
+    return FileResponse(os.path.join(BASE_DIR, "static", "qrcode.js"), media_type="text/javascript",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/static/inter.woff2", include_in_schema=False)
@@ -2671,12 +2688,12 @@ def tambah_akun(d: AkunIn, request: Request):
     if not _POLA_USERNAME.match(username):
         raise HTTPException(status_code=400, detail="Username 3-32 karakter: huruf, angka, titik, minus, garis bawah.")
     if d.peran not in _PERAN:
-        raise HTTPException(status_code=400, detail="Peran harus owner, admin, atau mitra.")
+        raise HTTPException(status_code=400, detail="Peran harus owner, admin, mitra, atau reseller.")
     _cek_password_baru(d.password)
     conn = _billing_conn()
     try:
         _cek_hak_owner(conn, request, None, d.peran)
-        lokasi = _cek_lokasi(conn, d.lokasi or 1) if d.peran == "mitra" else None
+        lokasi = _cek_lokasi(conn, d.lokasi or 1) if d.peran in ("mitra", "reseller") else None
         try:
             conn.execute("INSERT INTO akun (username, password_hash, peran, dibuat, lokasi) VALUES (?,?,?,?,?)",
                          (username, _hash_password(d.password), d.peran, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), lokasi))
@@ -2693,14 +2710,15 @@ def tambah_akun(d: AkunIn, request: Request):
 def ubah_akun(username: str, d: AkunUbahIn, request: Request):
     _wajib_admin(request)
     if d.peran is not None and d.peran not in _PERAN:
-        raise HTTPException(status_code=400, detail="Peran harus owner, admin, atau mitra.")
+        raise HTTPException(status_code=400, detail="Peran harus owner, admin, mitra, atau reseller.")
     conn = _billing_conn()
     try:
         r = conn.execute("SELECT peran, aktif, lokasi FROM akun WHERE username = ?", (username,)).fetchone()
         if not r:
             raise HTTPException(status_code=404, detail="Akun tidak ditemukan.")
         peran = d.peran if d.peran is not None else r["peran"]
-        lokasi = (_cek_lokasi(conn, d.lokasi) if d.lokasi is not None else (r["lokasi"] or 1)) if peran == "mitra" else None
+        lokasi = ((_cek_lokasi(conn, d.lokasi) if d.lokasi is not None else (r["lokasi"] or 1))
+                  if peran in ("mitra", "reseller") else None)
         aktif = int(d.aktif) if d.aktif is not None else r["aktif"]
         _cek_hak_owner(conn, request, r["peran"], peran)
         if r["peran"] == "owner" and request.state.peran != "owner":
@@ -2719,7 +2737,7 @@ def ubah_akun(username: str, d: AkunUbahIn, request: Request):
         ubah.append(f"peran {r['peran']} → {peran}")
     if aktif != r["aktif"]:
         ubah.append("diaktifkan" if aktif else "dinonaktifkan")
-    if peran == "mitra" and lokasi != r["lokasi"]:
+    if peran in ("mitra", "reseller") and lokasi != r["lokasi"]:
         ubah.append(f"lokasi {r['lokasi'] or '-'} → {lokasi}")
     if ubah:
         # Perubahan hak akses langsung berlaku: paksa login ulang.
@@ -2815,7 +2833,7 @@ async def on_startup():
 @app.get("/")
 async def serve_dashboard(request: Request):
     # no-cache: browser selalu cek ulang ke server, jadi update index.html langsung terpakai
-    halaman = "mitra.html" if request.state.peran == "mitra" else "index.html"
+    halaman = {"mitra": "mitra.html", "reseller": "reseller.html"}.get(request.state.peran, "index.html")
     return FileResponse(os.path.join(BASE_DIR, halaman), headers={"Cache-Control": "no-cache"})
 
 def _salin(model, **perubahan):
@@ -6371,6 +6389,8 @@ def _cek_transaksi(conn, d: TransaksiIn) -> str:
         raise HTTPException(status_code=400, detail="Pembayaran liabilitas dicatat dari tab Liabilitas.")
     if k["nama"] == _KAT_INSENTIF:
         raise HTTPException(status_code=400, detail="Pembayaran komisi mitra dicatat dari tab Komisi (agar terikat ke bulannya).")
+    if k["nama"] == _KAT_HOTSPOT:
+        raise HTTPException(status_code=400, detail="Setoran voucher hotspot dicatat dari menu Hotspot.")
     return k["nama"]
 
 
@@ -6437,6 +6457,8 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
             raise HTTPException(status_code=400, detail="Pembayaran liabilitas tidak bisa diubah. Batalkan, lalu bayar ulang dari tab Liabilitas.")
         if t["insentif_periode"]:
             raise HTTPException(status_code=400, detail="Pembayaran komisi tidak bisa diubah. Batalkan, lalu bayar ulang dari tab Komisi.")
+        if "hotspot_setoran_id" in t.keys() and t["hotspot_setoran_id"]:
+            raise HTTPException(status_code=400, detail="Setoran voucher hotspot diubah/dibatalkan lewat menu Hotspot.")
         _boleh_ubah_transaksi(request, t)
         kat = _cek_transaksi(conn, d)
         _wajib_buku_terbuka(conn, t["tanggal"], d.tanggal)
@@ -6479,6 +6501,8 @@ def keuangan_batal(tid: int, d: BatalIn, request: Request):
             raise HTTPException(status_code=404, detail="Transaksi tidak ditemukan.")
         if t["status"] != "aktif":
             raise HTTPException(status_code=400, detail="Transaksi sudah dibatalkan.")
+        if "hotspot_setoran_id" in t.keys() and t["hotspot_setoran_id"]:
+            raise HTTPException(status_code=400, detail="Setoran voucher hotspot dibatalkan lewat menu Hotspot.")
         _boleh_ubah_transaksi(request, t)
         _wajib_buku_terbuka(conn, t["tanggal"])
         conn.execute("UPDATE transaksi SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
@@ -7607,6 +7631,590 @@ def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
     return _buat_tiket(TiketIn(username=d.username, kategori=d.kategori, keterangan=d.keterangan),
                        _oleh(request), hanya_mitra=True, lokasi_mitra=_lokasi_mitra(request))
 
+
+
+# ============================================================
+# HOTSPOT — voucher WiFi terbuka, dijual warung/reseller
+# ============================================================
+# Voucher = user hotspot MikroTik (username = password = kode) dengan batas TOTAL waktu pakai (limit-uptime) yang
+# ditegakkan MikroTik sendiri, jadi tetap berlaku walau MikroTik tidak tersambung ke INDESO. Kecepatan & jumlah HP
+# per voucher lewat user profile INDESO-HS-<id paket>. Login lewat QR: http://<dns>/login?username=..&password=..
+# (server profile hotspot perlu login-by http-pap). Lokasi yang jaringannya tersambung ke INDESO: user langsung
+# dibuat lewat API; lokasi lain: INDESO mencetak skrip untuk ditempel di Terminal MikroTik lokasi itu (v6 & v7).
+# Alur uang: voucher dititipkan ke reseller (status stok) → terjual saat reseller menampilkan QR-nya → reseller
+# menyetor (harga reseller × terjual) → kas masuk "Pendapatan voucher hotspot".
+
+_KAT_HOTSPOT = "Pendapatan voucher hotspot"
+_HURUF_VOUCHER = "abcdefghjkmnpqrstuvwxyz23456789"     # tanpa 0/o dan 1/l/i: tidak tertukar saat dibaca dari kertas
+_KOMENTAR_HS = "INDESO voucher"
+
+
+def _siapkan_hotspot(conn) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS hs_paket (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, nama TEXT NOT NULL, lokasi INTEGER NOT NULL DEFAULT 1,
+        menit INTEGER NOT NULL, mbps REAL NOT NULL, perangkat INTEGER NOT NULL DEFAULT 1, harga INTEGER NOT NULL,
+        harga_reseller INTEGER NOT NULL, aktif INTEGER NOT NULL DEFAULT 1, dibuat TEXT, UNIQUE (nama, lokasi))""")
+    # Harga & lama pakai disalin ke batch saat dibuat: mengubah paket tidak mengubah voucher yang sudah dicetak.
+    conn.execute("""CREATE TABLE IF NOT EXISTS hs_batch (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, paket_id INTEGER NOT NULL, lokasi INTEGER NOT NULL, reseller TEXT,
+        jumlah INTEGER NOT NULL, menit INTEGER NOT NULL, harga INTEGER NOT NULL, harga_reseller INTEGER NOT NULL,
+        status TEXT NOT NULL, dibuat TEXT NOT NULL, oleh TEXT, terpasang TEXT, catatan TEXT)""")
+    # status voucher: menunggu (skrip belum ditempel) → stok → terjual; atau batal.
+    conn.execute("""CREATE TABLE IF NOT EXISTS hs_voucher (
+        kode TEXT PRIMARY KEY, batch_id INTEGER NOT NULL, paket_id INTEGER NOT NULL, reseller TEXT,
+        status TEXT NOT NULL, terjual_pada TEXT, setoran_id INTEGER)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hs_voucher ON hs_voucher(reseller, status)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS hs_setoran (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, reseller TEXT NOT NULL, lokasi INTEGER NOT NULL, waktu TEXT NOT NULL,
+        jumlah_voucher INTEGER NOT NULL, nominal INTEGER NOT NULL, metode TEXT, transaksi_id INTEGER, oleh TEXT,
+        status TEXT NOT NULL DEFAULT 'aktif', batal_alasan TEXT)""")
+    conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'masuk', 1)", (_KAT_HOTSPOT,))
+    if "hotspot_setoran_id" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+        conn.execute("ALTER TABLE transaksi ADD COLUMN hotspot_setoran_id INTEGER")
+
+
+def _teks_durasi(menit: int) -> str:
+    hari, sisa = divmod(int(menit), 1440)
+    jam, mnt = divmod(sisa, 60)
+    return " ".join(b for b in (f"{hari} hari" if hari else "", f"{jam} jam" if jam else "",
+                                f"{mnt} menit" if mnt else "") if b) or "0 menit"
+
+
+def _waktu_mikrotik(menit: int) -> str:
+    """Format waktu RouterOS (v6 & v7): 3h, 1d, 1h30m."""
+    hari, sisa = divmod(int(menit), 1440)
+    jam, mnt = divmod(sisa, 60)
+    return "".join(f"{n}{h}" for n, h in ((hari, "d"), (jam, "h"), (mnt, "m")) if n) or "0m"
+
+
+def _rate_mikrotik(mbps: float) -> str:
+    mbps = float(mbps)
+    return f"{int(mbps)}M" if mbps.is_integer() else f"{int(round(mbps * 1000))}k"
+
+
+def _profil_hs(p) -> tuple[str, dict]:
+    rate = _rate_mikrotik(p["mbps"])
+    return f"INDESO-HS-{p['id']}", {"rate-limit": f"{rate}/{rate}", "shared-users": str(int(p["perangkat"]))}
+
+
+def _hs_lokasi(conn, kode: int) -> dict:
+    r = conn.execute("SELECT kode, nama, jaringan, hs_ssid, hs_dns FROM lokasi WHERE kode = ?", (kode,)).fetchone()
+    if not r:
+        raise HTTPException(status_code=400, detail="Lokasi tidak ditemukan.")
+    return {"kode": r["kode"], "nama": r["nama"], "jaringan": bool(r["jaringan"]),
+            "ssid": r["hs_ssid"] or "INTERNET DESA HOTSPOT", "dns": r["hs_dns"] or "hotspot.desa"}
+
+
+def _url_login(dns: str, kode: str) -> str:
+    return f"http://{dns}/login?username={kode}&password={kode}"
+
+
+def _kutip_rsc(t: str) -> str:
+    return '"' + str(t).replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$") + '"'
+
+
+def _skrip_profil(p) -> list[str]:
+    nama, nilai = _profil_hs(p)
+    return ["/ip hotspot user profile",
+            f":if ([:len [find name={_kutip_rsc(nama)}]] = 0) do={{ add name={_kutip_rsc(nama)} }}",
+            f"set [find name={_kutip_rsc(nama)}] " + " ".join(f"{k}={v}" for k, v in nilai.items())]
+
+
+@app.get("/api/hotspot")
+def hotspot_ringkas(request: Request, lokasi: int = 1):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_hotspot(conn)
+        lok = _hs_lokasi(conn, lokasi)
+        daftar_lokasi = [dict(r) for r in conn.execute("SELECT kode, nama FROM lokasi ORDER BY kode")]
+        paket = [dict(r, durasi=_teks_durasi(r["menit"])) for r in conn.execute(
+            "SELECT * FROM hs_paket WHERE lokasi = ? ORDER BY aktif DESC, menit, harga", (lokasi,))]
+        reseller = []
+        for a in conn.execute("SELECT username, aktif FROM akun WHERE peran = 'reseller' AND COALESCE(lokasi, 1) = ? "
+                              "ORDER BY username COLLATE NOCASE", (lokasi,)):
+            st = {r["status"]: r["n"] for r in conn.execute(
+                "SELECT status, COUNT(*) AS n FROM hs_voucher WHERE reseller = ? GROUP BY status", (a["username"],))}
+            belum = conn.execute("SELECT COUNT(*), COALESCE(SUM(b.harga_reseller), 0) FROM hs_voucher v JOIN hs_batch b "
+                                 "ON b.id = v.batch_id WHERE v.reseller = ? AND v.status = 'terjual' AND v.setoran_id IS NULL",
+                                 (a["username"],)).fetchone()
+            stok = [dict(r) for r in conn.execute(
+                "SELECT p.nama, COUNT(*) AS n FROM hs_voucher v JOIN hs_paket p ON p.id = v.paket_id WHERE v.reseller = ? "
+                "AND v.status = 'stok' GROUP BY p.id ORDER BY p.menit", (a["username"],))]
+            reseller.append({"username": a["username"], "aktif": bool(a["aktif"]), "stok": st.get("stok", 0),
+                             "stok_paket": stok, "menunggu": st.get("menunggu", 0), "terjual": st.get("terjual", 0),
+                             "belum_setor": belum[0], "nominal_belum_setor": belum[1]})
+        batch = [dict(r, durasi=_teks_durasi(r["menit"])) for r in conn.execute(
+            "SELECT b.*, p.nama AS paket, (SELECT COUNT(*) FROM hs_voucher v WHERE v.batch_id = b.id AND v.status = 'terjual') "
+            "AS terjual, (SELECT COUNT(*) FROM hs_voucher v WHERE v.batch_id = b.id AND v.status IN ('stok','menunggu')) AS sisa "
+            "FROM hs_batch b JOIN hs_paket p ON p.id = b.paket_id WHERE b.lokasi = ? ORDER BY b.id DESC LIMIT 50", (lokasi,))]
+        setoran = [dict(r) for r in conn.execute(
+            "SELECT s.*, t.nomor FROM hs_setoran s LEFT JOIN transaksi t ON t.id = s.transaksi_id WHERE s.lokasi = ? "
+            "ORDER BY s.id DESC LIMIT 30", (lokasi,))]
+        conn.commit()
+    finally:
+        conn.close()
+    return {"peran": request.state.peran, "lokasi": lok, "daftar_lokasi": daftar_lokasi, "paket": paket,
+            "reseller": reseller, "batch": batch, "setoran": setoran}
+
+
+class HsLokasiIn(BaseModel):
+    ssid: str
+    dns: str
+
+
+@app.put("/api/hotspot/lokasi/{kode}")
+def hotspot_atur_lokasi(kode: int, d: HsLokasiIn, request: Request):
+    _wajib_owner(request, "Pengaturan hotspot hanya bisa diubah owner.")
+    ssid, dns = d.ssid.strip(), d.dns.strip().lower()
+    if not (1 <= len(ssid) <= 32 and all(32 <= ord(c) < 127 for c in ssid)):
+        raise HTTPException(status_code=400, detail="Nama WiFi 1–32 huruf/angka biasa.")
+    if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+|\d{1,3}(\.\d{1,3}){3}", dns):
+        raise HTTPException(status_code=400, detail="Nama DNS hotspot tidak valid (contoh: hotspot.desa atau 10.5.50.1).")
+    conn = _billing_conn()
+    try:
+        if not conn.execute("UPDATE lokasi SET hs_ssid = ?, hs_dns = ? WHERE kode = ?", (ssid, dns, kode)).rowcount:
+            raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan.")
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "hotspot", f"lokasi {kode}: WiFi {ssid}, DNS {dns}")
+    return {"ok": True}
+
+
+class HsPaketIn(BaseModel):
+    nama: str
+    lokasi: int = 1
+    menit: int
+    mbps: float
+    perangkat: int = 1
+    harga: int
+    harga_reseller: int
+    aktif: bool = True
+
+
+def _simpan_hs_paket(pid: Optional[int], d: HsPaketIn, request: Request) -> dict:
+    _wajib_owner(request, "Paket hotspot (harga, lama pakai) hanya bisa diatur owner.")
+    nama = d.nama.strip()
+    if not (1 <= len(nama) <= 40 and nama.isprintable()):
+        raise HTTPException(status_code=400, detail="Nama paket 1–40 huruf.")
+    if not 30 <= d.menit <= 90 * 1440:
+        raise HTTPException(status_code=400, detail="Lama pakai 30 menit sampai 90 hari.")
+    if not 0.5 <= d.mbps <= 1000 or not 1 <= d.perangkat <= 10:
+        raise HTTPException(status_code=400, detail="Kecepatan 0,5–1000 Mbps; perangkat per voucher 1–10.")
+    if not 0 <= d.harga_reseller <= d.harga <= 10_000_000:
+        raise HTTPException(status_code=400, detail="Harga reseller harus 0 sampai harga eceran.")
+    conn = _billing_conn()
+    try:
+        _siapkan_hotspot(conn)
+        _cek_lokasi(conn, d.lokasi)
+        nilai = (nama, d.lokasi, d.menit, d.mbps, d.perangkat, d.harga, d.harga_reseller, int(d.aktif))
+        try:
+            if pid is None:
+                pid = conn.execute("INSERT INTO hs_paket (nama, lokasi, menit, mbps, perangkat, harga, harga_reseller, aktif, "
+                                   "dibuat) VALUES (?,?,?,?,?,?,?,?,?)", nilai + (_sekarang_str(),)).lastrowid
+            elif not conn.execute("UPDATE hs_paket SET nama=?, lokasi=?, menit=?, mbps=?, perangkat=?, harga=?, harga_reseller=?, "
+                                  "aktif=? WHERE id=?", nilai + (pid,)).rowcount:
+                raise HTTPException(status_code=404, detail="Paket tidak ditemukan.")
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="Nama paket sudah dipakai di lokasi ini.")
+        p = conn.execute("SELECT * FROM hs_paket WHERE id = ?", (pid,)).fetchone()
+        lok = _hs_lokasi(conn, d.lokasi)
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "hotspot", f"paket {nama} (lokasi {d.lokasi}): {_teks_durasi(d.menit)}, "
+                    f"{_rp(d.harga)} / reseller {_rp(d.harga_reseller)}, {d.mbps:g} Mbps, {d.perangkat} HP")
+    # Profil kecepatan diselaraskan langsung bila MikroTik lokasi ini tersambung; selain itu lewat skrip.
+    sinkron = None
+    if lok["jaringan"]:
+        try:
+            pool = _mikrotik_pool()
+            try:
+                res = pool.get_api().get_resource("/ip/hotspot/user/profile")
+                nama_p, nilai_p = _profil_hs(p)
+                ada = res.get(name=nama_p)
+                if ada:
+                    res.set(id=ada[0]["id"], **nilai_p)
+                else:
+                    res.add(name=nama_p, **nilai_p)
+                sinkron = True
+            finally:
+                pool.disconnect()
+        except Exception as e:
+            sinkron = f"Profil belum terpasang di MikroTik ({e}); terpasang otomatis saat voucher pertama dibuat."
+    return {"ok": True, "id": pid, "mikrotik": sinkron}
+
+
+@app.post("/api/hotspot/paket")
+def hotspot_paket_tambah(d: HsPaketIn, request: Request):
+    return _simpan_hs_paket(None, d, request)
+
+
+@app.put("/api/hotspot/paket/{pid}")
+def hotspot_paket_ubah(pid: int, d: HsPaketIn, request: Request):
+    return _simpan_hs_paket(pid, d, request)
+
+
+class HsBatchIn(BaseModel):
+    paket_id: int
+    jumlah: int
+    reseller: str
+
+
+def _kode_voucher_baru(conn, jumlah: int) -> list[str]:
+    kode = set()
+    while len(kode) < jumlah:
+        k = "".join(secrets.choice(_HURUF_VOUCHER) for _ in range(8))
+        if k not in kode and not conn.execute("SELECT 1 FROM hs_voucher WHERE kode = ?", (k,)).fetchone():
+            kode.add(k)
+    return sorted(kode)
+
+
+def _skrip_user(b, p, kode: list[str]) -> str:
+    nama_p, _ = _profil_hs(p)
+    baris = [f"# INDESO: voucher {p['nama']} x{len(kode)} (batch B{b['id']}) untuk {b['reseller']}",
+             "# Tempel di Terminal MikroTik (RouterOS v6/v7). Aman ditempel ulang: user yang sudah ada dilewati."]
+    baris += _skrip_profil(p) + ["/ip hotspot user"]
+    komentar = _kutip_rsc(_KOMENTAR_HS + " " + str(b["reseller"]))
+    lama = _waktu_mikrotik(b["menit"])
+    for k in kode:
+        baris.append(f":if ([:len [find name={_kutip_rsc(k)}]] = 0) do={{ add name={_kutip_rsc(k)} password={_kutip_rsc(k)} "
+                     f"profile={_kutip_rsc(nama_p)} limit-uptime={lama} comment={komentar} }}")
+    return "\n".join(baris) + "\n"
+
+
+def _hapus_user_hs(kode: list[str]) -> None:
+    pool = _mikrotik_pool()
+    try:
+        api = pool.get_api()
+        res, aktif = api.get_resource("/ip/hotspot/user"), api.get_resource("/ip/hotspot/active")
+        for k in kode:
+            for a in aktif.get(user=k):
+                aktif.remove(id=a["id"])
+            for u in res.get(name=k):
+                if str(u.get("comment", "")).startswith(_KOMENTAR_HS):
+                    res.remove(id=u["id"])
+    finally:
+        pool.disconnect()
+
+
+@app.post("/api/hotspot/batch")
+def hotspot_batch(d: HsBatchIn, request: Request):
+    """Cetak & titipkan voucher ke reseller. Lokasi berjaringan: user hotspot dibuat langsung di MikroTik (gagal di
+    tengah = semua dibersihkan, tidak ada yang tercatat). Lokasi lain: voucher menunggu skripnya ditempel."""
+    _wajib_admin(request)
+    if not 1 <= d.jumlah <= 500:
+        raise HTTPException(status_code=400, detail="Jumlah voucher 1–500 per cetakan.")
+    conn = _billing_conn()
+    try:
+        _siapkan_hotspot(conn)
+        p = conn.execute("SELECT * FROM hs_paket WHERE id = ? AND aktif = 1", (d.paket_id,)).fetchone()
+        if not p:
+            raise HTTPException(status_code=404, detail="Paket tidak ditemukan atau nonaktif.")
+        r = conn.execute("SELECT username FROM akun WHERE username = ? AND peran = 'reseller' AND aktif = 1 "
+                         "AND COALESCE(lokasi, 1) = ?", (d.reseller, p["lokasi"])).fetchone()
+        if not r:
+            raise HTTPException(status_code=400, detail="Reseller tidak ditemukan di lokasi paket ini.")
+        lok = _hs_lokasi(conn, p["lokasi"])
+        kode = _kode_voucher_baru(conn, d.jumlah)
+        conn.commit()
+    finally:
+        conn.close()
+    status = "stok" if lok["jaringan"] else "menunggu"
+    b = {"id": 0, "reseller": r["username"], "menit": p["menit"]}
+    if lok["jaringan"]:
+        nama_p, nilai_p = _profil_hs(p)
+        dibuat = []
+        try:
+            pool = _mikrotik_pool()
+            try:
+                api = pool.get_api()
+                prof = api.get_resource("/ip/hotspot/user/profile")
+                ada = prof.get(name=nama_p)
+                if ada:
+                    prof.set(id=ada[0]["id"], **nilai_p)
+                else:
+                    prof.add(name=nama_p, **nilai_p)
+                res = api.get_resource("/ip/hotspot/user")
+                for k in kode:
+                    res.add(name=k, password=k, profile=nama_p, **{"limit-uptime": _waktu_mikrotik(p["menit"])},
+                            comment=f"{_KOMENTAR_HS} {r['username']}")
+                    dibuat.append(k)
+            finally:
+                pool.disconnect()
+        except Exception as e:
+            if dibuat:
+                try:
+                    _hapus_user_hs(dibuat)
+                except Exception as e2:
+                    logger.error(f"Gagal membersihkan user hotspot setelah gagal: {e2}")
+            raise HTTPException(status_code=502, detail=f"Gagal membuat voucher di MikroTik: {e}. Tidak ada yang tercatat.")
+    conn = _billing_conn()
+    try:
+        bid = conn.execute("INSERT INTO hs_batch (paket_id, lokasi, reseller, jumlah, menit, harga, harga_reseller, status, "
+                           "dibuat, oleh, terpasang) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                           (p["id"], p["lokasi"], r["username"], d.jumlah, p["menit"], p["harga"], p["harga_reseller"],
+                            "siap" if lok["jaringan"] else "menunggu", _sekarang_str(), _oleh(request),
+                            _sekarang_str() if lok["jaringan"] else None)).lastrowid
+        conn.executemany("INSERT INTO hs_voucher (kode, batch_id, paket_id, reseller, status) VALUES (?,?,?,?,?)",
+                         [(k, bid, p["id"], r["username"], status) for k in kode])
+        conn.commit()
+    finally:
+        conn.close()
+    b["id"] = bid
+    catat_aktivitas(_oleh(request), "hotspot", f"B{bid}: {d.jumlah} voucher {p['nama']} dititipkan ke {r['username']}"
+                    + ("" if lok["jaringan"] else " (menunggu skrip ditempel di MikroTik)"))
+    return {"ok": True, "id": bid, "status": "siap" if lok["jaringan"] else "menunggu",
+            "skrip": None if lok["jaringan"] else _skrip_user(b, p, kode)}
+
+
+def _batch(conn, bid: int):
+    _siapkan_hotspot(conn)
+    b = conn.execute("SELECT b.*, p.nama AS paket FROM hs_batch b JOIN hs_paket p ON p.id = b.paket_id WHERE b.id = ?",
+                     (bid,)).fetchone()
+    if not b:
+        raise HTTPException(status_code=404, detail="Cetakan voucher tidak ditemukan.")
+    return b
+
+
+@app.get("/api/hotspot/batch/{bid}")
+def hotspot_batch_rinci(bid: int, request: Request):
+    """Isi kartu voucher (kode & alamat login untuk QR) dan skrip MikroTik-nya."""
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        b = _batch(conn, bid)
+        p = conn.execute("SELECT * FROM hs_paket WHERE id = ?", (b["paket_id"],)).fetchone()
+        lok = _hs_lokasi(conn, b["lokasi"])
+        v = conn.execute("SELECT kode, status FROM hs_voucher WHERE batch_id = ? ORDER BY kode", (bid,)).fetchall()
+    finally:
+        conn.close()
+    aktif = [x["kode"] for x in v if x["status"] in ("stok", "menunggu")]
+    return {"batch": dict(b, durasi=_teks_durasi(b["menit"])), "lokasi": lok, "usaha": CONFIG["NAMA_USAHA"],
+            "voucher": [{"kode": x["kode"], "status": x["status"], "login": _url_login(lok["dns"], x["kode"])} for x in v],
+            "skrip": _skrip_user(b, dict(p, menit=b["menit"]), aktif) if aktif else None}
+
+
+@app.post("/api/hotspot/batch/{bid}/terpasang")
+def hotspot_batch_terpasang(bid: int, request: Request):
+    """Admin memastikan skripnya sudah ditempel di MikroTik: voucher masuk stok reseller dan bisa dijual."""
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        b = _batch(conn, bid)
+        if b["status"] != "menunggu":
+            raise HTTPException(status_code=400, detail="Cetakan ini tidak sedang menunggu skrip.")
+        conn.execute("UPDATE hs_batch SET status = 'siap', terpasang = ? WHERE id = ?", (_sekarang_str(), bid))
+        conn.execute("UPDATE hs_voucher SET status = 'stok' WHERE batch_id = ? AND status = 'menunggu'", (bid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "hotspot", f"B{bid}: skrip sudah ditempel di MikroTik, voucher siap dijual")
+    return {"ok": True}
+
+
+@app.post("/api/hotspot/batch/{bid}/batal")
+def hotspot_batch_batal(bid: int, d: BatalIn, request: Request):
+    """Tarik sisa voucher yang belum terjual (mis. reseller berhenti). Voucher terjual tidak disentuh."""
+    _wajib_admin(request)
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan pembatalan.")
+    conn = _billing_conn()
+    try:
+        b = _batch(conn, bid)
+        lok = _hs_lokasi(conn, b["lokasi"])
+        sisa = [r[0] for r in conn.execute("SELECT kode FROM hs_voucher WHERE batch_id = ? AND status IN ('stok','menunggu')",
+                                           (bid,))]
+    finally:
+        conn.close()
+    if not sisa:
+        raise HTTPException(status_code=400, detail="Tidak ada sisa voucher di cetakan ini.")
+    skrip = None
+    if lok["jaringan"] and b["status"] == "siap":
+        try:
+            _hapus_user_hs(sisa)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Gagal menghapus voucher di MikroTik: {e}")
+    elif b["status"] == "siap":
+        skrip = "/ip hotspot user\n" + "\n".join(f"remove [find name={_kutip_rsc(k)}]" for k in sisa) + "\n"
+    conn = _billing_conn()
+    try:
+        conn.execute(f"UPDATE hs_voucher SET status = 'batal' WHERE kode IN ({','.join('?' * len(sisa))})", sisa)
+        conn.execute("UPDATE hs_batch SET catatan = ?, status = CASE WHEN status = 'menunggu' THEN 'batal' ELSE status END "
+                     "WHERE id = ?", (f"{len(sisa)} sisa ditarik: {alasan[:200]}", bid))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "hotspot", f"B{bid}: {len(sisa)} voucher sisa ditarik ({alasan[:120]})")
+    return {"ok": True, "ditarik": len(sisa), "skrip_hapus": skrip}
+
+
+class HsSetoranIn(BaseModel):
+    reseller: str
+    metode: str = "tunai"
+    tanggal: Optional[str] = None
+
+
+@app.post("/api/hotspot/setoran")
+def hotspot_setoran(d: HsSetoranIn, request: Request):
+    """Terima setoran reseller untuk SEMUA voucher terjual yang belum disetor: harga reseller × jumlah → kas masuk."""
+    _wajib_admin(request)
+    if d.metode not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode tidak valid.")
+    tanggal = d.tanggal or datetime.now().strftime("%Y-%m-%d")
+    _cek_tanggal_lalu(tanggal)
+    conn = _billing_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _siapkan_hotspot(conn)
+        _wajib_buku_terbuka(conn, tanggal)
+        a = conn.execute("SELECT username, COALESCE(lokasi, 1) AS lokasi FROM akun WHERE username = ? AND peran = 'reseller'",
+                         (d.reseller,)).fetchone()
+        if not a:
+            raise HTTPException(status_code=404, detail="Reseller tidak ditemukan.")
+        v = conn.execute("SELECT v.kode, b.harga_reseller FROM hs_voucher v JOIN hs_batch b ON b.id = v.batch_id "
+                         "WHERE v.reseller = ? AND v.status = 'terjual' AND v.setoran_id IS NULL", (a["username"],)).fetchall()
+        if not v:
+            raise HTTPException(status_code=400, detail="Tidak ada voucher terjual yang belum disetor.")
+        nominal = sum(x["harga_reseller"] for x in v)
+        kat = conn.execute("SELECT id FROM kategori_kas WHERE nama = ?", (_KAT_HOTSPOT,)).fetchone()[0]
+        sid = conn.execute("INSERT INTO hs_setoran (reseller, lokasi, waktu, jumlah_voucher, nominal, metode, oleh) "
+                           "VALUES (?,?,?,?,?,?,?)", (a["username"], a["lokasi"], _sekarang_str(), len(v), nominal,
+                                                      d.metode, _oleh(request))).lastrowid
+        tid = conn.execute(
+            "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
+            "hotspot_setoran_id) VALUES (?, 'masuk', ?, ?, ?, ?, ?, ?, ?)",
+            (tanggal, kat, nominal, d.metode, f"Setoran voucher hotspot {a['username']}: {len(v)} voucher",
+             _oleh(request), _sekarang_str(), sid)).lastrowid
+        nomor = _beri_nomor(conn, tid)
+        conn.execute("UPDATE hs_setoran SET transaksi_id = ? WHERE id = ?", (tid, sid))
+        conn.execute(f"UPDATE hs_voucher SET setoran_id = ? WHERE kode IN ({','.join('?' * len(v))})",
+                     [sid] + [x["kode"] for x in v])
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "hotspot", f"{nomor} setoran {a['username']}: {len(v)} voucher {_rp(nominal)} ({d.metode})")
+    return {"ok": True, "id": sid, "nomor": nomor, "jumlah_voucher": len(v), "nominal": nominal}
+
+
+@app.post("/api/hotspot/setoran/{sid}/batal")
+def hotspot_setoran_batal(sid: int, d: BatalIn, request: Request):
+    """Batalkan setoran (mis. salah catat): kas ikut batal, voucher kembali 'belum disetor'."""
+    _wajib_owner(request, "Pembatalan setoran hanya oleh owner.")
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan pembatalan.")
+    conn = _billing_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _siapkan_hotspot(conn)
+        st = conn.execute("SELECT * FROM hs_setoran WHERE id = ? AND status = 'aktif'", (sid,)).fetchone()
+        if not st:
+            raise HTTPException(status_code=404, detail="Setoran tidak ditemukan.")
+        t = conn.execute("SELECT tanggal FROM transaksi WHERE id = ?", (st["transaksi_id"],)).fetchone()
+        _wajib_buku_terbuka(conn, t["tanggal"])
+        conn.execute("UPDATE transaksi SET status='batal', batal_oleh=?, batal_pada=?, batal_alasan=? WHERE id=?",
+                     (_oleh(request), _sekarang_str(), alasan[:300], st["transaksi_id"]))
+        conn.execute("UPDATE hs_setoran SET status = 'batal', batal_alasan = ? WHERE id = ?", (alasan[:300], sid))
+        conn.execute("UPDATE hs_voucher SET setoran_id = NULL WHERE setoran_id = ?", (sid,))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "hotspot", f"setoran #{sid} {st['reseller']} {_rp(st['nominal'])} dibatalkan: {alasan[:120]}")
+    return {"ok": True}
+
+
+@app.get("/api/hotspot/skrip-pengaturan")
+def hotspot_skrip_pengaturan(request: Request, lokasi: int = 1):
+    """Skrip pengaturan hotspot untuk MikroTik lokasi ini: DNS & login lewat QR (http-pap) di server profile, dan
+    profil kecepatan semua paket. Server hotspot, pool IP, dan interface-nya dibuat sendiri sekali di MikroTik."""
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_hotspot(conn)
+        lok = _hs_lokasi(conn, lokasi)
+        paket = conn.execute("SELECT * FROM hs_paket WHERE lokasi = ? ORDER BY id", (lokasi,)).fetchall()
+    finally:
+        conn.close()
+    baris = [f"# INDESO: pengaturan hotspot {lok['nama']} (RouterOS v6/v7)",
+             "# Ganti hsprof1 dengan nama server profile hotspot Anda (lihat /ip hotspot profile print).",
+             f"/ip hotspot profile set [find name=\"hsprof1\"] dns-name={_kutip_rsc(lok['dns'])} "
+             "login-by=http-pap,http-chap,cookie",
+             f"# Nama WiFi (SSID) terbuka tanpa sandi: {lok['ssid']}"]
+    for p in paket:
+        baris += _skrip_profil(p)
+    return {"skrip": "\n".join(baris) + "\n", "lokasi": lok}
+
+
+# --- Halaman reseller (warung) ---
+
+def _reseller(request: Request) -> dict:
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT username, COALESCE(lokasi, 1) AS lokasi FROM akun WHERE username = ? AND peran = 'reseller'",
+                         (request.state.user,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        raise HTTPException(status_code=403, detail="Khusus akun reseller.")
+    return dict(r)
+
+
+@app.get("/api/reseller/ringkas")
+def reseller_ringkas(request: Request):
+    me = _reseller(request)
+    hari = datetime.now().strftime("%Y-%m-%d")
+    conn = _billing_conn()
+    try:
+        _siapkan_hotspot(conn)
+        lok = _hs_lokasi(conn, me["lokasi"])
+        stok = [dict(r, durasi=_teks_durasi(r["menit"])) for r in conn.execute(
+            "SELECT p.id, p.nama, p.menit, p.harga, COUNT(*) AS stok FROM hs_voucher v JOIN hs_paket p ON p.id = v.paket_id "
+            "WHERE v.reseller = ? AND v.status = 'stok' GROUP BY p.id ORDER BY p.menit", (me["username"],))]
+        belum = conn.execute("SELECT COUNT(*), COALESCE(SUM(b.harga_reseller), 0), COALESCE(SUM(b.harga), 0) FROM hs_voucher v "
+                             "JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? AND v.status = 'terjual' "
+                             "AND v.setoran_id IS NULL", (me["username"],)).fetchone()
+        hari_ini = conn.execute("SELECT COUNT(*) FROM hs_voucher WHERE reseller = ? AND status = 'terjual' AND terjual_pada >= ?",
+                                (me["username"], hari)).fetchone()[0]
+        riwayat = [dict(r) for r in conn.execute(
+            "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
+            "JOIN hs_paket p ON p.id = v.paket_id JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? "
+            "AND v.status = 'terjual' ORDER BY v.terjual_pada DESC LIMIT 30", (me["username"],))]
+        conn.commit()
+    finally:
+        conn.close()
+    return {"akun": me["username"], "usaha": CONFIG["NAMA_USAHA"], "lokasi": lok["nama"], "ssid": lok["ssid"],
+            "stok": stok, "hari_ini": hari_ini, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
+            "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"])) for r in riwayat]}
+
+
+class ResellerJualIn(BaseModel):
+    paket_id: int
+
+
+@app.post("/api/reseller/jual")
+def reseller_jual(d: ResellerJualIn, request: Request):
+    """Ambil satu voucher dari stok reseller ini dan tandai terjual; QR-nya ditampilkan untuk dipindai pembeli."""
+    me = _reseller(request)
+    conn = _billing_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")      # dua tombol jual bersamaan tidak mendapat voucher yang sama
+        _siapkan_hotspot(conn)
+        lok = _hs_lokasi(conn, me["lokasi"])
+        v = conn.execute("SELECT v.kode, p.nama, b.menit, b.harga FROM hs_voucher v JOIN hs_paket p ON p.id = v.paket_id "
+                         "JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? AND v.paket_id = ? AND v.status = 'stok' "
+                         "ORDER BY v.batch_id, v.kode LIMIT 1", (me["username"], d.paket_id)).fetchone()
+        if not v:
+            raise HTTPException(status_code=409, detail="Stok voucher paket ini habis. Minta admin menitipkan lagi.")
+        conn.execute("UPDATE hs_voucher SET status = 'terjual', terjual_pada = ? WHERE kode = ?", (_sekarang_str(), v["kode"]))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(me["username"], "hotspot_jual", f"1 voucher {v['nama']} terjual")
+    return {"kode": v["kode"], "paket": v["nama"], "durasi": _teks_durasi(v["menit"]), "harga": v["harga"],
+            "ssid": lok["ssid"], "login": _url_login(lok["dns"], v["kode"])}
 
 # ============================================================
 # PORTAL PELANGGAN (/portal)
