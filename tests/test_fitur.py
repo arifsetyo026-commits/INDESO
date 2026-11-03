@@ -1784,16 +1784,16 @@ def test_ekspor_csv_pelanggan_tagihan_tunggakan(siap):
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     teks = r.content.decode("utf-8-sig")
     baris = teks.splitlines()
-    assert baris[0].startswith("Username;Nama;Alamat;No. HP;Paket")
+    assert baris[0].startswith("ID pelanggan;Username;Nama;Alamat;No. HP;Paket")
     import csv as _csv
-    ani = next(x for x in _csv.reader(baris, delimiter=";") if x[0] == "ani")
+    ani = next(x[1:] for x in _csv.reader(baris, delimiter=";") if x[1] == "ani")
     assert ani[1] == "'=HYPERLINK(\"x\")"                                 # formula dinetralkan
-    assert any(b.startswith("budi;") and b.endswith(";2;300000") for b in baris)
+    assert any(";budi;" in b and b.startswith("463376-1-") and b.endswith(";2;300000") for b in baris)
     t = k.get("/api/ekspor/tagihan?periode=2026-10").content.decode("utf-8-sig").splitlines()
-    assert t[0].startswith("Username;Nama;No. HP;Periode;Jumlah") and len(t) == 4
+    assert t[0].startswith("ID pelanggan;Username;Nama;No. HP;Periode;Jumlah") and len(t) == 4
     assert k.get("/api/ekspor/tagihan?periode=salah").status_code == 400
     g = k.get("/api/ekspor/tunggakan").content.decode("utf-8-sig").splitlines()
-    assert g[0].startswith("Username;Nama") and any(";2026-09, 2026-10;" in b for b in g)
+    assert g[0].startswith("ID pelanggan;Username;Nama") and any(";2026-09, 2026-10;" in b for b in g)
     for url in ("/api/ekspor/pelanggan", "/api/ekspor/tagihan?periode=2026-10", "/api/ekspor/tunggakan"):
         assert m.get(url).status_code == 403
 
@@ -3331,3 +3331,51 @@ def test_portal_pelanggan(siap, monkeypatch):
     assert o.post("/api/portal-akun/budisaja/status", json={"status": "nonaktif"}).status_code == 200
     assert p.get("/api/portal/saya").status_code == 401
     assert o.delete("/api/portal-akun/budisaja").status_code == 200 and daftar().status_code == 200   # boleh daftar ulang
+
+
+def test_id_pelanggan_dan_lokasi(siap):
+    """ID pelanggan 463376-L-NNNN: nomor urut per lokasi (urut tanggal pasang), tetap walau data berubah, nomor
+    baru saat pindah lokasi; tampil di data pelanggan, tagihan, mitra, ekspor; dipakai daftar portal bila satu
+    nomor HP dipakai lebih dari satu sambungan."""
+    from fastapi.testclient import TestClient
+    main, o, k, m = siap
+    data = lambda: {p["username"]: p for p in o.get("/api/data-pelanggan").json()["pelanggan"]}
+    d = data()
+    assert all(p["id_pelanggan"].startswith("463376-1-") for p in d.values())
+    assert sorted(p["id_pelanggan"] for p in d.values()) == [f"463376-1-{i:04d}" for i in range(1, len(d) + 1)]
+    lama = d["budi"]["id_pelanggan"]
+    o.put("/api/data-pelanggan/budi", json={"nama": "Budi Baru", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                            "no_hp": "081111111111"})
+    assert data()["budi"]["id_pelanggan"] == lama                      # nama/no. HP berubah, ID tetap
+    # lokasi baru (kode 2) dan pasang baru di sana: nomor urut mulai 0001
+    assert k.post("/api/lokasi", json={"nama": "Dusun Baru"}).json()["kode"] == 2
+    assert m.post("/api/lokasi", json={"nama": "X"}).status_code == 403
+    r = k.post("/api/pasang-baru", json={"username": "eko", "nama": "Eko", "paket_id": 1, "lokasi": 2, "no_hp": "0822",
+                                         "tgl_pasang": datetime.now().strftime("%Y-%m-%d"), "tagih_bulan_ini": False})
+    assert r.status_code == 200, r.text
+    assert data()["eko"]["id_pelanggan"] == "463376-2-0001"
+    assert k.post("/api/pasang-baru", json={"username": "x1", "nama": "X", "paket_id": 1, "lokasi": 7,
+                                            "tgl_pasang": "2026-10-01"}).status_code == 400
+    # pindah lokasi: nomor baru di lokasi tujuan, tercatat di aktivitas
+    o.put("/api/data-pelanggan/dwi", json={"nama": "dwi", "paket_id": 1, "status": "aktif", "atur_secret": False, "lokasi": 2})
+    assert data()["dwi"]["id_pelanggan"] == "463376-2-0002"
+    assert "lokasi 1 → 2" in o.get("/api/aktivitas").text
+    lk = {x["kode"]: x for x in o.get("/api/lokasi").json()["lokasi"]}
+    assert lk[2]["nama"] == "Dusun Baru" and lk[2]["pelanggan"] == 2
+    # tampil di tagihan, tunggakan, mitra, ekspor
+    o.post("/api/tagihan/buat?periode=2026-10")
+    assert next(t for t in o.get("/api/tagihan?periode=2026-10").json()["tagihan"] if t["username"] == "budi")["id_pelanggan"] == lama
+    assert next(g for g in o.get("/api/tagihan/tunggakan").json()["pelanggan"] if g["username"] == "budi")["id_pelanggan"] == lama
+    assert next(p for p in m.get("/api/mitra/pelanggan?periode=2026-10").json()["pelanggan"] if p["username"] == "budi")["id_pelanggan"] == lama
+    assert lama in o.get("/api/ekspor/pelanggan").text and lama in o.get("/api/ekspor/tagihan?periode=2026-10").text
+    # portal: satu nomor HP untuk dua sambungan → wajib ID
+    o.put("/api/data-pelanggan/ani", json={"nama": "Ani", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                           "no_hp": "081111111111"})
+    p = TestClient(main.app)
+    daftar = lambda **kw: p.post("/api/portal/daftar", json={"no_hp": "081111111111", "login": "budisaja",
+                                                             "password": "rahasia123", **kw})
+    r = daftar()
+    assert r.status_code == 409 and "ID pelanggan" in r.json()["detail"]
+    assert daftar(id_pelanggan="463376-9-9999").status_code == 400
+    assert daftar(id_pelanggan=lama.replace("-", "")).status_code == 200
+    assert o.get("/api/portal-akun").json()["akun"][0]["pelanggan"] == "budi"

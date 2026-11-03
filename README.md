@@ -94,6 +94,10 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   (pelanggan dengan tagihan lunas bulan itu, ditambah pelanggan gratis yang dicentang
   "Gratis, tetap dihitung insentif mitra", × tarif per pelanggan, default Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
   tidak terlihat dan tidak dihitung. Semua API lain ditolak untuk akun mitra.
+- **ID pelanggan & lokasi** — setiap pelanggan otomatis mendapat ID `463376-L-NNNN` (463376 = "INDESO" di
+  tombol HP, L = kode lokasi, NNNN = nomor urut per lokasi, urut tanggal pasang). ID tidak berubah walau username
+  atau nomor HP diganti; pindah lokasi memberi nomor baru. Lokasi dikelola di **Pelanggan → Lokasi**. ID tampil di
+  data pelanggan, pesan WA (`{id}`), halaman mitra, portal, dan semua ekspor.
 - **Portal pelanggan** (`/portal`) — pelanggan mendaftar sendiri dengan nomor HP yang tercatat
   di data pelanggan, lalu admin menyetujui di **Pelanggan → Akun portal**. Pelanggan melihat tagihan &
   riwayat bayar, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi, maks. 5× per jam), dan
