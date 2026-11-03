@@ -94,8 +94,8 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
   (pelanggan dengan tagihan lunas bulan itu, ditambah pelanggan gratis yang dicentang
   "Gratis, tetap dihitung insentif mitra", × tarif per pelanggan, default Rp 10.000). Pelanggan yang tidak dicentang "Tampilkan ke mitra" (mis. akun server)
   tidak terlihat dan tidak dihitung. Semua API lain ditolak untuk akun mitra.
-- **Portal pelanggan** (`/portal`) — pelanggan mendaftar sendiri dengan ID pelanggan (username PPPoE) dan
-  nomor HP yang tercatat, lalu admin menyetujui di **Pelanggan → Akun portal**. Pelanggan melihat tagihan &
+- **Portal pelanggan** (`/portal`) — pelanggan mendaftar sendiri dengan nomor HP yang tercatat
+  di data pelanggan, lalu admin menyetujui di **Pelanggan → Akun portal**. Pelanggan melihat tagihan &
   riwayat bayar, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi, maks. 5× per jam), dan
   bisa lapor gangguan (masuk Tiket). Sandi WiFi tidak pernah ditampilkan. Akun, sesi, dan cookie portal terpisah
   dari akun staf, jadi sesi pelanggan tidak bisa membuka API staf.

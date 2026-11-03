@@ -76,8 +76,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <div class="note">Lupa password? Hubungi admin untuk mengatur ulang.</div>
   </div>
   <div id="fDaftar" style="display:none">
-   <div class="note" style="margin-top:4px">Isi ID pelanggan (username internet Anda, tertera di nota/tagihan) dan nomor HP yang terdaftar. Akun bisa dipakai setelah disetujui admin.</div>
-   <label>ID pelanggan</label><input id="dPel" autocapitalize="off">
+   <div class="note" style="margin-top:4px">Isi nomor HP yang Anda berikan saat pemasangan internet. Akun bisa dipakai setelah disetujui admin.</div>
    <label>Nomor HP terdaftar</label><input id="dHp" type="tel" inputmode="tel" placeholder="08…">
    <label>Buat nama login</label><input id="dLogin" autocapitalize="off" autocomplete="username" placeholder="3–32 huruf/angka">
    <label>Buat password</label><input id="dPw" type="password" autocomplete="new-password" placeholder="minimal 8 karakter">
@@ -136,8 +135,8 @@ async function masuk(){
 }
 async function daftar(){
  if($('dPw').value!==$('dPw2').value){ pesan('aMsg','Ulangi password tidak sama.'); return; }
- try{ const d=await api('/api/portal/daftar',{pelanggan:$('dPel').value.trim(),no_hp:$('dHp').value.trim(),login:$('dLogin').value.trim(),password:$('dPw').value});
-  $('mLogin').value=$('dLogin').value.trim(); ['dPel','dHp','dLogin','dPw','dPw2'].forEach(i=>$(i).value=''); modeAuth('masuk'); pesan('aMsg',d.pesan,true); }
+ try{ const d=await api('/api/portal/daftar',{no_hp:$('dHp').value.trim(),login:$('dLogin').value.trim(),password:$('dPw').value});
+  $('mLogin').value=$('dLogin').value.trim(); ['dHp','dLogin','dPw','dPw2'].forEach(i=>$(i).value=''); modeAuth('masuk'); pesan('aMsg',d.pesan,true); }
  catch(e){ pesan('aMsg',e.message); }
 }
 async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{ await api('/api/portal/logout',{}); }catch(e){} tampil('auth'); }

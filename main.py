@@ -7527,7 +7527,7 @@ def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
 # ============================================================
 # PORTAL PELANGGAN (/portal)
 # ============================================================
-# Pelanggan mendaftar sendiri (ID pelanggan = username internet + nomor HP yang tercatat), lalu admin menyetujui
+# Pelanggan mendaftar sendiri dengan nomor HP yang tercatat di data pelanggan, lalu admin menyetujui
 # di menu Pelanggan → Akun portal. Akun, sesi, dan cookie terpisah dari akun staf. Pelanggan hanya melihat
 # datanya sendiri: tagihan, status internet, WiFi (nama & jumlah perangkat; bisa ganti nama/sandi), gangguan.
 # Sandi WiFi tidak pernah ditampilkan: ONU tidak mengirimkannya balik ke ACS.
@@ -7584,7 +7584,6 @@ async def halaman_portal():
 
 
 class PortalDaftarIn(BaseModel):
-    pelanggan: str
     no_hp: str
     login: str
     password: str
@@ -7602,13 +7601,17 @@ def portal_daftar(d: PortalDaftarIn, request: Request):
     _cek_password_baru(d.password)
     conn = _billing_conn()
     try:
-        p = conn.execute("SELECT username, nama, no_hp FROM pelanggan WHERE username = ? COLLATE NOCASE "
-                         "AND status = 'aktif'", (d.pelanggan.strip(),)).fetchone()
-        # Pesan sama untuk ID salah maupun nomor HP salah, supaya data pelanggan tidak bisa ditebak.
-        if not p or not _hp_baku(p["no_hp"]) or _hp_baku(p["no_hp"]) != _hp_baku(d.no_hp):
+        hp = _hp_baku(d.no_hp)
+        cocok = [r for r in conn.execute("SELECT username, nama, no_hp FROM pelanggan WHERE status = 'aktif' "
+                                         "AND COALESCE(no_hp, '') != ''").fetchall() if len(hp) >= 9 and _hp_baku(r["no_hp"]) == hp]
+        if not cocok:
             _catat_gagal(kunci, sekarang)
-            raise HTTPException(status_code=400, detail="Data tidak cocok dengan catatan kami. Periksa ID pelanggan "
-                                                        "(username internet) dan nomor HP, atau hubungi admin.")
+            raise HTTPException(status_code=400, detail="Nomor HP ini belum tercatat sebagai pelanggan. Periksa "
+                                                        "nomornya, atau hubungi admin untuk mencatatkannya.")
+        if len(cocok) > 1:
+            raise HTTPException(status_code=409, detail="Nomor HP ini tercatat untuk lebih dari satu sambungan. "
+                                                        "Hubungi admin untuk didaftarkan.")
+        p = cocok[0]
         if conn.execute("SELECT 1 FROM portal_akun WHERE pelanggan = ?", (p["username"],)).fetchone():
             raise HTTPException(status_code=409, detail="Pelanggan ini sudah punya akun (atau sedang menunggu "
                                                         "persetujuan). Hubungi admin bila lupa password.")

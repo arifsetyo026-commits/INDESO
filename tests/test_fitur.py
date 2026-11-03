@@ -3285,11 +3285,15 @@ def test_portal_pelanggan(siap, monkeypatch):
     p = TestClient(main.app)
     assert p.get("/portal").status_code == 200
     assert p.get("/api/portal/saya").status_code == 401
-    daftar = lambda **kw: p.post("/api/portal/daftar", json={"pelanggan": "budi", "no_hp": "+62 812 3456 7890",
+    daftar = lambda **kw: p.post("/api/portal/daftar", json={"no_hp": "+62 812 3456 7890",
                                                              "login": "budisaja", "password": "rahasia123", **kw})
-    # nomor HP salah / pelanggan tanpa HP: pesan sama (tidak membocorkan data)
-    salah = daftar(no_hp="0899")
-    assert salah.status_code == 400 and salah.json()["detail"] == daftar(pelanggan="ani").json()["detail"]
+    assert daftar(no_hp="0899").status_code == 400 and daftar(no_hp="").status_code == 400   # tidak tercatat
+    # satu nomor untuk dua sambungan: tidak bisa daftar sendiri (admin yang tahu sambungan mana)
+    o.put("/api/data-pelanggan/ani", json={"nama": "Ani", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                           "no_hp": "081234567890"})
+    assert daftar().status_code == 409
+    o.put("/api/data-pelanggan/ani", json={"nama": "Ani", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                           "no_hp": "0857"})
     assert daftar().status_code == 200
     assert daftar(login="budi2").status_code == 409                       # satu akun per pelanggan
     assert "Pendaftaran akun portal" in str(main._terkirim[-1]["data"])
