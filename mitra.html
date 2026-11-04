@@ -66,6 +66,21 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <div class="card"><small>Sudah bayar</small><strong id="nLunas">—</strong><span>pelanggan</span></div>
   <div class="card"><small>Belum bayar</small><strong id="nBelum" style="color:#b45309">—</strong><span>pelanggan</span></div>
  </div>
+ <div class="panel" id="kasRingkas" style="margin-bottom:12px;display:none">
+  <div class="nav" style="margin-bottom:6px"><b>Kas wilayah</b><button class="btn go" onclick="bukaSetor()">Setor ke Pusat</button></div>
+  <div id="kasInfo" class="sub"></div><div class="msg" id="kasMsg"></div>
+ </div>
+ <div class="panel form" id="kasView" style="display:none">
+  <div class="nav"><b>Setor ke Pusat</b><button class="btn" onclick="tutupForm()">‹ Kembali</button></div>
+  <div class="note" style="margin-top:0">Setor uang wilayah ke Pusat, lalu lampirkan foto bukti transfer/serah terima. Owner akan memeriksa; bila ditolak, kirim ulang buktinya.</div>
+  <label>Jumlah (Rp)</label><input id="ksJml" inputmode="numeric">
+  <label>Tanggal setor</label><input id="ksTgl" type="date">
+  <label>Metode</label><select id="ksMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select>
+  <label>Foto bukti setor</label><input id="ksBukti" type="file" accept="image/*,application/pdf">
+  <label>Catatan (opsional)</label><input id="ksCat" maxlength="300">
+  <div class="btns"><button class="btn go" id="ksBtn" onclick="kirimSetor()">Kirim setoran</button></div><div class="msg" id="ksMsg"></div>
+  <div class="nav" style="margin-top:16px"><b>Riwayat setoran</b></div><div id="ksList"></div>
+ </div>
  <div class="panel" id="listView">
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px"><input class="search" id="cari" placeholder="Cari nama atau username…" oninput="render()" style="flex:1;min-width:0;margin-bottom:0"><button class="btn" onclick="eksporExcel()" title="Unduh daftar pelanggan bulan ini (Excel)">⬇ Excel</button></div>
   <div class="filters"><button data-f="semua" class="on" onclick="setFilter('semua')">Semua</button><button data-f="belum" onclick="setFilter('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilter('lunas')">Sudah bayar</button><button data-f="kontak" onclick="setFilter('kontak')">Kontak belum lengkap</button></div>
@@ -177,7 +192,39 @@ function buka(i){
  $('fUser').value=p.username; $('fNama').value=p.nama||''; $('fAlamat').value=p.alamat||''; $('fHp').value=p.no_hp||''; $('fMsg').textContent='';
  $('listView').style.display='none'; $('formView').style.display='block'; $('fNama').focus();
 }
-function tutupForm(){ $('formView').style.display='none'; $('pwView').style.display='none'; $('tiketView').style.display='none'; $('listView').style.display='block'; }
+function tutupForm(){ $('formView').style.display='none'; $('pwView').style.display='none'; $('tiketView').style.display='none'; $('kasView').style.display='none'; $('listView').style.display='block'; }
+// ===== Kas wilayah: admin wilayah (pemegang kas) yang login dengan akun ini; setor ke Pusat dengan bukti =====
+const KS_STATUS={tanpa_bukti:'<span class="chip warn">Belum ada bukti</span>',menunggu:'<span class="chip warn">Diperiksa owner</span>',diterima:'<span class="chip ok">Diterima</span>',ditolak:'<span class="chip bad">Ditolak</span>'};
+async function muatKas(){
+ try{ const r=await fetch('/api/mitra/kas',{cache:'no-store'}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  st.kas=d; const p=d.posisi; $('kasRingkas').style.display='block';
+  $('kasInfo').innerHTML='Uang di tangan <b>'+rp(p.di_tangan)+'</b> · masuk bulan ini '+rp(p.masuk_bulan_ini)
+   +(p.wajib_setor?'<br><b style="color:#b45309">Wajib setor ke Pusat: '+rp(p.wajib_setor)+'</b>'+(p.tutup_terakhir?' (s/d buku '+namaP(p.tutup_terakhir)+')':''):'<br><span style="color:#0b7a3b">Tidak ada yang wajib disetor.</span>')
+   +(p.menunggu.n?'<br>'+p.menunggu.n+' setoran ('+rp(p.menunggu.jumlah)+') sedang diperiksa owner.':'')
+   +(p.tanpa_bukti?'<br><b style="color:#b42318">'+p.tanpa_bukti+' setoran belum ada buktinya.</b>':'');
+  $('ksList').innerHTML=d.setoran.length?d.setoran.map(x=>`<div class="row"><div class="info" style="cursor:default"><div class="name">#S${x.id} · ${rp(x.jumlah)}</div><div class="sub">${tgl(x.tanggal)} · ${esc(x.metode)}${x.alasan_tolak?' · ditolak: '+esc(x.alasan_tolak):''}</div></div>
+   <div class="right">${KS_STATUS[x.status]||''}${x.ada_bukti?`<a class="btn" href="/api/mitra/kas/setoran/${x.id}/bukti" target="_blank" rel="noopener">Bukti</a>`:''}${x.status==='tanpa_bukti'||x.status==='ditolak'?`<label class="btn" style="cursor:pointer">Kirim bukti<input type="file" accept="image/*,application/pdf" style="display:none" onchange="kirimBukti(${x.id},this.files[0])"></label>`:''}</div></div>`).join('')
+   :'<div class="muted">Belum ada setoran.</div>';
+ }catch(e){ $('kasRingkas').style.display='none'; }
+}
+function bukaSetor(){ ['listView','formView','pwView','tiketView'].forEach(i=>$(i).style.display='none'); $('kasView').style.display='block';
+ const p=st.kas.posisi, hari=new Date().toLocaleDateString('sv-SE'); $('ksJml').value=p.wajib_setor?Number(p.wajib_setor).toLocaleString('id-ID'):'';
+ $('ksTgl').value=hari; $('ksTgl').max=hari; $('ksBukti').value=''; $('ksCat').value=''; $('ksMsg').textContent=''; }
+async function kirimBukti(id,f){
+ if(!f) return; const m=$('ksMsg');
+ try{ const r=await fetch('/api/mitra/kas/setoran/'+id+'/bukti',{method:'POST',body:f}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  m.style.color='#0b7a3b'; m.textContent='Bukti #S'+id+' terkirim, menunggu diperiksa owner.'; await muatKas(); }
+ catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+}
+async function kirimSetor(){
+ const m=$('ksMsg'), f=$('ksBukti').files[0], body={jumlah:Number($('ksJml').value.replace(/\D/g,'')),tanggal:$('ksTgl').value,metode:$('ksMetode').value,catatan:$('ksCat').value.trim()||null};
+ m.style.color='#b42318'; if(!(body.jumlah>0)){ m.textContent='Isi jumlah setoran.'; return; } if(!f){ m.textContent='Lampirkan foto bukti setor.'; return; }
+ $('ksBtn').disabled=true;
+ try{ const r=await fetch('/api/mitra/kas/setoran',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  await kirimBukti(d.id,f); $('ksBukti').value=''; }
+ catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
+ finally{ $('ksBtn').disabled=false; }
+}
 const T_CHIP={baru:'<span class="chip bad">Menunggu teknisi</span>',dikerjakan:'<span class="chip warn">Sedang dikerjakan</span>',selesai:'<span class="chip ok">Selesai</span>',batal:'<span class="chip off">Dibatalkan</span>'};
 function tWaktu(s){ if(!s) return ''; return tgl(s.slice(0,10))+' '+s.slice(11,16); }
 async function muatTiket(){
@@ -213,6 +260,6 @@ async function simpan(){
   tutupForm(); await muat(); $('msg').style.color='#0b7a3b'; $('msg').textContent='Data '+body.nama+' disimpan.';
  }catch(e){ $('fMsg').style.color='#b42318'; $('fMsg').textContent='Gagal menyimpan: '+e.message; }
 }
-(function(){const t=new Date();st.periode=t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0');muat();muatTiket()})();
+(function(){const t=new Date();st.periode=t.getFullYear()+'-'+String(t.getMonth()+1).padStart(2,'0');muat();muatTiket();muatKas()})();
 </script>
 </body></html>
