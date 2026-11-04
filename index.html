@@ -310,7 +310,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="keuanganModal"><div class="modal kuModal"><div class="modalHead"><h3>Keuangan</h3><button class="close" onclick="closeModal('keuanganModal')">Tutup</button></div><div class="modalBody">
 <div class="blNav"><button class="btnS" onclick="geserKu(-1)" aria-label="Bulan sebelumnya">‹</button><b id="kuPeriode">—</b><button class="btnS" onclick="geserKu(1)" aria-label="Bulan berikutnya">›</button><a class="btnS" id="kuEkspor" href="#" download>Ekspor Buku Kas (CSV)</a><button class="btnS" id="kuLapBtn" style="display:none" onclick="pratinjauLaporan()">Kirim Laporan (Telegram)</button></div>
 <div id="kuLap" class="kuPanel" style="display:none;margin-bottom:10px"><h4>Pratinjau laporan Telegram <span class="plSub" id="kuLapInfo"></span></h4><div id="kuLapTeks" style="white-space:pre-wrap;font-size:var(--fs-xs);line-height:1.55;max-height:340px;overflow:auto;background:#f7faf8;border-radius:9px;padding:10px"></div><div class="plBtns"><button class="plSave" onclick="kirimLaporan()">Kirim ke Telegram owner</button><button class="plCancel" onclick="$('kuLap').style.display='none'">Tutup</button></div></div>
-<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ikhtisar Bulanan</button><button data-t="laporan" onclick="tabKu('laporan')">Laporan Keuangan</button><button data-t="valuasi" id="kuTabValuasi" onclick="tabKu('valuasi')" style="display:none">Valuasi</button><button data-t="semua" onclick="tabKu('semua')">Ikhtisar Kumulatif</button><button data-t="transaksi" onclick="tabKu('transaksi')">Riwayat Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Liabilitas <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Komisi Mitra <span id="kuNIns"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Pencatatan Transaksi</button></div>
+<div class="blFilters kuTabs"><button data-t="ringkasan" class="on" onclick="tabKu('ringkasan')">Ikhtisar Bulanan</button><button data-t="laporan" onclick="tabKu('laporan')">Laporan Keuangan</button><button data-t="valuasi" id="kuTabValuasi" onclick="tabKu('valuasi')" style="display:none">Valuasi</button><button data-t="semua" onclick="tabKu('semua')">Ikhtisar Kumulatif</button><button data-t="transaksi" onclick="tabKu('transaksi')">Riwayat Transaksi</button><button data-t="utang" onclick="tabKu('utang')">Liabilitas <span id="kuNUtang"></span></button><button data-t="insentif" onclick="tabKu('insentif')">Komisi Mitra <span id="kuNIns"></span></button><button data-t="kas" onclick="tabKu('kas')">Kas Wilayah <span id="kuNKas"></span></button><button data-t="catat" onclick="tabKu('catat')">+ Pencatatan Transaksi</button></div>
 <div class="plMsg" id="kuMsg"></div>
 <div id="kuRingkasan"></div>
 <div id="kuSemua" style="display:none"></div>
@@ -344,6 +344,13 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="plSub" style="margin-bottom:8px">Komisi hasil kerja bulan X dihitung dari tagihan bulan X+1 yang sudah lunas (pelanggan membayar di muka; + pelanggan gratis yang ditandai) dan dibayar awal bulan X+1. Contoh: tagihan November = hasil kerja Oktober, dibayar awal November. Pelanggan gratis yang ditandai baru dihitung mulai tanggal 1 bulan tagihannya. Angkanya final (terkunci) saat buku bulan X ditutup; bulan sebelum Penagihan dipakai dikunci manual oleh owner.</div>
  <div id="inList"></div>
 </div>
+<div id="kuKas" style="display:none">
+ <div class="plSub" style="margin-bottom:8px">Uang masuk tiap wilayah (tagihan pelanggan wilayah itu + transaksi berlabel wilayah) dipegang penanggung jawabnya. Setelah tutup buku, seluruh saldonya wajib disetor ke Pusat dengan bukti; owner menerima atau menolak. Setoran hanya memindahkan uang antar-kas, tidak mengubah laba.</div>
+ <div id="kasWil"></div>
+ <div class="plForm" id="kasForm"></div>
+ <div class="plName" style="margin:14px 0 4px">Riwayat setoran</div><div id="kasList"></div>
+ <div class="plSub" id="kasMulai" style="margin-top:10px"></div>
+</div>
 <div id="kuCatat" style="display:none"><div class="plForm">
  <b id="kuFormJudul" style="font-size:var(--fs-sm)">Pencatatan transaksi baru</b>
  <div class="kuJenis"><button type="button" data-j="keluar" class="on keluar" onclick="setFormJenis('keluar')">− Pengeluaran Kas</button><button type="button" data-j="masuk" class="masuk" onclick="setFormJenis('masuk')">+ Penerimaan Kas</button></div>
@@ -371,6 +378,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <label>Metode uang muka</label><select id="kuDPMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
   <div class="plSub" style="margin-top:6px">Harga barang dihitung sebagai pengeluaran bulan pembelian (laba); bunga angsuran dibebankan per bulan sesuai jadwal. Saldo kas baru berkurang saat liabilitas dilunasi atau diangsur di tab Liabilitas.</div>
  </div>
+ <div id="kuKasWrap" style="display:none"><label>Uang ini di kas <span class="plSub">(uang masuk yang diterima wilayah dihitung wajib setor ke Pusat)</span></label><select id="kuKasLok"></select></div>
  <label>Keterangan</label><textarea id="kuKet" placeholder="mis. Beli 10 ONT ZTE F670 dari toko X, nota no. 123"></textarea>
  <label>Foto nota / kuitansi</label>
  <div class="notaWrap" id="kuNotaAda"></div>
@@ -1501,7 +1509,7 @@ async function bukaLokasi(){ $('plTitle').textContent='Lokasi'; tampilkanView('l
 async function muatLokasi(){
  try{ pl.lokasi=(await jsonAtauError(await fetch('/api/lokasi',{cache:'no-store'}))).lokasi;
   $('lkList').innerHTML=pl.lokasi.map(l=>`<div class="blRow"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${l.jaringan?'jaringan dipantau INDESO':'<b>hanya penagihan</b> (isolir & akun PPPoE dikerjakan manual di MikroTik lokasi ini)'}</div></div>
-   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button></div></div>`).join('');
+   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Kas: ${esc(l.pj_kas||'Pusat')}</button></div></div>`).join('');
  }catch(e){ $('lkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 async function simpanLokasi(url,metode,nama,pesanOk){
@@ -1511,6 +1519,13 @@ async function simpanLokasi(url,metode,nama,pesanOk){
 }
 async function tambahLokasi(){ const nama=$('lkNama').value.trim(); if(!nama) return;
  await simpanLokasi('/api/lokasi','POST',nama,'Lokasi baru ditambahkan: '+nama+'.'); $('lkNama').value=''; }
+async function ubahPjKas(k){
+ const u=prompt('Penanggung jawab kas '+namaLokasi(k)+': ketik username MITRA lokasi ini yang memegang uang wilayah (mencatat setoran ke Pusat dari halaman mitra). Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
+ if(u==null) return;
+ try{ await jsonAtauError(await fetch('/api/lokasi/'+k+'/pj-kas',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.trim()||null})}));
+  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Penanggung jawab kas '+namaLokasi(k)+': '+(u.trim()||'Pusat')+'.'; await muatLokasi(); }
+ catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
+}
 function ubahLokasi(k){ const nama=prompt('Nama lokasi '+k+':',namaLokasi(k)); if(nama&&nama.trim()) simpanLokasi('/api/lokasi/'+k,'PUT',nama.trim(),'Nama lokasi diganti.'); }
 // --- Akun portal pelanggan ---
 async function bukaPortal(){ $('plTitle').textContent='Akun Portal Pelanggan'; tampilkanView('portal'); $('portalMsg').textContent='';
@@ -2404,8 +2419,8 @@ function tabKu(t){
  ku.tab=t; kuPesan(''); $('kuLapBtn').style.display=saya.peran==='owner'?'':'none'; $('kuKelolaLink').style.display=saya.peran==='owner'?'':'none'; $('kuLap').style.display='none';
  $('kuPeriode').textContent=namaPeriode(ku.periode); $('kuEkspor').href='/api/keuangan/ekspor?periode='+ku.periode;
  document.querySelectorAll('.kuTabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
- $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuLaporan').style.display=t==='laporan'?'block':'none'; $('kuValuasi').style.display=t==='valuasi'?'block':'none'; $('kuTabValuasi').style.display=saya.peran==='owner'?'':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none';
- if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='laporan') muatLaporanKu(); else if(t==='valuasi') muatValuasi(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(!ku.edit){ resetFormKu(); pulihkanDraftKu(); }
+ $('kuRingkasan').style.display=t==='ringkasan'?'block':'none'; $('kuSemua').style.display=t==='semua'?'block':'none'; $('kuLaporan').style.display=t==='laporan'?'block':'none'; $('kuValuasi').style.display=t==='valuasi'?'block':'none'; $('kuTabValuasi').style.display=saya.peran==='owner'?'':'none'; $('kuTransaksi').style.display=t==='transaksi'?'block':'none'; $('kuCatat').style.display=t==='catat'?'block':'none'; $('kuUtang').style.display=t==='utang'?'block':'none'; $('kuInsentif').style.display=t==='insentif'?'block':'none'; $('kuKas').style.display=t==='kas'?'block':'none';
+ if(t==='ringkasan') muatRingkasanKu(); else if(t==='semua') muatKeseluruhan(); else if(t==='laporan') muatLaporanKu(); else if(t==='valuasi') muatValuasi(); else if(t==='transaksi') muatTransaksi(); else if(t==='utang') muatUtang(); else if(t==='insentif') muatInsentif(); else if(t==='kas') muatKasWilayah(); else if(!ku.edit){ resetFormKu(); pulihkanDraftKu(); }
 }
 // Rekonsiliasi kas bulan ini: awal + uang masuk − uang keluar (penyusutan tidak termasuk, bukan uang keluar)
 function rincianKas(d){
@@ -2776,6 +2791,13 @@ function resetFormKu(){
  $('kuTgl').value=new Date().toLocaleDateString('sv-SE'); $('kuTgl').max=new Date().toLocaleDateString('sv-SE');
  $('kuJumlah').value=''; $('kuKet').value=''; $('kuMetode').value='tunai';
  ku.notaBaru=[]; $('kuNotaBaru').innerHTML=''; $('kuNotaAda').innerHTML=''; $('kuNotaInput').value='';
+ isiPilihanKasKu(null);
+}
+// Pilihan kas (Pusat / kas wilayah) saat mencatat; hanya tampil bila ada lebih dari satu lokasi.
+async function isiPilihanKasKu(pilih){
+ if(!ku.lokasi){ try{ const r=await fetch('/api/lokasi'); ku.lokasi=r.ok?(await r.json()).lokasi:[]; }catch(e){ ku.lokasi=[]; } }
+ $('kuKasWrap').style.display=ku.lokasi.length>1?'':'none';
+ $('kuKasLok').innerHTML='<option value="">Pusat</option>'+ku.lokasi.map(l=>`<option value="${l.kode}" ${l.kode===pilih?'selected':''}>Kas ${esc(l.nama)}</option>`).join('');
 }
 function editTransaksi(i){
  const t=ku.trx.transaksi[i]; ku.edit=t.id; tabKu('catat');
@@ -2783,6 +2805,7 @@ function editTransaksi(i){
  $('kuTgl').value=t.tanggal; $('kuJumlah').value=Number(t.jumlah).toLocaleString('id-ID'); $('kuMetode').value=t.metode; $('kuKet').value=t.keterangan||'';
  $('kuQty').value=t.qty?String(t.qty).replace('.',','):''; $('kuSatuan').value=t.qty?(t.satuan||'pcs'):''; infoQty();
  $('kuNotaAda').innerHTML=(t.nota||[]).map(n=>thumbNota(n,true)).join('');
+ isiPilihanKasKu(t.lokasi??null);
 }
 // Tombol Simpan: dikunci selama proses (kirim data + unggah nota bisa beberapa detik) supaya
 // tidak tertekan dua kali dan tercatat dobel; pesan juga tampil tepat di atas tombol.
@@ -2795,7 +2818,7 @@ async function kirimTransaksi(btn){
 }
 async function simpanTransaksi(){
  if(ku.edit==null&&ku.formJenis==='keluar'&&$('kuMetode').value==='kredit') return simpanKredit();
- const body={tanggal:$('kuTgl').value,jenis:ku.formJenis,kategori_id:Number($('kuKat').value),jumlah:Number($('kuJumlah').value.replace(/\D/g,'')),metode:$('kuMetode').value,keterangan:$('kuKet').value.trim()||null,qty:bacaQty(),satuan:$('kuSatuan').value.trim()||null};
+ const body={tanggal:$('kuTgl').value,jenis:ku.formJenis,kategori_id:Number($('kuKat').value),jumlah:Number($('kuJumlah').value.replace(/\D/g,'')),metode:$('kuMetode').value,keterangan:$('kuKet').value.trim()||null,qty:bacaQty(),satuan:$('kuSatuan').value.trim()||null,lokasi:$('kuKasLok').value?Number($('kuKasLok').value):null};
  if(String($('kuQty').value).trim()&&!body.qty){ kuPesan('Banyaknya barang harus berupa angka, mis. 10 atau 2,5.'); return; }
  if(!body.tanggal||!body.kategori_id||!(body.jumlah>0)){ kuPesan('Isi tanggal, kategori, dan jumlah.'); return; }
  const baru=ku.edit==null;
@@ -3038,6 +3061,57 @@ async function hapusNota(id){
 }
 AKSI_LABEL.nota_unggah='Unggah nota'; AKSI_LABEL.nota_hapus='Hapus nota';
 
+
+// ===== Kas wilayah: uang yang dipegang penanggung jawab wilayah & setoran ke Pusat (dengan bukti) =====
+ku.kas=null;
+const KAS_CHIP={tanpa_bukti:'<span class="chip warn">Belum ada bukti</span>',menunggu:'<span class="chip warn">Menunggu diperiksa</span>',diterima:'<span class="chip ok">Diterima Pusat</span>',ditolak:'<span class="chip bad">Ditolak</span>'};
+async function muatKasWilayah(){
+ $('kasWil').innerHTML='<div class="muted">Memuat…</div>';
+ try{ const d=await jsonAtauError(await fetch('/api/kas-wilayah',{cache:'no-store'})); ku.kas=d; const owner=d.peran==='owner';
+  const n=d.wilayah.filter(w=>w.wajib_setor>0||w.menunggu.n).length; $('kuNKas').textContent=n?'('+n+')':'';
+  $('kasWil').innerHTML=d.wilayah.map(w=>`<div class="blRow" style="display:block"><div class="plName">${esc(w.nama)}</div>
+   <div class="blSum" style="margin-top:6px"><div class="blBox"><small>Masuk bulan ini</small><b>${rp(w.masuk_bulan_ini)}</b></div><div class="blBox"><small>Uang di tangan</small><b>${rp(w.di_tangan)}</b></div>
+   <div class="blBox"><small>Wajib setor</small><b style="color:${w.wajib_setor?'#b45309':'#0b7a3b'}">${rp(w.wajib_setor)}</b><small>${w.tutup_terakhir?'s/d buku '+esc(namaPeriode(w.tutup_terakhir)):'belum ada buku ditutup'}</small></div>
+   <div class="blBox"><small>Menunggu diperiksa</small><b>${rp(w.menunggu.jumlah)}</b><small>${w.menunggu.n} setoran</small></div></div></div>`).join('');
+  $('kasForm').innerHTML=`<label>Catat setoran ke Pusat</label><div class="kuBayarForm" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+   <div><small>Wilayah</small><select id="ksLok" onchange="isiJumlahSetor()">${d.wilayah.map(w=>`<option value="${w.lokasi}">${esc(w.nama)}</option>`).join('')}</select></div>
+   <div><small>Jumlah (Rp)</small><input id="ksJml" inputmode="numeric"></div>
+   <div><small>Tanggal setor</small><input id="ksTgl" type="date" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div>
+   <div><small>Metode</small><select id="ksMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div>
+   <div style="grid-column:1/-1"><small>Foto bukti setor (wajib)</small><input id="ksBukti" type="file" accept="image/*,application/pdf"></div>
+   <div style="grid-column:1/-1"><small>Catatan</small><input id="ksCat" maxlength="300"></div></div>
+   <div class="plBtns"><button class="plSave" id="ksBtn" onclick="kirimSetoranWilayah()">Kirim setoran</button></div>`;
+  isiJumlahSetor();
+  $('kasList').innerHTML=d.setoran.length?d.setoran.map(x=>`<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><b>#S${x.id} · ${esc(x.nama_lokasi||'Lokasi '+x.lokasi)} · ${rp(x.jumlah)}</b>
+    <div class="plSub">${esc(tglPendek(x.tanggal))} · ${esc(x.metode)} · oleh ${esc(x.dibuat_oleh)}${x.catatan?' · '+esc(x.catatan):''}${x.diperiksa_oleh?' · diperiksa '+esc(x.diperiksa_oleh):''}${x.alasan_tolak?' · alasan: '+esc(x.alasan_tolak):''}</div></div>${KAS_CHIP[x.status]||''}</div>
+    <div class="blAksi">${x.ada_bukti?`<a class="btnS" href="/api/kas-wilayah/setoran/${x.id}/bukti" target="_blank" rel="noopener" style="text-decoration:none">Lihat bukti</a>`:''}
+    ${owner&&x.status==='menunggu'?`<button class="btnS go" onclick="periksaSetoran(${x.id},true)">Terima</button><button class="btnS" onclick="periksaSetoran(${x.id},false)">Tolak</button>`:''}</div></div>`).join('')
+   :'<div class="muted">Belum ada setoran.</div>';
+  $('kasMulai').innerHTML='Kas wilayah dihitung mulai '+esc(namaPeriode(d.mulai))+(owner?` · <a href="#" onclick="ubahKasMulai();return false">ubah</a>`:'');
+ }catch(e){ $('kasWil').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+function isiJumlahSetor(){ const w=ku.kas&&ku.kas.wilayah.find(x=>x.lokasi===Number($('ksLok').value)); if(w) $('ksJml').value=w.wajib_setor?Number(w.wajib_setor).toLocaleString('id-ID'):''; }
+async function kirimSetoranWilayah(){
+ const f=$('ksBukti').files[0], body={lokasi:Number($('ksLok').value),jumlah:Number($('ksJml').value.replace(/\D/g,'')),tanggal:$('ksTgl').value,metode:$('ksMetode').value,catatan:$('ksCat').value.trim()||null};
+ if(!(body.jumlah>0)){ kuPesan('Isi jumlah setoran.'); return; } if(!f){ kuPesan('Lampirkan foto bukti setor.'); return; }
+ $('ksBtn').disabled=true;
+ try{ const d=await jsonAtauError(await fetch('/api/kas-wilayah/setoran',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  await jsonAtauError(await fetch('/api/kas-wilayah/setoran/'+d.id+'/bukti',{method:'POST',body:f}));
+  kuPesan('Setoran #S'+d.id+' '+rp(body.jumlah)+' terkirim, menunggu diperiksa owner.',true); muatKasWilayah(); }
+ catch(e){ kuPesan('Gagal: '+e.message); if($('ksBtn')) $('ksBtn').disabled=false; }
+}
+async function periksaSetoran(id,terima){
+ let alasan=null; if(!terima){ alasan=prompt('Alasan menolak setoran #S'+id+' (mis. bukti buram, jumlah tidak cocok):'); if(alasan==null) return; }
+ else if(!confirm('Terima setoran #S'+id+'? Pastikan uangnya sudah masuk ke Pusat.')) return;
+ try{ await jsonAtauError(await fetch('/api/kas-wilayah/setoran/'+id+'/periksa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({terima,alasan})}));
+  kuPesan(terima?'Setoran #S'+id+' diterima.':'Setoran #S'+id+' ditolak; penanggung jawab diminta mengirim ulang bukti.',true); muatKasWilayah(); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
+async function ubahKasMulai(){
+ const p=prompt('Kas wilayah dihitung mulai bulan (YYYY-MM). Uang sebelum bulan ini dianggap sudah di Pusat:',ku.kas.mulai); if(!p) return;
+ try{ await jsonAtauError(await fetch('/api/kas-wilayah/mulai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({periode:p.trim()})})); muatKasWilayah(); }
+ catch(e){ kuPesan('Gagal: '+e.message); }
+}
 // ===== Komisi mitra: rekap per bulan + pembayaran =====
 ku.ins=null; ku.inBayar=null; ku.inLok=1;
 const IN_CHIP={lunas:'<span class="chip ok">Lunas</span>',sebagian:'<span class="chip warn">Sebagian</span>',belum:'<span class="chip bad">Belum dibayar</span>',nihil:'<span class="chip off">Tidak ada</span>'};

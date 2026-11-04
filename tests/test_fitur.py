@@ -3561,3 +3561,74 @@ def test_hotspot_reseller_voucher(siap):
     assert 'dns-name="hs.desa2"' in sk and "login-by=http-pap" in sk
     # kode voucher tidak pernah masuk log aktivitas
     assert j["kode"] not in o.get("/api/aktivitas").text
+
+
+def test_kas_wilayah_dan_setoran(siap):
+    """Uang masuk tiap wilayah dipegang penanggung jawabnya (W2 = mitra W2). Setelah tutup buku seluruh saldonya wajib
+    disetor ke Pusat: tidak otomatis, penanggung jawab mencatat setoran + foto bukti, owner (CFO) menerima/menolak.
+    Pengingat Telegram tiap 3 hari selama masih ada yang wajib disetor."""
+    main, o, k, m = siap
+    from fastapi.testclient import TestClient
+    hari = datetime.now().strftime("%Y-%m-%d")
+    per = hari[:7]
+    assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    assert o.post("/api/akun", json={"username": "rina", "password": "mitrapass2", "peran": "mitra", "lokasi": 2}).status_code == 200
+    m2 = TestClient(main.app)
+    m2.post("/api/login", json={"username": "rina", "password": "mitrapass2"})
+    # penanggung jawab kas ditunjuk owner; mitra lain (joko, lokasi 1) bukan penanggung jawab kas W1
+    assert m2.get("/api/mitra/kas").status_code == 403
+    assert k.put("/api/lokasi/2/pj-kas", json={"username": "rina"}).status_code == 403
+    assert o.put("/api/lokasi/2/pj-kas", json={"username": "joko"}).status_code == 400
+    assert o.put("/api/lokasi/2/pj-kas", json={"username": "rina"}).status_code == 200
+    assert m.get("/api/mitra/kas").status_code == 403
+    assert m.post("/api/mitra/kas/setoran", json={"jumlah": 1000, "tanggal": "2026-01-01"}).status_code == 403
+    assert k.post("/api/data-pelanggan", json={"username": "w2.sari", "nama": "Sari", "paket_id": 1, "lokasi": 2,
+                                               "tgl_pasang": f"{per}-01"}).status_code == 200
+    o.post(f"/api/tagihan/buat?periode={per}")
+    tg = {t["username"]: t for t in o.get(f"/api/tagihan?periode={per}").json()["tagihan"]}
+    for u in ("w2.sari", "budi"):
+        assert o.post(f"/api/tagihan/{tg[u]['id']}/lunas").status_code == 200
+    # transaksi manual berlabel kas W2 ikut dihitung; tanpa label = Pusat
+    kat = {x["nama"]: x["id"] for x in o.get("/api/keuangan/kategori").json()["kategori"]}
+    assert k.post("/api/keuangan/transaksi", json={"tanggal": hari, "jenis": "masuk", "lokasi": 2, "jumlah": 50000,
+                                                    "kategori_id": kat["Pendapatan jasa pemasangan"]}).status_code == 200
+    assert k.post("/api/keuangan/transaksi", json={"tanggal": hari, "jenis": "masuk", "lokasi": 9, "jumlah": 1,
+                                                    "kategori_id": kat["Pendapatan jasa pemasangan"]}).status_code == 400
+    w2 = tg["w2.sari"]["jumlah"] + 50000
+    pos = m2.get("/api/mitra/kas").json()["posisi"]
+    assert pos["di_tangan"] == w2 and pos["masuk_bulan_ini"] == w2 and pos["wajib_setor"] == 0      # buku belum ditutup
+    # tutup buku → wajib setor seluruh saldo, dikabarkan lewat Telegram
+    main._terkirim.clear()
+    assert o.post(f"/api/keuangan/tutup-buku/{per}", json={}).status_code == 200
+    assert "wajib setor" in " ".join(str(x["data"].get("text") or "") for x in main._terkirim)
+    wil = {w["lokasi"]: w for w in o.get("/api/kas-wilayah").json()["wilayah"]}
+    assert wil[2]["wajib_setor"] == w2 and wil[1]["wajib_setor"] == tg["budi"]["jumlah"]
+    # mitra W2 mencatat setoran: belum dihitung sampai bukti ada & owner menerima
+    sid = m2.post("/api/mitra/kas/setoran", json={"jumlah": w2 - 10000, "tanggal": hari}).json()["id"]
+    assert o.post(f"/api/kas-wilayah/setoran/{sid}/periksa", json={"terima": True}).status_code == 400   # belum ada bukti
+    jpg = b"\xff\xd8\xff\xe0" + b"0" * 300
+    assert m2.post(f"/api/mitra/kas/setoran/{sid}/bukti", content=b"<html>").status_code == 415
+    assert m2.post(f"/api/mitra/kas/setoran/{sid}/bukti", content=jpg).status_code == 200
+    assert m.get(f"/api/mitra/kas/setoran/{sid}/bukti").status_code == 403                 # mitra W1 tidak boleh
+    assert m2.get(f"/api/mitra/kas/setoran/{sid}/bukti").content == jpg
+    assert k.post(f"/api/kas-wilayah/setoran/{sid}/periksa", json={"terima": True}).status_code == 403  # hanya owner
+    assert o.post(f"/api/kas-wilayah/setoran/{sid}/periksa", json={"terima": False}).status_code == 400  # alasan wajib
+    assert o.post(f"/api/kas-wilayah/setoran/{sid}/periksa", json={"terima": False, "alasan": "bukti buram"}).status_code == 200
+    assert m2.get("/api/mitra/kas").json()["posisi"]["wajib_setor"] == w2
+    assert m2.post(f"/api/mitra/kas/setoran/{sid}/bukti", content=jpg).status_code == 200
+    assert o.post(f"/api/kas-wilayah/setoran/{sid}/periksa", json={"terima": True}).status_code == 200
+    pos = m2.get("/api/mitra/kas").json()["posisi"]
+    assert pos["wajib_setor"] == 10000 and pos["di_tangan"] == 10000                       # selisih tetap tercatat
+    # setoran tidak mengubah saldo kas total (hanya pindah antar-kas)
+    s = o.get(f"/api/keuangan/ringkasan?periode={per}").json()
+    assert s["pendapatan"] == tg["w2.sari"]["jumlah"] + tg["budi"]["jumlah"] + 50000
+    # pengingat tiap 3 hari selama masih ada wajib setor
+    main._terkirim.clear()
+    sekarang = datetime.now().replace(hour=23)
+    main.proses_pengingat_setoran(sekarang)
+    main.proses_pengingat_setoran(sekarang + timedelta(days=1))
+    pesan = [x for x in main._terkirim if "Setoran wilayah" in str(x["data"].get("text") or "")]
+    assert len(pesan) == 1
+    main.proses_pengingat_setoran(sekarang + timedelta(days=3))
+    assert len([x for x in main._terkirim if "Setoran wilayah" in str(x["data"].get("text") or "")]) == 2
+    assert "#S" in o.get("/api/aktivitas").text

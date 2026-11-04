@@ -106,6 +106,11 @@ berjalan 24/7 di Termux (Android) atau server Linux kecil.
 - **Hotspot voucher** — WiFi terbuka, login voucher (total waktu pakai) yang dijual warung/reseller lewat login
   khusus: tombol **Jual** menampilkan QR login langsung (WiFi terbuka, tanpa sandi). Titip stok, setoran ke kas, kartu QR
   siap cetak, dan skrip MikroTik (v6/v7) untuk lokasi yang belum tersambung. Lihat `docs/hotspot.md`.
+- **Kas wilayah & setoran ke Pusat** — uang masuk tiap wilayah (tagihan pelanggan wilayah itu + transaksi berlabel
+  kas wilayah, mis. setoran voucher hotspot) dipegang penanggung jawabnya (ditunjuk owner di **Pelanggan → Lokasi**;
+  W2 = mitra W2). Setelah tutup buku, seluruh saldonya wajib disetor ke Pusat: **tidak otomatis**, penanggung jawab
+  mencatat setoran + foto bukti, owner (CFO) menerima/menolak di **Keuangan → Kas Wilayah**. Pengingat Telegram tiap
+  3 hari selama masih ada yang wajib disetor. Setoran hanya memindahkan uang antar-kas, tidak mengubah laba.
 - **Mitra & komisi per lokasi** — akun mitra diikat ke satu lokasi (Pengaturan → Pengguna) dan hanya melihat
   pelanggan, tiket, Excel, dan komisi lokasinya. Komisi dihitung, dikunci (juga otomatis saat tutup buku), dan
   dibayar per lokasi di **Keuangan → Komisi Mitra**; laporan keuangan memakai jumlah semua lokasi.

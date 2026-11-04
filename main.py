@@ -1344,6 +1344,10 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat pengingat liabilitas: {e}")
         try:
+            await asyncio.to_thread(proses_pengingat_setoran)
+        except Exception as e:
+            logger.error(f"Error saat pengingat setoran wilayah: {e}")
+        try:
             await asyncio.to_thread(proses_pengingat_tiket)
         except Exception as e:
             logger.error(f"Error saat pengingat tiket: {e}")
@@ -1629,7 +1633,7 @@ def init_billing_db() -> None:
             conn.execute("UPDATE lokasi SET jaringan = 1 WHERE kode = 1")
         conn.execute("INSERT OR IGNORE INTO lokasi (kode, nama, jaringan) VALUES (1, 'Lokasi 1', 1)")
         kol_lok = [r[1] for r in conn.execute("PRAGMA table_info(lokasi)").fetchall()]
-        for kol in ("hs_ssid", "hs_dns"):
+        for kol in ("hs_ssid", "hs_dns", "pj_kas"):
             if kol not in kol_lok:
                 conn.execute(f"ALTER TABLE lokasi ADD COLUMN {kol} TEXT")
         if "lokasi" not in kolom:
@@ -3448,7 +3452,7 @@ def _cek_lokasi(conn, kode) -> int:
 def list_lokasi():
     conn = _billing_conn()
     try:
-        rows = conn.execute("SELECT l.kode, l.nama, l.jaringan, (SELECT COUNT(*) FROM pelanggan p WHERE p.lokasi = l.kode "
+        rows = conn.execute("SELECT l.kode, l.nama, l.jaringan, l.pj_kas, (SELECT COUNT(*) FROM pelanggan p WHERE p.lokasi = l.kode "
                             "AND p.status = 'aktif') AS pelanggan FROM lokasi l ORDER BY l.kode").fetchall()
     finally:
         conn.close()
@@ -3492,6 +3496,29 @@ def ubah_lokasi(kode: int, d: LokasiIn, request: Request):
     finally:
         conn.close()
     catat_aktivitas(_oleh(request), "lokasi", f"lokasi {kode} diubah: {nama}")
+    return {"ok": True}
+
+
+class PjKasIn(BaseModel):
+    username: Optional[str] = None      # kosong = kas dipegang Pusat (owner/admin)
+
+
+@app.put("/api/lokasi/{kode}/pj-kas")
+def ubah_pj_kas(kode: int, d: PjKasIn, request: Request):
+    """Owner menunjuk mitra lokasi ini sebagai penanggung jawab kasnya (mencatat setoran ke Pusat dari halaman mitra)."""
+    _wajib_owner(request, "Penanggung jawab kas wilayah hanya bisa diatur owner.")
+    u = (d.username or "").strip() or None
+    conn = _billing_conn()
+    try:
+        _cek_lokasi(conn, kode)
+        if u and not conn.execute("SELECT 1 FROM akun WHERE username = ? AND peran = 'mitra' AND COALESCE(lokasi, 1) = ?",
+                                  (u, kode)).fetchone():
+            raise HTTPException(status_code=400, detail="Penanggung jawab harus akun mitra di lokasi ini.")
+        conn.execute("UPDATE lokasi SET pj_kas = ? WHERE kode = ?", (u, kode))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_wilayah", f"penanggung jawab kas lokasi {kode}: {u or 'Pusat'}")
     return {"ok": True}
 
 
@@ -4647,6 +4674,9 @@ def init_keuangan_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_transaksi_tanggal ON transaksi(tanggal)")
+        # Kas tempat uang transaksi ini berada: NULL = Pusat, angka = kas wilayah (lokasi) yang dipegang penanggung jawabnya.
+        if "lokasi" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+            conn.execute("ALTER TABLE transaksi ADD COLUMN lokasi INTEGER")
         for lama, baru, jenis in _NAMA_KATEGORI_BAKU:
             conn.execute("UPDATE OR IGNORE kategori_kas SET nama=? WHERE nama=? AND jenis=?", (baru, lama, jenis))
         if conn.execute("SELECT COUNT(*) FROM kategori_kas").fetchone()[0] == 0:
@@ -5777,6 +5807,10 @@ def tutup_buku(periode: str, d: TutupBukuIn, request: Request):
         conn.commit()
     finally:
         conn.close()
+    try:
+        _kabar_wajib_setor(f"📒 Buku {_nama_periode(periode)} ditutup.")
+    except Exception as e:
+        logger.error(f"Gagal mengabarkan wajib setor: {e}")
     catat_aktivitas(_oleh(request), "tutup_buku",
                     f"{_nama_periode(periode)} ditutup · pendapatan {_rp(r['pendapatan'])}, beban {_rp(r['beban'])}, "
                     f"laba {_rp(r['laba'])}, saldo kas akhir {_rp(saldo)}" + (f" · {d.catatan.strip()[:120]}" if d.catatan and d.catatan.strip() else ""))
@@ -6345,6 +6379,7 @@ class TransaksiIn(BaseModel):
     keterangan: Optional[str] = None
     qty: Optional[float] = None         # banyaknya barang, mis. 10 (pcs)
     satuan: Optional[str] = None
+    lokasi: Optional[int] = None        # kas wilayah tempat uang ini (kosong = Pusat)
 
 
 def _cek_qty(qty: Optional[float], satuan: Optional[str]) -> tuple[Optional[float], Optional[str]]:
@@ -6400,6 +6435,8 @@ def keuangan_tambah(d: TransaksiIn, request: Request):
     conn = _billing_conn()
     try:
         kat = _cek_transaksi(conn, d)
+        if d.lokasi is not None:
+            _cek_lokasi(conn, d.lokasi)
         _wajib_buku_terbuka(conn, d.tanggal)
         # Kunci tulis dulu, lalu tolak kiriman kembar (tombol Simpan tertekan dua kali): transaksi
         # yang persis sama dari orang yang sama dalam 20 detik terakhir dianggap dobel.
@@ -6417,9 +6454,9 @@ def keuangan_tambah(d: TransaksiIn, request: Request):
                                 "Bila memang ada dua transaksi kembar, tunggu 20 detik lalu simpan lagi.")
         cur = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
-            "qty, satuan) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "qty, satuan, lokasi) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
-             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.qty, d.satuan),
+             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.qty, d.satuan, d.lokasi),
         )
         nomor = _beri_nomor(conn, cur.lastrowid)
         conn.commit()
@@ -6464,9 +6501,10 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
         _wajib_buku_terbuka(conn, t["tanggal"], d.tanggal)
         conn.execute(
             "UPDATE transaksi SET tanggal=?, jenis=?, kategori_id=?, jumlah=?, metode=?, keterangan=?, "
-            "qty=?, satuan=?, diubah_oleh=?, diubah_pada=? WHERE id=?",
+            "qty=?, satuan=?, lokasi=?, diubah_oleh=?, diubah_pada=? WHERE id=?",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
-             d.qty, d.satuan, _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
+             d.qty, d.satuan, _cek_lokasi(conn, d.lokasi) if d.lokasi is not None else None, _oleh(request),
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
         )
         nomor_baru = None
         if d.jenis != t["jenis"] or d.tanggal[:7] != t["tanggal"][:7]:
@@ -6518,7 +6556,7 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
     awal, akhir = _batas_periode(periode)
     sql = ("SELECT t.id, t.tanggal, t.jenis, t.kategori_id, k.nama AS kategori, k.pengaruh_laba, t.jumlah, t.metode, "
            "t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.diubah_oleh, t.diubah_pada, t.status, "
-           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, t.nomor, "
+           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, t.nomor, t.lokasi, "
            "(SELECT u.pemasok FROM utang u WHERE u.id = t.utang_id) AS pemasok "
            "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.tanggal >= ? AND t.tanggal < ?")
     arg: list = [awal, akhir]
@@ -7633,6 +7671,342 @@ def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
 
 
 
+
+# ============================================================
+# KAS WILAYAH & SETORAN KE PUSAT
+# ============================================================
+# Uang masuk tiap wilayah (pembayaran tagihan pelanggan lokasi itu + transaksi berlabel lokasi itu, mis. setoran
+# voucher hotspot) dipegang penanggung jawab wilayahnya. Setelah tutup buku, SELURUH saldo wilayah sampai akhir bulan
+# yang sudah ditutup wajib disetor ke Pusat. Setoran tidak otomatis: penanggung jawab mencatat setoran + foto bukti,
+# lalu owner (CFO) menerima atau menolaknya. Setoran hanya memindahkan uang antar-kas usaha yang sama, jadi bukan
+# pendapatan/beban dan tidak mengubah saldo kas total; yang berubah hanya posisi "uang di tangan" tiap wilayah.
+
+_KUNCI_KAS_MULAI = "KAS_WILAYAH_MULAI"
+SETOR_INGAT_HARI = 3
+
+
+def _siapkan_kas_wilayah(conn) -> str:
+    conn.execute("""CREATE TABLE IF NOT EXISTS kas_setoran (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, lokasi INTEGER NOT NULL, jumlah INTEGER NOT NULL, tanggal TEXT NOT NULL,
+        metode TEXT NOT NULL, catatan TEXT, dibuat_oleh TEXT NOT NULL, dibuat_pada TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'tanpa_bukti', berkas TEXT, mime TEXT, diperiksa_oleh TEXT, diperiksa_pada TEXT,
+        alasan_tolak TEXT)""")
+    conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+    r = conn.execute("SELECT nilai FROM pengaturan WHERE kunci = ?", (_KUNCI_KAS_MULAI,)).fetchone()
+    if not r:
+        # Pertama kali dipakai: kas wilayah dihitung mulai bulan ini (riwayat sebelumnya sudah di tangan Pusat).
+        mulai = datetime.now().strftime("%Y-%m")
+        conn.execute("INSERT INTO pengaturan (kunci, nilai) VALUES (?, ?)", (_KUNCI_KAS_MULAI, mulai))
+        conn.commit()
+        return mulai
+    return r[0]
+
+
+def _masuk_wilayah(conn, lokasi: int, dari: str, sampai: str) -> int:
+    """Uang yang diterima kas wilayah pada [dari, sampai): tagihan lunas pelanggan lokasi itu + transaksi berlabel lokasi."""
+    tagihan = conn.execute("SELECT COALESCE(SUM(t.jumlah), 0) FROM tagihan t JOIN pelanggan p ON p.username = t.username "
+                           "WHERE t.status = 'lunas' AND p.lokasi = ? AND t.tgl_bayar >= ? AND t.tgl_bayar < ?",
+                           (lokasi, dari, sampai)).fetchone()[0]
+    trx = conn.execute("SELECT COALESCE(SUM(CASE WHEN jenis = 'masuk' THEN jumlah ELSE -jumlah END), 0) FROM transaksi "
+                       "WHERE status = 'aktif' AND lokasi = ? AND tanggal >= ? AND tanggal < ?",
+                       (lokasi, dari, sampai)).fetchone()[0]
+    return tagihan + trx
+
+
+def _posisi_kas_wilayah(conn, lokasi: int) -> dict:
+    mulai = _siapkan_kas_wilayah(conn)
+    dari = f"{mulai}-01"
+    sekarang = datetime.now()
+    besok = (sekarang + timedelta(days=1)).strftime("%Y-%m-%d")
+    tutup = conn.execute("SELECT MAX(periode) FROM tutup_buku WHERE periode >= ?", (mulai,)).fetchone()[0]
+    sampai_tutup = _batas_periode(tutup)[1] if tutup else dari
+    setor = {r["status"]: (r["n"], r["total"]) for r in conn.execute(
+        "SELECT status, COUNT(*) AS n, COALESCE(SUM(jumlah), 0) AS total FROM kas_setoran WHERE lokasi = ? GROUP BY status",
+        (lokasi,))}
+    diterima = setor.get("diterima", (0, 0))[1]
+    masuk_total = _masuk_wilayah(conn, lokasi, dari, besok)
+    wajib = _masuk_wilayah(conn, lokasi, dari, sampai_tutup) - diterima
+    bln = sekarang.strftime("%Y-%m")
+    return {"lokasi": lokasi, "mulai": mulai, "tutup_terakhir": tutup,
+            "masuk_bulan_ini": _masuk_wilayah(conn, lokasi, f"{bln}-01", besok),
+            "di_tangan": masuk_total - diterima, "wajib_setor": max(0, wajib),
+            "menunggu": {"n": setor.get("menunggu", (0, 0))[0], "jumlah": setor.get("menunggu", (0, 0))[1]},
+            "tanpa_bukti": setor.get("tanpa_bukti", (0, 0))[0], "diterima_total": diterima}
+
+
+def _daftar_setoran(conn, lokasi: Optional[int] = None, limit: int = 30) -> list[dict]:
+    rows = conn.execute("SELECT s.*, l.nama AS nama_lokasi FROM kas_setoran s LEFT JOIN lokasi l ON l.kode = s.lokasi "
+                        + ("WHERE s.lokasi = ? " if lokasi is not None else "") + "ORDER BY s.id DESC LIMIT ?",
+                        ((lokasi, limit) if lokasi is not None else (limit,))).fetchall()
+    return [{k: r[k] for k in r.keys() if k not in ("berkas", "mime")} | {"ada_bukti": bool(r["berkas"])} for r in rows]
+
+
+def _kabar_wajib_setor(judul: str) -> bool:
+    """Telegram: wilayah yang masih wajib setor & setoran yang menunggu konfirmasi owner. False bila tidak ada."""
+    conn = _billing_conn()
+    try:
+        _siapkan_kas_wilayah(conn)
+        baris = []
+        for l in conn.execute("SELECT kode, nama FROM lokasi ORDER BY kode").fetchall():
+            pos = _posisi_kas_wilayah(conn, l["kode"])
+            if pos["wajib_setor"] > 0:
+                baris.append(f"• {_esc(l['nama'])}: wajib setor <b>{_rp(pos['wajib_setor'])}</b>"
+                             + (f" ({pos['menunggu']['n']} setoran menunggu diperiksa)" if pos["menunggu"]["n"] else ""))
+            elif pos["menunggu"]["n"]:
+                baris.append(f"• {_esc(l['nama'])}: {pos['menunggu']['n']} setoran menunggu diperiksa owner")
+    finally:
+        conn.close()
+    if not baris:
+        return False
+    send_telegram_message(f"{judul}\n💰 <b>Setoran wilayah ke Pusat</b>\n" + "\n".join(baris)
+                          + "\nSetor lalu lampirkan bukti di INDESO; owner menerima di Keuangan → Kas Wilayah.")
+    return True
+
+
+def proses_pengingat_setoran(sekarang=None) -> None:
+    """Tiap SETOR_INGAT_HARI hari (setelah TAGIHAN_JAM) selama masih ada yang wajib disetor atau menunggu diperiksa."""
+    sekarang = sekarang or datetime.now()
+    if sekarang.hour < CONFIG["TAGIHAN_JAM"]:
+        return
+    hari = sekarang.strftime("%Y-%m-%d")
+    conn = _billing_conn()
+    try:
+        terakhir = conn.execute("SELECT MAX(tanggal) FROM otomasi_log WHERE jenis = 'setor_wilayah'").fetchone()[0]
+    except sqlite3.OperationalError:
+        terakhir = None
+    finally:
+        conn.close()
+    if terakhir and (sekarang - datetime.strptime(terakhir, "%Y-%m-%d")).days < SETOR_INGAT_HARI:
+        return
+    if _kabar_wajib_setor("⏰ Pengingat"):
+        conn = _billing_conn()
+        try:
+            conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?, 'setor_wilayah')", (hari,))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _boleh_lokasi_kas(request: Request, lokasi: int) -> None:
+    """Admin/owner: semua wilayah. Mitra: hanya bila ditunjuk owner sebagai penanggung jawab kas wilayah itu."""
+    if request.state.peran in _PERAN_PENUH:
+        return
+    if request.state.peran == "mitra":
+        conn = _billing_conn()
+        try:
+            r = conn.execute("SELECT pj_kas FROM lokasi WHERE kode = ?", (lokasi,)).fetchone()
+        finally:
+            conn.close()
+        if r and r["pj_kas"] == request.state.user:
+            return
+    raise HTTPException(status_code=403, detail="Anda bukan penanggung jawab kas wilayah ini.")
+
+
+@app.get("/api/kas-wilayah")
+def kas_wilayah(request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        mulai = _siapkan_kas_wilayah(conn)
+        wilayah = [dict(_posisi_kas_wilayah(conn, l["kode"]), nama=l["nama"])
+                   for l in conn.execute("SELECT kode, nama FROM lokasi ORDER BY kode").fetchall()]
+        setoran = _daftar_setoran(conn, limit=60)
+    finally:
+        conn.close()
+    return {"peran": request.state.peran, "mulai": mulai, "wilayah": wilayah, "setoran": setoran}
+
+
+class KasMulaiIn(BaseModel):
+    periode: str
+
+
+@app.post("/api/kas-wilayah/mulai")
+def kas_wilayah_mulai(d: KasMulaiIn, request: Request):
+    _wajib_owner(request, "Hanya owner yang bisa mengatur awal perhitungan kas wilayah.")
+    if not _periode_valid(d.periode) or d.periode > datetime.now().strftime("%Y-%m"):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    conn = _billing_conn()
+    try:
+        lama = _siapkan_kas_wilayah(conn)
+        conn.execute("INSERT OR REPLACE INTO pengaturan (kunci, nilai) VALUES (?, ?)", (_KUNCI_KAS_MULAI, d.periode))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_wilayah", f"kas wilayah dihitung mulai {lama} → {d.periode}")
+    return {"ok": True}
+
+
+class SetoranWilayahIn(BaseModel):
+    lokasi: int
+    jumlah: int
+    tanggal: str
+    metode: str = "transfer"
+    catatan: Optional[str] = None
+
+
+def _catat_setoran(d: SetoranWilayahIn, request: Request) -> dict:
+    _boleh_lokasi_kas(request, d.lokasi)
+    _cek_tanggal_lalu(d.tanggal, "Tanggal setor")
+    if d.metode not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode tidak valid.")
+    if not 0 < d.jumlah <= 1_000_000_000:
+        raise HTTPException(status_code=400, detail="Jumlah setoran tidak valid.")
+    conn = _billing_conn()
+    try:
+        _cek_lokasi(conn, d.lokasi)
+        _siapkan_kas_wilayah(conn)
+        sid = conn.execute("INSERT INTO kas_setoran (lokasi, jumlah, tanggal, metode, catatan, dibuat_oleh, dibuat_pada) "
+                           "VALUES (?,?,?,?,?,?,?)", (d.lokasi, d.jumlah, d.tanggal, d.metode,
+                                                      (d.catatan or "").strip()[:300] or None, _oleh(request),
+                                                      _sekarang_str())).lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_setoran", f"#S{sid} lokasi {d.lokasi}: setor {_rp(d.jumlah)} ({d.metode}), menunggu bukti")
+    return {"ok": True, "id": sid}
+
+
+async def _unggah_bukti_setoran(sid: int, request: Request) -> dict:
+    batas = CONFIG["NOTA_MAKS_MB"] * 1024 * 1024
+    if int(request.headers.get("content-length") or 0) > batas:
+        raise HTTPException(status_code=413, detail=f"Berkas maksimal {CONFIG['NOTA_MAKS_MB']} MB.")
+    isi = await request.body()
+    if not isi or len(isi) > batas:
+        raise HTTPException(status_code=413 if isi else 400, detail=f"Berkas kosong atau lebih dari {CONFIG['NOTA_MAKS_MB']} MB.")
+    jenis = _jenis_berkas(isi)
+    if not jenis:
+        raise HTTPException(status_code=415, detail="Bukti setor harus foto (JPG/PNG/WEBP) atau PDF.")
+
+    def simpan():
+        conn = _billing_conn()
+        try:
+            _siapkan_kas_wilayah(conn)
+            s = conn.execute("SELECT * FROM kas_setoran WHERE id = ?", (sid,)).fetchone()
+            if not s:
+                raise HTTPException(status_code=404, detail="Setoran tidak ditemukan.")
+            _boleh_lokasi_kas(request, s["lokasi"])
+            if s["status"] not in ("tanpa_bukti", "ditolak", "menunggu"):
+                raise HTTPException(status_code=400, detail="Setoran yang sudah diterima tidak bisa diubah buktinya.")
+            if request.state.peran != "owner" and s["dibuat_oleh"] != _oleh(request):
+                raise HTTPException(status_code=403, detail="Hanya pencatat setoran atau owner yang bisa melampirkan bukti.")
+            berkas = f"setoran/{datetime.now().strftime('%Y%m')}/{secrets.token_hex(12)}.{jenis[1]}"
+            path = os.path.join(_folder_nota(), berkas)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(isi)
+            conn.execute("UPDATE kas_setoran SET berkas = ?, mime = ?, status = 'menunggu', alasan_tolak = NULL WHERE id = ?",
+                         (berkas, jenis[0], sid))
+            conn.commit()
+            return s
+        finally:
+            conn.close()
+
+    s = await asyncio.to_thread(simpan)
+    catat_aktivitas(_oleh(request), "kas_setoran", f"#S{sid}: bukti setor diunggah, menunggu diperiksa owner")
+    try:
+        send_telegram_message(f"💰 Setoran wilayah #S{sid} {_rp(s['jumlah'])} oleh {_esc(_oleh(request))} menunggu "
+                              "diperiksa (Keuangan → Kas Wilayah).")
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+@app.post("/api/kas-wilayah/setoran")
+def kas_wilayah_setor(d: SetoranWilayahIn, request: Request):
+    _wajib_admin(request)
+    return _catat_setoran(d, request)
+
+
+@app.post("/api/kas-wilayah/setoran/{sid}/bukti")
+async def kas_wilayah_bukti(sid: int, request: Request):
+    _wajib_admin(request)
+    return await _unggah_bukti_setoran(sid, request)
+
+
+@app.get("/api/kas-wilayah/setoran/{sid}/bukti")
+def kas_wilayah_lihat_bukti(sid: int, request: Request):
+    conn = _billing_conn()
+    try:
+        _siapkan_kas_wilayah(conn)
+        s = conn.execute("SELECT lokasi, berkas, mime FROM kas_setoran WHERE id = ?", (sid,)).fetchone()
+    finally:
+        conn.close()
+    if not s or not s["berkas"]:
+        raise HTTPException(status_code=404, detail="Bukti tidak ditemukan.")
+    _boleh_lokasi_kas(request, s["lokasi"])
+    path = os.path.realpath(os.path.join(_folder_nota(), s["berkas"]))
+    if not path.startswith(os.path.realpath(_folder_nota()) + os.sep) or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Berkas bukti tidak ada di server.")
+    return FileResponse(path, media_type=s["mime"], headers={"Cache-Control": "private, max-age=3600"})
+
+
+class PeriksaSetoranIn(BaseModel):
+    terima: bool
+    alasan: Optional[str] = None
+
+
+@app.post("/api/kas-wilayah/setoran/{sid}/periksa")
+def kas_wilayah_periksa(sid: int, d: PeriksaSetoranIn, request: Request):
+    """Owner (CFO) menerima setoran (uang pindah ke Pusat) atau menolaknya dengan alasan (bukti dikirim ulang)."""
+    _wajib_owner(request, "Hanya owner yang bisa menerima atau menolak setoran wilayah.")
+    alasan = (d.alasan or "").strip()
+    if not d.terima and len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan penolakan.")
+    conn = _billing_conn()
+    try:
+        _siapkan_kas_wilayah(conn)
+        s = conn.execute("SELECT * FROM kas_setoran WHERE id = ?", (sid,)).fetchone()
+        if not s:
+            raise HTTPException(status_code=404, detail="Setoran tidak ditemukan.")
+        if s["status"] != "menunggu":
+            raise HTTPException(status_code=400, detail="Setoran ini tidak sedang menunggu diperiksa (bukti belum ada atau sudah diperiksa).")
+        conn.execute("UPDATE kas_setoran SET status = ?, diperiksa_oleh = ?, diperiksa_pada = ?, alasan_tolak = ? WHERE id = ?",
+                     ("diterima" if d.terima else "ditolak", _oleh(request), _sekarang_str(),
+                      None if d.terima else alasan[:300], sid))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "kas_setoran", f"#S{sid} lokasi {s['lokasi']} {_rp(s['jumlah'])}: "
+                    + ("DITERIMA Pusat" if d.terima else f"ditolak ({alasan[:120]})"))
+    return {"ok": True}
+
+
+# --- Mitra = penanggung jawab kas wilayahnya ---
+
+@app.get("/api/mitra/kas")
+def mitra_kas(request: Request):
+    lok = _lokasi_mitra(request)
+    _boleh_lokasi_kas(request, lok)
+    conn = _billing_conn()
+    try:
+        pos = _posisi_kas_wilayah(conn, lok)
+        setoran = _daftar_setoran(conn, lok, limit=20)
+    finally:
+        conn.close()
+    return {"posisi": pos, "setoran": setoran}
+
+
+class SetoranMitraIn(BaseModel):
+    jumlah: int
+    tanggal: str
+    metode: str = "transfer"
+    catatan: Optional[str] = None
+
+
+@app.post("/api/mitra/kas/setoran")
+def mitra_kas_setor(d: SetoranMitraIn, request: Request):
+    return _catat_setoran(SetoranWilayahIn(lokasi=_lokasi_mitra(request), **d.model_dump()), request)
+
+
+@app.post("/api/mitra/kas/setoran/{sid}/bukti")
+async def mitra_kas_bukti(sid: int, request: Request):
+    return await _unggah_bukti_setoran(sid, request)
+
+
+@app.get("/api/mitra/kas/setoran/{sid}/bukti")
+def mitra_kas_lihat_bukti(sid: int, request: Request):
+    return kas_wilayah_lihat_bukti(sid, request)
+
 # ============================================================
 # HOTSPOT — voucher WiFi terbuka, dijual warung/reseller
 # ============================================================
@@ -8085,9 +8459,9 @@ def hotspot_setoran(d: HsSetoranIn, request: Request):
                                                       d.metode, _oleh(request))).lastrowid
         tid = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
-            "hotspot_setoran_id) VALUES (?, 'masuk', ?, ?, ?, ?, ?, ?, ?)",
+            "hotspot_setoran_id, lokasi) VALUES (?, 'masuk', ?, ?, ?, ?, ?, ?, ?, ?)",
             (tanggal, kat, nominal, d.metode, f"Setoran voucher hotspot {a['username']}: {len(v)} voucher",
-             _oleh(request), _sekarang_str(), sid)).lastrowid
+             _oleh(request), _sekarang_str(), sid, a["lokasi"])).lastrowid
         nomor = _beri_nomor(conn, tid)
         conn.execute("UPDATE hs_setoran SET transaksi_id = ? WHERE id = ?", (tid, sid))
         conn.execute(f"UPDATE hs_voucher SET setoran_id = ? WHERE kode IN ({','.join('?' * len(v))})",
