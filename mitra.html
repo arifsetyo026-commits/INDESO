@@ -193,7 +193,7 @@ function buka(i){
  $('listView').style.display='none'; $('formView').style.display='block'; $('fNama').focus();
 }
 function tutupForm(){ $('formView').style.display='none'; $('pwView').style.display='none'; $('tiketView').style.display='none'; $('kasView').style.display='none'; $('listView').style.display='block'; }
-// ===== Kas wilayah: mitra = penanggung jawab uang wilayahnya; setor ke Pusat dengan bukti =====
+// ===== Kas wilayah: admin wilayah (pemegang kas) yang login dengan akun ini; setor ke Pusat dengan bukti =====
 const KS_STATUS={tanpa_bukti:'<span class="chip warn">Belum ada bukti</span>',menunggu:'<span class="chip warn">Diperiksa owner</span>',diterima:'<span class="chip ok">Diterima</span>',ditolak:'<span class="chip bad">Ditolak</span>'};
 async function muatKas(){
  try{ const r=await fetch('/api/mitra/kas',{cache:'no-store'}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));

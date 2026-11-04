@@ -345,7 +345,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div id="inList"></div>
 </div>
 <div id="kuKas" style="display:none">
- <div class="plSub" style="margin-bottom:8px">Uang masuk tiap wilayah (tagihan pelanggan wilayah itu + transaksi berlabel wilayah) dipegang penanggung jawabnya. Setelah tutup buku, seluruh saldonya wajib disetor ke Pusat dengan bukti; owner menerima atau menolak. Setoran hanya memindahkan uang antar-kas, tidak mengubah laba.</div>
+ <div class="plSub" style="margin-bottom:8px">Uang masuk tiap wilayah (tagihan pelanggan wilayah itu + transaksi berlabel wilayah) dipegang <b>admin wilayah</b>-nya (W1: Pusat/owner; W2: admin W2). Setelah tutup buku, seluruh saldonya wajib disetor ke Pusat dengan bukti; owner menerima atau menolak. Setoran hanya memindahkan uang antar-kas, tidak mengubah laba.</div>
  <div id="kasWil"></div>
  <div class="plForm" id="kasForm"></div>
  <div class="plName" style="margin:14px 0 4px">Riwayat setoran</div><div id="kasList"></div>
@@ -1509,7 +1509,7 @@ async function bukaLokasi(){ $('plTitle').textContent='Lokasi'; tampilkanView('l
 async function muatLokasi(){
  try{ pl.lokasi=(await jsonAtauError(await fetch('/api/lokasi',{cache:'no-store'}))).lokasi;
   $('lkList').innerHTML=pl.lokasi.map(l=>`<div class="blRow"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${l.jaringan?'jaringan dipantau INDESO':'<b>hanya penagihan</b> (isolir & akun PPPoE dikerjakan manual di MikroTik lokasi ini)'}</div></div>
-   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Kas: ${esc(l.pj_kas||'Pusat')}</button></div></div>`).join('');
+   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Admin wilayah: ${esc(l.pj_kas||'Pusat')}</button></div></div>`).join('');
  }catch(e){ $('lkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 async function simpanLokasi(url,metode,nama,pesanOk){
@@ -1520,10 +1520,10 @@ async function simpanLokasi(url,metode,nama,pesanOk){
 async function tambahLokasi(){ const nama=$('lkNama').value.trim(); if(!nama) return;
  await simpanLokasi('/api/lokasi','POST',nama,'Lokasi baru ditambahkan: '+nama+'.'); $('lkNama').value=''; }
 async function ubahPjKas(k){
- const u=prompt('Penanggung jawab kas '+namaLokasi(k)+': ketik username MITRA lokasi ini yang memegang uang wilayah (mencatat setoran ke Pusat dari halaman mitra). Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
+ const u=prompt('Admin wilayah '+namaLokasi(k)+' (pemegang kas): ketik username akun lokasi ini yang memegang uang wilayah dan mencatat setoran ke Pusat (di W2: akun mitra W2). Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
  if(u==null) return;
  try{ await jsonAtauError(await fetch('/api/lokasi/'+k+'/pj-kas',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.trim()||null})}));
-  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Penanggung jawab kas '+namaLokasi(k)+': '+(u.trim()||'Pusat')+'.'; await muatLokasi(); }
+  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Admin wilayah '+namaLokasi(k)+': '+(u.trim()||'Pusat')+'.'; await muatLokasi(); }
  catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
 }
 function ubahLokasi(k){ const nama=prompt('Nama lokasi '+k+':',namaLokasi(k)); if(nama&&nama.trim()) simpanLokasi('/api/lokasi/'+k,'PUT',nama.trim(),'Nama lokasi diganti.'); }
@@ -3062,7 +3062,7 @@ async function hapusNota(id){
 AKSI_LABEL.nota_unggah='Unggah nota'; AKSI_LABEL.nota_hapus='Hapus nota';
 
 
-// ===== Kas wilayah: uang yang dipegang penanggung jawab wilayah & setoran ke Pusat (dengan bukti) =====
+// ===== Kas wilayah: uang yang dipegang admin wilayah & setoran ke Pusat (dengan bukti) =====
 ku.kas=null;
 const KAS_CHIP={tanpa_bukti:'<span class="chip warn">Belum ada bukti</span>',menunggu:'<span class="chip warn">Menunggu diperiksa</span>',diterima:'<span class="chip ok">Diterima Pusat</span>',ditolak:'<span class="chip bad">Ditolak</span>'};
 async function muatKasWilayah(){
@@ -3104,7 +3104,7 @@ async function periksaSetoran(id,terima){
  let alasan=null; if(!terima){ alasan=prompt('Alasan menolak setoran #S'+id+' (mis. bukti buram, jumlah tidak cocok):'); if(alasan==null) return; }
  else if(!confirm('Terima setoran #S'+id+'? Pastikan uangnya sudah masuk ke Pusat.')) return;
  try{ await jsonAtauError(await fetch('/api/kas-wilayah/setoran/'+id+'/periksa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({terima,alasan})}));
-  kuPesan(terima?'Setoran #S'+id+' diterima.':'Setoran #S'+id+' ditolak; penanggung jawab diminta mengirim ulang bukti.',true); muatKasWilayah(); }
+  kuPesan(terima?'Setoran #S'+id+' diterima.':'Setoran #S'+id+' ditolak; admin wilayah diminta mengirim ulang bukti.',true); muatKasWilayah(); }
  catch(e){ kuPesan('Gagal: '+e.message); }
 }
 async function ubahKasMulai(){

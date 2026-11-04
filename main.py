@@ -3505,20 +3505,20 @@ class PjKasIn(BaseModel):
 
 @app.put("/api/lokasi/{kode}/pj-kas")
 def ubah_pj_kas(kode: int, d: PjKasIn, request: Request):
-    """Owner menunjuk mitra lokasi ini sebagai penanggung jawab kasnya (mencatat setoran ke Pusat dari halaman mitra)."""
-    _wajib_owner(request, "Penanggung jawab kas wilayah hanya bisa diatur owner.")
+    """Owner menunjuk admin wilayah (pemegang kas lokasi ini; di W2 akun mitra W2) yang mencatat setoran ke Pusat."""
+    _wajib_owner(request, "Admin wilayah (pemegang kas) hanya bisa diatur owner.")
     u = (d.username or "").strip() or None
     conn = _billing_conn()
     try:
         _cek_lokasi(conn, kode)
         if u and not conn.execute("SELECT 1 FROM akun WHERE username = ? AND peran = 'mitra' AND COALESCE(lokasi, 1) = ?",
                                   (u, kode)).fetchone():
-            raise HTTPException(status_code=400, detail="Penanggung jawab harus akun mitra di lokasi ini.")
+            raise HTTPException(status_code=400, detail="Admin wilayah harus akun di lokasi ini (akun berperan mitra).")
         conn.execute("UPDATE lokasi SET pj_kas = ? WHERE kode = ?", (u, kode))
         conn.commit()
     finally:
         conn.close()
-    catat_aktivitas(_oleh(request), "kas_wilayah", f"penanggung jawab kas lokasi {kode}: {u or 'Pusat'}")
+    catat_aktivitas(_oleh(request), "kas_wilayah", f"admin wilayah (pemegang kas) lokasi {kode}: {u or 'Pusat'}")
     return {"ok": True}
 
 
@@ -4674,7 +4674,7 @@ def init_keuangan_db() -> None:
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_transaksi_tanggal ON transaksi(tanggal)")
-        # Kas tempat uang transaksi ini berada: NULL = Pusat, angka = kas wilayah (lokasi) yang dipegang penanggung jawabnya.
+        # Kas tempat uang transaksi ini berada: NULL = Pusat, angka = kas wilayah (lokasi) yang dipegang admin wilayahnya.
         if "lokasi" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
             conn.execute("ALTER TABLE transaksi ADD COLUMN lokasi INTEGER")
         for lama, baru, jenis in _NAMA_KATEGORI_BAKU:
@@ -7676,8 +7676,8 @@ def mitra_tambah_tiket(d: TiketMitraIn, request: Request):
 # KAS WILAYAH & SETORAN KE PUSAT
 # ============================================================
 # Uang masuk tiap wilayah (pembayaran tagihan pelanggan lokasi itu + transaksi berlabel lokasi itu, mis. setoran
-# voucher hotspot) dipegang penanggung jawab wilayahnya. Setelah tutup buku, SELURUH saldo wilayah sampai akhir bulan
-# yang sudah ditutup wajib disetor ke Pusat. Setoran tidak otomatis: penanggung jawab mencatat setoran + foto bukti,
+# voucher hotspot) dipegang admin wilayahnya. Setelah tutup buku, SELURUH saldo wilayah sampai akhir bulan
+# yang sudah ditutup wajib disetor ke Pusat. Setoran tidak otomatis: admin wilayah mencatat setoran + foto bukti,
 # lalu owner (CFO) menerima atau menolaknya. Setoran hanya memindahkan uang antar-kas usaha yang sama, jadi bukan
 # pendapatan/beban dan tidak mengubah saldo kas total; yang berubah hanya posisi "uang di tangan" tiap wilayah.
 
@@ -7788,7 +7788,7 @@ def proses_pengingat_setoran(sekarang=None) -> None:
 
 
 def _boleh_lokasi_kas(request: Request, lokasi: int) -> None:
-    """Admin/owner: semua wilayah. Mitra: hanya bila ditunjuk owner sebagai penanggung jawab kas wilayah itu."""
+    """Admin/owner: semua wilayah. Akun mitra: hanya bila ditunjuk owner sebagai admin wilayah (pemegang kas) lokasi itu."""
     if request.state.peran in _PERAN_PENUH:
         return
     if request.state.peran == "mitra":
@@ -7799,7 +7799,7 @@ def _boleh_lokasi_kas(request: Request, lokasi: int) -> None:
             conn.close()
         if r and r["pj_kas"] == request.state.user:
             return
-    raise HTTPException(status_code=403, detail="Anda bukan penanggung jawab kas wilayah ini.")
+    raise HTTPException(status_code=403, detail="Anda bukan admin wilayah (pemegang kas) lokasi ini.")
 
 
 @app.get("/api/kas-wilayah")
@@ -7971,7 +7971,7 @@ def kas_wilayah_periksa(sid: int, d: PeriksaSetoranIn, request: Request):
     return {"ok": True}
 
 
-# --- Mitra = penanggung jawab kas wilayahnya ---
+# --- Admin wilayah (pemegang kas) yang login dengan akun mitra, mis. W2 ---
 
 @app.get("/api/mitra/kas")
 def mitra_kas(request: Request):
