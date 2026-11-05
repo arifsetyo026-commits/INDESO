@@ -1373,6 +1373,7 @@ async function simpanPasangBaru(){
   await loadPelanggan(); backPelanggan();
   const t=[ 'Pelanggan '+body.nama+' ('+d.username+', ID '+d.id_pelanggan+') tersimpan' ];
   if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
+  if(d.jumlah_tagihan>1) t.push('ditambah '+(d.jumlah_tagihan-1)+' tagihan bulan berikutnya s/d bulan ini');
   $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
  }catch(e){ msg.textContent='Gagal: '+e.message; }
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
@@ -1911,6 +1912,11 @@ function renderDiagnosa(){
  const warna={bad:['#fff6f5','#f3b4ab','#b42318','✖'],warn:['#fffaf0','#f3d48a','#8a5a00','⚠'],ok:['#f3faf5','#bfe6cb','#0b7a3b','✔'],info:['#f2f7fd','#c8dcf2','#1669aa','ℹ']};
  let h=`<div class="kuPanel" style="margin-bottom:10px"><div class="plName" style="font-size:var(--fs-md)">${esc(P.nama||P.username)} <span class="plSub">· ${esc(P.username)} · ${esc(P.paket||'tanpa paket')}${P.kecepatan_mbps?' ('+P.kecepatan_mbps+' Mbps)':''}</span></div><div class="plSub">${esc(P.alamat||'')}${P.no_hp?' · <a href="https://wa.me/'+esc(nomorWA(P.no_hp))+'" target="_blank" rel="noopener">WA '+esc(P.no_hp)+'</a>':''}${d.tiket_terbuka?' · <a href="#" onclick="closeModal(\'diagModal\');openTiket();bukaTiket('+d.tiket_terbuka.id+');return false">tiket #T'+d.tiket_terbuka.id+' terbuka</a>':''}</div></div>`;
  h+='<div style="margin-bottom:10px">'+d.kesimpulan.map(k=>{ const w=warna[k.tingkat]||warna.info; return `<div style="background:${w[0]};border:1px solid ${w[1]};color:${w[2]};border-radius:10px;padding:9px 11px;margin-bottom:6px;font-size:var(--fs-xs);font-weight:700">${w[3]} ${esc(k.teks)}</div>`; }).join('')+'</div>';
+ if(d.dipantau===false){   // lokasi hanya penagihan: tidak ada data jaringan dari MikroTik/OLT utama
+  h+='<div class="detailGrid">'+(d.terisolir?kotak('Isolir','<span style="color:#b42318">Sedang diisolir</span>'):'')
+   +kotak('Tagihan belum dibayar',d.tunggakan.jumlah?d.tunggakan.jumlah+' bulan · '+rp(d.tunggakan.total):'tidak ada')+'</div>';
+  $('dgIsi').innerHTML=h; return;
+ }
  const pp=d.pppoe, ll=d.lalu_lintas, lim=pp.limit_mbps;
  const bar=(v)=>lim&&v!=null?`<div style="height:6px;background:#eef3ef;border-radius:9px;margin-top:4px"><div style="height:6px;border-radius:9px;width:${Math.min(100,v*100/lim)}%;background:${v>=0.9*lim?'#eb6834':'#2a78d6'}"></div></div>`:'';
  h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Koneksi</div><div class="detailGrid" style="margin-bottom:6px">'
@@ -3070,11 +3076,11 @@ async function muatKasWilayah(){
  try{ const d=await jsonAtauError(await fetch('/api/kas-wilayah',{cache:'no-store'})); ku.kas=d; const owner=d.peran==='owner';
   const n=d.wilayah.filter(w=>w.wajib_setor>0||w.menunggu.n).length; $('kuNKas').textContent=n?'('+n+')':'';
   $('kasWil').innerHTML=d.wilayah.map(w=>`<div class="blRow" style="display:block"><div class="plName">${esc(w.nama)}</div>
-   <div class="blSum" style="margin-top:6px"><div class="blBox"><small>Masuk bulan ini</small><b>${rp(w.masuk_bulan_ini)}</b></div><div class="blBox"><small>Uang di tangan</small><b>${rp(w.di_tangan)}</b></div>
+   <div class="blSum" style="margin-top:6px"><div class="blBox"><small>Masuk bulan ini</small><b>${rp(w.masuk_bulan_ini)}</b></div><div class="blBox"><small>Uang di tangan</small><b>${w.admin_wilayah?rp(w.di_tangan):'di Pusat'}</b><small>${w.admin_wilayah?'admin '+esc(w.admin_wilayah):'tanpa admin wilayah'}</small></div>
    <div class="blBox"><small>Wajib setor</small><b style="color:${w.wajib_setor?'#b45309':'#0b7a3b'}">${rp(w.wajib_setor)}</b><small>${w.tutup_terakhir?'s/d buku '+esc(namaPeriode(w.tutup_terakhir)):'belum ada buku ditutup'}</small></div>
    <div class="blBox"><small>Menunggu diperiksa</small><b>${rp(w.menunggu.jumlah)}</b><small>${w.menunggu.n} setoran</small></div></div></div>`).join('');
-  $('kasForm').innerHTML=`<label>Catat setoran ke Pusat</label><div class="kuBayarForm" style="grid-template-columns:repeat(2,minmax(0,1fr))">
-   <div><small>Wilayah</small><select id="ksLok" onchange="isiJumlahSetor()">${d.wilayah.map(w=>`<option value="${w.lokasi}">${esc(w.nama)}</option>`).join('')}</select></div>
+  $('kasForm').innerHTML=!d.wilayah.some(w=>w.admin_wilayah)?'<div class="plSub">Belum ada wilayah dengan admin wilayah (pemegang kas). Tunjuk di Pelanggan → Lokasi; wilayah tanpa admin dianggap dipegang Pusat.</div>':`<label>Catat setoran ke Pusat</label><div class="kuBayarForm" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+   <div><small>Wilayah</small><select id="ksLok" onchange="isiJumlahSetor()">${d.wilayah.filter(w=>w.admin_wilayah).map(w=>`<option value="${w.lokasi}">${esc(w.nama)} (admin ${esc(w.admin_wilayah)})</option>`).join('')}</select></div>
    <div><small>Jumlah (Rp)</small><input id="ksJml" inputmode="numeric"></div>
    <div><small>Tanggal setor</small><input id="ksTgl" type="date" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div>
    <div><small>Metode</small><select id="ksMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div>
@@ -3090,7 +3096,7 @@ async function muatKasWilayah(){
   $('kasMulai').innerHTML='Kas wilayah dihitung mulai '+esc(namaPeriode(d.mulai))+(owner?` · <a href="#" onclick="ubahKasMulai();return false">ubah</a>`:'');
  }catch(e){ $('kasWil').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
-function isiJumlahSetor(){ const w=ku.kas&&ku.kas.wilayah.find(x=>x.lokasi===Number($('ksLok').value)); if(w) $('ksJml').value=w.wajib_setor?Number(w.wajib_setor).toLocaleString('id-ID'):''; }
+function isiJumlahSetor(){ if(!$('ksLok')) return; const w=ku.kas&&ku.kas.wilayah.find(x=>x.lokasi===Number($('ksLok').value)); if(w) $('ksJml').value=w.wajib_setor?Number(w.wajib_setor).toLocaleString('id-ID'):''; }
 async function kirimSetoranWilayah(){
  const f=$('ksBukti').files[0], body={lokasi:Number($('ksLok').value),jumlah:Number($('ksJml').value.replace(/\D/g,'')),tanggal:$('ksTgl').value,metode:$('ksMetode').value,catatan:$('ksCat').value.trim()||null};
  if(!(body.jumlah>0)){ kuPesan('Isi jumlah setoran.'); return; } if(!f){ kuPesan('Lampirkan foto bukti setor.'); return; }
