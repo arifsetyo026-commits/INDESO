@@ -3623,6 +3623,27 @@ def mikrotik_profil(request: Request):
     return {"profil": [{"nama": n, "mbps": _kecepatan_dari_profil(n)} for n in nama]}
 
 
+def _buat_tagihan_pertama(conn, username: str, periode: str, tgl_pasang: str, harga: int, diskon: int, cara: str,
+                          jumlah: Optional[int], oleh: str) -> int:
+    """Tagihan bulan pasang menurut pilihan admin: prorata otomatis, penuh satu bulan, atau jumlah yang diisi manual.
+    Jatuh tempo tetap paling cepat 7 hari setelah pasang."""
+    if cara == "prorata":
+        return _buat_tagihan_satu(conn, username, periode)
+    if conn.execute("SELECT 1 FROM pelanggan WHERE username = ? AND (gratis = 1 OR status != 'aktif')", (username,)).fetchone():
+        return 0
+    jatuh_tempo = max(f"{periode}-{CONFIG['JATUH_TEMPO_TANGGAL']:02d}",
+                      (datetime.strptime(tgl_pasang, "%Y-%m-%d") + timedelta(days=7)).strftime("%Y-%m-%d"))
+    if cara == "penuh":
+        jumlah = max(0, int(harga) - int(diskon or 0))
+        catatan = "bulan pertama penuh" + (f"; diskon {_rp(diskon)}" if diskon else "")
+    else:
+        catatan = f"bulan pertama diisi manual oleh {oleh}"
+    if not jumlah:
+        return 0
+    return conn.execute("INSERT OR IGNORE INTO tagihan (username, periode, jumlah, jatuh_tempo, catatan) VALUES (?,?,?,?,?)",
+                        (username, periode, int(jumlah), jatuh_tempo, catatan)).rowcount
+
+
 class TambahPelangganIn(BaseModel):
     username: str
     nama: str
@@ -3632,7 +3653,9 @@ class TambahPelangganIn(BaseModel):
     tgl_pasang: str
     diskon: int = 0
     lokasi: int = 1
-    tagih_bulan_ini: bool = True       # langsung buat tagihan prorata bulan pasang
+    tagih_bulan_ini: bool = True       # langsung buat tagihan bulan pasang (dan bulan-bulan sesudahnya s/d sekarang)
+    tagihan_pertama: str = "prorata"   # prorata | penuh | manual — cara menghitung tagihan bulan pasang
+    jumlah_pertama: Optional[int] = None   # wajib bila tagihan_pertama = manual
 
 
 @app.post("/api/data-pelanggan")
@@ -3653,6 +3676,10 @@ def tambah_pelanggan(d: TambahPelangganIn, request: Request):
         raise HTTPException(status_code=400, detail="Tanggal pasang tidak boleh di masa depan.")
     diskon = _cek_diskon(d.diskon)
     periode = tgl[:7]
+    if d.tagihan_pertama not in ("prorata", "penuh", "manual"):
+        raise HTTPException(status_code=400, detail="Cara tagihan pertama harus prorata, penuh, atau manual.")
+    if d.tagihan_pertama == "manual" and not (d.jumlah_pertama and 0 < d.jumlah_pertama <= 10_000_000):
+        raise HTTPException(status_code=400, detail="Isi jumlah tagihan bulan pertama (lebih dari Rp0).")
     conn = _billing_conn()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -3671,7 +3698,9 @@ def tambah_pelanggan(d: TambahPelangganIn, request: Request):
         if d.tagih_bulan_ini:
             # Dicatat mundur (pasang bulan lalu): tagihan bulan pasang (prorata) sampai bulan berjalan sekaligus,
             # supaya bulan-bulan sesudahnya tidak terlewat (tagihan otomatis hanya dibuat di akhir/awal bulan).
-            p, akhir = periode, datetime.now().strftime("%Y-%m")
+            n_tagihan += _buat_tagihan_pertama(conn, username, periode, tgl, paket["harga"], diskon,
+                                               d.tagihan_pertama, d.jumlah_pertama, _oleh(request))
+            p, akhir = _geser_periode(periode, 1), datetime.now().strftime("%Y-%m")
             while p <= akhir:
                 n_tagihan += _buat_tagihan_satu(conn, username, p)
                 p = _geser_periode(p, 1)
@@ -4574,6 +4603,40 @@ def tandai_lunas(tagihan_id: int, request: Request, d: Optional[LunasIn] = None)
         conn.close()
     catat_aktivitas(_oleh(request), "tagihan_lunas",
                     f"{t['username']} {t['periode']} {_rp(t['jumlah'])} · dibayar {tanggal} ({d.metode})")
+    return {"ok": True}
+
+
+class UbahJumlahIn(BaseModel):
+    jumlah: int
+    alasan: str
+
+
+@app.post("/api/tagihan/{tagihan_id}/jumlah")
+def ubah_jumlah_tagihan(tagihan_id: int, d: UbahJumlahIn, request: Request):
+    """Admin mengoreksi jumlah tagihan yang BELUM dibayar (mis. kesepakatan bulan pertama). Alasan wajib dan
+    jumlah lama tercatat di catatan tagihan & log aktivitas. Tagihan lunas tidak bisa diubah (batalkan dulu)."""
+    _wajib_admin(request)
+    alasan = d.alasan.strip()
+    if len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan perubahan jumlah tagihan.")
+    if not 0 < d.jumlah <= 10_000_000:
+        raise HTTPException(status_code=400, detail="Jumlah tagihan harus lebih dari Rp0.")
+    conn = _billing_conn()
+    try:
+        t = conn.execute("SELECT * FROM tagihan WHERE id = ?", (tagihan_id,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tagihan tidak ditemukan.")
+        if t["status"] == "lunas":
+            raise HTTPException(status_code=400, detail="Tagihan sudah lunas. Batalkan pelunasannya dulu bila jumlahnya salah.")
+        catatan = "; ".join(x for x in (t["catatan"], f"diubah {_rp(t['jumlah'])} → {_rp(d.jumlah)} oleh {_oleh(request)}: "
+                                        f"{alasan[:100]}") if x)
+        conn.execute("UPDATE tagihan SET jumlah = ?, catatan = ? WHERE id = ? AND status != 'lunas'",
+                     (d.jumlah, catatan[:500], tagihan_id))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "tagihan_ubah",
+                    f"{t['username']} {t['periode']}: {_rp(t['jumlah'])} → {_rp(d.jumlah)} ({alasan[:120]})")
     return {"ok": True}
 
 

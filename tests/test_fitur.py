@@ -3697,3 +3697,27 @@ def test_lengkapi_tagihan_harian(siap):
     main.proses_lengkapi_tagihan(sekarang)
     baru = {t["username"]: t for t in o.get(f"/api/tagihan?periode={per}").json()["tagihan"]}
     assert "dwi" in baru and "server" not in baru and baru["budi"]["jumlah"] == ada["budi"]["jumlah"]
+
+
+def test_tagihan_pertama_pilihan_dan_ubah_jumlah(siap):
+    """Tagihan bulan pertama pelanggan baru tidak harus prorata: bisa penuh atau diisi manual oleh admin. Tagihan yang
+    belum dibayar bisa dikoreksi jumlahnya dengan alasan (tercatat); tagihan lunas tidak."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    tgl = f"{ini}-{min(datetime.now().day, 28):02d}"
+    tambah = lambda u, **kw: k.post("/api/data-pelanggan", json={"username": u, "nama": u, "paket_id": 1, "tgl_pasang": tgl, **kw})
+    assert tambah("x1", tagihan_pertama="manual").status_code == 400            # jumlah wajib
+    assert tambah("x2", tagihan_pertama="ngawur").status_code == 400
+    t = tambah("eko", tagihan_pertama="manual", jumlah_pertama=75000).json()["tagihan"]
+    assert t["jumlah"] == 75000 and "manual" in t["catatan"]
+    t = tambah("fani", tagihan_pertama="penuh").json()["tagihan"]
+    assert t["jumlah"] == 150000 and "penuh" in t["catatan"]
+    tid = next(x["id"] for x in o.get(f"/api/tagihan?periode={ini}").json()["tagihan"] if x["username"] == "eko")
+    assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 80000, "alasan": ""}).status_code == 400
+    assert m.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 80000, "alasan": "sepakat"}).status_code == 403
+    assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 80000, "alasan": "sepakat langsung"}).status_code == 200
+    x = next(x for x in o.get(f"/api/tagihan?periode={ini}").json()["tagihan"] if x["id"] == tid)
+    assert x["jumlah"] == 80000 and "Rp 75.000 → Rp 80.000" in x["catatan"]
+    assert "Rp 75.000 → Rp 80.000" in o.get("/api/aktivitas").text
+    o.post(f"/api/tagihan/{tid}/lunas")
+    assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 90000, "alasan": "telat"}).status_code == 400
