@@ -4328,6 +4328,55 @@ def _buat_tagihan_satu(conn, username: str, periode: str) -> int:
                         (username, periode, *h)).rowcount
 
 
+def _bulan_pasang_terpotong(conn, username: str, periode: str) -> bool:
+    """True bila periode ini bulan pasang pelanggan yang mulai setelah tanggal 1 dan tagihannya belum ada."""
+    r = conn.execute("SELECT tgl_pasang FROM pelanggan WHERE username = ?", (username,)).fetchone()
+    if not r or not r[0] or r[0][:7] != periode or int(r[0][8:10]) <= 1:
+        return False
+    return not conn.execute("SELECT 1 FROM tagihan WHERE username = ? AND periode = ?", (username, periode)).fetchone()
+
+
+class TagihanPertamaIn(BaseModel):
+    cara: str                       # prorata | penuh | manual
+    jumlah: Optional[int] = None    # wajib bila manual
+
+
+@app.post("/api/tagihan/pertama/{username}")
+def tagihan_pertama(username: str, d: TagihanPertamaIn, request: Request):
+    """Buat tagihan bulan pasang satu pelanggan dengan cara yang dipilih admin."""
+    _wajib_admin(request)
+    if d.cara not in ("prorata", "penuh", "manual"):
+        raise HTTPException(status_code=400, detail="Cara tagihan pertama harus prorata, penuh, atau manual.")
+    if d.cara == "manual" and not (d.jumlah and 0 < d.jumlah <= 10_000_000):
+        raise HTTPException(status_code=400, detail="Isi jumlah tagihan bulan pertama (lebih dari Rp0).")
+    conn = _billing_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        p = conn.execute("SELECT p.username, p.nama, p.tgl_pasang, p.diskon, p.gratis, p.status, k.harga FROM pelanggan p "
+                         "JOIN paket k ON k.id = p.paket_id WHERE p.username = ?", (username,)).fetchone()
+        if not p:
+            raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan atau belum punya paket.")
+        if p["gratis"] or p["status"] != "aktif":
+            raise HTTPException(status_code=400, detail="Pelanggan gratis/berhenti tidak ditagih.")
+        if not p["tgl_pasang"]:
+            raise HTTPException(status_code=400, detail="Tanggal pasang pelanggan belum diisi.")
+        periode = p["tgl_pasang"][:7]
+        if conn.execute("SELECT 1 FROM tagihan WHERE username = ? AND periode = ?", (username, periode)).fetchone():
+            raise HTTPException(status_code=409, detail=f"Tagihan {_nama_periode(periode)} sudah ada. Pakai Ubah jumlah.")
+        n = _buat_tagihan_pertama(conn, username, periode, p["tgl_pasang"], p["harga"], p["diskon"], d.cara, d.jumlah,
+                                  _oleh(request))
+        if not n:
+            raise HTTPException(status_code=400, detail="Tagihan tidak dibuat (jumlahnya Rp0).")
+        t = dict(conn.execute("SELECT id, periode, jumlah, jatuh_tempo, catatan FROM tagihan WHERE username = ? AND periode = ?",
+                              (username, periode)).fetchone())
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "tagihan_buat",
+                    f"tagihan pertama {username} {periode} {_rp(t['jumlah'])} ({d.cara})")
+    return {"ok": True, "tagihan": t}
+
+
 def buat_tagihan(periode: str):
     if not _periode_valid(periode):
         raise HTTPException(status_code=400, detail="Format periode harus YYYY-MM, contoh 2026-11.")
@@ -4338,15 +4387,20 @@ def buat_tagihan(periode: str):
             "SELECT p.username FROM pelanggan p JOIN paket k ON k.id = p.paket_id "
             "WHERE p.gratis = 0 AND p.status = 'aktif'"
         ).fetchall()
-        baru = 0
+        baru = menunggu = 0
         for r in rows:
+            if _bulan_pasang_terpotong(conn, r["username"], periode):
+                # Tagihan bulan pertama tidak pernah dibuat otomatis (prorata): admin memilih sendiri lewat Tambah
+                # pelanggan atau tombol "Buat tagihan pertama" di Penagihan (prorata / penuh / isi manual).
+                menunggu += 1
+                continue
             baru += _buat_tagihan_satu(conn, r["username"], periode)
         tanpa_paket = conn.execute(
             "SELECT COUNT(*) FROM pelanggan WHERE paket_id IS NULL AND gratis = 0 AND status = 'aktif'"
         ).fetchone()[0]
         conn.commit()
-        return {"periode": periode, "jatuh_tempo": jatuh_tempo, "baru": baru,
-                "sudah_ada": len(rows) - baru, "tanpa_paket": tanpa_paket}
+        return {"periode": periode, "jatuh_tempo": jatuh_tempo, "baru": baru, "menunggu_pertama": menunggu,
+                "sudah_ada": len(rows) - baru - menunggu, "tanpa_paket": tanpa_paket}
     finally:
         conn.close()
 
@@ -4369,7 +4423,7 @@ def list_tagihan(periode: str):
         # Pelanggan tanpa tagihan di periode ini (gratis, belum punya paket, atau
         # tagihannya belum dibuat) tetap dikirim supaya bisa diisolir manual.
         tanpa_tagihan = conn.execute(
-            "SELECT p.username, p.nama, p.no_hp, p.gratis, p.paket_id, p.status, p.lokasi FROM pelanggan p "
+            "SELECT p.username, p.nama, p.no_hp, p.gratis, p.paket_id, p.status, p.lokasi, p.tgl_pasang FROM pelanggan p "
             "WHERE p.username NOT IN (SELECT username FROM tagihan WHERE periode = ?) "
             "AND (p.status = 'aktif' OR p.username IN (SELECT username FROM isolir)) "
             "ORDER BY p.gratis DESC, p.nama COLLATE NOCASE",
@@ -9915,6 +9969,9 @@ def proses_tagihan_harian(sekarang=None) -> None:
                 catatan.append(f"{hasil['tanpa_paket']} pelanggan belum punya paket (tidak ditagih)")
             if tanpa_hp:
                 catatan.append(f"{tanpa_hp} pelanggan belum punya nomor HP")
+            if hasil.get("menunggu_pertama"):
+                catatan.append(f"{hasil['menunggu_pertama']} pelanggan baru: tagihan bulan pertama belum dibuat "
+                               "(Penagihan → Buat tagihan pertama)")
             if hasil["sudah_ada"] == 0:
                 status = "dibuat (terlambat)" if terlambat else "dibuat"
             elif hasil["baru"] > 0:

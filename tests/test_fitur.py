@@ -3699,6 +3699,31 @@ def test_lengkapi_tagihan_harian(siap):
     assert "dwi" in baru and "server" not in baru and baru["budi"]["jumlah"] == ada["budi"]["jumlah"]
 
 
+def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
+    """Pelanggan baru yang belum ditagih bulan pertamanya: pembuatan tagihan otomatis/tombol "Buat tagihan" tidak
+    membuat prorata sendiri; admin memilih lewat Buat tagihan pertama (prorata / penuh / manual)."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    lalu = main._geser_periode(ini, -1)
+    r = k.post("/api/data-pelanggan", json={"username": "gani", "nama": "Gani", "paket_id": 1,
+                                             "tgl_pasang": f"{lalu}-15", "tagih_bulan_ini": False})
+    assert r.status_code == 200 and r.json()["jumlah_tagihan"] == 0
+    h = o.post(f"/api/tagihan/buat?periode={lalu}").json()
+    assert h["menunggu_pertama"] == 1
+    assert "gani" not in {x["username"] for x in o.get(f"/api/tagihan?periode={lalu}").json()["tagihan"]}
+    belum = next(x for x in o.get(f"/api/tagihan?periode={lalu}").json()["tanpa_tagihan"] if x["username"] == "gani")
+    assert belum["tgl_pasang"] == f"{lalu}-15"
+    o.post(f"/api/tagihan/buat?periode={ini}")                       # bulan berikutnya tetap penuh otomatis
+    assert next(x for x in o.get(f"/api/tagihan?periode={ini}").json()["tagihan"] if x["username"] == "gani")["jumlah"] == 150000
+    assert m.post("/api/tagihan/pertama/gani", json={"cara": "manual", "jumlah": 60000}).status_code == 403
+    assert k.post("/api/tagihan/pertama/gani", json={"cara": "manual"}).status_code == 400
+    t = k.post("/api/tagihan/pertama/gani", json={"cara": "manual", "jumlah": 60000}).json()["tagihan"]
+    assert t["periode"] == lalu and t["jumlah"] == 60000 and "manual" in t["catatan"]
+    assert t["jatuh_tempo"] >= f"{lalu}-22"
+    assert k.post("/api/tagihan/pertama/gani", json={"cara": "penuh"}).status_code == 409
+    assert o.post(f"/api/tagihan/buat?periode={lalu}").json()["menunggu_pertama"] == 0
+
+
 def test_tagihan_pertama_pilihan_dan_ubah_jumlah(siap):
     """Tagihan bulan pertama pelanggan baru tidak harus prorata: bisa penuh atau diisi manual oleh admin. Tagihan yang
     belum dibayar bisa dikoreksi jumlahnya dengan alasan (tercatat); tagihan lunas tidak."""

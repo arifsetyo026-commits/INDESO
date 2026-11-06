@@ -747,7 +747,7 @@ async function buatTagihan(){
   if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
   await loadBilling(true);
   $('blMsg').style.color='#0b7a3b';
-  $('blMsg').textContent=d.baru+' tagihan baru dibuat'+(d.tanpa_paket?(' · '+d.tanpa_paket+' pelanggan belum punya paket'):'');
+  $('blMsg').textContent=d.baru+' tagihan baru dibuat'+(d.tanpa_paket?(' · '+d.tanpa_paket+' pelanggan belum punya paket'):'')+(d.menunggu_pertama?(' · '+d.menunggu_pertama+' pelanggan baru menunggu tagihan pertama (pilih prorata/penuh/manual di bawah)'):'');
  }catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
                                                                                                                                                          }
 function openCustomers(){ $('customerModal').classList.add('show'); $('customerSearch').focus(); searchCustomers();
@@ -1214,9 +1214,12 @@ function renderBillingIsi(s){
   const terisolir=iso.has(p.username), i=bl.lain.indexOf(p);
   const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':p.gratis?'<span class="chip ok">Gratis</span>':'<span class="chip warn">'+(p.paket_id?'Belum ditagih':'Belum ada paket')+'</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
-  const sub=p.status==='berhenti'?'Berhenti berlangganan':p.gratis?'Tidak ditagih':(p.paket_id?'Tagihan periode ini belum dibuat':'Lengkapi paket di menu Pelanggan');
+  const pertama=p.status==='aktif'&&!p.gratis&&p.paket_id&&p.tgl_pasang&&p.tgl_pasang.slice(0,7)===bl.periode;
+  const sub=p.status==='berhenti'?'Berhenti berlangganan':p.gratis?'Tidak ditagih':(!p.paket_id?'Lengkapi paket di menu Pelanggan':pertama?'Pasang '+tglPendek(p.tgl_pasang)+' · tagihan bulan pertama belum dibuat':'Tagihan periode ini belum dibuat');
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolirLain(${i})">Buka isolir</button>`:`<button class="btnS" onclick="isolirLain(${i})">Isolir</button>`;
-  return `<div class="blRow"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tIso}</div></div></div>`;
+  const tPertama=pertama?`<button class="btnS go" onclick="bl.pertama=bl.pertama===${i}?null:${i};renderBilling()">Buat tagihan pertama</button>`:'';
+  const fPertama=pertama&&bl.pertama===i?`<div class="kuBayarForm" style="margin-top:8px"><div><small>Tagihan bulan pertama</small><select id="blPCara" onchange="$('blPJmlW').style.display=this.value==='manual'?'':'none'"><option value="manual">Isi manual</option><option value="penuh">Penuh 1 bulan</option><option value="prorata">Prorata (sesuai sisa hari)</option></select></div><div id="blPJmlW"><small>Jumlah (Rp)</small><input id="blPJml" inputmode="numeric" placeholder="mis. 75000"></div><div><small>&nbsp;</small><button class="btnS go" onclick="simpanTagihanPertama(${i})">Simpan</button></div></div>`:'';
+  return `<div class="blRow"${fPertama?' style="display:block"':''}><div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tPertama}${tIso}</div></div></div>${fPertama}</div>`;
  }).join('');
  const kosong=!bl.rows.length?'<div class="muted" style="margin-bottom:8px">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>':'';
  $('blList').innerHTML=(bl.kw?kotakKwitansi():'')+info+kosong+((htmlTagihan||htmlLain)?htmlTagihan+(htmlLain&&htmlTagihan?'<div class="plSub" style="margin:12px 0 4px"><b>Gratis / tanpa tagihan</b></div>':'')+htmlLain:(bl.rows.length?'<div class="muted">Tidak ada yang cocok.</div>':''));
@@ -1233,6 +1236,15 @@ async function isolirManual(id){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
  if(!confirm('ISOLIR '+t.nama+'? Internetnya dibatasi sampai tagihan dilunasi.')) return;
  await aksiIsolir('/api/isolir/'+encodeURIComponent(t.username),t.nama+' diisolir.');
+}
+async function simpanTagihanPertama(i){
+ const p=(bl.lain||[])[i]; if(!p) return;
+ const cara=$('blPCara').value, jumlah=Number(($('blPJml').value||'').replace(/\D/g,''))||null;
+ if(cara==='manual'&&!jumlah){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Isi jumlah tagihan bulan pertama.'; return; }
+ try{ const d=await jsonAtauError(await fetch('/api/tagihan/pertama/'+encodeURIComponent(p.username),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cara,jumlah})}));
+  bl.pertama=null; await loadBilling(true);
+  $('blMsg').style.color='#0b7a3b'; $('blMsg').textContent='Tagihan pertama '+p.nama+' dibuat: '+rp(d.tagihan.jumlah)+'.'; }
+ catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
 }
 async function isolirLain(i){
  const p=(bl.lain||[])[i]; if(!p) return;
