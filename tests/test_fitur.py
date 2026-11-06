@@ -3561,6 +3561,10 @@ def test_hotspot_reseller_voucher(siap):
     assert 'dns-name="hs.desa2"' in sk and "login-by=http-pap" in sk
     # kode voucher tidak pernah masuk log aktivitas
     assert j["kode"] not in o.get("/api/aktivitas").text
+    # reseller yang masih memegang stok / uang voucher tidak bisa dihapus atau dipindah lokasi
+    r_hapus = o.delete("/api/akun/warungsri")
+    assert r_hapus.status_code == 400 and "voucher" in r_hapus.json()["detail"]
+    assert o.put("/api/akun/warungsri", json={"lokasi": 2}).status_code == 400
 
 
 def test_kas_wilayah_dan_setoran(siap):
@@ -3602,7 +3606,9 @@ def test_kas_wilayah_dan_setoran(siap):
     assert o.post(f"/api/keuangan/tutup-buku/{per}", json={}).status_code == 200
     assert "wajib setor" in " ".join(str(x["data"].get("text") or "") for x in main._terkirim)
     wil = {w["lokasi"]: w for w in o.get("/api/kas-wilayah").json()["wilayah"]}
-    assert wil[2]["wajib_setor"] == w2 and wil[1]["wajib_setor"] == tg["budi"]["jumlah"]
+    # W1 tanpa admin wilayah = uangnya dipegang Pusat sendiri: tidak ada wajib setor
+    assert wil[2]["wajib_setor"] == w2 and wil[2]["admin_wilayah"] == "rina"
+    assert wil[1]["wajib_setor"] == 0 and wil[1]["admin_wilayah"] is None
     # mitra W2 mencatat setoran: belum dihitung sampai bukti ada & owner menerima
     sid = m2.post("/api/mitra/kas/setoran", json={"jumlah": w2 - 10000, "tanggal": hari}).json()["id"]
     assert o.post(f"/api/kas-wilayah/setoran/{sid}/periksa", json={"terima": True}).status_code == 400   # belum ada bukti
@@ -3632,3 +3638,111 @@ def test_kas_wilayah_dan_setoran(siap):
     main.proses_pengingat_setoran(sekarang + timedelta(days=3))
     assert len([x for x in main._terkirim if "Setoran wilayah" in str(x["data"].get("text") or "")]) == 2
     assert "#S" in o.get("/api/aktivitas").text
+    # lokasi tanpa admin wilayah (W1, dipegang Pusat) tidak menerima setoran
+    assert o.post("/api/kas-wilayah/setoran", json={"lokasi": 1, "jumlah": 1000, "tanggal": hari}).status_code == 400
+    # admin wilayah (pemegang kas) tidak bisa dihapus sebelum diganti
+    assert o.delete("/api/akun/rina").status_code == 400
+    # pelanggan pindah lokasi: uang yang sudah diterima wilayah lamanya tidak ikut pindah
+    sebelum = m2.get("/api/mitra/kas").json()["posisi"]["di_tangan"]
+    o.put("/api/data-pelanggan/w2.sari", json={"nama": "Sari", "paket_id": 1, "status": "aktif", "atur_secret": False, "lokasi": 1})
+    assert m2.get("/api/mitra/kas").json()["posisi"]["di_tangan"] == sebelum
+
+
+def test_lokasi_hanya_penagihan_tidak_dibaca_dari_jaringan_utama(siap):
+    """Pelanggan lokasi hanya penagihan: tidak dianggap 'hilang dari MikroTik' saat impor, status internetnya di portal
+    tidak diketahui (bukan 'offline'), dan Diagnosa tidak membaca MikroTik/OLT utama."""
+    main, o, k, m = siap
+    from fastapi.testclient import TestClient
+    assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    assert k.post("/api/data-pelanggan", json={"username": "w2.sari", "nama": "Sari", "paket_id": 1, "lokasi": 2,
+                                               "no_hp": "081299990000", "tgl_pasang": "2026-09-01"}).status_code == 200
+    hilang = {x["username"] for x in o.post("/api/impor-pelanggan").json()["tidak_ada_di_mikrotik"]}
+    assert "w2.sari" not in hilang
+    d = k.get("/api/diagnosa/w2.sari").json()
+    assert d["dipantau"] is False and d["pppoe"]["online"] is None and "belum tersambung" in d["kesimpulan"][0]["teks"]
+    assert k.get("/api/diagnosa/budi").json().get("dipantau", True) is not False
+    p = TestClient(main.app)
+    assert p.post("/api/portal/daftar", json={"no_hp": "081299990000", "login": "sari2", "password": "rahasia123"}).status_code == 200
+    o.post("/api/portal-akun/sari2/status", json={"status": "aktif"})
+    p.post("/api/portal/login", json={"username": "sari2", "password": "rahasia123"})
+    main._latest_data = main._build_dashboard([], None, [])
+    assert p.get("/api/portal/saya").json()["internet"]["diketahui"] is False
+
+
+def test_tambah_pelanggan_mundur_tagihan_sampai_bulan_ini(siap):
+    """Pelanggan dicatat mundur (pasang bulan lalu): tagihan prorata bulan pasang + tagihan bulan-bulan sesudahnya
+    s/d bulan berjalan dibuat sekaligus, supaya tidak ada bulan yang terlewat."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    lalu = main._geser_periode(ini, -2)
+    r = k.post("/api/data-pelanggan", json={"username": "eko", "nama": "Eko", "paket_id": 1,
+                                            "tgl_pasang": f"{lalu}-15"}).json()
+    assert r["jumlah_tagihan"] == 3 and r["tagihan"]["periode"] == lalu and "prorata" in r["tagihan"]["catatan"]
+    for p in (lalu, main._geser_periode(ini, -1), ini):
+        assert any(t["username"] == "eko" for t in o.get(f"/api/tagihan?periode={p}").json()["tagihan"]), p
+    assert "tidak dipantau" not in o.get("/api/ekspor/pelanggan").text
+
+
+def test_lengkapi_tagihan_harian(siap):
+    """Pelanggan yang diaktifkan lagi setelah tagihan bulanan dibuat dilengkapi tagihannya sekali sehari; yang gratis
+    tidak ditagih dan tagihan yang ada tidak ditimpa."""
+    main, o, k, m = siap
+    sekarang = datetime.now().replace(hour=23)
+    per = sekarang.strftime("%Y-%m")
+    o.put("/api/data-pelanggan/dwi", json={"nama": "dwi", "paket_id": 1, "status": "berhenti", "atur_secret": False})
+    o.post(f"/api/tagihan/buat?periode={per}")
+    ada = {t["username"]: t for t in o.get(f"/api/tagihan?periode={per}").json()["tagihan"]}
+    assert "dwi" not in ada
+    o.put("/api/data-pelanggan/dwi", json={"nama": "dwi", "paket_id": 1, "status": "aktif", "atur_secret": False})
+    main.proses_lengkapi_tagihan(sekarang)
+    baru = {t["username"]: t for t in o.get(f"/api/tagihan?periode={per}").json()["tagihan"]}
+    assert "dwi" in baru and "server" not in baru and baru["budi"]["jumlah"] == ada["budi"]["jumlah"]
+
+
+def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
+    """Pelanggan baru yang belum ditagih bulan pertamanya: pembuatan tagihan otomatis/tombol "Buat tagihan" tidak
+    membuat prorata sendiri; admin memilih lewat Buat tagihan pertama (prorata / penuh / manual)."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    lalu = main._geser_periode(ini, -1)
+    r = k.post("/api/data-pelanggan", json={"username": "gani", "nama": "Gani", "paket_id": 1,
+                                             "tgl_pasang": f"{lalu}-15", "tagih_bulan_ini": False})
+    assert r.status_code == 200 and r.json()["jumlah_tagihan"] == 0
+    h = o.post(f"/api/tagihan/buat?periode={lalu}").json()
+    assert h["menunggu_pertama"] == 1
+    assert "gani" not in {x["username"] for x in o.get(f"/api/tagihan?periode={lalu}").json()["tagihan"]}
+    belum = next(x for x in o.get(f"/api/tagihan?periode={lalu}").json()["tanpa_tagihan"] if x["username"] == "gani")
+    assert belum["tgl_pasang"] == f"{lalu}-15"
+    o.post(f"/api/tagihan/buat?periode={ini}")                       # bulan berikutnya tetap penuh otomatis
+    assert next(x for x in o.get(f"/api/tagihan?periode={ini}").json()["tagihan"] if x["username"] == "gani")["jumlah"] == 150000
+    assert m.post("/api/tagihan/pertama/gani", json={"cara": "manual", "jumlah": 60000}).status_code == 403
+    assert k.post("/api/tagihan/pertama/gani", json={"cara": "manual"}).status_code == 400
+    t = k.post("/api/tagihan/pertama/gani", json={"cara": "manual", "jumlah": 60000}).json()["tagihan"]
+    assert t["periode"] == lalu and t["jumlah"] == 60000 and "manual" in t["catatan"]
+    assert t["jatuh_tempo"] >= f"{lalu}-22"
+    assert k.post("/api/tagihan/pertama/gani", json={"cara": "penuh"}).status_code == 409
+    assert o.post(f"/api/tagihan/buat?periode={lalu}").json()["menunggu_pertama"] == 0
+
+
+def test_tagihan_pertama_pilihan_dan_ubah_jumlah(siap):
+    """Tagihan bulan pertama pelanggan baru tidak harus prorata: bisa penuh atau diisi manual oleh admin. Tagihan yang
+    belum dibayar bisa dikoreksi jumlahnya dengan alasan (tercatat); tagihan lunas tidak."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    tgl = f"{ini}-{min(datetime.now().day, 28):02d}"
+    tambah = lambda u, **kw: k.post("/api/data-pelanggan", json={"username": u, "nama": u, "paket_id": 1, "tgl_pasang": tgl, **kw})
+    assert tambah("x1", tagihan_pertama="manual").status_code == 400            # jumlah wajib
+    assert tambah("x2", tagihan_pertama="ngawur").status_code == 400
+    t = tambah("eko", tagihan_pertama="manual", jumlah_pertama=75000).json()["tagihan"]
+    assert t["jumlah"] == 75000 and "manual" in t["catatan"]
+    t = tambah("fani", tagihan_pertama="penuh").json()["tagihan"]
+    assert t["jumlah"] == 150000 and "penuh" in t["catatan"]
+    tid = next(x["id"] for x in o.get(f"/api/tagihan?periode={ini}").json()["tagihan"] if x["username"] == "eko")
+    assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 80000, "alasan": ""}).status_code == 400
+    assert m.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 80000, "alasan": "sepakat"}).status_code == 403
+    assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 80000, "alasan": "sepakat langsung"}).status_code == 200
+    x = next(x for x in o.get(f"/api/tagihan?periode={ini}").json()["tagihan"] if x["id"] == tid)
+    assert x["jumlah"] == 80000 and "Rp 75.000 → Rp 80.000" in x["catatan"]
+    assert "Rp 75.000 → Rp 80.000" in o.get("/api/aktivitas").text
+    o.post(f"/api/tagihan/{tid}/lunas")
+    assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 90000, "alasan": "telat"}).status_code == 400

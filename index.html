@@ -237,7 +237,9 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label>Paket</label><select id="pbPaket" onchange="pratinjauPasang()"></select>
 <label>Tanggal pasang</label><input id="pbTgl" type="date" onchange="pratinjauPasang()">
 <label>Diskon tetap per bulan (Rp)</label><input id="pbDiskon" type="number" min="0" step="1000" value="0" inputmode="numeric" oninput="pratinjauPasang()">
-<label class="plCek"><input type="checkbox" id="pbTagih" checked onchange="pratinjauPasang()"> Langsung buat tagihan bulan pertama (prorata)</label>
+<label class="plCek"><input type="checkbox" id="pbTagih" checked onchange="pratinjauPasang()"> Langsung buat tagihan bulan pertama</label>
+<div id="pbCaraWrap"><label>Tagihan bulan pertama</label><select id="pbCara" onchange="pratinjauPasang()"><option value="prorata">Prorata otomatis (sesuai sisa hari)</option><option value="penuh">Penuh 1 bulan</option><option value="manual">Isi manual</option></select>
+<div id="pbManualWrap" style="display:none"><label>Jumlah tagihan bulan pertama (Rp)</label><input id="pbManual" inputmode="numeric" oninput="pratinjauPasang()"></div></div>
 <div class="kuPanel" id="pbPratinjau" style="margin:4px 0 10px;background:#f7faf8"></div>
 <div class="plBtns"><button class="plSave" id="pbSimpan" onclick="simpanPasangBaru()">Simpan pelanggan baru</button><button class="plCancel" onclick="backPelanggan()">Batal</button></div>
 <div class="plMsg" id="pbMsg"></div></div></div>
@@ -680,6 +682,15 @@ async function kirimKwitansiWA(id){
  }catch(e){ if(w) w.close(); alert('Gagal menyiapkan kwitansi: '+e.message); }
 }
 async function ubahPeriode(n){ bl.periode=geserPeriode(bl.periode,n); await loadBilling(); }
+async function ubahJumlahTagihan(id){
+ const t=bl.rows.find(x=>x.id===id); if(!t) return;
+ const v=prompt('Jumlah baru tagihan '+t.nama+' ('+namaPeriode(bl.periode)+'), sekarang '+rp(t.jumlah)+':',String(t.jumlah)); if(v==null) return;
+ const jumlah=Number(v.replace(/\D/g,'')); if(!(jumlah>0)){ alert('Jumlah tidak valid.'); return; }
+ const alasan=prompt('Alasan perubahan (tercatat di tagihan & log aktivitas):'); if(alasan==null) return;
+ try{ await jsonAtauError(await fetch('/api/tagihan/'+id+'/jumlah',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jumlah,alasan})}));
+  $('blMsg').style.color='#0b7a3b'; $('blMsg').textContent='Tagihan '+t.nama+' diubah menjadi '+rp(jumlah)+'.'; await loadBilling(true); }
+ catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
+}
 function setFilterBilling(f){ bl.filter=f; renderBilling(); }
 // Teks pesan WA diatur di Pengaturan (nama usaha, cara bayar, template); ini cadangan bila belum termuat.
 bl.pesan={usaha:'Internet Desa',cara_bayar:'Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.',
@@ -736,7 +747,7 @@ async function buatTagihan(){
   if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
   await loadBilling(true);
   $('blMsg').style.color='#0b7a3b';
-  $('blMsg').textContent=d.baru+' tagihan baru dibuat'+(d.tanpa_paket?(' · '+d.tanpa_paket+' pelanggan belum punya paket'):'');
+  $('blMsg').textContent=d.baru+' tagihan baru dibuat'+(d.tanpa_paket?(' · '+d.tanpa_paket+' pelanggan belum punya paket'):'')+(d.menunggu_pertama?(' · '+d.menunggu_pertama+' pelanggan baru menunggu tagihan pertama (pilih prorata/penuh/manual di bawah)'):'');
  }catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
                                                                                                                                                          }
 function openCustomers(){ $('customerModal').classList.add('show'); $('customerSearch').focus(); searchCustomers();
@@ -1193,7 +1204,7 @@ function renderBillingIsi(s){
   const chip=lunas?'<span class="chip ok">Lunas</span>':telat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
   const sub=(lunas?('Dibayar '+tglPendek(t.tgl_bayar)+(t.metode_bayar?' · '+esc(t.metode_bayar):'')+(t.lunas_oleh?' · dicatat '+esc(t.lunas_oleh):'')):('Jatuh tempo '+tglPendek(t.jatuh_tempo)))+(t.catatan?' · <span style="color:#1d5fa8">'+esc(t.catatan)+'</span>':'');
-  const tLunas=lunas?`<button class="btnS" onclick="bl.kw=${t.id};renderBilling();$('blList').scrollIntoView({block:'start'})">Kwitansi</button><button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="bl.bayar=bl.bayar===${t.id}?null:${t.id};renderBilling()">Tandai lunas</button>`;
+  const tLunas=lunas?`<button class="btnS" onclick="bl.kw=${t.id};renderBilling();$('blList').scrollIntoView({block:'start'})">Kwitansi</button><button class="btnS" onclick="ubahLunas(${t.id},false)">Batalkan</button>`:`<button class="btnS" onclick="ingatkanWA(${t.id})">Ingatkan</button><button class="btnS go" onclick="bl.bayar=bl.bayar===${t.id}?null:${t.id};renderBilling()">Tandai lunas</button><button class="btnS" onclick="ubahJumlahTagihan(${t.id})">Ubah jumlah</button>`;
   const hariIni=new Date().toLocaleDateString('sv-SE');
   const fBayar=!lunas&&bl.bayar===t.id?`<div class="kuBayarForm" style="margin-top:8px"><div><small>Tanggal uang diterima</small><input type="date" id="blTgl" value="${hariIni}" max="${hariIni}"></div><div><small>Metode</small><select id="blMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select></div><div><small>&nbsp;</small><button class="btnS go" onclick="ubahLunas(${t.id},true)">Simpan lunas</button></div></div>`:'';
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolir(${t.id})">Buka isolir</button>`:(lunas?'':`<button class="btnS" onclick="isolirManual(${t.id})">Isolir</button>`);
@@ -1203,9 +1214,12 @@ function renderBillingIsi(s){
   const terisolir=iso.has(p.username), i=bl.lain.indexOf(p);
   const chip=p.status==='berhenti'?'<span class="chip bad">Berhenti</span>':p.gratis?'<span class="chip ok">Gratis</span>':'<span class="chip warn">'+(p.paket_id?'Belum ditagih':'Belum ada paket')+'</span>';
   const chipIso=terisolir?'<span class="chip bad">ISOLIR</span>':'';
-  const sub=p.status==='berhenti'?'Berhenti berlangganan':p.gratis?'Tidak ditagih':(p.paket_id?'Tagihan periode ini belum dibuat':'Lengkapi paket di menu Pelanggan');
+  const pertama=p.status==='aktif'&&!p.gratis&&p.paket_id&&p.tgl_pasang&&p.tgl_pasang.slice(0,7)===bl.periode;
+  const sub=p.status==='berhenti'?'Berhenti berlangganan':p.gratis?'Tidak ditagih':(!p.paket_id?'Lengkapi paket di menu Pelanggan':pertama?'Pasang '+tglPendek(p.tgl_pasang)+' · tagihan bulan pertama belum dibuat':'Tagihan periode ini belum dibuat');
   const tIso=terisolir?`<button class="btnS" onclick="bukaIsolirLain(${i})">Buka isolir</button>`:`<button class="btnS" onclick="isolirLain(${i})">Isolir</button>`;
-  return `<div class="blRow"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tIso}</div></div></div>`;
+  const tPertama=pertama?`<button class="btnS go" onclick="bl.pertama=bl.pertama===${i}?null:${i};renderBilling()">Buat tagihan pertama</button>`:'';
+  const fPertama=pertama&&bl.pertama===i?`<div class="kuBayarForm" style="margin-top:8px"><div><small>Tagihan bulan pertama</small><select id="blPCara" onchange="$('blPJmlW').style.display=this.value==='manual'?'':'none'"><option value="manual">Isi manual</option><option value="penuh">Penuh 1 bulan</option><option value="prorata">Prorata (sesuai sisa hari)</option></select></div><div id="blPJmlW"><small>Jumlah (Rp)</small><input id="blPJml" inputmode="numeric" placeholder="mis. 75000"></div><div><small>&nbsp;</small><button class="btnS go" onclick="simpanTagihanPertama(${i})">Simpan</button></div></div>`:'';
+  return `<div class="blRow"${fPertama?' style="display:block"':''}><div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><div class="plName">${esc(p.nama)}</div><div class="plSub">${esc(p.username)} · ${sub}</div></div><div class="blKanan"><div class="blAmt">—</div><div class="blAksi">${chipIso}${chip}${tPertama}${tIso}</div></div></div>${fPertama}</div>`;
  }).join('');
  const kosong=!bl.rows.length?'<div class="muted" style="margin-bottom:8px">Belum ada tagihan untuk periode ini. Tekan “Buat tagihan” di atas.</div>':'';
  $('blList').innerHTML=(bl.kw?kotakKwitansi():'')+info+kosong+((htmlTagihan||htmlLain)?htmlTagihan+(htmlLain&&htmlTagihan?'<div class="plSub" style="margin:12px 0 4px"><b>Gratis / tanpa tagihan</b></div>':'')+htmlLain:(bl.rows.length?'<div class="muted">Tidak ada yang cocok.</div>':''));
@@ -1222,6 +1236,15 @@ async function isolirManual(id){
  const t=bl.rows.find(x=>x.id===id); if(!t) return;
  if(!confirm('ISOLIR '+t.nama+'? Internetnya dibatasi sampai tagihan dilunasi.')) return;
  await aksiIsolir('/api/isolir/'+encodeURIComponent(t.username),t.nama+' diisolir.');
+}
+async function simpanTagihanPertama(i){
+ const p=(bl.lain||[])[i]; if(!p) return;
+ const cara=$('blPCara').value, jumlah=Number(($('blPJml').value||'').replace(/\D/g,''))||null;
+ if(cara==='manual'&&!jumlah){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Isi jumlah tagihan bulan pertama.'; return; }
+ try{ const d=await jsonAtauError(await fetch('/api/tagihan/pertama/'+encodeURIComponent(p.username),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cara,jumlah})}));
+  bl.pertama=null; await loadBilling(true);
+  $('blMsg').style.color='#0b7a3b'; $('blMsg').textContent='Tagihan pertama '+p.nama+' dibuat: '+rp(d.tagihan.jumlah)+'.'; }
+ catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
 }
 async function isolirLain(i){
  const p=(bl.lain||[])[i]; if(!p) return;
@@ -1348,7 +1371,7 @@ function hitungProrata(harga,diskon,tgl){
 function bukaPasangBaru(){
  $('plTitle').textContent='Tambah Pelanggan';
  ['pbUser','pbNama','pbAlamat','pbHp'].forEach(i=>$(i).value='');
- $('pbDiskon').value=0; $('pbTagih').checked=true;
+ $('pbDiskon').value=0; $('pbTagih').checked=true; $('pbCara').value='prorata'; $('pbManual').value='';
  const hari=new Date().toLocaleDateString('sv-SE'); $('pbTgl').value=hari; $('pbTgl').max=hari;
  $('pbPaket').innerHTML='<option value="">— pilih paket —</option>'+pl.paket.map(k=>`<option value="${k.id}">${esc(k.nama)} · ${k.kecepatan_mbps} Mbps · ${rp(k.harga)}</option>`).join('');
  $('pbLokasi').innerHTML=opsiLokasi(1); $('pbMsg').textContent=''; pratinjauPasang(); tampilkanView('baru'); $('pbUser').focus();
@@ -1356,7 +1379,13 @@ function bukaPasangBaru(){
 function pratinjauPasang(){
  const k=pl.paket.find(x=>x.id===Number($('pbPaket').value)), tgl=$('pbTgl').value, dis=Number($('pbDiskon').value||0), el=$('pbPratinjau');
  if(!k||!tgl){ el.innerHTML='<span class="plSub">Pilih paket dan tanggal pasang untuk melihat tagihan pertama.</span>'; return; }
- const p=hitungProrata(k.harga,dis,tgl), bln=namaPeriode(tgl.slice(0,7));
+ const p=hitungProrata(k.harga,dis,tgl), bln=namaPeriode(tgl.slice(0,7)), cara=$('pbCara').value, penuh=Math.max(0,k.harga-dis);
+ $('pbCaraWrap').style.display=$('pbTagih').checked?'':'none'; $('pbManualWrap').style.display=cara==='manual'?'':'none';
+ if($('pbTagih').checked&&cara!=='prorata'){
+  const j=cara==='penuh'?penuh:Number(($('pbManual').value||'').replace(/\D/g,''));
+  el.innerHTML=`<b>Tagihan ${esc(bln)}: ${j?rp(j):'—'}</b><div class="plSub">${cara==='penuh'?'penuh satu bulan':'diisi manual'}${dis&&cara==='penuh'?' · sudah dipotong diskon '+rp(dis):''}. Bulan berikutnya ${rp(penuh)}.</div>`;
+  return;
+ }
  el.innerHTML=$('pbTagih').checked
   ?`<b>Tagihan ${esc(bln)}: ${rp(p.jumlah)}</b><div class="plSub">${p.hari<p.hb?`prorata ${p.hari} dari ${p.hb} hari (${rp(Math.max(0,k.harga-dis))} × ${p.hari}/${p.hb})`:'bulan penuh'}${dis?' · sudah dipotong diskon '+rp(dis):''}. Bulan berikutnya ${rp(Math.max(0,k.harga-dis))}.</div>`
   :`<span class="plSub">Tagihan ${esc(bln)} tidak dibuat sekarang. Mulai bulan berikutnya ${rp(Math.max(0,k.harga-dis))}/bulan.</span>`;
@@ -1364,7 +1393,8 @@ function pratinjauPasang(){
 async function simpanPasangBaru(){
  const body={username:$('pbUser').value.trim(),nama:$('pbNama').value.trim(),alamat:$('pbAlamat').value.trim()||null,no_hp:$('pbHp').value.trim()||null,
   paket_id:Number($('pbPaket').value||0),tgl_pasang:$('pbTgl').value,diskon:Number($('pbDiskon').value||0),tagih_bulan_ini:$('pbTagih').checked,
-  lokasi:Number($('pbLokasi').value||1)};
+  lokasi:Number($('pbLokasi').value||1),tagihan_pertama:$('pbCara').value,jumlah_pertama:Number(($('pbManual').value||'').replace(/\D/g,''))||null};
+ if(body.tagih_bulan_ini&&body.tagihan_pertama==='manual'&&!body.jumlah_pertama){ $('pbMsg').style.color='#b42318'; $('pbMsg').textContent='Isi jumlah tagihan bulan pertama.'; return; }
  const msg=$('pbMsg'); msg.style.color='#b42318';
  if(!body.username||!body.nama||!body.paket_id||!body.tgl_pasang){ msg.textContent='Isi username, nama, paket, dan tanggal pasang.'; return; }
  const b=$('pbSimpan'); b.disabled=true; b.textContent='Menyimpan…';
@@ -1373,6 +1403,7 @@ async function simpanPasangBaru(){
   await loadPelanggan(); backPelanggan();
   const t=[ 'Pelanggan '+body.nama+' ('+d.username+', ID '+d.id_pelanggan+') tersimpan' ];
   if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
+  if(d.jumlah_tagihan>1) t.push('ditambah '+(d.jumlah_tagihan-1)+' tagihan bulan berikutnya s/d bulan ini');
   $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
  }catch(e){ msg.textContent='Gagal: '+e.message; }
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
@@ -1594,7 +1625,7 @@ async function hapusPaket(i){
  }catch(e){ m.style.color='#b42318'; m.textContent='Gagal: '+e.message; }
 }
 // ===== Log aktivitas (di menu Pengaturan) =====
-const AKSI_LABEL={mikrotik_cek:'Cek DNS & MTU MikroTik',pasang_baru:'Pasang baru',pelanggan_tambah:'Tambah pelanggan',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
+const AKSI_LABEL={mikrotik_cek:'Cek DNS & MTU MikroTik',pasang_baru:'Pasang baru',pelanggan_tambah:'Tambah pelanggan',ekspor:'Ekspor data',olt_tr069:'Kirim TR-069 lewat OLT',tagihan_lunas:'Tandai lunas',tagihan_ubah:'Ubah jumlah tagihan',tagihan_batal_lunas:'Batal lunas',tagihan_buat:'Buat tagihan',isolir:'Isolir',isolir_buka:'Buka isolir',pelanggan_ubah:'Ubah pelanggan',impor_pelanggan:'Impor pelanggan',paket_tambah:'Tambah paket',paket_ubah:'Ubah paket',paket_hapus:'Hapus paket',backup:'Backup'};
 
 // ===== Pengaturan: akun saya, pengguna, sistem, log =====
 AKSI_LABEL.login='Login'; AKSI_LABEL.login_gagal='Login gagal'; AKSI_LABEL.logout='Logout';
@@ -1911,6 +1942,11 @@ function renderDiagnosa(){
  const warna={bad:['#fff6f5','#f3b4ab','#b42318','✖'],warn:['#fffaf0','#f3d48a','#8a5a00','⚠'],ok:['#f3faf5','#bfe6cb','#0b7a3b','✔'],info:['#f2f7fd','#c8dcf2','#1669aa','ℹ']};
  let h=`<div class="kuPanel" style="margin-bottom:10px"><div class="plName" style="font-size:var(--fs-md)">${esc(P.nama||P.username)} <span class="plSub">· ${esc(P.username)} · ${esc(P.paket||'tanpa paket')}${P.kecepatan_mbps?' ('+P.kecepatan_mbps+' Mbps)':''}</span></div><div class="plSub">${esc(P.alamat||'')}${P.no_hp?' · <a href="https://wa.me/'+esc(nomorWA(P.no_hp))+'" target="_blank" rel="noopener">WA '+esc(P.no_hp)+'</a>':''}${d.tiket_terbuka?' · <a href="#" onclick="closeModal(\'diagModal\');openTiket();bukaTiket('+d.tiket_terbuka.id+');return false">tiket #T'+d.tiket_terbuka.id+' terbuka</a>':''}</div></div>`;
  h+='<div style="margin-bottom:10px">'+d.kesimpulan.map(k=>{ const w=warna[k.tingkat]||warna.info; return `<div style="background:${w[0]};border:1px solid ${w[1]};color:${w[2]};border-radius:10px;padding:9px 11px;margin-bottom:6px;font-size:var(--fs-xs);font-weight:700">${w[3]} ${esc(k.teks)}</div>`; }).join('')+'</div>';
+ if(d.dipantau===false){   // lokasi hanya penagihan: tidak ada data jaringan dari MikroTik/OLT utama
+  h+='<div class="detailGrid">'+(d.terisolir?kotak('Isolir','<span style="color:#b42318">Sedang diisolir</span>'):'')
+   +kotak('Tagihan belum dibayar',d.tunggakan.jumlah?d.tunggakan.jumlah+' bulan · '+rp(d.tunggakan.total):'tidak ada')+'</div>';
+  $('dgIsi').innerHTML=h; return;
+ }
  const pp=d.pppoe, ll=d.lalu_lintas, lim=pp.limit_mbps;
  const bar=(v)=>lim&&v!=null?`<div style="height:6px;background:#eef3ef;border-radius:9px;margin-top:4px"><div style="height:6px;border-radius:9px;width:${Math.min(100,v*100/lim)}%;background:${v>=0.9*lim?'#eb6834':'#2a78d6'}"></div></div>`:'';
  h+='<div class="plSub" style="font-weight:800;margin-bottom:4px">Koneksi</div><div class="detailGrid" style="margin-bottom:6px">'
@@ -3070,11 +3106,11 @@ async function muatKasWilayah(){
  try{ const d=await jsonAtauError(await fetch('/api/kas-wilayah',{cache:'no-store'})); ku.kas=d; const owner=d.peran==='owner';
   const n=d.wilayah.filter(w=>w.wajib_setor>0||w.menunggu.n).length; $('kuNKas').textContent=n?'('+n+')':'';
   $('kasWil').innerHTML=d.wilayah.map(w=>`<div class="blRow" style="display:block"><div class="plName">${esc(w.nama)}</div>
-   <div class="blSum" style="margin-top:6px"><div class="blBox"><small>Masuk bulan ini</small><b>${rp(w.masuk_bulan_ini)}</b></div><div class="blBox"><small>Uang di tangan</small><b>${rp(w.di_tangan)}</b></div>
+   <div class="blSum" style="margin-top:6px"><div class="blBox"><small>Masuk bulan ini</small><b>${rp(w.masuk_bulan_ini)}</b></div><div class="blBox"><small>Uang di tangan</small><b>${w.admin_wilayah?rp(w.di_tangan):'di Pusat'}</b><small>${w.admin_wilayah?'admin '+esc(w.admin_wilayah):'tanpa admin wilayah'}</small></div>
    <div class="blBox"><small>Wajib setor</small><b style="color:${w.wajib_setor?'#b45309':'#0b7a3b'}">${rp(w.wajib_setor)}</b><small>${w.tutup_terakhir?'s/d buku '+esc(namaPeriode(w.tutup_terakhir)):'belum ada buku ditutup'}</small></div>
    <div class="blBox"><small>Menunggu diperiksa</small><b>${rp(w.menunggu.jumlah)}</b><small>${w.menunggu.n} setoran</small></div></div></div>`).join('');
-  $('kasForm').innerHTML=`<label>Catat setoran ke Pusat</label><div class="kuBayarForm" style="grid-template-columns:repeat(2,minmax(0,1fr))">
-   <div><small>Wilayah</small><select id="ksLok" onchange="isiJumlahSetor()">${d.wilayah.map(w=>`<option value="${w.lokasi}">${esc(w.nama)}</option>`).join('')}</select></div>
+  $('kasForm').innerHTML=!d.wilayah.some(w=>w.admin_wilayah)?'<div class="plSub">Belum ada wilayah dengan admin wilayah (pemegang kas). Tunjuk di Pelanggan → Lokasi; wilayah tanpa admin dianggap dipegang Pusat.</div>':`<label>Catat setoran ke Pusat</label><div class="kuBayarForm" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+   <div><small>Wilayah</small><select id="ksLok" onchange="isiJumlahSetor()">${d.wilayah.filter(w=>w.admin_wilayah).map(w=>`<option value="${w.lokasi}">${esc(w.nama)} (admin ${esc(w.admin_wilayah)})</option>`).join('')}</select></div>
    <div><small>Jumlah (Rp)</small><input id="ksJml" inputmode="numeric"></div>
    <div><small>Tanggal setor</small><input id="ksTgl" type="date" value="${new Date().toLocaleDateString('sv-SE')}" max="${new Date().toLocaleDateString('sv-SE')}"></div>
    <div><small>Metode</small><select id="ksMetode"><option value="transfer">Transfer</option><option value="tunai">Tunai</option><option value="qris">QRIS</option><option value="lainnya">Lainnya</option></select></div>
@@ -3090,7 +3126,7 @@ async function muatKasWilayah(){
   $('kasMulai').innerHTML='Kas wilayah dihitung mulai '+esc(namaPeriode(d.mulai))+(owner?` · <a href="#" onclick="ubahKasMulai();return false">ubah</a>`:'');
  }catch(e){ $('kasWil').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
-function isiJumlahSetor(){ const w=ku.kas&&ku.kas.wilayah.find(x=>x.lokasi===Number($('ksLok').value)); if(w) $('ksJml').value=w.wajib_setor?Number(w.wajib_setor).toLocaleString('id-ID'):''; }
+function isiJumlahSetor(){ if(!$('ksLok')) return; const w=ku.kas&&ku.kas.wilayah.find(x=>x.lokasi===Number($('ksLok').value)); if(w) $('ksJml').value=w.wajib_setor?Number(w.wajib_setor).toLocaleString('id-ID'):''; }
 async function kirimSetoranWilayah(){
  const f=$('ksBukti').files[0], body={lokasi:Number($('ksLok').value),jumlah:Number($('ksJml').value.replace(/\D/g,'')),tanggal:$('ksTgl').value,metode:$('ksMetode').value,catatan:$('ksCat').value.trim()||null};
  if(!(body.jumlah>0)){ kuPesan('Isi jumlah setoran.'); return; } if(!f){ kuPesan('Lampirkan foto bukti setor.'); return; }
