@@ -58,6 +58,25 @@
 .kuJenis{display:flex;gap:6px;margin-top:4px}.kuJenis button{flex:1;border:1px solid var(--line);background:#fff;border-radius:9px;padding:10px;font-weight:800;font-size:var(--fs-xs);cursor:pointer}
 .kuJenis button.on.keluar{background:#fde4e1;border-color:#f3b4ab;color:#b42318}.kuJenis button.on.masuk{background:#dcf5e5;border-color:#a6dfb9;color:#0b7a3b}
 .kuBatal{opacity:.55}.kuBatal .blAmt{text-decoration:line-through}
+.trxSum{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:2px 0 6px}
+.trxSum .blBox b{font-size:var(--fs-sm);white-space:nowrap}
+@media(max-width:420px){.trxSum .blBox{padding:8px 7px}.trxSum .blBox b{font-size:var(--fs-xs)}}
+.trx{display:flex;flex-wrap:wrap;gap:0 10px;padding:10px 4px;border-bottom:1px solid var(--line);cursor:pointer;align-items:flex-start}
+.trx>.trxDetail{flex:0 0 100%}
+.trx:hover,.trx.buka{background:#f7faf8}.trx.kuBatal.buka{opacity:1}
+.trxTgl{flex:0 0 34px;text-align:center;line-height:1.1;padding-top:1px}
+.trxTgl b{display:block;font-size:var(--fs-lg);color:var(--ink)}.trxTgl small{font-size:var(--fs-2xs);color:var(--muted);font-weight:700;text-transform:uppercase}
+.trxIsi{flex:1;min-width:0}.trxJudul{font-weight:700;font-size:var(--fs-md);overflow-wrap:anywhere}
+.trxSub{font-size:var(--fs-xs);color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.trxTanda{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}.trxTanda:empty{display:none}
+.trxAmt{font-weight:800;font-size:var(--fs-md);white-space:nowrap;text-align:right}
+.trxAmt small{display:block;font-size:var(--fs-2xs);font-weight:600;color:var(--muted)}
+.trxDetail{margin:8px 0 2px 44px;padding:10px;border-radius:10px;background:#fff;border:1px solid var(--line);cursor:default}
+@media(max-width:420px){.trxDetail{margin-left:0}}
+.trxDetail dl{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:var(--fs-xs)}
+.trxDetail dt{color:var(--muted)}.trxDetail dd{margin:0;font-weight:600;overflow-wrap:anywhere}
+.trxDetail .blAksi{justify-content:flex-start;margin-top:8px}
+.trxBulan{display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin:16px 2px 2px;padding-bottom:5px;border-bottom:2px solid var(--line)}
 @media(max-width:900px){.kuSub{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:760px){.kuKpi,.kuSub{grid-template-columns:repeat(2,minmax(0,1fr))}.kuGrid{grid-template-columns:1fr}.kuBayarForm{grid-template-columns:1fr 1fr}}
 .evRow{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:start;padding:10px 4px;border-bottom:1px solid var(--line)}
@@ -325,12 +344,12 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <div class="kuFGrid" id="kuRentangKustom" style="display:none"><label>Dari tanggal<input type="date" id="kuDari" onchange="muatTransaksi()"></label><label>Sampai tanggal<input type="date" id="kuSampai" onchange="muatTransaksi()"></label></div>
   <div class="search"><input id="kuCari" placeholder="Cari keterangan, pemasok, pelanggan…" onkeydown="if(event.key==='Enter')muatTransaksi()"><button onclick="muatTransaksi()">Cari</button></div>
   <div class="blFilters kuFJenis"><button data-v="" class="on" onclick="setKuJenis('')">Semua</button><button data-v="keluar" onclick="setKuJenis('keluar')">Pengeluaran</button><button data-v="masuk" onclick="setKuJenis('masuk')">Penerimaan</button><button data-v="langganan" onclick="setKuJenis('langganan')">Langganan</button><button data-v="kredit" onclick="setKuJenis('kredit')">Kredit</button><button data-v="dihapus" onclick="setKuJenis('dihapus')">Dibatalkan</button></div>
-  <div class="kuFGrid">
+  <div class="plSub" style="margin:2px 0 6px"><a href="#" id="kuFLanjutBtn" onclick="ku.fLanjut=!ku.fLanjut;aturFilterLanjut();return false">Filter lanjutan ▾</a> · <a href="#" onclick="resetFilterKu();return false">Atur ulang filter</a></div>
+  <div class="kuFGrid" id="kuFLanjut" style="display:none">
    <label>Kategori<select id="kuFKat" onchange="muatTransaksi()"><option value="">Semua</option></select></label>
    <label>Metode<select id="kuFMetode" onchange="muatTransaksi()"><option value="">Semua</option><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option><option value="kredit">Kredit</option></select></label>
    <label>Urutan<select id="kuUrut" onchange="ku.urut=this.value;muatTransaksi()"><option value="tanggal">Terbaru dulu</option><option value="lama">Terlama dulu</option><option value="dicatat">Terakhir dicatat</option></select></label>
   </div>
-  <div class="plSub" style="margin:2px 0 8px"><a href="#" onclick="resetFilterKu();return false">Atur ulang filter</a></div>
  </div>
  <div class="plSub" id="kuTrxInfo" style="margin-bottom:6px"></div>
  <div id="kuTrxList"></div>
@@ -2697,11 +2716,17 @@ function setKuRentang(r){ ku.rentang=r; muatTransaksi(); }
 function kepalaTrx(daftar,i){
  const kunci=t=>ku.urut==='dicatat'?(t.dicatat_pada||t.tanggal).slice(0,10):(ku.rentang==='semua'?t.tanggal.slice(0,7):null);
  const k=kunci(daftar[i]); if(!k||(i>0&&kunci(daftar[i-1])===k)) return '';
- const grup=daftar.filter(t=>kunci(t)===k&&t.status==='aktif');
+ const grup=daftar.filter(t=>kunci(t)===k&&(ku.jenis==='dihapus'||t.status==='aktif'));
  const masuk=grup.filter(t=>t.jenis==='masuk').reduce((a,t)=>a+t.jumlah,0), keluar=grup.filter(t=>t.jenis==='keluar'&&t.sumber!=='kredit').reduce((a,t)=>a+t.jumlah,0);
  const hari=new Date().toLocaleDateString('sv-SE'), kemarin=new Date(Date.now()-864e5).toLocaleDateString('sv-SE');
  const judul=ku.urut==='dicatat'?(k===hari?'Dicatat hari ini':k===kemarin?'Dicatat kemarin':'Dicatat '+tglPendek(k)+' '+k.slice(0,4)):namaPeriode(k);
- return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;margin:14px 2px 4px;padding-bottom:4px;border-bottom:2px solid var(--line)"><b style="font-size:var(--fs-sm)">${esc(judul)} <span class="plSub" style="font-weight:600">· ${grup.length} transaksi</span></b><span class="plSub">${masuk?'<span class="naik">+'+rp(masuk)+'</span> ':''}${keluar?'<span class="turun">−'+rp(keluar)+'</span>':''}</span></div>`;
+ return `<div class="trxBulan"><b style="font-size:var(--fs-sm)">${esc(judul)} <span class="plSub" style="font-weight:600">· ${grup.length} transaksi</span></b><span class="plSub">${masuk?'<span class="naik">+'+rp(masuk)+'</span> ':''}${keluar?'<span class="turun">−'+rp(keluar)+'</span>':''}</span></div>`;
+}
+function renderTrx(){ if(ku.renderTrx) ku.renderTrx(); }
+function aturFilterLanjut(){
+ const n=[$('kuFKat').value,$('kuFMetode').value,(ku.urut||'tanggal')!=='tanggal'].filter(Boolean).length;
+ $('kuFLanjut').style.display=ku.fLanjut?'':'none';
+ $('kuFLanjutBtn').textContent='Filter lanjutan'+(n?' ('+n+' aktif)':'')+(ku.fLanjut?' ▴':' ▾');
 }
 function bolehUbahKu(t){
  if(t.status!=='aktif') return false; if(ku.trx&&ku.trx.peran==='owner') return true;
@@ -2722,7 +2747,7 @@ async function muatTransaksi(){
   if($('kuFKat').options.length<=1) isiFilterKategori();
   const lihatHapus=ku.jenis==='dihapus', rentang=ku.rentang||'semua', semua=rentang!=='bulan';
   const per=rentang==='bulan'?ku.periode:'semua';
-  document.querySelectorAll('.kuRentang button').forEach(b=>b.classList.toggle('on',b.dataset.v===rentang));
+  document.querySelectorAll('.kuRentang button').forEach(b=>b.classList.toggle('on',b.dataset.v===rentang)); aturFilterLanjut();
   $('kuRentangKustom').style.display=rentang==='kustom'?'':'none';
   // Bawaan: semua transaksi sejak awal sampai hari ini (transaksi bertanggal ke depan tidak ikut).
   const dari=rentang==='kustom'?$('kuDari').value:'', sampai=rentang==='kustom'?$('kuSampai').value:(rentang==='semua'?hariIni():'');
@@ -2731,19 +2756,55 @@ async function muatTransaksi(){
   if($('kuFKat').value) q.set('kategori_id',$('kuFKat').value);
   const d=await jsonAtauError(await fetch('/api/keuangan/transaksi?'+q)); ku.trx=d;
   if(lihatHapus) d.transaksi=d.transaksi.filter(t=>t.status==='batal');
-  $('kuTrxInfo').innerHTML=lihatHapus?(d.transaksi.length+' transaksi dihapus'+(semua?'':' bulan ini')+' — tidak dihitung di laporan.'+(d.peran==='owner'?' Owner bisa menghapus permanen.':'')):(()=>{ const r=d.ringkasan; return r.jumlah+' transaksi · uang masuk <b class="naik">'+rp(r.masuk)+'</b>'+(r.n_langganan?' <span class="muted">(termasuk '+r.n_langganan+' pembayaran langganan '+rp(r.langganan)+')</span>':'')+' · uang keluar <b class="turun">'+rp(r.keluar)+'</b>'+(r.n_kredit?' · pembelian kredit <b style="color:#b45309">'+rp(r.kredit)+'</b> <span class="muted">('+r.n_kredit+'x, kas berkurang saat dicicil)</span>':'')+(r.dibatalkan?' · '+r.dibatalkan+' dihapus':''); })();
+  $('kuTrxInfo').innerHTML=lihatHapus?(d.transaksi.length+' transaksi dihapus'+(semua?'':' bulan ini')+' — tidak dihitung di laporan.'+(d.peran==='owner'?' Owner bisa menghapus permanen.':'')):(()=>{ const r=d.ringkasan, net=r.masuk-r.keluar;
+   return `<div class="trxSum"><div class="blBox"><small>Uang masuk</small><b class="naik">${rp(r.masuk)}</b></div><div class="blBox"><small>Uang keluar</small><b class="turun">${rp(r.keluar)}</b></div><div class="blBox"><small>Selisih kas</small><b class="${net<0?'turun':'naik'}">${net<0?'−':'+'}${rp(Math.abs(net))}</b></div></div>`
+    +'<div class="plSub">'+r.jumlah+' transaksi'+(r.n_langganan?' · '+r.n_langganan+' bayar langganan ('+rp(r.langganan)+')':'')+(r.n_kredit?' · '+r.n_kredit+' pembelian kredit '+rp(r.kredit)+' <span class="muted">(belum mengurangi kas)</span>':'')+(r.dibatalkan?' · '+r.dibatalkan+' dibatalkan':'')+' · ketuk transaksi untuk detail</div>'; })();
+  const METODE={tunai:'Tunai',transfer:'Transfer',qris:'QRIS',lainnya:'Lainnya',kredit:'Kredit'};
+  const pendek=n=>String(n||'').replace(/\s*\(.*\)\s*$/,'');
+  const dd=(k,v)=>v?`<dt>${k}</dt><dd>${v}</dd>`:'';
   const barisTrx=(t,i)=>{
-   if(t.sumber==='langganan') return `<div class="blRow"><div><div class="plName">${esc(t.kategori)} <span class="chip info">Penagihan</span></div><div class="plSub">${esc(t.keterangan)}</div><div class="plSub">${esc(tglPendek(t.tanggal))} · ditandai lunas di menu Penagihan</div></div><div class="blKanan"><div class="blAmt naik">+${rp(t.jumlah)}</div></div></div>`;
-   if(t.sumber==='kredit'){ const bunga=t.pokok&&t.jumlah>t.pokok?t.jumlah-t.pokok:0;
-    return `<div class="blRow"><div><div class="plName">${esc(t.kategori)} <span class="chip warn">Kredit</span> <span class="plSub">· ${esc(t.pemasok)} (#U${t.id})</span></div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${esc(tglPendek(t.tanggal))}${t.qty?' · <b>'+esc(teksQty(t.qty,t.satuan))+'</b> @'+rp(Math.round((t.pokok||t.jumlah)/t.qty)):''} · ${t.tenor?'angsuran '+t.tenor+'x':'sekali bayar'}${bunga?' · harga '+rp(t.pokok)+' + bunga '+rp(bunga):''}${t.uang_muka?' · uang muka '+rp(t.uang_muka):''} · dicatat ${esc(t.dicatat_oleh)}</div>${htmlNota(t.nota,`tambahNota('utang',${t.id})`,false)}</div><div class="blKanan"><div class="blAmt" style="color:#b45309">−${rp(t.jumlah)}</div><div class="blAksi"><button class="btnS" onclick="ku.utFilter='semua';tabKu('utang')">Lihat di Liabilitas</button></div></div></div>`; }
-   const aksi=bolehUbahKu(t)?(t.utang_id||t.insentif_periode?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Hapus</button>`
-    :(t.status==='batal'&&ku.trx.peran==='owner'?`<button class="btnS" onclick="hapusPermanen('transaksi',${t.id})">Hapus permanen</button>`:'');
-   const info=esc(tglPendek(t.tanggal))+(t.qty?' · <b>'+esc(teksQty(t.qty,t.satuan))+'</b> @'+rp(Math.round(t.jumlah/t.qty)):'')+' · '+esc(t.metode)+' · dicatat '+esc(t.dicatat_oleh)+(t.diubah_oleh?' · diubah '+esc(t.diubah_oleh):'');
-   const batal=t.status==='batal'?`<div class="plSub" style="color:#b42318">Dihapus ${esc(t.batal_oleh)} (${esc(khWaktu(t.batal_pada))}): ${esc(t.batal_alasan||'')}</div>`:'';
-   const nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,t.jenis==='keluar'&&!t.utang_id&&t.status==='aktif');
-   return `<div class="blRow ${t.status==='batal'?'kuBatal':''}"><div><div class="plSub" style="font-weight:800;letter-spacing:.02em">${esc(t.nomor||'#'+t.id)}</div><div class="plName">${esc(t.kategori)}${t.utang_id?' <span class="plSub">· '+esc(t.pemasok||'')+' (#U'+t.utang_id+')</span>':''}${t.insentif_periode?' <span class="plSub">· untuk '+esc(namaPeriode(t.insentif_periode))+'</span>':''}</div><div class="plSub">${esc(t.keterangan||'—')}</div><div class="plSub">${info}</div>${batal}${nota}</div><div class="blKanan"><div class="blAmt ${t.jenis==='keluar'?'turun':'naik'}">${t.jenis==='keluar'?'−':'+'}${rp(t.jumlah)}</div><div class="blAksi">${aksi}</div></div></div>`;
+   const kunci=t.sumber+':'+t.id, buka=ku.trxBuka===kunci, batal=t.status==='batal';
+   const metode=METODE[t.metode]||t.metode||'';
+   let judul, sub, tanda=[], detail=[], aksi='', nota='', warna=t.jenis==='keluar'?'turun':'naik', tanya=t.jenis==='keluar'?'−':'+', ket='';
+   if(t.sumber==='langganan'){
+    judul=t.pelanggan||t.username; sub='Bayar langganan '+(t.periode_tagihan?namaPeriode(t.periode_tagihan):'')+' · '+metode;
+    tanda.push('<span class="chip info">Penagihan</span>');
+    detail=[dd('Pelanggan',esc(t.keterangan)),dd('Tanggal bayar',esc(tglPendek(t.tanggal))),dd('Metode',esc(metode)),dd('Asal','ditandai lunas di menu Penagihan')];
+   } else if(t.sumber==='kredit'){
+    const bunga=t.pokok&&t.jumlah>t.pokok?t.jumlah-t.pokok:0;
+    judul=t.keterangan||pendek(t.kategori); sub='Beli kredit · '+(t.pemasok||''); warna=''; tanya=''; ket='belum mengurangi kas';
+    tanda.push('<span class="chip warn">Kredit</span>');
+    detail=[dd('Kategori',esc(t.kategori)),dd('Pemasok',esc(t.pemasok)+' (#U'+t.id+')'),dd('Tanggal',esc(tglPendek(t.tanggal))),
+     dd('Banyaknya',t.qty?esc(teksQty(t.qty,t.satuan))+' @'+rp(Math.round((t.pokok||t.jumlah)/t.qty)):''),
+     dd('Pembayaran',t.tenor?'angsuran '+t.tenor+'×':'sekali bayar'),dd('Harga',bunga?rp(t.pokok)+' + bunga '+rp(bunga):''),
+     dd('Uang muka',t.uang_muka?rp(t.uang_muka):''),dd('Dicatat',esc(t.dicatat_oleh))];
+    nota=htmlNota(t.nota,`tambahNota('utang',${t.id})`,false);
+    aksi=`<button class="btnS" onclick="ku.utFilter='semua';tabKu('utang')">Lihat di Liabilitas</button>`;
+   } else {
+    if(t.utang_id){ judul=(/uang muka/i.test(t.keterangan||'')?'Uang muka':'Cicilan')+' ke '+(t.pemasok||'pemasok'); sub='Pelunasan liabilitas · '+metode; }
+    else if(t.insentif_periode){ judul='Komisi mitra'; sub='hasil kerja '+namaPeriode(geserPeriode(t.insentif_periode,-1))+' · '+metode; }
+    else { judul=t.keterangan||pendek(t.kategori); sub=(t.keterangan?pendek(t.kategori)+' · ':'')+metode; }
+    if(t.qty) sub+=' · '+teksQty(t.qty,t.satuan);
+    if(t.lokasi) sub+=' · kas '+namaLokasi(t.lokasi);
+    if(batal) tanda.push('<span class="chip bad">Dibatalkan</span>');
+    if(!batal&&t.jenis==='keluar'&&!t.utang_id&&!(t.nota||[]).length) tanda.push('<span class="chip warn">tanpa nota</span>');
+    if((t.nota||[]).length) tanda.push('<span class="chip ok">📎 '+t.nota.length+' nota</span>');
+    detail=[dd('No. bukti',esc(t.nomor||'#'+t.id)),dd('Kategori',esc(t.kategori)),dd('Keterangan',esc(t.keterangan||'')),dd('Tanggal',esc(tglPendek(t.tanggal))+' '+t.tanggal.slice(0,4)),
+     dd('Metode',esc(metode)),dd('Banyaknya',t.qty?esc(teksQty(t.qty,t.satuan))+' @'+rp(Math.round(t.jumlah/t.qty)):''),
+     dd('Pemasok',t.utang_id?esc(t.pemasok||'')+' (#U'+t.utang_id+')':''),dd('Kas',t.lokasi?esc(namaLokasi(t.lokasi)):''),
+     dd('Dicatat',esc(t.dicatat_oleh)+(t.dicatat_pada?' · '+esc(khWaktu(t.dicatat_pada)):'')),dd('Diubah',t.diubah_oleh?esc(t.diubah_oleh)+(t.diubah_pada?' · '+esc(khWaktu(t.diubah_pada)):''):''),
+     dd('Dibatalkan',batal?esc(t.batal_oleh||'')+' ('+esc(khWaktu(t.batal_pada))+'): '+esc(t.batal_alasan||''):'')];
+    aksi=bolehUbahKu(t)?(t.utang_id||t.insentif_periode?'':`<button class="btnS" onclick="editTransaksi(${i})">Ubah</button>`)+`<button class="btnS" onclick="batalTransaksi(${i})">Hapus</button>`
+     :(batal&&ku.trx.peran==='owner'?`<button class="btnS" onclick="hapusPermanen('transaksi',${t.id})">Hapus permanen</button>`:'');
+    nota=htmlNota(t.nota,bolehUbahKu(t)?`tambahNota('transaksi',${t.id})`:null,false);
+   }
+   const sebelum=d.transaksi[i-1], tampilTgl=ku.urut==='dicatat'||!sebelum||sebelum.tanggal!==t.tanggal;
+   const tgl=tampilTgl?`<b>${+t.tanggal.slice(8,10)}</b><small>${KH_BLN[+t.tanggal.slice(5,7)-1]}</small>`:'';
+   const isiDetail=buka?`<div class="trxDetail" onclick="event.stopPropagation()"><dl>${detail.join('')}</dl>${nota}${aksi?'<div class="blAksi">'+aksi+'</div>':''}</div>`:'';
+   return `<div class="trx${buka?' buka':''}${batal?' kuBatal':''}" onclick="ku.trxBuka=ku.trxBuka==='${kunci}'?null:'${kunci}';renderTrx()"><div class="trxTgl">${tgl}</div><div class="trxIsi"><div class="trxJudul">${esc(judul)}</div><div class="trxSub">${esc(sub)}</div><div class="trxTanda">${tanda.join('')}</div></div><div class="trxAmt ${warna}"><span class="blAmt">${tanya}${rp(t.jumlah)}</span>${ket?'<small>'+ket+'</small>':''}</div>${isiDetail}</div>`;
   };
-  $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>kepalaTrx(d.transaksi,i)+barisTrx(t,i)).join(''):'<div class="muted">Belum ada transaksi'+(semua?'.':' di bulan ini.')+'</div>';
+  ku.renderTrx=()=>{ $('kuTrxList').innerHTML=d.transaksi.length?d.transaksi.map((t,i)=>kepalaTrx(d.transaksi,i)+barisTrx(t,i)).join(''):'<div class="muted">Belum ada transaksi'+(semua?'.':' di bulan ini.')+'</div>'; };
+  ku.renderTrx();
  }catch(e){ $('kuTrxList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 function isiKategori(pilih){

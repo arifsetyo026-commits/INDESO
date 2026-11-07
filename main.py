@@ -6776,7 +6776,8 @@ def keuangan_list(request: Request, periode: str = "semua", jenis: str = "", kat
                                "kategori": "Pembayaran langganan", "pengaruh_laba": 1, "jumlah": r["jumlah"],
                                "metode": r["metode_bayar"] or "tunai", "status": "aktif", "username": r["username"],
                                "keterangan": f"{r['nama'] or r['username']} ({r['username']}) · tagihan {_nama_periode(r['periode'])}",
-                               "dicatat_oleh": "Billing", "dicatat_pada": r["tgl_bayar"], "nota": []})
+                               "dicatat_oleh": "Billing", "dicatat_pada": r["tgl_bayar"], "nota": [],
+                               "pelanggan": r["nama"] or r["username"], "periode_tagihan": r["periode"]})
         if jenis in ("", "keluar", "kredit") and not batal:
             sql = ("SELECT u.id, u.tanggal, u.pemasok, u.jumlah, u.pokok, u.uang_muka, u.tenor, u.keterangan, u.qty, u.satuan, "
                    "u.dicatat_oleh, u.dicatat_pada, u.kategori_id, k.nama AS kategori, k.pengaruh_laba "
