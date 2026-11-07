@@ -158,11 +158,12 @@ async function muat(){
   $('insTotal').textContent=rp(ins.total);
   const bayarBln=BLN[+ins.dibayar_bulan.slice(5)-1]+' '+ins.dibayar_bulan.slice(0,4);
   $('insJudul').textContent='Komisi hasil kerja '+namaP(geserP(st.periode,-1))+' (tagihan '+namaP(st.periode)+')';
-  $('insRumus').textContent=(ins.final&&ins.total!==ins.jumlah*ins.per_pelanggan?'angka disepakati':ins.jumlah_lunas+' lunas × '+rp(ins.per_pelanggan))
+  $('insRumus').textContent=(ins.final&&ins.total!==ins.jumlah*ins.per_pelanggan?'angka disepakati':ins.jumlah_lunas+' lunas'+(ins.jumlah_susulan?' + '+ins.jumlah_susulan+' susulan':'')+' × '+rp(ins.per_pelanggan))
    +(ins.final?' · 🔒 final':' · masih berjalan, final saat tutup buku')+' · dibayar awal '+bayarBln;
   const byr=(ins.pembayaran||[]).map(p=>rp(p.jumlah)+' ('+tgl(p.tanggal)+', '+p.metode+')').join(', ');
   $('insBayar').innerHTML=ins.total?(ins.sisa?('<b style="color:#b45309">Belum dibayar '+esc(rp(ins.sisa))+'</b>'+(byr?' · sudah dibayar '+esc(byr):'')):('<b style="color:#0b7a3b">✓ Sudah dibayar</b> '+esc(byr))):'';
   $('insBayar').innerHTML+=(ins.tertunggak_lain||[]).length?'<br>Belum dibayar bulan lain: '+ins.tertunggak_lain.map(b=>esc('hasil kerja '+namaP(geserP(b.periode,-1)))+' '+esc(rp(b.sisa))).join(', '):'';
+  if((ins.susulan||[]).length) $('insBayar').innerHTML+='<br>Susulan (pelanggan telat bayar): '+ins.susulan.map(x=>esc(x.nama)+' — tagihan '+esc(namaP(x.periode))).join(', ');
   const lunas=d.pelanggan.filter(p=>p.status_bayar==='lunas').length;
   $('nLunas').textContent=lunas; $('nBelum').textContent=d.pelanggan.filter(p=>p.status_bayar==='belum').length;
   render();

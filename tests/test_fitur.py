@@ -413,6 +413,12 @@ def test_mitra_ekspor_excel(siap):
     assert "Ringkasan" in teks and "<v>20000</v>" in lembar            # komisi: budi + server (gratis dihitung)
     assert "ekspor" in o.get("/api/aktivitas").text
     assert m.get("/api/mitra/ekspor?periode=2026-13").status_code == 400
+    # pelanggan yang belum punya tagihan bulan itu tidak ikut diekspor (jumlah baris = sudah + belum bayar)
+    k.post("/api/data-pelanggan", json={"username": "baru", "nama": "Pelanggan Baru", "paket_id": 1,
+                                         "tgl_pasang": "2026-10-20", "tagih_bulan_ini": False})
+    lembar = zipfile.ZipFile(io.BytesIO(m.get("/api/mitra/ekspor?periode=2026-10").content)).read("xl/worksheets/sheet1.xml").decode()
+    teks = " ".join(_re.findall(r"<t[^>]*>([^<]*)</t>", lembar))
+    assert "Pelanggan Baru" not in teks and "Belum ada tagihan" not in teks and "budi" in teks
 
 
 # ------------------------------------------------------------------
@@ -3697,6 +3703,48 @@ def test_lengkapi_tagihan_harian(siap):
     main.proses_lengkapi_tagihan(sekarang)
     baru = {t["username"]: t for t in o.get(f"/api/tagihan?periode={per}").json()["tagihan"]}
     assert "dwi" in baru and "server" not in baru and baru["budi"]["jumlah"] == ada["budi"]["jumlah"]
+
+
+def test_komisi_susulan_pelanggan_telat(siap):
+    """Pelanggan yang melunasi tagihan setelah komisi bulannya dikunci: komisinya masuk ke bulan berikutnya yang
+    belum dikunci (susulan), sekali saja; komisi yang sudah final tidak berubah."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    p1, p2 = main._geser_periode(ini, -2), main._geser_periode(ini, -1)
+    for p in (p1, p2, ini):
+        o.post(f"/api/tagihan/buat?periode={p}")
+    tid = lambda u, p: next(x["id"] for x in o.get(f"/api/tagihan?periode={p}").json()["tagihan"] if x["username"] == u)
+    tarif = main.CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
+
+    def mundurkan_kunci():            # kunci & pelunasan bisa jatuh di detik yang sama saat tes
+        c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
+        c.execute("UPDATE komisi_kunci SET pada = '2000-01-01 00:00:00'")
+        c.commit(); c.close()
+
+    o.post(f"/api/tagihan/{tid('budi', p1)}/lunas")
+    assert o.post(f"/api/keuangan/insentif/{p1}/kunci", json={}).json()["total"] == tarif
+    mundurkan_kunci()
+    o.post(f"/api/tagihan/{tid('ani', p1)}/lunas")                     # telat: bayar setelah komisi p1 final
+    ins = lambda p: next(b for b in o.get("/api/keuangan/insentif").json()["rekap"] if b["periode"] == p)
+    assert ins(p1)["terhitung"] == tarif                                  # komisi final tidak berubah
+    assert ins(p2)["jumlah_susulan"] == 1 and ins(p2)["susulan"][0]["username"] == "ani"
+    assert ins(p2)["susulan"][0]["periode"] == p1 and ins(p2)["terhitung"] == tarif
+    assert ins(ini)["jumlah_susulan"] == 0                                # tidak dihitung dua kali
+    # ani bayar p2 juga di bulan yang sama: komisinya dua di p2 (susulan p1 + rutin p2)
+    o.post(f"/api/tagihan/{tid('ani', p2)}/lunas")
+    assert ins(p2)["terhitung"] == 2 * tarif
+    # p2 dikunci (susulan ikut tersimpan); dwi melunasi p1 sesudahnya -> loncat ke bulan pertama yang belum dikunci
+    o.post(f"/api/keuangan/insentif/{p2}/kunci", json={})
+    mundurkan_kunci()
+    o.post(f"/api/tagihan/{tid('dwi', p1)}/lunas")
+    assert ins(p2)["terhitung"] == 2 * tarif
+    assert [x["username"] for x in ins(ini)["susulan"]] == ["dwi"] and ins(ini)["jumlah_susulan"] == 1
+    # halaman mitra menampilkan susulan dengan nama & bulan tagihannya
+    d = m.get(f"/api/mitra/pelanggan?periode={ini}").json()["insentif"]
+    assert d["jumlah_susulan"] == 1 and d["susulan"][0]["periode"] == p1
+    # batal lunas sebelum komisi tujuan dikunci -> susulan hilang
+    o.post(f"/api/tagihan/{tid('dwi', p1)}/batal", json={"alasan": "salah tandai"})
+    assert ins(ini)["jumlah_susulan"] == 0
 
 
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
