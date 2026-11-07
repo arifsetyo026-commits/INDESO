@@ -3747,6 +3747,41 @@ def test_komisi_susulan_pelanggan_telat(siap):
     assert ins(ini)["jumlah_susulan"] == 0
 
 
+def test_mitra_pelanggan_baru_dan_bayar_setelah_final(siap):
+    """Daftar mitra bulan X = hasil kerja X-1: pelanggan yang baru pasang di bulan X tidak tampil di daftar X dan
+    bulan pertamanya masuk komisi X+1 (susulan, pelanggan baru). Yang bayar setelah komisi X final tetap tampil
+    lunas tapi ditandai komisi bulan depan dan tidak dihitung di "sudah bayar", supaya angka = komisi."""
+    main, o, k, m = siap
+    ini = datetime.now().strftime("%Y-%m")
+    lalu = main._geser_periode(ini, -1)
+    o.post(f"/api/tagihan/buat?periode={lalu}")
+    tid = lambda u, p: next(x["id"] for x in o.get(f"/api/tagihan?periode={p}").json()["tagihan"] if x["username"] == u)
+    tarif = main.CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
+    k.post("/api/data-pelanggan", json={"username": "neo", "nama": "Neo", "paket_id": 1, "tgl_pasang": f"{lalu}-10",
+                                         "tagihan_pertama": "manual", "jumlah_pertama": 100000})
+    o.post(f"/api/tagihan/{tid('neo', lalu)}/lunas")
+    o.post(f"/api/tagihan/{tid('budi', lalu)}/lunas")
+    d = m.get(f"/api/mitra/pelanggan?periode={lalu}").json()
+    assert "neo" not in {p["username"] for p in d["pelanggan"]}           # pelanggan baru tidak di daftar bulan pasang
+    assert d["insentif"]["total"] == tarif                                  # hanya budi
+    ins = lambda p: next(b for b in o.get("/api/keuangan/insentif").json()["rekap"] if b["periode"] == p)
+    assert ins(ini)["susulan"] == [{"nama": "Neo", "username": "neo", "periode": lalu, "baru": True}]
+    # komisi lalu final, lalu ani bayar: tampil lunas "komisi bulan depan", tidak dihitung di komisi lalu
+    o.post(f"/api/keuangan/insentif/{lalu}/kunci", json={})
+    c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"]); c.execute("UPDATE komisi_kunci SET pada='2000-01-01 00:00:00'"); c.commit(); c.close()
+    o.post(f"/api/tagihan/{tid('ani', lalu)}/lunas")
+    d = m.get(f"/api/mitra/pelanggan?periode={lalu}").json()
+    ani = next(p for p in d["pelanggan"] if p["username"] == "ani")
+    assert ani["status_bayar"] == "lunas" and ani["komisi_bulan_depan"]
+    assert not next(p for p in d["pelanggan"] if p["username"] == "budi").get("komisi_bulan_depan")
+    assert d["insentif"]["total"] == tarif
+    assert {x["username"] for x in ins(ini)["susulan"]} == {"neo", "ani"} and ins(ini)["terhitung"] == 2 * tarif
+    import io, zipfile, re as _re
+    lembar = zipfile.ZipFile(io.BytesIO(m.get(f"/api/mitra/ekspor?periode={lalu}").content)).read("xl/worksheets/sheet1.xml").decode()
+    teks = " ".join(_re.findall(r"<t[^>]*>([^<]*)</t>", lembar))
+    assert "Neo" not in teks and "komisi bulan depan" in teks
+
+
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
     """Pelanggan baru yang belum ditagih bulan pertamanya: pembuatan tagihan otomatis/tombol "Buat tagihan" tidak
     membuat prorata sendiri; admin memilih lewat Buat tagihan pertama (prorata / penuh / manual)."""

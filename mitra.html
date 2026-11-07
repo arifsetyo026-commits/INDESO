@@ -163,8 +163,9 @@ async function muat(){
   const byr=(ins.pembayaran||[]).map(p=>rp(p.jumlah)+' ('+tgl(p.tanggal)+', '+p.metode+')').join(', ');
   $('insBayar').innerHTML=ins.total?(ins.sisa?('<b style="color:#b45309">Belum dibayar '+esc(rp(ins.sisa))+'</b>'+(byr?' · sudah dibayar '+esc(byr):'')):('<b style="color:#0b7a3b">✓ Sudah dibayar</b> '+esc(byr))):'';
   $('insBayar').innerHTML+=(ins.tertunggak_lain||[]).length?'<br>Belum dibayar bulan lain: '+ins.tertunggak_lain.map(b=>esc('hasil kerja '+namaP(geserP(b.periode,-1)))+' '+esc(rp(b.sisa))).join(', '):'';
-  if((ins.susulan||[]).length) $('insBayar').innerHTML+='<br>Susulan (pelanggan telat bayar): '+ins.susulan.map(x=>esc(x.nama)+' — tagihan '+esc(namaP(x.periode))).join(', ');
-  const lunas=d.pelanggan.filter(p=>p.status_bayar==='lunas').length;
+  if((ins.susulan||[]).length) $('insBayar').innerHTML+='<br>Susulan (pelanggan telat bayar): '+ins.susulan.map(x=>esc(x.nama)+' — '+(x.baru?'pelanggan baru, ':'')+'tagihan '+esc(namaP(x.periode))).join(', ');
+  const lunas=d.pelanggan.filter(p=>p.status_bayar==='lunas'&&!p.komisi_bulan_depan).length, telat=d.pelanggan.filter(p=>p.komisi_bulan_depan).length;
+  if(telat) $('insBayar').innerHTML+='<br>'+telat+' pelanggan bayar setelah komisi ini final: komisinya masuk bulan depan.';
   $('nLunas').textContent=lunas; $('nBelum').textContent=d.pelanggan.filter(p=>p.status_bayar==='belum').length;
   render();
  }catch(e){$('list').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'}
@@ -177,7 +178,8 @@ function render(){
  const rows=d.pelanggan.map((p,i)=>({p,i})).filter(({p})=>lolos(p));
  $('list').innerHTML=rows.length?rows.map(({p,i})=>{
   let chip;
-  if(p.status_bayar==='lunas') chip='<span class="chip ok">Lunas'+(p.tgl_bayar?' '+tgl(p.tgl_bayar):'')+'</span>';
+  if(p.status_bayar==='lunas'&&p.komisi_bulan_depan) chip='<span class="chip ok">Lunas'+(p.tgl_bayar?' '+tgl(p.tgl_bayar):'')+' · komisi bulan depan</span>';
+  else if(p.status_bayar==='lunas') chip='<span class="chip ok">Lunas'+(p.tgl_bayar?' '+tgl(p.tgl_bayar):'')+'</span>';
   else if(p.status_bayar==='belum') chip=p.jatuh_tempo<hari?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>';
   else if(p.gratis) chip=p.insentif_gratis?'<span class="chip ok">Gratis · dihitung komisi</span>':'<span class="chip off">Gratis</span>';
   else chip='<span class="chip off">Belum ada tagihan</span>';

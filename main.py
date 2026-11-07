@@ -6362,7 +6362,8 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24, lokasi: Optional[in
         sisa = ins["total"] - dibayar
         hasil.append({"periode": p, "jumlah_pelanggan": ins["jumlah"], "jumlah_lunas": ins["jumlah_lunas"],
                       "jumlah_gratis": ins["jumlah_gratis"], "jumlah_susulan": ins.get("jumlah_susulan") or 0,
-                      "susulan": [{"nama": x.get("nama") or x["username"], "username": x["username"], "periode": x["susulan"]}
+                      "susulan": [{"nama": x.get("nama") or x["username"], "username": x["username"], "periode": x["susulan"],
+                                   "baru": bool(x.get("baru"))}
                                   for x in ins["pelanggan"] if x.get("susulan")],
                       "per_pelanggan": ins["per_pelanggan"],
                       "terhitung": ins["total"], "dibayar": dibayar, "sisa": max(0, sisa),
@@ -7255,8 +7256,9 @@ def _hitung_insentif_berjalan(conn, periode: str, lokasi: int = 1) -> dict:
     pembayaran tidak terhitung."""
     lunas = conn.execute(
         "SELECT p.username, p.nama, t.tgl_bayar FROM tagihan t JOIN pelanggan p ON p.username = t.username "
-        "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 AND p.lokasi = ? ORDER BY p.nama COLLATE NOCASE",
-        (periode, lokasi),
+        "WHERE t.periode = ? AND t.status = 'lunas' AND p.tampil_mitra = 1 AND p.lokasi = ? "
+        "AND (p.tgl_pasang IS NULL OR p.tgl_pasang < ?) ORDER BY p.nama COLLATE NOCASE",
+        (periode, lokasi, f"{periode}-01"),
     ).fetchall()
     # Pelanggan gratis dihitung untuk periode selama ia belum berhenti sebelum awal periode tersebut, dan baru
     # mulai tanggal 1 bulan tagihannya (aturan owner): tagihan November dibayar di muka oleh pelanggan biasa,
@@ -7267,10 +7269,10 @@ def _hitung_insentif_berjalan(conn, periode: str, lokasi: int = 1) -> dict:
         gratis = conn.execute(
             "SELECT p.username, p.nama FROM pelanggan p "
             "WHERE p.gratis = 1 AND p.insentif_gratis = 1 AND p.tampil_mitra = 1 AND p.lokasi = ? "
-            "AND (p.status = 'aktif' OR p.berhenti_sejak >= ?) "
+            "AND (p.status = 'aktif' OR p.berhenti_sejak >= ?) AND (p.tgl_pasang IS NULL OR p.tgl_pasang < ?) "
             "AND p.username NOT IN (SELECT username FROM tagihan WHERE periode = ? AND status = 'lunas') "
             "ORDER BY p.nama COLLATE NOCASE",
-            (lokasi, f"{periode}-01", periode),
+            (lokasi, f"{periode}-01", f"{periode}-01", periode),
         ).fetchall()
     susulan = _komisi_susulan(conn, periode, lokasi)
     tarif = CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
@@ -7286,24 +7288,29 @@ def _komisi_susulan(conn, periode: str, lokasi: int) -> list[dict]:
     Satu tagihan hanya menghasilkan satu komisi: yang sudah tercatat di kuncian mana pun tidak dihitung lagi."""
     kunci = {r["periode"]: (r["pada"], json.loads(r["pelanggan"] or "[]")) for r in conn.execute(
         "SELECT periode, pada, pelanggan FROM komisi_kunci WHERE lokasi = ?", (lokasi,))}
-    if not kunci:
-        return []
     sudah = {(x["susulan"], x["username"]) for _p, (_w, d) in kunci.items() for x in d if x.get("susulan")}
     hasil = []
     for r in conn.execute(
-            "SELECT t.periode, p.username, p.nama, t.tgl_bayar, COALESCE(t.lunas_pada, t.tgl_bayar) AS waktu FROM tagihan t "
+            "SELECT t.periode, p.username, p.nama, t.tgl_bayar, p.tgl_pasang, "
+            "COALESCE(t.lunas_pada, t.tgl_bayar) AS waktu FROM tagihan t "
             "JOIN pelanggan p ON p.username = t.username WHERE t.status = 'lunas' AND t.periode < ? "
             "AND p.tampil_mitra = 1 AND p.lokasi = ? ORDER BY t.periode, p.nama COLLATE NOCASE", (periode, lokasi)):
         k = kunci.get(r["periode"])
-        if not k or (r["periode"], r["username"]) in sudah or not r["waktu"] or r["waktu"] <= (k[0] or ""):
+        baru = bool(r["tgl_pasang"]) and r["tgl_pasang"] >= f"{r['periode']}-01"
+        if (r["periode"], r["username"]) in sudah:
             continue
-        if any(x.get("username") == r["username"] and not x.get("susulan") for x in k[1]):
-            continue                    # sudah dihitung di komisi bulannya sendiri
+        if k and any(x.get("username") == r["username"] and not x.get("susulan") for x in k[1]):
+            continue                    # sudah dihitung di komisi bulannya sendiri (data lama)
+        # Pelanggan lama: susulan hanya bila dilunasi setelah komisi bulannya dikunci. Pelanggan baru (pasang di
+        # bulan tagihannya): bulan pertamanya selalu masuk komisi bulan berikutnya = hasil kerja bulan pasang.
+        if not baru and (not k or not r["waktu"] or r["waktu"] <= (k[0] or "")):
+            continue
         tujuan = _geser_periode(r["periode"], 1)
         while tujuan in kunci:
             tujuan = _geser_periode(tujuan, 1)
         if tujuan == periode:
-            hasil.append({"username": r["username"], "nama": r["nama"], "tgl_bayar": r["tgl_bayar"], "susulan": r["periode"]})
+            hasil.append({"username": r["username"], "nama": r["nama"], "tgl_bayar": r["tgl_bayar"], "susulan": r["periode"],
+                          "baru": baru})
     return hasil
 
 
@@ -7323,7 +7330,7 @@ def mitra_list_pelanggan(periode: str, request: Request):
             periode = awal_mitra
         rows = conn.execute(
             f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.nama, p.alamat, p.no_hp, p.status, p.gratis, p.insentif_gratis, k.nama AS paket, "
-            "t.status AS status_bayar, t.tgl_bayar, t.jatuh_tempo, "
+            "t.status AS status_bayar, t.tgl_bayar, t.jatuh_tempo, p.tgl_pasang, "
             "(SELECT 1 FROM isolir i WHERE i.username = p.username) AS terisolir "
             "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "LEFT JOIN tagihan t ON t.username = p.username AND t.periode = ? "
@@ -7347,9 +7354,15 @@ def mitra_list_pelanggan(periode: str, request: Request):
     # biasa: otomatis "lunas" sejak tanggal 1 bulan itu. Status gratisnya tidak dikirim ke HP mitra sama
     # sekali, supaya tidak menimbulkan iri; jumlah komisinya tetap sama.
     bulan_ini = datetime.now().strftime("%Y-%m")
+    dihitung = {x["username"] for x in insentif.get("pelanggan", []) if not x.get("susulan")}
     daftar = []
     for r in rows:
         p = dict(r)
+        tgl_pasang = p.pop("tgl_pasang", None)
+        if tgl_pasang and tgl_pasang >= f"{periode}-01" and p["username"] not in dihitung:
+            continue        # pelanggan baru bulan ini: bukan hasil kerja bulan lalu, komisinya di bulan berikutnya
+        if p["status_bayar"] == "lunas" and not p["gratis"] and p["username"] not in dihitung:
+            p["komisi_bulan_depan"] = True      # dilunasi setelah komisi bulan ini final: masuk komisi bulan depan
         if p["gratis"] and p["insentif_gratis"]:
             p["status_bayar"], p["tgl_bayar"], p["jatuh_tempo"] = (
                 ("lunas", f"{periode}-01", f"{periode}-{CONFIG['JATUH_TEMPO_TANGGAL']:02d}") if periode <= bulan_ini
@@ -7360,7 +7373,7 @@ def mitra_list_pelanggan(periode: str, request: Request):
     insentif["jumlah_lunas"] += insentif.get("jumlah_gratis") or 0
     insentif["jumlah_gratis"] = 0
     # Susulan: nama & bulan tagihannya ditampilkan ke mitra supaya jelas kenapa komisinya bertambah.
-    insentif["susulan"] = [{"nama": x.get("nama") or x["username"], "periode": x["susulan"]}
+    insentif["susulan"] = [{"nama": x.get("nama") or x["username"], "periode": x["susulan"], "baru": bool(x.get("baru"))}
                            for x in insentif.get("pelanggan", []) if x.get("susulan")]
     insentif.pop("pelanggan", None)        # daftar internal (berisi tanda gratis) tidak dikirim ke mitra
     t = insentif.get("terkunci")
@@ -7439,12 +7452,14 @@ def mitra_ekspor(periode: str, request: Request):
              [f"Diekspor {datetime.now().strftime('%Y-%m-%d %H:%M')}"], [],
              ["No", "ID pelanggan", "Nama", "Username", "Paket", "Alamat", "No. HP", "Status bayar", "Tanggal bayar",
               "Jatuh tempo", "Keterangan"]]
-    lunas = belum = 0
+    lunas = belum = telat = 0
     # Hanya pelanggan yang punya tagihan bulan ini (lunas/belum), supaya jumlah barisnya sama dengan ringkasan
     # "sudah bayar + belum bayar" di HP mitra. Pelanggan gratis yang dihitung komisi sudah tampil lunas.
     ditagih = [p for p in d["pelanggan"] if p["status_bayar"] in ("lunas", "belum")]
     for i, p in enumerate(ditagih, 1):
-        if p["status_bayar"] == "lunas":
+        if p["status_bayar"] == "lunas" and p.get("komisi_bulan_depan"):
+            status, telat = "Lunas (bayar setelah komisi final, komisi bulan depan)", telat + 1
+        elif p["status_bayar"] == "lunas":
             status, lunas = "Lunas", lunas + 1
         else:
             status, belum = ("Terlambat" if (p["jatuh_tempo"] or "") < hari else "Belum bayar"), belum + 1
@@ -7452,7 +7467,12 @@ def mitra_ekspor(periode: str, request: Request):
         baris.append([i, p["id_pelanggan"], p["nama"], p["username"], p["paket"], p["alamat"], p["no_hp"], status,
                       p["tgl_bayar"] or "", p["jatuh_tempo"] or "", ket])
     awal_ringkas = len(baris) + 1
-    baris += [[], ["Ringkasan"], ["Sudah bayar", lunas], ["Belum bayar", belum],
+    baris += [[], ["Ringkasan"], ["Sudah bayar", lunas], ["Belum bayar", belum]]
+    if telat:
+        baris.append(["Bayar setelah komisi final (komisi bulan depan)", telat])
+    for x in ins.get("susulan", []):
+        baris.append([f"Komisi susulan: {x['nama']}", f"{'pelanggan baru, ' if x['baru'] else ''}tagihan {_nama_periode(x['periode'])}"])
+    baris += [
               [f"Komisi hasil kerja {_nama_periode(ins['kerja_bulan'])}", ins["total"]],
               ["Komisi sudah dibayar", ins["dibayar"]], ["Komisi belum dibayar", ins["sisa"]],
               ["Status komisi", "final" if ins["final"] else "masih berjalan, final saat tutup buku"]]
