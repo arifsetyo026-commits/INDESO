@@ -4432,7 +4432,7 @@ def list_tagihan(periode: str):
         insentif = _hitung_insentif(conn, periode)
         return {
             "periode": periode,
-            "insentif_mitra": {k: insentif[k] for k in ("jumlah_lunas", "jumlah_gratis", "jumlah", "per_pelanggan", "total")} if conn.execute(
+            "insentif_mitra": {k: insentif.get(k, 0) for k in ("jumlah_lunas", "jumlah_gratis", "jumlah_susulan", "jumlah", "per_pelanggan", "total")} if conn.execute(
                 "SELECT 1 FROM akun WHERE peran='mitra' LIMIT 1").fetchone() else None,
             "ringkasan": {"jumlah_tagihan": len(rows), "total": total,
                           "terbayar": lunas, "belum_bayar": total - lunas},
@@ -6361,7 +6361,10 @@ def _rekap_insentif(conn, sampai: str, maks_bulan: int = 24, lokasi: Optional[in
         dibayar = _insentif_dibayar(conn, p, lokasi)
         sisa = ins["total"] - dibayar
         hasil.append({"periode": p, "jumlah_pelanggan": ins["jumlah"], "jumlah_lunas": ins["jumlah_lunas"],
-                      "jumlah_gratis": ins["jumlah_gratis"], "per_pelanggan": ins["per_pelanggan"],
+                      "jumlah_gratis": ins["jumlah_gratis"], "jumlah_susulan": ins.get("jumlah_susulan") or 0,
+                      "susulan": [{"nama": x.get("nama") or x["username"], "username": x["username"], "periode": x["susulan"]}
+                                  for x in ins["pelanggan"] if x.get("susulan")],
+                      "per_pelanggan": ins["per_pelanggan"],
                       "terhitung": ins["total"], "dibayar": dibayar, "sisa": max(0, sisa),
                       "lebih": max(0, -sisa), "terkunci": ins.get("terkunci"), "ada_tagihan": _ada_tagihan(conn, p),
                       "status": "lunas" if ins["total"] and sisa <= 0 else ("sebagian" if dibayar else
@@ -7221,14 +7224,15 @@ def _hitung_insentif(conn, periode: str, lokasi: Optional[int] = None) -> dict:
     if lokasi is None:
         bagian = [_hitung_insentif(conn, periode, x) for x in _kode_lokasi(conn)]
         return {"periode": periode, "per_pelanggan": bagian[0]["per_pelanggan"],
-                **{f: sum(b[f] for b in bagian) for f in ("jumlah_lunas", "jumlah_gratis", "jumlah", "total")},
+                **{f: sum(b[f] for b in bagian) for f in ("jumlah_lunas", "jumlah_gratis", "jumlah_susulan", "jumlah", "total")},
                 "pelanggan": [p for b in bagian for p in b["pelanggan"]],
                 "terkunci": bagian[-1]["terkunci"] if all(b["terkunci"] for b in bagian) else None}
     k = conn.execute("SELECT * FROM komisi_kunci WHERE periode = ? AND lokasi = ?", (periode, lokasi)).fetchone()
     if k:
+        daftar = json.loads(k["pelanggan"] or "[]")
         return {"periode": periode, "per_pelanggan": k["per_pelanggan"], "jumlah_lunas": k["jumlah_lunas"],
-                "jumlah_gratis": k["jumlah_gratis"], "jumlah": k["jumlah"], "total": k["total"],
-                "pelanggan": json.loads(k["pelanggan"] or "[]"),
+                "jumlah_gratis": k["jumlah_gratis"], "jumlah_susulan": sum(1 for x in daftar if x.get("susulan")),
+                "jumlah": k["jumlah"], "total": k["total"], "pelanggan": daftar,
                 "terkunci": {"sumber": k["sumber"], "oleh": k["oleh"], "pada": k["pada"], "catatan": k["catatan"]}}
     return {**_hitung_insentif_berjalan(conn, periode, lokasi), "terkunci": None}
 
@@ -7268,11 +7272,39 @@ def _hitung_insentif_berjalan(conn, periode: str, lokasi: int = 1) -> dict:
             "ORDER BY p.nama COLLATE NOCASE",
             (lokasi, f"{periode}-01", periode),
         ).fetchall()
+    susulan = _komisi_susulan(conn, periode, lokasi)
     tarif = CONFIG["MITRA_INSENTIF_PER_PELANGGAN"]
-    jumlah = len(lunas) + len(gratis)
+    jumlah = len(lunas) + len(gratis) + len(susulan)
     return {"periode": periode, "per_pelanggan": tarif, "jumlah_lunas": len(lunas),
-            "jumlah_gratis": len(gratis), "jumlah": jumlah, "total": jumlah * tarif,
-            "pelanggan": [dict(r) for r in lunas] + [{**dict(r), "gratis": True} for r in gratis]}
+            "jumlah_gratis": len(gratis), "jumlah_susulan": len(susulan), "jumlah": jumlah, "total": jumlah * tarif,
+            "pelanggan": [dict(r) for r in lunas] + [{**dict(r), "gratis": True} for r in gratis] + susulan}
+
+
+def _komisi_susulan(conn, periode: str, lokasi: int) -> list[dict]:
+    """Komisi susulan: tagihan bulan lalu yang baru dilunasi SETELAH komisi bulannya dikunci (pelanggan telat bayar).
+    Komisinya tidak hilang, tapi masuk ke komisi bulan pertama sesudahnya yang belum dikunci (biasanya bulan berikutnya).
+    Satu tagihan hanya menghasilkan satu komisi: yang sudah tercatat di kuncian mana pun tidak dihitung lagi."""
+    kunci = {r["periode"]: (r["pada"], json.loads(r["pelanggan"] or "[]")) for r in conn.execute(
+        "SELECT periode, pada, pelanggan FROM komisi_kunci WHERE lokasi = ?", (lokasi,))}
+    if not kunci:
+        return []
+    sudah = {(x["susulan"], x["username"]) for _p, (_w, d) in kunci.items() for x in d if x.get("susulan")}
+    hasil = []
+    for r in conn.execute(
+            "SELECT t.periode, p.username, p.nama, t.tgl_bayar, COALESCE(t.lunas_pada, t.tgl_bayar) AS waktu FROM tagihan t "
+            "JOIN pelanggan p ON p.username = t.username WHERE t.status = 'lunas' AND t.periode < ? "
+            "AND p.tampil_mitra = 1 AND p.lokasi = ? ORDER BY t.periode, p.nama COLLATE NOCASE", (periode, lokasi)):
+        k = kunci.get(r["periode"])
+        if not k or (r["periode"], r["username"]) in sudah or not r["waktu"] or r["waktu"] <= (k[0] or ""):
+            continue
+        if any(x.get("username") == r["username"] and not x.get("susulan") for x in k[1]):
+            continue                    # sudah dihitung di komisi bulannya sendiri
+        tujuan = _geser_periode(r["periode"], 1)
+        while tujuan in kunci:
+            tujuan = _geser_periode(tujuan, 1)
+        if tujuan == periode:
+            hasil.append({"username": r["username"], "nama": r["nama"], "tgl_bayar": r["tgl_bayar"], "susulan": r["periode"]})
+    return hasil
 
 
 @app.get("/api/mitra/pelanggan")
@@ -7327,6 +7359,9 @@ def mitra_list_pelanggan(periode: str, request: Request):
         daftar.append(p)
     insentif["jumlah_lunas"] += insentif.get("jumlah_gratis") or 0
     insentif["jumlah_gratis"] = 0
+    # Susulan: nama & bulan tagihannya ditampilkan ke mitra supaya jelas kenapa komisinya bertambah.
+    insentif["susulan"] = [{"nama": x.get("nama") or x["username"], "periode": x["susulan"]}
+                           for x in insentif.get("pelanggan", []) if x.get("susulan")]
     insentif.pop("pelanggan", None)        # daftar internal (berisi tanda gratis) tidak dikirim ke mitra
     t = insentif.get("terkunci")
     insentif["final"] = bool(t)
