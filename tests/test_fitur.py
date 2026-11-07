@@ -413,6 +413,12 @@ def test_mitra_ekspor_excel(siap):
     assert "Ringkasan" in teks and "<v>20000</v>" in lembar            # komisi: budi + server (gratis dihitung)
     assert "ekspor" in o.get("/api/aktivitas").text
     assert m.get("/api/mitra/ekspor?periode=2026-13").status_code == 400
+    # pelanggan yang belum punya tagihan bulan itu tidak ikut diekspor (jumlah baris = sudah + belum bayar)
+    k.post("/api/data-pelanggan", json={"username": "baru", "nama": "Pelanggan Baru", "paket_id": 1,
+                                         "tgl_pasang": "2026-10-20", "tagih_bulan_ini": False})
+    lembar = zipfile.ZipFile(io.BytesIO(m.get("/api/mitra/ekspor?periode=2026-10").content)).read("xl/worksheets/sheet1.xml").decode()
+    teks = " ".join(_re.findall(r"<t[^>]*>([^<]*)</t>", lembar))
+    assert "Pelanggan Baru" not in teks and "Belum ada tagihan" not in teks and "budi" in teks
 
 
 # ------------------------------------------------------------------

@@ -7440,13 +7440,14 @@ def mitra_ekspor(periode: str, request: Request):
              ["No", "ID pelanggan", "Nama", "Username", "Paket", "Alamat", "No. HP", "Status bayar", "Tanggal bayar",
               "Jatuh tempo", "Keterangan"]]
     lunas = belum = 0
-    for i, p in enumerate(d["pelanggan"], 1):
+    # Hanya pelanggan yang punya tagihan bulan ini (lunas/belum), supaya jumlah barisnya sama dengan ringkasan
+    # "sudah bayar + belum bayar" di HP mitra. Pelanggan gratis yang dihitung komisi sudah tampil lunas.
+    ditagih = [p for p in d["pelanggan"] if p["status_bayar"] in ("lunas", "belum")]
+    for i, p in enumerate(ditagih, 1):
         if p["status_bayar"] == "lunas":
             status, lunas = "Lunas", lunas + 1
-        elif p["status_bayar"] == "belum":
-            status, belum = ("Terlambat" if (p["jatuh_tempo"] or "") < hari else "Belum bayar"), belum + 1
         else:
-            status = "Gratis" if p["gratis"] else "Belum ada tagihan"
+            status, belum = ("Terlambat" if (p["jatuh_tempo"] or "") < hari else "Belum bayar"), belum + 1
         ket = ", ".join(k for k, ya in (("Berhenti", p["status"] == "berhenti"), ("Isolir", p["terisolir"])) if ya)
         baris.append([i, p["id_pelanggan"], p["nama"], p["username"], p["paket"], p["alamat"], p["no_hp"], status,
                       p["tgl_bayar"] or "", p["jatuh_tempo"] or "", ket])
@@ -7455,7 +7456,7 @@ def mitra_ekspor(periode: str, request: Request):
               [f"Komisi hasil kerja {_nama_periode(ins['kerja_bulan'])}", ins["total"]],
               ["Komisi sudah dibayar", ins["dibayar"]], ["Komisi belum dibayar", ins["sisa"]],
               ["Status komisi", "final" if ins["final"] else "masih berjalan, final saat tutup buku"]]
-    catat_aktivitas(_oleh(request), "ekspor", f"Excel pelanggan mitra {periode} ({len(d['pelanggan'])} baris)")
+    catat_aktivitas(_oleh(request), "ekspor", f"Excel pelanggan mitra {periode} ({len(ditagih)} baris)")
     isi = _xlsx(baris, [5, 15, 26, 16, 12, 30, 15, 13, 13, 12, 16], {0, 3, awal_ringkas})
     return Response(isi, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f'attachment; filename="pelanggan-mitra-{periode}.xlsx"'})
