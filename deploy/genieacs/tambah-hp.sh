@@ -5,6 +5,8 @@
 #   sudo bash tambah-hp.sh                # buat akses untuk "hp-owner" (atau tampilkan lagi kode QR-nya)
 #   sudo bash tambah-hp.sh hp-teknisi     # akses untuk perangkat lain
 #   sudo bash tambah-hp.sh hapus hp-lama  # cabut akses satu perangkat (mis. HP hilang)
+#   sudo bash tambah-hp.sh perbarui hp-owner  # perbarui jalur (mis. setelah MikroTik v6 ditambah lewat
+#                                         #  mikrotik-ovpn.sh), lalu impor ulang kode QR-nya
 #   sudo bash tambah-hp.sh berkas         # salin konfigurasi ke folder home untuk diimpor di HP
 #                                         # (bila skrip dijalankan dari HP yang sama lewat SSH/Termux,
 #                                         #  kode QR di layar tidak bisa dipindai HP itu sendiri)
@@ -40,8 +42,27 @@ PY
   exit 0
 fi
 
+# Yang dilewatkan ke VPS: MikroTik (10.99.0.2) + jaringan yang sudah dirutekan terowongan INDESO
+# (LAN kantor, pool PPPoE pelanggan) + MikroTik RouterOS v6 lewat OpenVPN (mikrotik-ovpn.sh, 10.97.0.0/24).
+# Internet HP lainnya tetap lewat jalur HP sendiri.
+jalur_hp() {
+  local t="10.99.0.2/32" net
+  for net in $(wg show "$WG_ACS" allowed-ips | cut -f2- | tr ' \t' '\n\n' | grep '/' | sort -u); do
+    case "$net" in 10.99.0.*) ;; *) t="$t, $net";; esac
+  done
+  [ -f /etc/openvpn/server/indeso-mt.conf ] && t="$t, 10.97.0.0/24"
+  echo "$t"
+}
+
 BERKAS=0
 if [ "${1:-}" = "berkas" ]; then BERKAS=1; shift; fi
+if [ "${1:-}" = "perbarui" ]; then
+  shift
+  NAMA_P="${1:-hp-owner}"
+  [ -f "$DIR/$NAMA_P.conf" ] || { echo "Perangkat '$NAMA_P' belum ada."; exit 1; }
+  sed -i "s#^AllowedIPs = .*#AllowedIPs = $(jalur_hp)#" "$DIR/$NAMA_P.conf"
+  echo "Jalur '$NAMA_P' diperbarui. Impor ulang kode QR di bawah ke aplikasi WireGuard (hapus yang lama)."
+fi
 NAMA="${1:-hp-owner}"
 [[ "$NAMA" =~ ^[A-Za-z0-9_-]{1,30}$ ]] || { echo "Nama hanya huruf, angka, - atau _ (maks. 30)."; exit 1; }
 command -v qrencode >/dev/null || apt-get install -y qrencode >/dev/null
@@ -85,12 +106,7 @@ if [ ! -f "$DIR/$NAMA.conf" ]; then
   wg set "$WG_HP" peer "$PUB" allowed-ips "${NET}.${N}/32"
   echo "$PUB" > "$DIR/$NAMA.pub"
 
-  # Yang dilewatkan ke VPS: MikroTik (10.99.0.2) + jaringan yang sudah dirutekan terowongan INDESO
-  # (LAN kantor, pool PPPoE pelanggan). Internet HP lainnya tetap lewat jalur HP sendiri.
-  TUJUAN="10.99.0.2/32"
-  for net in $(wg show "$WG_ACS" allowed-ips | cut -f2- | tr ' \t' '\n\n' | grep '/' | sort -u); do
-    case "$net" in 10.99.0.*) ;; *) TUJUAN="$TUJUAN, $net";; esac
-  done
+  TUJUAN=$(jalur_hp)
   ENDPOINT="${ENDPOINT:-$(curl -4 -fsS https://api.ipify.org || true)}"
   [ -n "$ENDPOINT" ] || { echo "IP publik VPS tidak terbaca; jalankan lagi dengan ENDPOINT=<ip-vps>"; exit 1; }
   cat > "$DIR/$NAMA.conf" <<CL
@@ -135,6 +151,8 @@ echo "2. Ketuk tombol + -> Pindai dari kode QR -> arahkan kamera ke kode di atas
 echo "3. Nyalakan tombolnya, lalu buka:"
 echo "     Winbox : 10.99.0.2   (port 8291)"
 echo "     WebFig : http://10.99.0.2/"
+[ -f /etc/openvpn/server/indeso-mt.conf ] && for c in /etc/openvpn/server/indeso-mt/ccd/*; do
+  [ -f "$c" ] && echo "     MikroTik $(basename "$c") (OpenVPN): $(awk '{print $2}' "$c")"; done
 echo
 echo "Jalur yang lewat terowongan: $(awk -F' *= *' '/^AllowedIPs/ {print $2}' "$DIR/$NAMA.conf")"
 echo "Port VPS: ${PORT}/udp. Bila HP tidak bisa tersambung, izinkan port ini di firewall penyedia VPS (panel cloud)."

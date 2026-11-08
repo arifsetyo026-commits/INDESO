@@ -416,3 +416,22 @@ Kalau ada kendala:
 - **HP tidak tersambung**: izinkan port UDP yang tertulis di akhir skrip pada firewall penyedia VPS.
 - **Winbox/WebFig ditolak**: di MikroTik, tambahkan `10.99.0.0/24` pada kolom address layanan `winbox` dan `www`
   (`/ip service print`).
+
+## MikroTik RouterOS v6 (belum ada WireGuard), mis. MikroTik wilayah 2
+RouterOS v6 tidak punya WireGuard. Sampai MikroTik diganti/di-upgrade ke v7, sambungkan lewat OpenVPN (TCP):
+MikroTik yang memanggil VPS, jadi tetap jalan di belakang modem/NAT/CGNAT dan walau sumber bandwidth diganti.
+
+```
+cd /opt/indeso/deploy/genieacs
+sudo bash mikrotik-ovpn.sh w2          # siapkan; menampilkan perintah untuk Terminal MikroTik
+sudo bash mikrotik-ovpn.sh status      # siapa yang tersambung
+sudo bash mikrotik-ovpn.sh hapus w2    # cabut (mis. setelah pindah ke WireGuard)
+sudo bash tambah-hp.sh perbarui hp-owner   # HP owner ikut melewatkan 10.97.0.0/24, impor ulang QR
+```
+- MikroTik mendapat alamat tetap `10.97.0.2`, `10.97.0.3`, … (VPS `10.97.0.1`). Buka Winbox/aplikasi MikroTik ke
+  alamat itu dari HP yang tersambung WireGuard.
+- Perintah MikroTik dari skrip menambahkan `ovpn-vps` ke daftar `LAN`, sehingga firewall MikroTik mengizinkan
+  akses dari terowongan ini (dan tetap menolak akses dari port uplink).
+- Port: TCP 1194 (atau port kosong berikutnya s/d 1199). Izinkan di firewall penyedia VPS bila MikroTik tidak bisa
+  tersambung. Cek log: `sudo journalctl -u openvpn-server@indeso-mt -n 50`.
+- Kompatibel RouterOS v6: TCP, AES-256-CBC + SHA1, login nama/sandi, tanpa kompresi.
