@@ -719,8 +719,12 @@ async function muatPesanWA(){ try{ const r=await fetch('/api/pesan-wa',{cache:'n
 function pesanPengingat(nama,username,daftar,id){
  const total=daftar.reduce((a,t)=>a+t.jumlah,0);
  const rincian=daftar.map(t=>'- '+namaPeriode(t.periode)+': '+rp(t.jumlah)+' (jatuh tempo '+tglPendek(t.jatuh_tempo)+')').join('\n');
- const isi={nama,username,id:id||username,usaha:bl.pesan.usaha,rincian,total:rp(total),cara_bayar:bl.pesan.cara_bayar};
- return bl.pesan.template.replace(/\{(nama|username|id|usaha|rincian|total|cara_bayar)\}/g,(_,k)=>isi[k]);
+ const portal=location.origin+'/portal';
+ const isi={nama,username,id:id||username,usaha:bl.pesan.usaha,rincian,total:rp(total),cara_bayar:bl.pesan.cara_bayar,portal};
+ let teks=bl.pesan.template.replace(/\{(nama|username|id|usaha|rincian|total|cara_bayar|portal)\}/g,(_,k)=>isi[k]);
+ // QRIS portal aktif: ajak bayar lewat portal (bila template belum memuat {portal})
+ if(bl.pesan.qris&&!bl.pesan.template.includes('{portal}')) teks+='\n\nCek tagihan & bayar lewat QRIS (nominal otomatis): '+portal;
+ return teks;
 }
 function catatPengingat(username,total,bulan){
  fetch('/api/tagihan/pengingat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,total,bulan})}).catch(()=>{});
