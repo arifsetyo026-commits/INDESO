@@ -75,7 +75,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <label>Nama login</label><input id="mLogin" autocapitalize="off" autocomplete="username">
    <label>Password</label><input id="mPw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')masuk()">
    <div class="btns"><button class="btn go" onclick="masuk()">Masuk</button></div>
-   <div class="note">Lupa password? Hubungi admin untuk mengatur ulang.</div>
+   <div class="note" id="lupaPw">Lupa password? Hubungi admin untuk mengatur ulang.</div>
   </div>
   <div id="fDaftar" style="display:none">
    <div class="note" style="margin-top:4px">Isi nomor HP yang Anda berikan saat pemasangan internet. Akun bisa dipakai setelah disetujui admin.</div>
@@ -182,8 +182,12 @@ async function kirimBukti(){
   byr.buka=false; await muat(); pesan('msg','Bukti bayar terkirim. Tagihan menjadi lunas setelah dicek admin; internet terbuka otomatis bila sedang diisolir.',true); }
  catch(e){ pesan('bMsg','Gagal: '+e.message); }
 }
+async function muatInfo(){
+ try{ const i=await api('/api/portal/info'); if(i.usaha) $('usaha').textContent=i.usaha;
+  if(i.wa) $('lupaPw').innerHTML='Lupa password? Hubungi admin lewat <a href="'+esc(i.wa)+'" target="_blank" rel="noopener">WhatsApp '+esc(i.wa_teks)+'</a> untuk mengatur ulang.'; }catch(e){}
+}
 async function muat(){
- let d; try{ d=await api('/api/portal/saya'); }catch(e){ tampil('auth'); return; }
+ let d; try{ d=await api('/api/portal/saya'); }catch(e){ tampil('auth'); muatInfo(); return; }
  try{ byr.riwayat=(await api('/api/portal/konfirmasi')).konfirmasi||[]; }catch(e){ byr.riwayat=[]; }
  const dicek=new Set(byr.riwayat.filter(k=>k.status==='menunggu').flatMap(k=>k.periode.split(',')));
  tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;
@@ -193,7 +197,7 @@ async function muat(){
  const belum=d.tagihan.filter(t=>!t.lunas);
  $('cTagih').textContent=d.belum_bayar?rp(d.belum_bayar):'Lunas'; $('cTagih').style.color=d.belum_bayar?'#b45309':'';
  $('cTagihSub').textContent=belum.length?belum.length+' bulan':'tidak ada tunggakan';
- $('tagihan').innerHTML=d.tagihan.length?d.tagihan.map(t=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':''):'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div>
+ $('tagihan').innerHTML=d.tagihan.length?d.tagihan.map(t=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':'')+` · <a href="/api/portal/kwitansi/${esc(t.periode)}" target="_blank" rel="noopener">Kwitansi</a>`:'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div>
   <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':dicek.has(t.periode)?'<span class="chip off">Bukti sedang dicek</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`).join(''):'<div class="muted">Belum ada tagihan.</div>';
  $('infoBayar').textContent=d.info_bayar?'Cara bayar lain: '+d.info_bayar:'';
  byr.belum=belum.filter(t=>!dicek.has(t.periode)).length; renderBayar();

@@ -1570,7 +1570,7 @@ def test_pengingat_wa_massal(siap):
     assert o.put("/api/pengaturan", json={"nilai": {"NAMA_USAHA": "x" * 61}}).status_code == 400
     p = k.get("/api/pesan-wa").json()
     assert p == {"usaha": "Indeso Net", "cara_bayar": "Transfer BRI 1234 a.n. Arif\nKirim bukti ke nomor ini.",
-                 "template": "Halo {nama}, tagihan {usaha}:\n{rincian}\nTotal {total}\n{cara_bayar}"}
+                 "template": "Halo {nama}, tagihan {usaha}:\n{rincian}\nTotal {total}\n{cara_bayar}", "qris": False}
     assert m.get("/api/pesan-wa").status_code == 403
     # tersimpan permanen (dimuat ulang saat restart)
     main.CONFIG["NAMA_USAHA"] = "lain"
@@ -3981,11 +3981,25 @@ def test_qris_dan_konfirmasi_bukti_bayar(siap):
     c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
     assert {x[0] for x in c.execute("SELECT lokasi_kas FROM tagihan WHERE username='budi'")} == {0}   # kas Pusat
     c.close()
+    # kwitansi di portal: hanya tagihan lunas milik sendiri
+    kw = p.get("/api/portal/kwitansi/2026-11")
+    assert kw.status_code == 200 and "KWITANSI" in kw.text and "Budi" in kw.text
+    assert p.get("/api/portal/kwitansi/2027-01").status_code == 404
+    o.post("/api/tagihan/buat?periode=2026-09")
+    t_ani = next(x for x in o.get("/api/tagihan?periode=2026-09").json()["tagihan"] if x["username"] == "ani")
+    o.post(f"/api/tagihan/{t_ani['id']}/lunas")
+    assert p.get("/api/portal/kwitansi/2026-09").status_code == 404           # milik pelanggan lain tidak bisa dibuka
+    assert TestClient(main.app).get("/api/portal/kwitansi/2026-11").status_code == 401
+    # info publik portal & penanda QRIS untuk pesan WA
+    o.put("/api/pengaturan", json={"nilai": {"USAHA_WA": "081234567890"}})
+    info = TestClient(main.app).get("/api/portal/info").json()
+    assert info["wa"] == "https://wa.me/6281234567890" and info["usaha"]
+    assert k.get("/api/pesan-wa").json()["qris"] is True
     # nominal otomatis bisa dimatikan: portal memberi QRIS toko asli
     o.post("/api/tagihan/buat?periode=2026-12")
     assert o.put("/api/pengaturan", json={"nilai": {"QRIS_NOMINAL": "tidak"}}).status_code == 200
     b = p.get("/api/portal/bayar").json()
-    assert b["nominal_otomatis"] is False and b["qris"] == qris and b["jumlah"] == 150000
+    assert b["nominal_otomatis"] is False and b["qris"] == qris and b["jumlah"] == 300000   # 2026-09 + 2026-12
     assert o.put("/api/pengaturan", json={"nilai": {"QRIS_NOMINAL": "ya"}}).status_code == 200
     # QR uji owner
     assert k.get("/api/qris/uji").status_code == 403

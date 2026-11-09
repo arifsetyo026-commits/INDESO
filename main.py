@@ -2306,7 +2306,7 @@ _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 # Selain itu: tanpa login -> 401/ke halaman login, mitra -> 403.
 _JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|api/login|api/setup|api/setup-status|healthz"
                            r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js"
-                           r"|syarat-ketentuan|kebijakan-privasi|kebijakan-pengembalian-dana)$")
+                           r"|syarat-ketentuan|kebijakan-privasi|kebijakan-pengembalian-dana|api/portal/info)$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
 # Reseller (warung) voucher hotspot: hanya halaman jual vouchernya sendiri.
 _JALUR_RESELLER = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/reseller/.*)$")
@@ -3250,7 +3250,9 @@ _PENGATURAN = {
                                 "tidak: portal menampilkan QRIS toko asli dan pelanggan mengetik nominal yang tertera."},
     "TEMPLATE_PENGINGAT": {"label": "Teks pengingat tagihan WA", "tipe": "teksbebas", "maks": 1500, "baris": 8,
                            "bantuan": "Penanda yang diisi otomatis: {nama} {usaha} {rincian} (daftar bulan & jumlah) "
-                                      "{total} {cara_bayar} {username} {id} (ID pelanggan). Huruf di antara *bintang* jadi tebal di WA."},
+                                      "{total} {cara_bayar} {username} {id} (ID pelanggan) {portal} (alamat Portal Pelanggan). Bila QRIS "
+                                      "portal aktif dan {portal} tidak dipakai, ajakan bayar lewat portal ditambahkan "
+                                      "di akhir pesan. Huruf di antara *bintang* jadi tebal di WA."},
     "PENGINGAT_JEDA_HARI": {"label": "Pengingat massal: lewati pelanggan yang sudah diingatkan dalam (hari)", "tipe": "int",
                             "min": 0, "max": 30},
     "ONU_SANDI_ADMIN": {"label": "Password admin web ONU (dipasang tombol 🔒 Amankan ONU)", "tipe": "rahasia",
@@ -4759,7 +4761,13 @@ def list_tunggakan():
 @app.get("/api/pesan-wa")
 def pengaturan_pesan_wa():
     """Teks yang dipakai browser untuk menyusun pesan WA ke pelanggan."""
-    return {"usaha": CONFIG["NAMA_USAHA"], "cara_bayar": CONFIG["INFO_BAYAR"], "template": CONFIG["TEMPLATE_PENGINGAT"]}
+    conn = _billing_conn()
+    try:
+        qris = _qris_aktif(conn) is not None
+    finally:
+        conn.close()
+    return {"usaha": CONFIG["NAMA_USAHA"], "cara_bayar": CONFIG["INFO_BAYAR"], "template": CONFIG["TEMPLATE_PENGINGAT"],
+            "qris": qris}
 
 
 class PengingatIn(BaseModel):
@@ -4828,6 +4836,26 @@ def _tgl_indo(tgl: Optional[str]) -> str:
 @app.get("/kwitansi/{tagihan_id}")
 def kwitansi_cetak(tagihan_id: int):
     """Halaman kwitansi siap cetak / simpan PDF (ukuran setengah A4 / layar HP)."""
+    return _respons_kwitansi(tagihan_id)
+
+
+@app.get("/api/portal/kwitansi/{periode}")
+def portal_kwitansi(periode: str, request: Request):
+    """Kwitansi tagihan lunas milik pelanggan yang sedang masuk portal."""
+    if not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT id FROM tagihan WHERE username = ? AND periode = ? AND status = 'lunas'",
+                         (request.state.portal["pelanggan"], periode)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        raise HTTPException(status_code=404, detail="Kwitansi belum tersedia: tagihan ini belum lunas.")
+    return _respons_kwitansi(r["id"])
+
+
+def _respons_kwitansi(tagihan_id: int):
     d = _data_kwitansi(tagihan_id)
     e = _esc
     sisa = (f'<p class="sisa">Masih ada tagihan belum lunas: {d["sisa_bulan"]} bulan, {e(_rp(d["sisa_total"]))}.</p>'
@@ -9874,6 +9902,12 @@ def konfirmasi_periksa(kid: int, d: PeriksaKonfirmasiIn, request: Request):
                                                                        + (f", {len(sudah)} sudah lunas sebelumnya" if sudah else "")
                                                                        if d.terima else f"ditolak: {alasan[:100]}"))
     return {"ok": True, "status": "diterima" if d.terima else "ditolak", "lunas": len(lunas), "sudah_lunas": len(sudah)}
+
+
+@app.get("/api/portal/info")
+def portal_info():
+    """Publik (sebelum masuk): nama usaha & kontak bantuan, mis. untuk lupa password."""
+    return {"usaha": CONFIG["NAMA_USAHA"], "wa": _wa_link(CONFIG.get("USAHA_WA") or ""), "wa_teks": CONFIG.get("USAHA_WA") or ""}
 
 
 @app.get("/api/portal/wifi")
