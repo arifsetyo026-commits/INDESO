@@ -221,7 +221,8 @@ def test_halaman_dan_login(app):
     main = app
     c = klien(main)
     c.follow_redirects = False
-    assert c.get("/").status_code == 303 and c.get("/").headers["location"] == "/login"
+    # tanpa login: beranda publik (bukan dashboard), dengan tautan masuk petugas
+    assert c.get("/").status_code == 200 and 'href="/login"' in c.get("/").text and "Keuangan" not in c.get("/").text
     assert c.get("/login").status_code == 200
     assert c.get("/api/status").status_code == 401
     assert c.get("/api/setup-status").json()["perlu_setup"] is True
@@ -3324,7 +3325,7 @@ def test_portal_pelanggan(siap, monkeypatch):
     assert p.post("/api/portal/login", json={"username": "budisaja", "password": "salah1234"}).status_code == 401
     assert p.post("/api/portal/login", json={"username": "BudiSaja", "password": "rahasia123"}).status_code == 200
     assert p.get("/api/akun").status_code == 401 and p.get("/api/tiket").status_code == 401   # bukan sesi staf
-    assert p.get("/").status_code == 200 and "/login" in str(p.get("/").url)                # dashboard → login
+    assert p.get("/").status_code == 200 and "Paket &amp; harga" in p.get("/").text           # sesi portal ≠ dashboard
     d = p.get("/api/portal/saya").json()
     assert d["username"] == "budi" and d["internet"]["online"] in (True, False)
     assert [t["periode"] for t in d["tagihan"]] == ["2026-10"] and d["belum_bayar"] == d["tagihan"][0]["jumlah"]
@@ -3871,6 +3872,38 @@ def test_mikrotik_per_lokasi_w2(siap, monkeypatch):
     assert o.put("/api/lokasi/2/mikrotik", json=dict(isian, pantau=False)).json()["pantau"] is False
     assert {x["kode"]: x for x in o.get("/api/lokasi").json()["lokasi"]}[2]["jaringan"] == 0
     assert "w2.tri" not in {u.username for u in main.fetch_pppoe_active(True)[0]}
+
+
+def test_halaman_publik_untuk_verifikasi_payment_gateway(siap):
+    """Beranda publik (tanpa login) berisi deskripsi, paket & harga, cara bayar, kontak, dan tautan ke Syarat &
+    Ketentuan, Kebijakan Privasi, Kebijakan Pengembalian Dana; staf yang login tetap melihat dashboard."""
+    from fastapi.testclient import TestClient
+    main, o, k, m = siap
+    tamu = TestClient(main.app)
+    r = o.put("/api/pengaturan", json={"nilai": {"USAHA_WA": "081234567890", "USAHA_EMAIL": "halo@contoh.id",
+                                                 "USAHA_PEMILIK": "Arif <b>", "USAHA_AREA": "Desa Contoh",
+                                                 "USAHA_ALAMAT": "RT 1"}})
+    assert r.status_code == 200, r.text
+    assert o.put("/api/pengaturan", json={"nilai": {"USAHA_EMAIL": "bukan-email"}}).status_code == 400
+    assert k.put("/api/pengaturan", json={"nilai": {"USAHA_AREA": "x"}}).status_code == 403     # khusus owner
+    b = tamu.get("/", follow_redirects=False)
+    assert b.status_code == 200 and "text/html" in b.headers["content-type"]
+    t = b.text
+    for kata in ("Paket &amp; harga", "Rp150.000", "10 Mbps", "wa.me/6281234567890", "halo@contoh.id", "Desa Contoh",
+                 "/syarat-ketentuan", "/kebijakan-privasi", "/kebijakan-pengembalian-dana", "jatuh tempo tanggal <b>5</b>"):
+        assert kata in t, kata
+    assert "Arif &lt;b&gt;" in t and "Arif <b>" not in t                        # isian di-escape
+    for jalur, judul in (("/syarat-ketentuan", "Syarat &amp; Ketentuan Layanan"), ("/kebijakan-privasi", "Kebijakan Privasi"),
+                         ("/kebijakan-pengembalian-dana", "Kebijakan Pengembalian Dana")):
+        h = tamu.get(jalur)
+        assert h.status_code == 200 and judul in h.text and "halo@contoh.id" in h.text
+    assert "pukul 08.00" in tamu.get("/syarat-ketentuan").text                    # jam isolir dari pengaturan
+    # yang lain tetap wajib login
+    assert tamu.get("/api/tagihan?periode=2026-10").status_code == 401
+    assert tamu.post("/", follow_redirects=False).status_code in (303, 403, 405)
+    # staf yang login tetap mendapat dashboard
+    assert "Keuangan" in o.get("/").text and "Paket &amp; harga" not in o.get("/").text
+    assert "/syarat-ketentuan" in tamu.get("/portal").text and "/kebijakan-privasi" in tamu.get("/login").text
 
 
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
