@@ -72,7 +72,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div id="vAuth" class="auth" style="display:none"><div class="panel form">
   <div class="tabs"><button id="tMasuk" class="on" onclick="modeAuth('masuk')">Masuk</button><button id="tDaftar" onclick="modeAuth('daftar')">Daftar</button></div>
   <div id="fMasuk">
-   <label>Nama login</label><input id="mLogin" autocapitalize="off" autocomplete="username">
+   <label>Nama login atau ID pelanggan</label><input id="mLogin" autocapitalize="off" autocomplete="username" placeholder="mis. 463376-1-0001">
    <label>Password</label><input id="mPw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')masuk()">
    <div class="btns"><button class="btn go" onclick="masuk()">Masuk</button></div>
    <div class="note" id="lupaPw">Lupa password? Hubungi admin untuk mengatur ulang.</div>
@@ -106,8 +106,9 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  </div>
 
  <div id="vPw" class="auth" style="display:none"><div class="panel form">
-  <div class="nav"><b>Ganti password</b><button class="btn" onclick="tampil('utama')">‹ Kembali</button></div>
-  <label>Password lama</label><input id="pLama" type="password" autocomplete="current-password">
+  <div class="nav"><b>Ganti password</b><button class="btn" id="pKembali" onclick="tampil('utama')">‹ Kembali</button></div>
+  <div class="note" id="pWajib" style="display:none;margin-bottom:6px">Selamat datang! Demi keamanan, ganti dulu <b>sandi awal 6 angka</b> yang Anda terima dengan password Anda sendiri (minimal 8 karakter). Setelah itu tagihan, pembayaran, dan WiFi bisa dibuka.</div>
+  <label id="pLamaLbl">Password lama</label><input id="pLama" type="password" autocomplete="current-password">
   <label>Password baru</label><input id="pBaru" type="password" autocomplete="new-password">
   <label>Ulangi password baru</label><input id="pBaru2" type="password" autocomplete="new-password">
   <div class="btns"><button class="btn go" onclick="gantiPw()">Simpan</button></div><div class="msg" id="pMsg"></div>
@@ -121,9 +122,12 @@ const rp=n=>'Rp '+Number(n||0).toLocaleString('id-ID');
 const namaP=p=>{const [y,m]=p.split('-').map(Number);return BLN[m-1]+' '+y};
 const tgl=s=>{if(!s)return '';const [y,m,d]=s.slice(0,10).split('-');return (+d)+' '+BLN[+m-1].slice(0,3)+' '+y};
 function pesan(id,teks,ok){ const m=$(id); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=teks||''; }
+let wajibGanti=false;
+function mintaGanti(){ wajibGanti=true; tampil('pw'); $('pWajib').style.display=''; $('pKembali').style.display='none'; $('pLamaLbl').textContent='Sandi awal (6 angka)'; }
 async function api(url,body){
  const r=await fetch(url,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  const d=await r.json().catch(()=>({}));
+ if(r.status===403&&d.wajib_ganti){ mintaGanti(); throw new Error(d.detail); }
  if(r.status===401&&!url.endsWith('/login')){ tampil('auth'); throw new Error(d.detail||'Silakan masuk lagi.'); }
  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status)); return d;
 }
@@ -133,7 +137,8 @@ function tampil(v){ $('vAuth').style.display=v==='auth'?'block':'none'; $('vUtam
 function modeAuth(m){ $('fMasuk').style.display=m==='masuk'?'block':'none'; $('fDaftar').style.display=m==='daftar'?'block':'none';
  $('tMasuk').classList.toggle('on',m==='masuk'); $('tDaftar').classList.toggle('on',m==='daftar'); pesan('aMsg',''); }
 async function masuk(){
- try{ await api('/api/portal/login',{username:$('mLogin').value.trim(),password:$('mPw').value}); $('mPw').value=''; pesan('aMsg',''); await muat(); }
+ try{ const h=await api('/api/portal/login',{username:$('mLogin').value.trim(),password:$('mPw').value}); $('mPw').value=''; pesan('aMsg','');
+  if(h.wajib_ganti){ mintaGanti(); return; } await muat(); }
  catch(e){ pesan('aMsg',e.message); }
 }
 async function daftar(){
@@ -146,7 +151,8 @@ async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{ awai
 async function gantiPw(){
  if($('pBaru').value!==$('pBaru2').value){ pesan('pMsg','Ulangi password baru tidak sama.'); return; }
  try{ await api('/api/portal/password',{lama:$('pLama').value,baru:$('pBaru').value}); ['pLama','pBaru','pBaru2'].forEach(i=>$(i).value='');
-  tampil('utama'); pesan('msg','Password berhasil diganti.',true); }catch(e){ pesan('pMsg',e.message); }
+  const pertama=wajibGanti; wajibGanti=false; $('pWajib').style.display='none'; $('pKembali').style.display=''; $('pLamaLbl').textContent='Password lama';
+  await muat(); pesan('msg',pertama?'Password tersimpan. Selamat datang di portal pelanggan!':'Password berhasil diganti.',true); }catch(e){ pesan('pMsg',e.message); }
 }
 // --- Bayar QRIS & kirim bukti bayar ---
 const byr={buka:false,data:null,belum:0,riwayat:[]};
@@ -187,7 +193,7 @@ async function muatInfo(){
   if(i.wa) $('lupaPw').innerHTML='Lupa password? Hubungi admin lewat <a href="'+esc(i.wa)+'" target="_blank" rel="noopener">WhatsApp '+esc(i.wa_teks)+'</a> untuk mengatur ulang.'; }catch(e){}
 }
 async function muat(){
- let d; try{ d=await api('/api/portal/saya'); }catch(e){ tampil('auth'); muatInfo(); return; }
+ let d; try{ d=await api('/api/portal/saya'); }catch(e){ if(!wajibGanti){ tampil('auth'); muatInfo(); } return; }
  try{ byr.riwayat=(await api('/api/portal/konfirmasi')).konfirmasi||[]; }catch(e){ byr.riwayat=[]; }
  const dicek=new Set(byr.riwayat.filter(k=>k.status==='menunggu').flatMap(k=>k.periode.split(',')));
  tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;

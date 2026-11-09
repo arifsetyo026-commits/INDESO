@@ -2385,6 +2385,13 @@ def init_akun_db() -> None:
                 login_terakhir TEXT
             )
         """)
+        # Akun dibuat admin (login = ID pelanggan): sandi_awal 6 angka acak per pelanggan, terlihat admin hanya
+        # sampai pelanggan menggantinya (wajib_ganti = 1 -> portal meminta ganti sandi sebelum yang lain).
+        kol_pa = [r[1] for r in conn.execute("PRAGMA table_info(portal_akun)").fetchall()]
+        if "sandi_awal" not in kol_pa:
+            conn.execute("ALTER TABLE portal_akun ADD COLUMN sandi_awal TEXT")
+        if "wajib_ganti" not in kol_pa:
+            conn.execute("ALTER TABLE portal_akun ADD COLUMN wajib_ganti INTEGER NOT NULL DEFAULT 0")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS portal_sesi (
                 token_hash TEXT PRIMARY KEY,
@@ -2546,6 +2553,9 @@ async def wajib_login(request: Request, call_next):
             return JSONResponse({"detail": "Sesi berakhir, silakan masuk lagi."}, status_code=401)
         request.state.portal = akun
         request.state.user = "portal:" + akun["login"]
+        if akun.get("wajib_ganti") and jalur not in ("/api/portal/password", "/api/portal/logout"):
+            return JSONResponse({"detail": "Ganti sandi awal dulu sebelum memakai portal.", "wajib_ganti": True},
+                                status_code=403)
     elif not _JALUR_PUBLIK.match(jalur):
         sesi = await asyncio.to_thread(_ambil_sesi, request.state.token)
         if sesi is None and jalur == "/" and request.method in ("GET", "HEAD"):
@@ -9207,7 +9217,7 @@ def _ambil_sesi_portal(token: str) -> Optional[dict]:
     th = _hash_token(token)
     conn = _billing_conn()
     try:
-        r = conn.execute("SELECT s.login, s.terakhir_aktif, a.pelanggan FROM portal_sesi s JOIN portal_akun a "
+        r = conn.execute("SELECT s.login, s.terakhir_aktif, a.pelanggan, a.wajib_ganti FROM portal_sesi s JOIN portal_akun a "
                          "ON a.login = s.login WHERE s.token_hash = ? AND a.status = 'aktif'", (th,)).fetchone()
         if not r:
             return None
@@ -9219,7 +9229,7 @@ def _ambil_sesi_portal(token: str) -> Optional[dict]:
             conn.execute("UPDATE portal_sesi SET terakhir_aktif = ? WHERE token_hash = ?",
                          (sekarang.isoformat(timespec="seconds"), th))
             conn.commit()
-        return {"login": r["login"], "pelanggan": r["pelanggan"]}
+        return {"login": r["login"], "pelanggan": r["pelanggan"], "wajib_ganti": bool(r["wajib_ganti"])}
     finally:
         conn.close()
 
@@ -9468,6 +9478,9 @@ def portal_daftar(d: PortalDaftarIn, request: Request):
     login = d.login.strip()
     if not _POLA_USERNAME.match(login):
         raise HTTPException(status_code=400, detail="Nama login 3-32 karakter: huruf, angka, titik, minus, garis bawah.")
+    if login.startswith(_AWALAN_ID):
+        # Login berbentuk ID pelanggan dicadangkan untuk akun yang dibuat admin (login = ID pelanggan itu sendiri).
+        raise HTTPException(status_code=400, detail="Nama login tidak boleh diawali nomor ID pelanggan. Pilih nama lain.")
     _cek_password_baru(d.password)
     conn = _billing_conn()
     try:
@@ -9508,14 +9521,14 @@ def portal_daftar(d: PortalDaftarIn, request: Request):
 
 @app.post("/api/portal/login")
 def portal_login(d: LoginIn, request: Request):
-    login, sekarang, ip = d.username.strip(), datetime.now(), _ip(request)
+    login, sekarang, ip = _login_portal_baku(d.username), datetime.now(), _ip(request)
     for kunci, batas in ((f"portal-ip:{ip}", _BATAS_GAGAL["ip"]), (f"portal-user:{login.lower()}", _BATAS_GAGAL["user"])):
         menit = _terkunci(kunci, batas, sekarang)
         if menit:
             raise HTTPException(status_code=429, detail=f"Terlalu banyak percobaan gagal. Coba lagi dalam {menit} menit.")
     conn = _billing_conn()
     try:
-        r = conn.execute("SELECT login, password_hash, status FROM portal_akun WHERE login = ?", (login,)).fetchone()
+        r = conn.execute("SELECT login, password_hash, status, wajib_ganti FROM portal_akun WHERE login = ?", (login,)).fetchone()
     finally:
         conn.close()
     if not (_cek_password(d.password, r["password_hash"] if r else _HASH_PALSU) and r is not None):
@@ -9537,7 +9550,7 @@ def portal_login(d: LoginIn, request: Request):
         conn.commit()
     finally:
         conn.close()
-    resp = JSONResponse({"ok": True})
+    resp = JSONResponse({"ok": True, "wajib_ganti": bool(r["wajib_ganti"])})
     https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     resp.set_cookie(_COOKIE_PORTAL, token, httponly=True, samesite="strict", secure=https,
                     max_age=_PORTAL_SESI_HARI * 86400, path="/")
@@ -9567,7 +9580,10 @@ def portal_ganti_password(d: GantiPasswordIn, request: Request):
         r = conn.execute("SELECT password_hash FROM portal_akun WHERE login = ?", (login,)).fetchone()
         if not r or not _cek_password(d.lama, r["password_hash"]):
             raise HTTPException(status_code=400, detail="Password lama salah.")
-        conn.execute("UPDATE portal_akun SET password_hash = ? WHERE login = ?", (_hash_password(d.baru), login))
+        if d.baru == d.lama:
+            raise HTTPException(status_code=400, detail="Password baru harus berbeda dari password lama.")
+        conn.execute("UPDATE portal_akun SET password_hash = ?, sandi_awal = NULL, wajib_ganti = 0 WHERE login = ?",
+                     (_hash_password(d.baru), login))
         conn.commit()
     finally:
         conn.close()
@@ -10060,11 +10076,74 @@ def list_portal_akun(request: Request):
     conn = _billing_conn()
     try:
         rows = conn.execute("SELECT a.login, a.pelanggan, a.status, a.no_hp, a.dibuat, a.disetujui, a.login_terakhir, "
-                            "p.nama FROM portal_akun a LEFT JOIN pelanggan p ON p.username = a.pelanggan "
+                            "a.wajib_ganti, CASE WHEN a.wajib_ganti = 1 THEN a.sandi_awal END AS sandi_awal, "
+                            "p.nama, p.no_hp AS hp_pelanggan FROM portal_akun a LEFT JOIN pelanggan p ON p.username = a.pelanggan "
                             "ORDER BY CASE a.status WHEN 'menunggu' THEN 0 ELSE 1 END, a.dibuat DESC").fetchall()
+        tanpa = conn.execute("SELECT COUNT(*) FROM pelanggan p WHERE p.status = 'aktif' AND p.username NOT IN "
+                             "(SELECT pelanggan FROM portal_akun)").fetchone()[0]
     finally:
         conn.close()
-    return {"akun": [dict(r) for r in rows]}
+    return {"akun": [dict(r) for r in rows], "pelanggan_tanpa_akun": tanpa}
+
+
+def _login_portal_baku(teks: str) -> str:
+    """ID pelanggan boleh diketik dengan spasi/titik/tanpa tanda (4633761 0001, 463376.1.0001) -> 463376-1-0001."""
+    t = (teks or "").strip()
+    m = re.fullmatch(rf"{_AWALAN_ID}\D*(\d)\D*(\d{{4}})", t)
+    return f"{_AWALAN_ID}-{m.group(1)}-{m.group(2)}" if m else t
+
+
+def _sandi_awal() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+@app.post("/api/portal-akun/massal")
+def buat_portal_akun_massal(request: Request):
+    """Akun portal untuk semua pelanggan aktif yang belum punya: login = ID pelanggan, sandi awal 6 angka acak
+    BERBEDA per pelanggan (bukan sandi bersama), langsung aktif, wajib diganti saat pertama masuk."""
+    _wajib_admin(request)
+    sekarang = _sekarang_str()
+    conn = _billing_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        calon = conn.execute(f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.no_hp FROM pelanggan p WHERE p.status = 'aktif' "
+                             "AND p.username NOT IN (SELECT pelanggan FROM portal_akun) AND p.no_urut IS NOT NULL").fetchall()
+        dibuat, bentrok = 0, []
+        for c in calon:
+            if conn.execute("SELECT 1 FROM portal_akun WHERE login = ?", (c["id_pelanggan"],)).fetchone():
+                bentrok.append(c["id_pelanggan"])
+                continue
+            sandi = _sandi_awal()
+            conn.execute("INSERT INTO portal_akun (login, pelanggan, password_hash, status, no_hp, dibuat, disetujui, "
+                         "sandi_awal, wajib_ganti) VALUES (?,?,?,'aktif',?,?,?,?,1)",
+                         (c["id_pelanggan"], c["username"], _hash_password(sandi), c["no_hp"], sekarang,
+                          f"{sekarang} dibuat {_oleh(request)}", sandi))
+            dibuat += 1
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "portal_akun", f"akun portal dibuat massal: {dibuat} pelanggan (login = ID pelanggan)")
+    return {"ok": True, "dibuat": dibuat, "bentrok": bentrok}
+
+
+@app.post("/api/portal-akun/{login}/sandi-awal")
+def buat_ulang_sandi_awal(login: str, request: Request):
+    """Pelanggan lupa sandi: sandi awal baru (6 angka acak), wajib diganti lagi saat masuk; sesi lama dicabut."""
+    _wajib_admin(request)
+    sandi = _sandi_awal()
+    conn = _billing_conn()
+    try:
+        r = conn.execute("SELECT login FROM portal_akun WHERE login = ?", (login,)).fetchone()
+        if not r:
+            raise HTTPException(status_code=404, detail="Akun portal tidak ditemukan.")
+        conn.execute("UPDATE portal_akun SET password_hash = ?, sandi_awal = ?, wajib_ganti = 1, status = 'aktif' "
+                     "WHERE login = ?", (_hash_password(sandi), sandi, r["login"]))
+        conn.commit()
+    finally:
+        conn.close()
+    _cabut_sesi_portal(r["login"])
+    catat_aktivitas(_oleh(request), "portal_akun", f"{r['login']}: sandi awal dibuat ulang")
+    return {"ok": True, "sandi_awal": sandi}
 
 
 class PortalStatusIn(BaseModel):
@@ -10100,7 +10179,8 @@ def reset_portal_password(login: str, d: ResetPasswordIn, request: Request):
     _cek_password_baru(d.baru)
     conn = _billing_conn()
     try:
-        n = conn.execute("UPDATE portal_akun SET password_hash = ? WHERE login = ?", (_hash_password(d.baru), login)).rowcount
+        n = conn.execute("UPDATE portal_akun SET password_hash = ?, sandi_awal = NULL, wajib_ganti = 0 WHERE login = ?",
+                         (_hash_password(d.baru), login)).rowcount
         conn.commit()
     finally:
         conn.close()

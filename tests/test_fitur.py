@@ -4047,6 +4047,44 @@ def test_hapus_pelanggan(siap):
     mt.mati = False
 
 
+def test_akun_portal_massal_sandi_awal(siap):
+    """Akun portal untuk semua pelanggan: login = ID pelanggan, sandi awal 6 angka acak BERBEDA per pelanggan, wajib
+    diganti saat pertama masuk (portal terkunci sampai diganti); sandi awal terlihat admin hanya sampai diganti."""
+    from fastapi.testclient import TestClient
+    main, o, k, m = siap
+    assert m.post("/api/portal-akun/massal").status_code == 403
+    d = k.get("/api/portal-akun").json()
+    assert d["pelanggan_tanpa_akun"] >= 3
+    r = k.post("/api/portal-akun/massal").json()
+    assert r["dibuat"] == d["pelanggan_tanpa_akun"]
+    assert k.post("/api/portal-akun/massal").json()["dibuat"] == 0                # tidak dobel
+    akun = {a["pelanggan"]: a for a in k.get("/api/portal-akun").json()["akun"]}
+    budi = akun["budi"]
+    assert budi["login"].startswith("463376-1-") and budi["wajib_ganti"] and re.fullmatch(r"\d{6}", budi["sandi_awal"])
+    sandi = [a["sandi_awal"] for a in akun.values()]
+    assert len(set(sandi)) == len(sandi)                                         # berbeda tiap pelanggan
+    p = TestClient(main.app)
+    # login dengan ID diketik longgar
+    ketik = budi["login"].replace("-", " ")
+    h = p.post("/api/portal/login", json={"username": ketik, "password": budi["sandi_awal"]})
+    assert h.status_code == 200 and h.json()["wajib_ganti"] is True
+    r = p.get("/api/portal/saya")
+    assert r.status_code == 403 and r.json()["wajib_ganti"] is True              # terkunci sampai ganti sandi
+    assert p.post("/api/portal/wifi", json={"index": 1, "ssid": "x"}).status_code == 403
+    assert p.post("/api/portal/password", json={"lama": budi["sandi_awal"], "baru": budi["sandi_awal"] + "00"}).status_code == 200
+    assert p.get("/api/portal/saya").status_code == 200
+    a = {x["pelanggan"]: x for x in k.get("/api/portal-akun").json()["akun"]}["budi"]
+    assert not a["wajib_ganti"] and a["sandi_awal"] is None                     # sandi awal hilang setelah diganti
+    # lupa sandi: buat ulang -> sesi lama dicabut, wajib ganti lagi
+    baru = k.post(f"/api/portal-akun/{budi['login']}/sandi-awal").json()["sandi_awal"]
+    assert p.get("/api/portal/saya").status_code == 401
+    assert p.post("/api/portal/login", json={"username": budi["login"], "password": baru}).json()["wajib_ganti"] is True
+    # pendaftaran mandiri tidak boleh memakai login berbentuk ID pelanggan
+    r = TestClient(main.app).post("/api/portal/daftar", json={"no_hp": "081200000000", "login": "463376-1-9999",
+                                                                "password": "rahasia123"})
+    assert r.status_code == 400
+
+
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
     """Pelanggan baru yang belum ditagih bulan pertamanya: pembuatan tagihan otomatis/tombol "Buat tagihan" tidak
     membuat prorata sendiri; admin memilih lewat Buat tagihan pertama (prorata / penuh / manual)."""
