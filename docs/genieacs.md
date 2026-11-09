@@ -435,3 +435,17 @@ sudo bash tambah-hp.sh perbarui hp-owner   # HP owner ikut melewatkan 10.97.0.0/
 - Port: TCP 1194 (atau port kosong berikutnya s/d 1199). Izinkan di firewall penyedia VPS bila MikroTik tidak bisa
   tersambung. Cek log: `sudo journalctl -u openvpn-server@indeso-mt -n 50`.
 - Kompatibel RouterOS v6: TCP, AES-256-CBC + SHA1, login nama/sandi, tanpa kompresi.
+
+### INDESO memantau MikroTik lokasi lain lewat terowongan ini
+Setelah MikroTik lokasi (mis. W2, `10.97.0.2`) tersambung, INDESO bisa memantau & mengelolanya seperti lokasi 1
+(online/putus, isolir otomatis, sinkron secret, Diagnosa, Impor). Di MikroTik lokasi itu buat user API khusus yang
+hanya bisa masuk dari VPS (`10.97.0.1`):
+```
+/user group add name=indeso-api policy=read,write,api,test
+/user add name=indeso group=indeso-api password=SANDI_API_UNIK address=10.97.0.1/32
+/ip service set api disabled=no port=8728 address=10.97.0.1/32
+```
+Lalu di INDESO (owner): **Pelanggan → Lokasi → MikroTik** pada lokasi itu: alamat `10.97.0.2`, port `8728`, user
+`indeso`, sandi tadi → **Tes koneksi** → **Simpan & pantau**. Profil PPP `ISOLIR` harus ada di MikroTik itu.
+Bila MikroTik lokasi itu tak terjangkau, pelanggannya tidak dianggap putus dan owner dikabari sekali lewat Telegram.
+Sandi API tersimpan di database INDESO (ikut backup) dan tidak pernah dikirim ke browser.

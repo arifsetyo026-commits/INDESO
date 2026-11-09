@@ -282,7 +282,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="plMsg" id="plMsg"></div></div></div>
 <div id="plLokasiView" style="display:none">
 <div class="blNav"><button class="btnS" onclick="backPelanggan()">‹ Kembali</button></div>
-<div class="plSub">Lokasi baru dicatat sebagai <b>hanya penagihan</b>: tagihan, pengingat, portal, dan komisi mitra berjalan; isolir otomatis, sinkron secret, dan pantauan putus tidak dijalankan (dikabarkan lewat Telegram siapa yang perlu diisolir manual). ID pelanggan: <b>463376</b> ("INDESO" di tombol HP) - <b>kode lokasi</b> - <b>nomor urut</b>, mis. 463376-2-0001 = pelanggan pertama di lokasi 2. Nomor diberikan otomatis dan tidak berubah walau username atau nomor HP diganti.</div>
+<div class="plSub">Lokasi baru dicatat sebagai <b>hanya penagihan</b>: tagihan, pengingat, portal, dan komisi mitra berjalan; isolir otomatis, sinkron secret, dan pantauan putus tidak dijalankan (dikabarkan lewat Telegram siapa yang perlu diisolir manual). Bila MikroTik lokasi itu sudah tersambung ke VPS, owner bisa menyambungkannya lewat tombol <b>MikroTik</b> supaya lokasi itu dipantau seperti lokasi 1. ID pelanggan: <b>463376</b> ("INDESO" di tombol HP) - <b>kode lokasi</b> - <b>nomor urut</b>, mis. 463376-2-0001 = pelanggan pertama di lokasi 2. Nomor diberikan otomatis dan tidak berubah walau username atau nomor HP diganti.</div>
 <div class="plMsg" id="lkMsg"></div><div id="lkList"></div>
 <div class="plForm"><label>Tambah lokasi baru</label><div style="display:flex;gap:8px"><input id="lkNama" placeholder="mis. Dusun Krajan" maxlength="60" style="flex:1;min-width:0"><button class="btnS go" onclick="tambahLokasi()">Tambah</button></div></div></div>
 <div id="plPortalView" style="display:none">
@@ -1558,8 +1558,18 @@ async function hsKartu(bid){
 async function bukaLokasi(){ $('plTitle').textContent='Lokasi'; tampilkanView('lokasi'); $('lkMsg').textContent=''; await muatLokasi(); }
 async function muatLokasi(){
  try{ pl.lokasi=(await jsonAtauError(await fetch('/api/lokasi',{cache:'no-store'}))).lokasi;
-  $('lkList').innerHTML=pl.lokasi.map(l=>`<div class="blRow"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${l.jaringan?'jaringan dipantau INDESO':'<b>hanya penagihan</b> (isolir & akun PPPoE dikerjakan manual di MikroTik lokasi ini)'}</div></div>
-   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Admin wilayah: ${esc(l.pj_kas||'Pusat')}</button></div></div>`).join('');
+  $('lkList').innerHTML=pl.lokasi.map(l=>{
+   const mt=l.mikrotik, st=mt&&mt.status;
+   const status=l.kode===1?'jaringan dipantau INDESO (MikroTik utama)':l.jaringan?('dipantau INDESO lewat MikroTik '+esc(mt?mt.host:'')+(st?(st.ok?' · <span class="naik">terhubung</span>':' · <b class="turun">tak terjangkau sejak '+esc((st.sejak||'').slice(11,16))+'</b>'):'')):'<b>hanya penagihan</b> (isolir & akun PPPoE dikerjakan manual di MikroTik lokasi ini)';
+   const form=mt&&lk.mt===l.kode?`<div class="kuBayarForm" style="margin-top:8px;grid-template-columns:repeat(2,minmax(0,1fr))">
+     <div><small>Alamat MikroTik</small><input id="lkMtHost" value="${esc(mt.host||'')}" placeholder="10.97.0.2"></div>
+     <div><small>Port API</small><input id="lkMtPort" inputmode="numeric" value="${mt.port||8728}"></div>
+     <div><small>User API</small><input id="lkMtUser" value="${esc(mt.user||'')}" placeholder="indeso" autocomplete="off"></div>
+     <div><small>Sandi user API</small><input id="lkMtSandi" type="password" autocomplete="new-password" placeholder="${mt.ada_sandi?'tersimpan, kosongkan bila tetap':''}"></div></div>
+     <div class="plSub" style="margin-top:6px">Setelah dipantau, pelanggan lokasi ini ikut <b>isolir otomatis</b>, sinkron secret PPPoE, peringatan putus, dan Diagnosa seperti lokasi 1.</div>
+     <div class="blAksi" style="justify-content:flex-start;margin-top:6px"><button class="btnS" onclick="tesMtLokasi(${l.kode})">Tes koneksi</button><button class="btnS go" onclick="simpanMtLokasi(${l.kode},true)">Simpan &amp; pantau</button>${l.jaringan?`<button class="btnS" onclick="simpanMtLokasi(${l.kode},false)">Kembali ke hanya penagihan</button>`:''}</div>`:'';
+   return `<div class="blRow"${form?' style="display:block"':''}><div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${status}</div>${st&&!st.ok&&st.pesan?'<div class="plSub turun">'+esc(st.pesan)+'</div>':''}</div>
+   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Admin wilayah: ${esc(l.pj_kas||'Pusat')}</button>${mt?`<button class="btnS" onclick="lk.mt=lk.mt===${l.kode}?null:${l.kode};muatLokasi()">MikroTik</button>`:''}</div></div>${form}</div>`;}).join('');
  }catch(e){ $('lkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 async function simpanLokasi(url,metode,nama,pesanOk){
@@ -1569,6 +1579,23 @@ async function simpanLokasi(url,metode,nama,pesanOk){
 }
 async function tambahLokasi(){ const nama=$('lkNama').value.trim(); if(!nama) return;
  await simpanLokasi('/api/lokasi','POST',nama,'Lokasi baru ditambahkan: '+nama+'.'); $('lkNama').value=''; }
+const lk={mt:null};
+function isianMtLokasi(pantau){ return {host:$('lkMtHost').value.trim(),port:Number($('lkMtPort').value)||8728,user:$('lkMtUser').value.trim(),sandi:$('lkMtSandi').value||null,pantau}; }
+function teksInfoMt(i){ return i?(i.identitas+' · RouterOS '+i.versi+(i.model?' · '+i.model:'')+' · '+i.ppp_aktif+' online dari '+i.ppp_secret+' akun PPPoE'+((i.peringatan||[]).length?' · ⚠ '+i.peringatan.join(' '):'')):''; }
+async function tesMtLokasi(k){
+ $('lkMsg').style.color=''; $('lkMsg').textContent='Mencoba masuk ke MikroTik…';
+ try{ const i=await jsonAtauError(await fetch('/api/lokasi/'+k+'/mikrotik/tes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(isianMtLokasi(true))}));
+  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Berhasil: '+teksInfoMt(i); }
+ catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
+}
+async function simpanMtLokasi(k,pantau){
+ if(pantau&&!confirm('Pantau '+namaLokasi(k)+' lewat MikroTik ini? Mulai sekarang pelanggan lokasi ini ikut isolir otomatis (jam isolir berikutnya), sinkron secret, dan peringatan putus.')) return;
+ if(!pantau&&!confirm('Kembalikan '+namaLokasi(k)+' ke "hanya penagihan"? INDESO berhenti memantau & mengisolir pelanggan lokasi ini.')) return;
+ $('lkMsg').style.color=''; $('lkMsg').textContent='Menyimpan…';
+ try{ const d=await jsonAtauError(await fetch('/api/lokasi/'+k+'/mikrotik',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(isianMtLokasi(pantau))}));
+  lk.mt=null; await muatLokasi(); $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent=pantau?('Dipantau: '+teksInfoMt(d.info)):'Kembali ke hanya penagihan.'; }
+ catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
+}
 async function ubahPjKas(k){
  const u=prompt('Admin wilayah '+namaLokasi(k)+' (pemegang kas): ketik username akun lokasi ini yang memegang uang wilayah dan mencatat setoran ke Pusat (di W2: akun mitra W2). Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
  if(u==null) return;
