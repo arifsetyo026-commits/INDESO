@@ -3906,6 +3906,86 @@ def test_halaman_publik_untuk_verifikasi_payment_gateway(siap):
     assert "/syarat-ketentuan" in tamu.get("/portal").text and "/kebijakan-privasi" in tamu.get("/login").text
 
 
+def _qris_contoh(main, merchant="INTERNET DESA", nmid="ID1026123456789", ubah=None):
+    tlv = lambda t, v: f"{t}{len(v):02d}{v}"
+    isi = (tlv("00", "01") + tlv("01", "11") + tlv("26", tlv("00", "ID.CO.QRIS.WWW") + tlv("01", "936000000000000001"))
+           + tlv("51", tlv("00", "ID.CO.QRIS.WWW") + tlv("02", nmid) + tlv("03", "UMI")) + tlv("52", "4899")
+           + tlv("53", "360") + tlv("58", "ID") + tlv("59", merchant) + tlv("60", "TEMANGGUNG") + tlv("61", "56200") + "6304")
+    if ubah:
+        isi = ubah(isi)
+    return isi + main._crc16_qris(isi)
+
+
+def test_qris_dan_konfirmasi_bukti_bayar(siap):
+    """QRIS statis disimpan owner sebagai kode (CRC & nama merchant diperiksa, owner dikabari); portal memberi QRIS
+    bernominal tagihan + nama merchant; pelanggan kirim bukti; admin Terima -> lunas (kas Pusat) / Tolak dengan alasan."""
+    from fastapi.testclient import TestClient
+    main, o, k, m = siap
+    assert main._crc16_qris("123456789") == "29B1"                            # CRC-16/CCITT-FALSE
+    qris = _qris_contoh(main)
+    info = main._baca_qris(qris)
+    assert info["merchant"] == "INTERNET DESA" and info["nmid"] == "ID1026123456789" and info["statis"]
+    dinamis = main._qris_bernominal(qris, 110000)
+    d2 = main._baca_qris(dinamis)                                               # CRC baru sah, tujuan sama
+    assert d2["merchant"] == "INTERNET DESA" and d2["nominal_tetap"] == "110000" and not d2["statis"]
+    assert dinamis.index("5406110000") > dinamis.index("5303360") and dinamis.index("5406110000") < dinamis.index("5802ID")
+    rusak = qris[:-30] + ("X" if qris[-30] != "X" else "Y") + qris[-29:]
+    assert o.put("/api/qris", json={"payload": rusak}).status_code == 400        # diutak-atik: CRC tidak cocok
+    assert o.put("/api/qris", json={"payload": "https://contoh.id"}).status_code == 400
+    assert o.put("/api/qris", json={"payload": dinamis}).status_code == 400      # QRIS sekali bayar ditolak
+    assert k.put("/api/qris", json={"payload": qris}).status_code == 403         # hanya owner
+    main._terkirim.clear()
+    r = o.put("/api/qris", json={"payload": qris}).json()
+    assert r["merchant"] == "INTERNET DESA" and r["nmid"] == "ID1026123456789"
+    assert any("QRIS pembayaran diganti" in str(t["data"]) for t in main._terkirim)
+    assert k.get("/api/qris").json()["aktif"]["merchant"] == "INTERNET DESA" and not k.get("/api/qris").json()["boleh_ubah"]
+    assert qris not in k.get("/api/qris").text                                  # kode lengkap tidak dikirim ke dashboard
+
+    # pelanggan budi masuk portal
+    o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                            "no_hp": "081234567890", "lokasi": 1})
+    o.post("/api/tagihan/buat?periode=2026-10")
+    o.post("/api/tagihan/buat?periode=2026-11")
+    p = TestClient(main.app)
+    p.post("/api/portal/daftar", json={"no_hp": "081234567890", "login": "budisaja", "password": "rahasia123"})
+    o.post("/api/portal-akun/budisaja/status", json={"status": "aktif"})
+    p.post("/api/portal/login", json={"username": "budisaja", "password": "rahasia123"})
+    b = p.get("/api/portal/bayar").json()
+    assert b["tersedia"] and b["jumlah"] == 300000 and b["merchant"] == "INTERNET DESA"
+    assert main._baca_qris(b["qris"])["nominal_tetap"] == "300000"
+    assert p.get("/api/portal/bayar?periode=2026-11").json()["jumlah"] == 150000
+    assert p.post("/api/portal/konfirmasi", content=b"bukan gambar").status_code == 415
+    foto = b"\xff\xd8\xff" + b"0" * 100
+    main._terkirim.clear()
+    r = p.post("/api/portal/konfirmasi?periode=2026-10,2026-11&catatan=lewat%20DANA", content=foto)
+    assert r.status_code == 200 and r.json()["jumlah"] == 300000
+    assert any("Konfirmasi bayar" in str(t["data"]) for t in main._terkirim)
+    assert p.post("/api/portal/konfirmasi?periode=2026-10", content=foto).status_code == 409   # sudah dikirim
+    assert p.get("/api/portal/bayar").json()["jumlah"] == 0                     # sedang dicek: tidak ditagih dobel
+    assert p.get("/api/konfirmasi-bayar").status_code == 401                     # bukan sesi staf
+    assert m.get("/api/konfirmasi-bayar").status_code == 403
+    kf = k.get("/api/konfirmasi-bayar").json()
+    assert kf["menunggu"] == 1 and kf["konfirmasi"][0]["catatan"] == "lewat DANA"
+    kid = kf["konfirmasi"][0]["id"]
+    assert k.get(f"/api/konfirmasi-bayar/{kid}/bukti").content == foto
+    assert k.post(f"/api/konfirmasi-bayar/{kid}/periksa", json={"terima": False}).status_code == 400   # alasan wajib
+    assert k.post(f"/api/konfirmasi-bayar/{kid}/periksa", json={"terima": False, "alasan": "dana belum masuk"}).json()["status"] == "ditolak"
+    assert p.get("/api/portal/konfirmasi").json()["konfirmasi"][0]["alasan"] == "dana belum masuk"
+    # kirim ulang -> diterima
+    r = p.post("/api/portal/konfirmasi", content=foto).json()
+    hasil = k.post(f"/api/konfirmasi-bayar/{r['id']}/periksa", json={"terima": True, "tanggal": "2026-11-03"}).json()
+    assert hasil["lunas"] == 2
+    t = {x["periode"]: x for x in p.get("/api/portal/saya").json()["tagihan"]}
+    assert t["2026-10"]["lunas"] and t["2026-11"]["lunas"] and t["2026-11"]["tgl_bayar"] == "2026-11-03"
+    assert k.post(f"/api/konfirmasi-bayar/{r['id']}/periksa", json={"terima": True}).status_code == 400  # tidak dobel
+    c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
+    assert {x[0] for x in c.execute("SELECT lokasi_kas FROM tagihan WHERE username='budi'")} == {0}   # kas Pusat
+    c.close()
+    # QRIS dimatikan: portal tidak menawarkan QRIS
+    assert o.delete("/api/qris").status_code == 200
+    assert p.get("/api/portal/bayar").json()["tersedia"] is False
+
+
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
     """Pelanggan baru yang belum ditagih bulan pertamanya: pembuatan tagihan otomatis/tombol "Buat tagihan" tidak
     membuat prorata sendiri; admin memilih lewat Buat tagihan pertama (prorata / penuh / manual)."""

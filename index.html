@@ -303,11 +303,11 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="blFilters blTabs"><button data-v="bulan" class="on" onclick="tampilBl('bulan')">Per bulan</button><button data-v="tunggakan" onclick="tampilBl('tunggakan')">Tunggakan</button></div>
 <div id="blTunggakan" style="display:none"></div>
 <div id="blBulan">
-<div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button><a class="btnS" id="blEkspor" href="#" download style="text-decoration:none">Ekspor CSV</a></div>
+<div class="blNav"><button class="btnS" onclick="ubahPeriode(-1)">‹</button><b id="blPeriode">—</b><button class="btnS" onclick="ubahPeriode(1)">›</button><button class="btnS go" onclick="buatTagihan()">Buat tagihan</button><a class="btnS" id="blEkspor" href="#" download style="text-decoration:none">Ekspor CSV</a><button class="btnS" onclick="aturQris()">QRIS pembayaran</button></div>
 <div class="blSum"><div class="blBox"><small>Total</small><b id="blTotal">—</b><small id="blTotalN"></small></div><div class="blBox"><small>Terbayar</small><b id="blTerbayar" style="color:#0b7a3b">—</b><small id="blTerbayarN"></small></div><div class="blBox"><small>Belum bayar</small><b id="blBelum" style="color:#b45309">—</b><small id="blBelumN"></small></div></div>
 <div class="search" style="display:flex;gap:8px"><input id="blSearch" placeholder="Cari nama, username, atau ID…" oninput="renderBilling()" style="flex:1;min-width:0"><select id="blLokasi" onchange="bl.lok=Number(this.value);renderBilling();if(bl.tg)renderTunggakan()" style="display:none;max-width:45%"></select></div>
 <div class="blFilters"><button data-f="semua" class="on" onclick="setFilterBilling('semua')">Semua</button><button data-f="belum" onclick="setFilterBilling('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilterBilling('lunas')">Lunas</button><button data-f="isolir" onclick="setFilterBilling('isolir')">Terisolir</button><button data-f="lain" onclick="setFilterBilling('lain')">Gratis / tanpa tagihan</button></div>
-<div class="plMsg" id="blMsg"></div><div id="blList"></div>
+<div class="plMsg" id="blMsg"></div><div id="blKonf"></div><div id="blList"></div>
 </div>
 </div></div></div>
 <div class="overlay" id="upstreamModal"><div class="modal"><div class="modalHead"><h3>Internet Pusat</h3><button class="close" onclick="closeModal('upstreamModal')">Tutup</button></div><div class="modalBody">
@@ -1168,6 +1168,42 @@ async function muatRiwayatPutus(i){
 const _bukaKesehatanAsli=bukaKesehatan;
 bukaKesehatan=function(i){ _bukaKesehatanAsli(i); if(kh.buka===i) muatRiwayatPutus(i); };
   // ===== Isolir di menu Billing dan Pelanggan (menggantikan fungsi lama bernama sama) =====
+// --- Konfirmasi bukti bayar dari Portal Pelanggan & QRIS pembayaran ---
+async function muatKonfirmasi(){
+ try{ const d=await jsonAtauError(await fetch('/api/konfirmasi-bayar?status=menunggu',{cache:'no-store'})); bl.konf=d.konfirmasi||[]; }catch(e){ bl.konf=[]; }
+ const L=bl.konf; if(!L.length){ $('blKonf').innerHTML=''; return; }
+ $('blKonf').innerHTML=`<div class="kuPanel" style="margin:6px 0 10px;border-color:#f1d58a;background:#fffbea"><h4>💳 Konfirmasi bayar menunggu (${L.length})</h4>
+  <div class="plSub" style="margin-bottom:6px">Terima hanya setelah uangnya terlihat di mutasi rekening/aplikasi QRIS Anda. Foto bukti saja belum tentu uangnya masuk.</div>`
+  +L.map(k=>`<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div><div class="plName">${esc(k.nama||k.username)} <span class="plSub">${esc(k.id_pelanggan||k.username)}</span></div>
+  <div class="plSub">#K${k.id} · ${esc(k.periode.split(',').map(namaPeriode).join(', '))} · dikirim ${esc(khWaktu(k.dibuat_pada))}${k.catatan?' · “'+esc(k.catatan)+'”':''}</div>
+  <a class="plSub" href="/api/konfirmasi-bayar/${k.id}/bukti" target="_blank" rel="noopener">📎 Lihat bukti bayar</a></div>
+  <div class="blKanan"><div class="blAmt">${rp(k.jumlah)}</div><div class="blAksi"><button class="btnS go" onclick="periksaKonf(${k.id},true)">Terima</button><button class="btnS" onclick="periksaKonf(${k.id},false)">Tolak</button></div></div></div></div>`).join('')+'</div>';
+}
+async function periksaKonf(id,terima){
+ const k=(bl.konf||[]).find(x=>x.id===id); if(!k) return; let body;
+ if(terima){
+  if(!confirm('Terima pembayaran '+(k.nama||k.username)+' '+rp(k.jumlah)+'?\nPastikan uangnya SUDAH masuk di mutasi rekening/QRIS Anda.')) return;
+  const tgl=prompt('Tanggal uang masuk (YYYY-MM-DD):',k.dibuat_pada.slice(0,10)); if(tgl==null) return;
+  const metode=(prompt('Metode: qris / transfer / lainnya','qris')||'qris').trim().toLowerCase();
+  body={terima:true,tanggal:tgl.trim(),metode};
+ } else { const a=prompt('Alasan penolakan (tampil ke pelanggan), mis. "dana belum masuk" atau "foto tidak jelas":'); if(a==null) return; body={terima:false,alasan:a}; }
+ try{ const d=await jsonAtauError(await fetch('/api/konfirmasi-bayar/'+id+'/periksa',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  $('blMsg').style.color='#0b7a3b'; $('blMsg').textContent=terima?('Diterima: '+d.lunas+' tagihan lunas'+(d.sudah_lunas?' ('+d.sudah_lunas+' sudah lunas sebelumnya)':'')+'. Isolir dibuka otomatis dalam beberapa menit.'):'Konfirmasi ditolak; pelanggan melihat alasannya di portal.';
+  await loadBilling(true); }
+ catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
+}
+async function aturQris(){
+ let q; try{ q=await jsonAtauError(await fetch('/api/qris',{cache:'no-store'})); }catch(e){ alert('Gagal: '+e.message); return; }
+ const kini=q.aktif?('QRIS aktif di portal: '+q.aktif.merchant+(q.aktif.nmid?' (NMID '+q.aktif.nmid+')':'')+'\nDipasang '+q.aktif.oleh+' '+q.aktif.pada):'Belum ada QRIS di portal.';
+ if(!q.boleh_ubah){ alert(kini+'\n\nHanya owner yang bisa mengganti QRIS.'); return; }
+ const v=prompt(kini+'\n\nTempel ISI kode QRIS toko Anda (teks diawali 000201…, didapat dengan memindai QRIS memakai aplikasi pemindai QR lalu salin teksnya). Ketik HAPUS untuk mematikan QRIS di portal:','');
+ if(v==null||!v.trim()) return;
+ try{
+  if(v.trim().toUpperCase()==='HAPUS'){ await jsonAtauError(await fetch('/api/qris',{method:'DELETE'})); alert('QRIS di portal dimatikan.'); return; }
+  const d=await jsonAtauError(await fetch('/api/qris',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload:v.trim()})}));
+  alert('QRIS tersimpan.\nNama merchant: '+d.merchant+(d.nmid?'\nNMID: '+d.nmid:'')+(d.kota?'\nKota: '+d.kota:'')+'\n\nPastikan nama ini benar milik Anda. Pelanggan diminta mencocokkan nama ini sebelum membayar.');
+ }catch(e){ alert('Gagal: '+e.message); }
+}
 async function loadBilling(diam){
  $('blPeriode').textContent=namaPeriode(bl.periode); $('blEkspor').href='/api/ekspor/tagihan?periode='+bl.periode;
  if(!diam){ $('blMsg').textContent=''; $('blList').innerHTML='<div class="muted">Memuat…</div>'; }
@@ -1178,7 +1214,7 @@ async function loadBilling(diam){
   isiPilihanLokasiBilling();
   if(ri.ok){ const di=await ri.json(); bl.isolir=new Set((di.terisolir||[]).map(x=>x.username)); bl.modeIsolir=di.mode; }
   else { bl.isolir=new Set(); }
-  renderBilling();
+  renderBilling(); muatKonfirmasi();
  }catch(e){ $('blList').innerHTML='<div class="muted">Gagal memuat tagihan: '+esc(e.message)+'</div>'; }
 }
 function infoIsolir(){
