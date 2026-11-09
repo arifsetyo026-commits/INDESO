@@ -55,6 +55,8 @@ class FakeRes:
             rows = list(self.mt.log)
         elif self.path == "/system/resource":
             rows = [dict(self.mt.resource)]
+        elif self.path == "/system/identity":
+            rows = [{"name": getattr(self.mt, "identitas", "MikroTik")}]
         elif self.path == "/queue/simple":
             rows = list(getattr(self.mt, "queue", []))
         else:
@@ -125,9 +127,10 @@ class FakeMikroTik:
                          "uptime": "3d", "version": "7.14", "board-name": "RB4011"}
         self.hs = {"/ip/hotspot": [], "/ip/hotspot/user": [], "/ip/hotspot/user/profile": [], "/ip/hotspot/active": []}
         self.hs_tolak = 0                                 # >0: user hotspot ke-N berikutnya ditolak (uji batal utuh)
+        self.lain = {}
 
-    def pool(self):
-        mt = self
+    def pool(self, lokasi=1):
+        mt = self if lokasi == 1 else self.lain[lokasi]       # MikroTik lokasi lain (mis. W2)
 
         class Pool:
             def get_api(self_):
@@ -3149,8 +3152,8 @@ def test_pemantauan_ringan_diagnosa_langsung(siap):
     panggil = []
     asli = main._mikrotik_pool
 
-    def pool_hitung():
-        p = asli()
+    def pool_hitung(*a):
+        p = asli(*a)
         api = p.get_api()
 
         class Api:
@@ -3780,6 +3783,94 @@ def test_mitra_pelanggan_baru_dan_bayar_setelah_final(siap):
     lembar = zipfile.ZipFile(io.BytesIO(m.get(f"/api/mitra/ekspor?periode={lalu}").content)).read("xl/worksheets/sheet1.xml").decode()
     teks = " ".join(_re.findall(r"<t[^>]*>([^<]*)</t>", lembar))
     assert "Neo" not in teks and "komisi bulan depan" in teks
+
+
+def test_mikrotik_per_lokasi_w2(siap, monkeypatch):
+    """MikroTik lokasi 2 (W2, lewat terowongan): owner menyambungkan & mengujinya; setelah itu pelanggan W2
+    dipantau online/putus, diisolir/dibuka di MikroTik W2 (bukan MikroTik utama), sinkron secret, diagnosa,
+    dan impor ke lokasi 2. MikroTik W2 mati tidak membuat pelanggannya dianggap putus."""
+    main, o, k, m = siap
+    mt, mt2 = main._mt, FakeMikroTik()
+    mt2.identitas = "INDESO-W2"
+    mt2.secret = {"w2.tri": {"id": "*21", "profile": "W2-10M", "disabled": "no"}}
+    mt2.active = {"w2.tri": [{"id": "*B1", "address": "172.20.53.2", "uptime": "2h", "caller-id": "AA:BB:CC:00:00:21"}]}
+    mt2.profiles = ["default", "W2-10M", "ISOLIR"]
+    mt.lain[2] = mt2
+    sandi_benar = "rahasia-api"
+
+    def buat(host, port, user, sandi):
+        if sandi != sandi_benar:
+            raise Exception("invalid user name or password")
+        return mt2.pool()
+    monkeypatch.setattr(main, "_buat_pool_mt", buat)
+    assert o.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    isian = {"host": "10.97.0.2", "port": 8728, "user": "indeso", "sandi": sandi_benar, "pantau": True}
+    assert k.put("/api/lokasi/2/mikrotik", json=isian).status_code == 403           # hanya owner
+    assert o.put("/api/lokasi/1/mikrotik", json=isian).status_code == 400           # lokasi 1 dari .env
+    assert o.post("/api/lokasi/2/mikrotik/tes", json=dict(isian, sandi="salah")).status_code == 400
+    t = o.post("/api/lokasi/2/mikrotik/tes", json=isian).json()
+    assert t["identitas"] == "INDESO-W2" and t["ppp_secret"] == 1 and t["peringatan"] == []
+    r = o.put("/api/lokasi/2/mikrotik", json=isian).json()
+    assert r["ok"] and r["info"]["identitas"] == "INDESO-W2"
+    lok = {x["kode"]: x for x in o.get("/api/lokasi").json()["lokasi"]}
+    assert lok[2]["jaringan"] == 1 and lok[2]["mikrotik"]["host"] == "10.97.0.2" and lok[2]["mikrotik"]["ada_sandi"]
+    assert sandi_benar not in o.get("/api/lokasi").text
+    assert "mikrotik" not in k.get("/api/lokasi").json()["lokasi"][1]                # admin tidak melihat pengaturan
+    # simpan ulang tanpa sandi = sandi lama dipakai
+    assert o.put("/api/lokasi/2/mikrotik", json=dict(isian, sandi="")).status_code == 200
+
+    # impor: secret W2 jadi pelanggan lokasi 2 (paket dari profil "W2-10M")
+    imp = o.post("/api/impor-pelanggan").json()
+    assert "w2.tri" in [p["username"] for p in o.get("/api/data-pelanggan").json()["pelanggan"] if p["lokasi"] == 2]
+    assert imp["mikrotik_gagal"] == []
+    p_tri = next(p for p in o.get("/api/data-pelanggan").json()["pelanggan"] if p["username"] == "w2.tri")
+    assert p_tri["paket_id"] == 1                                                      # 10 Mbps
+
+    # pemantauan: sesi kedua MikroTik digabung
+    users, err = main.fetch_pppoe_active(True)
+    assert err is None and {u.username for u in users} >= {"budi", "w2.tri"}
+    # diagnosa membaca MikroTik W2
+    d = k.get("/api/diagnosa/w2.tri").json()
+    assert d.get("dipantau", True) is True and d["pppoe"]["online"] is True and d["pppoe"]["ip"] == "172.20.53.2"
+
+    # isolir & buka isolir di MikroTik W2 saja
+    o.post("/api/tagihan/buat?periode=2026-10")
+    main.CONFIG["ISOLIR_MAKS_SEKALI"] = 50
+    main.proses_isolir(datetime(2026, 10, 11, 9))
+    assert mt2.secret["w2.tri"]["profile"] == "ISOLIR" and "w2.tri" not in mt.secret
+    tid = next(x["id"] for x in o.get("/api/tagihan?periode=2026-10").json()["tagihan"] if x["username"] == "w2.tri")
+    o.post(f"/api/tagihan/{tid}/lunas")
+    main.proses_isolir(datetime(2026, 10, 11, 10))
+    assert mt2.secret["w2.tri"]["profile"] == "W2-10M"
+
+    # MikroTik W2 mati: MikroTik utama tetap terbaca, pelanggan W2 tidak dianggap putus, owner dikabari sekali
+    main._siapkan_putus()
+    main.proses_putus_pelanggan(*main.fetch_pppoe_active(True)[:2], [])
+    mt2.mati = True
+    main._terkirim.clear()
+    for _ in range(4):
+        users, err = main.fetch_pppoe_active(True)
+        assert err is None and "w2.tri" not in {u.username for u in users}
+        main.proses_putus_pelanggan(users, err, [], datetime.now() + timedelta(hours=1))
+    assert "w2.tri" not in main._putus_aktif
+    kabar = [t["data"].get("text", "") for t in main._terkirim]
+    assert sum("MikroTik Wilayah 2 tidak terjangkau" in x for x in kabar) == 1
+    assert not o.get("/api/lokasi").json()["lokasi"][1]["mikrotik"]["status"]["ok"]
+    imp = o.post("/api/impor-pelanggan").json()                                        # W2 tak terbaca: dilewati
+    assert imp["mikrotik_gagal"][0]["lokasi"] == 2
+    assert "w2.tri" not in [h["username"] for h in imp["tidak_ada_di_mikrotik"]]
+    mt2.mati = False
+    main._terkirim.clear()
+    main.fetch_pppoe_active(True)
+    assert any("terhubung lagi" in t["data"].get("text", "") for t in main._terkirim)
+
+    # berhenti -> secret W2 dinonaktifkan di MikroTik W2
+    r = o.put("/api/data-pelanggan/w2.tri", json={"nama": "Tri", "paket_id": 1, "status": "berhenti"}).json()
+    assert r["secret"]["ok"] and mt2.secret["w2.tri"]["disabled"] == "yes"
+    # kembali ke "hanya penagihan"
+    assert o.put("/api/lokasi/2/mikrotik", json=dict(isian, pantau=False)).json()["pantau"] is False
+    assert {x["kode"]: x for x in o.get("/api/lokasi").json()["lokasi"]}[2]["jaringan"] == 0
+    assert "w2.tri" not in {u.username for u in main.fetch_pppoe_active(True)[0]}
 
 
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):

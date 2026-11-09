@@ -386,8 +386,111 @@ def _ringkas_limit(raw: str) -> str:
 _trafik = {"terakhir": 0.0, "bw": {}, "limit": {}}
 
 
+def _mt_lokasi(lokasi: int):
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"], timeout=15)
+    conn.row_factory = sqlite3.Row
+    try:
+        return conn.execute("SELECT kode, nama, mt_host, mt_port, mt_user, mt_sandi FROM lokasi WHERE kode = ?",
+                            (lokasi,)).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
+def _pool(lokasi: int):
+    # Lokasi 1 dipanggil tanpa argumen (kompatibel dengan pemanggil & tiruan lama).
+    return _mikrotik_pool() if lokasi == 1 else _mikrotik_pool(lokasi)
+
+
+def _lokasi_mt_lain() -> list[int]:
+    """Lokasi selain 1 yang MikroTik-nya dipantau INDESO (jaringan = 1 dan alamat MikroTik diisi)."""
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"], timeout=15)
+    try:
+        return [r[0] for r in conn.execute("SELECT kode FROM lokasi WHERE kode != 1 AND jaringan = 1 "
+                                            "AND COALESCE(mt_host, '') != '' ORDER BY kode")]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _lokasi_pengguna(daftar) -> dict:
+    """{username: kode lokasi}; yang tidak dikenal dianggap lokasi 1."""
+    daftar = list(daftar)
+    if not daftar:
+        return {}
+    conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"], timeout=15)
+    try:
+        hasil = {}
+        for i in range(0, len(daftar), 500):
+            bagian = daftar[i:i + 500]
+            hasil.update(conn.execute(f"SELECT username, lokasi FROM pelanggan WHERE username IN ({','.join('?' * len(bagian))})",
+                                      bagian).fetchall())
+    except sqlite3.OperationalError:
+        hasil = {}
+    finally:
+        conn.close()
+    return {u: int(hasil.get(u) or 1) for u in daftar}
+
+
+# Status MikroTik lokasi lain: {kode: {"ok", "pesan", "sejak", "gagal", "dikabari"}}. Pelanggan lokasi yang
+# MikroTik-nya tak terbaca tidak dianggap putus (datanya tidak bisa dipercaya), dan owner dikabari sekali.
+_mt_status: dict[int, dict] = {}
+_MT_GAGAL_KABAR = 3      # putaran gagal berturut-turut sebelum dikabarkan
+
+
+def _catat_status_mt(lokasi: int, err: Optional[str]) -> None:
+    s = _mt_status.setdefault(lokasi, {"ok": True, "pesan": None, "sejak": None, "gagal": 0, "dikabari": False})
+    sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    r = _mt_lokasi(lokasi)
+    nama = (r["nama"] if r else None) or f"Lokasi {lokasi}"
+    if err is None:
+        if s["dikabari"]:
+            send_telegram_message(f"✅ <b>MikroTik {_esc(nama)} terhubung lagi</b>\nPemantauan pelanggan lokasi ini jalan lagi.")
+        if not s["ok"] or s["sejak"] is None:
+            s["sejak"] = sekarang
+        s.update(ok=True, pesan=None, gagal=0, dikabari=False)
+        return
+    if s["ok"]:
+        s["sejak"] = sekarang
+    s.update(ok=False, pesan=err[:200], gagal=s["gagal"] + 1)
+    if s["gagal"] >= _MT_GAGAL_KABAR and not s["dikabari"]:
+        s["dikabari"] = True
+        send_telegram_message(f"⚠️ <b>MikroTik {_esc(nama)} tidak terjangkau</b> sejak {s['sejak'][11:16]}\n"
+                              f"{_esc(err[:150])}\nPelanggan lokasi ini tidak dianggap putus selama MikroTik-nya "
+                              "tak terbaca. Cek listrik/internet lokasi dan terowongan ke VPS.")
+
+
+def _lokasi_tak_terbaca() -> set:
+    return {k for k, s in _mt_status.items() if not s["ok"]}
+
+
 def fetch_pppoe_active(dengan_trafik: bool = True, nama: Optional[str] = None) -> tuple[list[PPPoEUser], Optional[str]]:
-    """Ambil daftar PPPoE active dari MikroTik via RouterOS API, sekalian
+    """Sesi PPPoE semua MikroTik yang dipantau: lokasi 1 (utama) + lokasi lain yang MikroTik-nya diatur.
+    Error yang dikembalikan hanya error MikroTik utama (perilaku lama); MikroTik lokasi lain yang gagal dicatat di
+    _mt_status, sehingga pelanggannya tidak dianggap putus. nama: satu pelanggan, dibaca dari MikroTik lokasinya."""
+    if nama:
+        lok = _lokasi_pengguna([nama]).get(nama, 1)
+        users, err, bw, limit = _pppoe_active_satu(lok, True, nama)
+        _trafik["bw"].update(bw)
+        _trafik["limit"].update(limit)
+        return users, err
+    users, err, bw, limit = _pppoe_active_satu(1, dengan_trafik, None)
+    bw, limit = dict(bw), dict(limit)
+    for lok in _lokasi_mt_lain():
+        u2, e2, bw2, limit2 = _pppoe_active_satu(lok, dengan_trafik, None)
+        _catat_status_mt(lok, e2)
+        users += u2
+        bw.update(bw2)
+        limit.update(limit2)
+    if dengan_trafik:
+        _trafik.update(terakhir=time.monotonic(), bw=bw, limit=limit)
+    return users, err
+
+
+def _pppoe_active_satu(lokasi: int, dengan_trafik: bool, nama: Optional[str]) -> tuple:
+    """(users, error, bw, limit) satu MikroTik. Ambil daftar PPPoE active dari MikroTik via RouterOS API, sekalian
     bandwidth sesaat (monitor-traffic, satu kali panggil buat semua interface
     biar hemat) dan rate-limit tiap pelanggan kalau tersedia.
     dengan_trafik=False: bandwidth & batas paket memakai nilai terakhir (tanpa monitor-traffic/queue).
@@ -396,7 +499,7 @@ def fetch_pppoe_active(dengan_trafik: bool = True, nama: Optional[str] = None) -
     untuk status mikrotik_online yang akurat, bukan ditebak dari isi list."""
     connection = None
     try:
-        connection = _mikrotik_pool()
+        connection = _pool(lokasi)
         api = connection.get_api()
         active = api.get_resource("/ppp/active")
         active_list = active.get(name=nama) if nama else active.get()
@@ -437,11 +540,6 @@ def fetch_pppoe_active(dengan_trafik: bool = True, nama: Optional[str] = None) -
                         limit_by_username[nq[len("<pppoe-"):-1]] = _ringkas_limit(q["max-limit"])
             except Exception as e:
                 logger.warning(f"Gagal ambil antrean (queue simple): {e}")
-            if nama:
-                _trafik["bw"].update(bw_by_username)
-                _trafik["limit"].update(limit_by_username)
-            else:
-                _trafik.update(terakhir=time.monotonic(), bw=bw_by_username, limit=limit_by_username)
 
         users = []
         for item in active_list:
@@ -463,11 +561,11 @@ def fetch_pppoe_active(dengan_trafik: bool = True, nama: Optional[str] = None) -
                     rate_limit_mbps=rate_mbps,
                 )
             )
-        return users, None
+        return users, None, (bw_by_username if dengan_trafik else {}), (limit_by_username if dengan_trafik else {})
     except Exception as e:
         err = f"[{type(e).__name__}] {e}"
-        logger.error(f"Gagal konek MikroTik: {err}")
-        return [], err
+        logger.error(f"Gagal konek MikroTik{'' if lokasi == 1 else f' lokasi {lokasi}'}: {err}")
+        return [], err, {}, {}
     finally:
         if connection:
             try:
@@ -1637,9 +1735,13 @@ def init_billing_db() -> None:
             conn.execute("UPDATE lokasi SET jaringan = 1 WHERE kode = 1")
         conn.execute("INSERT OR IGNORE INTO lokasi (kode, nama, jaringan) VALUES (1, 'Lokasi 1', 1)")
         kol_lok = [r[1] for r in conn.execute("PRAGMA table_info(lokasi)").fetchall()]
-        for kol in ("hs_ssid", "hs_dns", "pj_kas"):
+        for kol in ("hs_ssid", "hs_dns", "pj_kas", "mt_host", "mt_user", "mt_sandi"):
             if kol not in kol_lok:
                 conn.execute(f"ALTER TABLE lokasi ADD COLUMN {kol} TEXT")
+        # MikroTik lokasi selain 1 (mis. W2 lewat terowongan VPS): API RouterOS di mt_host:mt_port.
+        # Lokasi 1 tetap memakai MIKROTIK_HOST dkk. dari lingkungan (.env).
+        if "mt_port" not in kol_lok:
+            conn.execute("ALTER TABLE lokasi ADD COLUMN mt_port INTEGER")
         if "lokasi" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN lokasi INTEGER NOT NULL DEFAULT 1")
         if "no_urut" not in kolom:
@@ -3381,7 +3483,8 @@ def fetch_ppp_secrets() -> list[dict]:
 
 
 def _kecepatan_dari_profil(profile: Optional[str]) -> Optional[float]:
-    m = re.search(r"(\d+)\s*mbps", (profile or "").lower())
+    # "paket-10mbps" (W1) atau "W2-10M" (W2)
+    m = re.search(r"(\d+)\s*m(?:bps)?\b", (profile or "").lower())
     return float(m.group(1)) if m else None
 
 
@@ -3398,8 +3501,8 @@ def _simpan_secret_pelanggan(conn: sqlite3.Connection, secrets: list[dict]) -> t
         if paket_id is None:
             tanpa_paket.append(f'{s["name"]} ({s.get("profile")})')
         cur = conn.execute(
-            "INSERT OR IGNORE INTO pelanggan (username, nama, paket_id) VALUES (?,?,?)",
-            (s["name"], s["name"], paket_id),
+            "INSERT OR IGNORE INTO pelanggan (username, nama, paket_id, lokasi) VALUES (?,?,?,?)",
+            (s["name"], s["name"], paket_id, int(s.get("lokasi") or 1)),
         )
         if cur.rowcount:
             baru.append(s["name"])
@@ -3415,12 +3518,30 @@ def _simpan_secret_pelanggan(conn: sqlite3.Connection, secrets: list[dict]) -> t
     return baru, sudah_ada, tanpa_paket
 
 
+def _secrets_lokasi(lokasi: int) -> list[dict]:
+    pool = _pool(lokasi)
+    try:
+        rows = pool.get_api().get_resource("/ppp/secret").get()
+        return [{"name": r.get("name"), "profile": r.get("profile"), "lokasi": lokasi} for r in rows if r.get("name")]
+    finally:
+        pool.disconnect()
+
+
 @app.post("/api/impor-pelanggan")
 def impor_pelanggan(request: Request):
     try:
         secrets = fetch_ppp_secrets()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gagal baca MikroTik: {e}")
+    # MikroTik lokasi lain yang dipantau: secret-nya jadi pelanggan lokasi itu. Yang tak terbaca dilewati
+    # (pelanggannya juga tidak dilaporkan "tidak ada di MikroTik").
+    terbaca, gagal = {1}, []
+    for lok in _lokasi_mt_lain():
+        try:
+            secrets += _secrets_lokasi(lok)
+            terbaca.add(lok)
+        except Exception as e:
+            gagal.append({"lokasi": lok, "pesan": str(e)[:150]})
     conn = _billing_conn()
     try:
         daftar_baru, sudah_ada, tanpa_paket = _simpan_secret_pelanggan(conn, secrets)
@@ -3431,9 +3552,9 @@ def impor_pelanggan(request: Request):
         hilang = [
             {"username": r["username"], "nama": r["nama"]}
             # Hanya lokasi yang jaringannya dipantau INDESO (MikroTik ini); pelanggan wilayah lain memang tidak ada di sini.
-            for r in conn.execute(f"SELECT username, nama FROM pelanggan p WHERE status='aktif' AND {_SQL_DIPANTAU} "
+            for r in conn.execute(f"SELECT username, nama, lokasi FROM pelanggan p WHERE status='aktif' AND {_SQL_DIPANTAU} "
                                   "ORDER BY nama COLLATE NOCASE")
-            if r["username"] not in nama_secret
+            if r["username"] not in nama_secret and r["lokasi"] in terbaca
         ]
         conn.commit()
     finally:
@@ -3441,7 +3562,7 @@ def impor_pelanggan(request: Request):
     catat_aktivitas(_oleh(request), "impor_pelanggan",
                     f"{len(secrets)} secret, {baru} baru, {len(hilang)} tidak ada di MikroTik")
     return {"total_secret": len(secrets), "baru": baru, "sudah_ada": sudah_ada,
-            "tanpa_paket": tanpa_paket, "tidak_ada_di_mikrotik": hilang}
+            "tanpa_paket": tanpa_paket, "tidak_ada_di_mikrotik": hilang, "mikrotik_gagal": gagal}
 
 def _cek_tgl_pasang(t: str) -> str:
     t = (t or "").strip()
@@ -3483,14 +3604,116 @@ def _cek_lokasi(conn, kode) -> int:
 
 
 @app.get("/api/lokasi")
-def list_lokasi():
+def list_lokasi(request: Request):
     conn = _billing_conn()
     try:
-        rows = conn.execute("SELECT l.kode, l.nama, l.jaringan, l.pj_kas, (SELECT COUNT(*) FROM pelanggan p WHERE p.lokasi = l.kode "
-                            "AND p.status = 'aktif') AS pelanggan FROM lokasi l ORDER BY l.kode").fetchall()
+        rows = conn.execute("SELECT l.kode, l.nama, l.jaringan, l.pj_kas, l.mt_host, l.mt_port, l.mt_user, "
+                            "(COALESCE(l.mt_sandi, '') != '') AS mt_ada_sandi, (SELECT COUNT(*) FROM pelanggan p "
+                            "WHERE p.lokasi = l.kode AND p.status = 'aktif') AS pelanggan FROM lokasi l ORDER BY l.kode").fetchall()
     finally:
         conn.close()
-    return {"awalan": _AWALAN_ID, "lokasi": [dict(r) for r in rows]}
+    owner = getattr(request.state, "peran", None) == "owner"
+    hasil = []
+    for r in rows:
+        d = {k: r[k] for k in ("kode", "nama", "jaringan", "pj_kas", "pelanggan")}
+        if owner and r["kode"] != 1:
+            # Sandi MikroTik tidak pernah dikirim ke browser.
+            st = _mt_status.get(r["kode"])
+            d["mikrotik"] = {"host": r["mt_host"], "port": r["mt_port"] or 8728, "user": r["mt_user"],
+                             "ada_sandi": bool(r["mt_ada_sandi"]),
+                             "status": ({"ok": st["ok"], "pesan": st["pesan"], "sejak": st["sejak"]} if st else None)}
+        hasil.append(d)
+    return {"awalan": _AWALAN_ID, "lokasi": hasil}
+
+
+class MikrotikLokasiIn(BaseModel):
+    host: Optional[str] = None
+    port: int = 8728
+    user: Optional[str] = None
+    sandi: Optional[str] = None     # kosong = pakai sandi yang tersimpan
+    pantau: bool = True             # True = INDESO memantau & mengelola pelanggan lokasi ini lewat MikroTik ini
+
+
+def _cek_isian_mt(conn, kode: int, d: MikrotikLokasiIn) -> tuple:
+    if kode == 1:
+        raise HTTPException(status_code=400, detail="Lokasi 1 memakai MikroTik utama (diatur di berkas .env VPS).")
+    lama = conn.execute("SELECT mt_host, mt_port, mt_user, mt_sandi FROM lokasi WHERE kode = ?", (kode,)).fetchone()
+    if not lama:
+        raise HTTPException(status_code=404, detail="Lokasi tidak ditemukan.")
+    host = (d.host if d.host is not None else lama["mt_host"] or "").strip()
+    user = (d.user if d.user is not None else lama["mt_user"] or "").strip()
+    sandi = d.sandi or lama["mt_sandi"] or ""
+    if not re.fullmatch(r"[A-Za-z0-9.:-]{3,100}", host):
+        raise HTTPException(status_code=400, detail="Alamat MikroTik tidak valid, mis. 10.97.0.2")
+    if not 1 <= int(d.port) <= 65535:
+        raise HTTPException(status_code=400, detail="Port API tidak valid (bawaan 8728).")
+    if not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", user):
+        raise HTTPException(status_code=400, detail="Isi user API MikroTik (huruf/angka, tanpa spasi).")
+    if not sandi or len(sandi) > 128:
+        raise HTTPException(status_code=400, detail="Isi sandi user API MikroTik.")
+    return host, int(d.port), user, sandi
+
+
+def _tes_mikrotik(host: str, port: int, user: str, sandi: str) -> dict:
+    """Coba masuk API MikroTik; kembalikan identitas & kesiapan untuk INDESO. Gagal -> HTTPException 400."""
+    pool = None
+    try:
+        pool = _buat_pool_mt(host, port, user, sandi)
+        api = pool.get_api()
+        ident = (api.get_resource("/system/identity").get() or [{}])[0].get("name")
+        res = (api.get_resource("/system/resource").get() or [{}])[0]
+        profil = [p.get("name") for p in api.get_resource("/ppp/profile").get()]
+        n_secret = len(api.get_resource("/ppp/secret").get())
+        n_aktif = len(api.get_resource("/ppp/active").get())
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Tidak bisa masuk ke MikroTik {host}:{port}: {str(e)[:150]}")
+    finally:
+        try:
+            pool and pool.disconnect()
+        except Exception:
+            pass
+    peringatan = []
+    if CONFIG["ISOLIR_PROFILE"] not in profil:
+        peringatan.append(f"Profil PPP '{CONFIG['ISOLIR_PROFILE']}' tidak ada di MikroTik ini: isolir otomatis akan gagal.")
+    return {"identitas": ident, "versi": res.get("version"), "model": res.get("board-name"),
+            "ppp_secret": n_secret, "ppp_aktif": n_aktif, "peringatan": peringatan}
+
+
+@app.post("/api/lokasi/{kode}/mikrotik/tes")
+def tes_mikrotik_lokasi(kode: int, d: MikrotikLokasiIn, request: Request):
+    _wajib_owner(request, "Pengaturan MikroTik lokasi hanya bisa diatur owner.")
+    conn = _billing_conn()
+    try:
+        host, port, user, sandi = _cek_isian_mt(conn, kode, d)
+    finally:
+        conn.close()
+    return _tes_mikrotik(host, port, user, sandi)
+
+
+@app.put("/api/lokasi/{kode}/mikrotik")
+def atur_mikrotik_lokasi(kode: int, d: MikrotikLokasiIn, request: Request):
+    """Sambungkan MikroTik lokasi ini ke INDESO. pantau=True: koneksi dicek dulu, lalu lokasi ini dipantau
+    (online/putus, isolir otomatis, sinkron secret, diagnosa) seperti lokasi 1. pantau=False: kembali ke
+    "hanya penagihan" (pengaturan koneksi tetap tersimpan)."""
+    _wajib_owner(request, "Pengaturan MikroTik lokasi hanya bisa diatur owner.")
+    conn = _billing_conn()
+    try:
+        host, port, user, sandi = _cek_isian_mt(conn, kode, d)
+    finally:
+        conn.close()
+    info = _tes_mikrotik(host, port, user, sandi) if d.pantau else None
+    conn = _billing_conn()
+    try:
+        conn.execute("UPDATE lokasi SET mt_host = ?, mt_port = ?, mt_user = ?, mt_sandi = ?, jaringan = ? WHERE kode = ?",
+                     (host, port, user, sandi, 1 if d.pantau else 0, kode))
+        conn.commit()
+    finally:
+        conn.close()
+    _mt_status.pop(kode, None)
+    catat_aktivitas(_oleh(request), "lokasi_mikrotik",
+                    f"lokasi {kode}: MikroTik {host}:{port} user {user} — "
+                    + (f"dipantau ({info['identitas']}, RouterOS {info['versi']})" if d.pantau else "hanya penagihan"))
+    return {"ok": True, "pantau": d.pantau, "info": info}
 
 
 class LokasiIn(BaseModel):
@@ -4203,8 +4426,9 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
 
 def _atur_secret_mikrotik(username: str, nonaktif: bool) -> tuple[bool, str]:
     """disabled=yes/no pada /ppp/secret; saat dinonaktifkan sesi aktifnya diputus.
-    Secret TIDAK dihapus, jadi password & profil tetap ada bila pelanggan kembali."""
-    pool = _mikrotik_pool()
+    Secret TIDAK dihapus, jadi password & profil tetap ada bila pelanggan kembali.
+    MikroTik yang dipakai: MikroTik lokasi pelanggan."""
+    pool = _pool(_lokasi_pengguna([username])[username])
     try:
         api = pool.get_api()
         secret = api.get_resource("/ppp/secret")
@@ -9686,7 +9910,7 @@ def _data_pelanggan() -> dict:
     try:
         return {
             r["username"]: dict(r)
-            for r in conn.execute(f"SELECT username, nama, alamat, no_hp FROM pelanggan p WHERE status = 'aktif' AND {_SQL_DIPANTAU}")
+            for r in conn.execute(f"SELECT username, nama, alamat, no_hp, lokasi FROM pelanggan p WHERE status = 'aktif' AND {_SQL_DIPANTAU}")
         }
     finally:
         conn.close()
@@ -9831,7 +10055,9 @@ def proses_putus_pelanggan(pppoe_users, mikrotik_error, onu_list, sekarang=None)
     onu_by_key = {(o.pon, o.onu_id): o for o in onu_list}
 
     data = _data_pelanggan()
-    dipantau = {u for u in data if u in _pernah_aktif}
+    # Pelanggan lokasi yang MikroTik-nya sedang tak terbaca: datanya tidak bisa dipercaya, jangan dianggap putus.
+    tak_terbaca = _lokasi_tak_terbaca()
+    dipantau = {u for u in data if u in _pernah_aktif and (data[u].get("lokasi") or 1) not in tak_terbaca}
     putus_sekarang = [u for u in sorted(dipantau) if u not in aktif]
 
     # Siklus pertama setelah program dinyalakan: catat saja, satu pesan ringkasan
@@ -10101,24 +10327,52 @@ _siapkan_tabel_isolir()
 _isolir_gagal_terakhir = None   # supaya pesan gagal tidak dikirim tiap 2 menit
 
 
-def _mikrotik_pool():
-    return routeros_api.RouterOsApiPool(
-        CONFIG["MIKROTIK_HOST"],
-        username=CONFIG["MIKROTIK_USER"],
-        password=CONFIG["MIKROTIK_PASSWORD"],
-        port=CONFIG["MIKROTIK_PORT"],
-        use_ssl=CONFIG["MIKROTIK_USE_SSL"],
-        ssl_verify=False,
-        plaintext_login=True,
-    )
+def _mikrotik_pool(lokasi: int = 1):
+    """Koneksi API MikroTik. Lokasi 1 dari lingkungan (.env); lokasi lain dari pengaturan MikroTik lokasi itu
+    (tabel lokasi: mt_host, mt_port, mt_user, mt_sandi), mis. MikroTik W2 di 10.97.0.2 lewat terowongan VPS."""
+    if lokasi == 1:
+        return routeros_api.RouterOsApiPool(
+            CONFIG["MIKROTIK_HOST"],
+            username=CONFIG["MIKROTIK_USER"],
+            password=CONFIG["MIKROTIK_PASSWORD"],
+            port=CONFIG["MIKROTIK_PORT"],
+            use_ssl=CONFIG["MIKROTIK_USE_SSL"],
+            ssl_verify=False,
+            plaintext_login=True,
+        )
+    r = _mt_lokasi(lokasi)
+    if not r or not r["mt_host"]:
+        raise RuntimeError(f"MikroTik lokasi {lokasi} belum diatur")
+    return _buat_pool_mt(r["mt_host"], int(r["mt_port"] or 8728), r["mt_user"] or "", r["mt_sandi"] or "")
+
+
+def _buat_pool_mt(host: str, port: int, user: str, sandi: str):
+    return routeros_api.RouterOsApiPool(host, username=user, password=sandi, port=port, use_ssl=False,
+                                        ssl_verify=False, plaintext_login=True)
 
 
 def _ganti_profil_mikrotik(perubahan: dict, hanya_dari=None) -> dict:
     """perubahan: {username: profil_baru}. Mengubah profil PPP secret lalu memutus
     sesi aktifnya supaya langsung berlaku. hanya_dari: kalau diisi, profil baru
     hanya dipasang bila profil sekarang sama dengan nilai ini.
-    Hasil: {username: (berhasil, profil_lama atau pesan_error)}."""
-    pool = _mikrotik_pool()
+    Hasil: {username: (berhasil, profil_lama atau pesan_error)}.
+    Tiap pelanggan diubah di MikroTik lokasinya; MikroTik lokasi pertama (utama) yang tak terbaca menaikkan
+    exception seperti sebelumnya, MikroTik lokasi lain yang tak terbaca hanya menggagalkan pelanggannya."""
+    lok = _lokasi_pengguna(perubahan)
+    hasil = {}
+    for kode in sorted(set(lok.values())):
+        bagian = {u: b for u, b in perubahan.items() if lok[u] == kode}
+        if kode == 1:
+            hasil.update(_ganti_profil_satu(_pool(1), bagian, hanya_dari))
+            continue
+        try:
+            hasil.update(_ganti_profil_satu(_pool(kode), bagian, hanya_dari))
+        except Exception as e:
+            hasil.update({u: (False, f"MikroTik lokasi {kode} tidak terbaca: {e}") for u in bagian})
+    return hasil
+
+
+def _ganti_profil_satu(pool, perubahan: dict, hanya_dari=None) -> dict:
     hasil = {}
     try:
         api = pool.get_api()
@@ -12065,7 +12319,11 @@ def acs_reboot(username: str, request: Request):
 def _mikrotik_lalu_lintas(username: str) -> Optional[dict]:
     """rx/tx sesaat dari interface PPPoE pelanggan (<pppoe-username>). rx di router =
     upload pelanggan, tx = download pelanggan."""
-    pool = _mikrotik_pool()
+    try:
+        pool = _pool(_lokasi_pengguna([username])[username])
+    except Exception as e:
+        logger.warning(f"monitor-traffic {username} gagal: {e}")
+        return None
     try:
         api = pool.get_api()
         r = api.get_resource("/interface").call("monitor-traffic", {"interface": f"<pppoe-{username}>", "once": ""})
@@ -12088,16 +12346,17 @@ def _mikrotik_lalu_lintas(username: str) -> Optional[dict]:
     return {"download_mbps": mbps("tx-bits-per-second"), "upload_mbps": mbps("rx-bits-per-second")}
 
 
-def _mikrotik_ping(ip: str, jumlah: int = 10) -> dict:
-    pool = _mikrotik_pool()
+def _mikrotik_ping(ip: str, jumlah: int = 10, lokasi: int = 1) -> dict:
+    pool = None
     try:
+        pool = _pool(lokasi)
         api = pool.get_api()
         hasil = api.get_resource("/").call("ping", {"address": ip, "count": str(jumlah), "interval": "0.2"})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Ping lewat MikroTik gagal: {e}")
     finally:
         try:
-            pool.disconnect()
+            pool.disconnect() if pool else None
         except Exception:
             pass
     waktu = [w for w in (_ms(h.get("time")) for h in hasil or [] if h.get("status") != "timeout") if w is not None]
@@ -12698,7 +12957,7 @@ def diagnosa_ping(username: str, request: Request):
     u = _pppoe_langsung(username)
     if not u:
         raise HTTPException(status_code=400, detail="Pelanggan sedang tidak online, tidak bisa di-ping.")
-    return _mikrotik_ping(u.ip_address)
+    return _mikrotik_ping(u.ip_address, lokasi=_lokasi_pengguna([username])[username])
 
 
 # ============================================================
