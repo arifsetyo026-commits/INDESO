@@ -40,6 +40,8 @@
 .row:last-child{border-bottom:0}.row .info{min-width:0;cursor:pointer;flex:1}
 .name{font-weight:800;font-size:var(--fs-md)}.sub{font-size:var(--fs-xs);color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
 .right{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.qrBox{text-align:center;margin:10px 0}.qrBox svg{width:230px;height:230px;max-width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:6px}
+.awas{background:#fff7e0;border:1px solid #f1d58a;border-radius:10px;padding:10px;font-size:var(--fs-sm);margin:8px 0}
 .chip{font-size:var(--fs-2xs);font-weight:800;padding:3px 9px;border-radius:999px;white-space:nowrap}
 .chip.ok{background:#dcf5e5;color:#0b7a3b}.chip.warn{background:#fff1c9;color:var(--amber)}.chip.bad{background:#fde4e1;color:var(--red)}.chip.off{background:#eef3ef;color:#5f7669}
 .muted{color:var(--muted);font-size:var(--fs-sm);padding:8px 2px}
@@ -60,7 +62,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .wf{border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-top:8px}
 .wf .atas{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .ok{color:#0b7a3b}.bad{color:var(--red)}
-</style></head><body>
+</style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
  <div class="topRow"><div class="mark">ID</div><div class="judul"><b id="usaha">Internet Desa</b><small><span class="peran">Pelanggan</span><span id="akun">Masuk untuk melihat tagihan &amp; WiFi</span></small></div>
   <span id="tombolAkun" style="display:none;gap:8px"><button class="ib" onclick="tampil('pw')" aria-label="Ganti password" title="Ganti password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M18.5 4.5l2 2"/></svg></button>
@@ -94,7 +96,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <div class="card"><small>Perangkat di WiFi</small><strong id="cPerangkat">—</strong><span id="cPerangkatSub">tersambung</span></div>
   </div>
   <div class="msg" id="msg"></div>
-  <div class="panel sec"><h3>Tagihan</h3><div id="tagihan"><div class="muted">Memuat…</div></div><div class="note" id="infoBayar"></div></div>
+  <div class="panel sec"><h3>Tagihan</h3><div id="tagihan"><div class="muted">Memuat…</div></div><div id="bayar"></div><div class="note" id="infoBayar"></div></div>
   <div class="panel sec form"><h3>WiFi</h3><div id="wifi"><div class="muted">Memuat…</div></div><div class="msg" id="wMsg"></div>
    <div class="note">Sandi WiFi tidak bisa ditampilkan karena modem tidak mengirimkannya. Bila lupa, buat sandi baru di sini; semua HP perlu disambungkan ulang dengan sandi baru.</div></div>
   <div class="panel sec form"><h3>Lapor gangguan</h3><div id="tiket"></div>
@@ -146,8 +148,44 @@ async function gantiPw(){
  try{ await api('/api/portal/password',{lama:$('pLama').value,baru:$('pBaru').value}); ['pLama','pBaru','pBaru2'].forEach(i=>$(i).value='');
   tampil('utama'); pesan('msg','Password berhasil diganti.',true); }catch(e){ pesan('pMsg',e.message); }
 }
+// --- Bayar QRIS & kirim bukti bayar ---
+const byr={buka:false,data:null,belum:0,riwayat:[]};
+async function bukaBayar(){ byr.buka=true; byr.data=null; renderBayar();
+ try{ byr.data=await api('/api/portal/bayar'); }catch(e){ byr.data={tersedia:false,pesan:e.message}; } renderBayar(); }
+function renderBayar(){
+ const r=byr.riwayat.slice(0,3).map(k=>`<div class="sub" style="margin-top:4px">Bukti ${esc(tgl(k.dibuat_pada))} · ${rp(k.jumlah)} · ${k.status==='menunggu'?'<b>sedang dicek admin</b>':k.status==='diterima'?'<b class="ok">diterima, tagihan lunas</b>':'<b class="bad">ditolak</b>: '+esc(k.alasan||'')}</div>`).join('');
+ if(!byr.buka){ $('bayar').innerHTML=(byr.belum?'<div class="btns"><button class="btn go" onclick="bukaBayar()">Bayar dengan QRIS</button></div>':'')+r; return; }
+ const d=byr.data;
+ if(!d){ $('bayar').innerHTML='<div class="muted">Menyiapkan QRIS…</div>'; return; }
+ if(!d.tersedia||!d.jumlah){ $('bayar').innerHTML='<div class="note">'+esc(d.pesan||'')+'</div>'+r; return; }
+ let qr=''; try{ const q=qrcode(0,'M'); q.addData(d.qris); q.make(); qr=q.createSvgTag({cellSize:5,margin:2,scalable:true}); }catch(e){ qr='<div class="muted">QR gagal dibuat.</div>'; }
+ $('bayar').innerHTML=`<div class="awas">⚠️ Sebelum membayar, pastikan nama penerima di aplikasi Anda: <b>${esc(d.merchant)}</b>${d.nmid?' (NMID '+esc(d.nmid)+')':''}. Jika berbeda, <b>jangan bayar</b> dan hubungi kami.</div>
+  <div class="qrBox">${qr}<div style="font-size:var(--fs-xl);font-weight:800;margin-top:6px">${rp(d.jumlah)}</div>
+  <div class="sub">${d.tagihan.map(t=>esc(namaP(t.periode))).join(', ')}</div></div>
+  <div class="sub">Scan dengan aplikasi bank atau dompet digital (DANA, GoPay, OVO, ShopeePay, m-banking). ${d.nominal_otomatis?'Bila nominal tidak terisi otomatis, ketik '+rp(d.jumlah)+'.':'<b>Ketik nominal '+rp(d.jumlah)+'</b> saat membayar.'}</div>
+  <div style="margin-top:12px;font-size:var(--fs-sm);font-weight:800">Sudah bayar? Kirim foto/screenshot bukti bayar</div><input type="file" id="bBukti" accept="image/*,application/pdf" style="margin-top:6px;font-size:var(--fs-sm);max-width:100%">
+  <div class="btns"><button class="btn go" onclick="kirimBukti()">Kirim bukti</button><button class="btn" onclick="byr.buka=false;renderBayar()">Tutup</button></div><div class="msg" id="bMsg"></div>`+r;
+}
+async function kecilkan(f){
+ if(!f.type.startsWith('image/')||f.type==='image/gif') return f;
+ try{ const bmp=await createImageBitmap(f), k=Math.min(1,1600/Math.max(bmp.width,bmp.height));
+  if(k===1&&f.size<700*1024) return f;
+  const c=document.createElement('canvas'); c.width=Math.round(bmp.width*k); c.height=Math.round(bmp.height*k);
+  c.getContext('2d').drawImage(bmp,0,0,c.width,c.height); return await new Promise(r=>c.toBlob(b=>r(b||f),'image/jpeg',.82)); }catch(e){ return f; }
+}
+async function kirimBukti(){
+ const f=$('bBukti').files[0]; if(!f){ pesan('bMsg','Pilih foto bukti bayar dulu.'); return; }
+ pesan('bMsg','Mengirim…',true);
+ try{ const isi=await kecilkan(f), per=(byr.data.tagihan||[]).map(t=>t.periode).join(',');
+  const r=await fetch('/api/portal/konfirmasi?periode='+encodeURIComponent(per),{method:'POST',body:isi});
+  const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
+  byr.buka=false; await muat(); pesan('msg','Bukti bayar terkirim. Tagihan menjadi lunas setelah dicek admin; internet terbuka otomatis bila sedang diisolir.',true); }
+ catch(e){ pesan('bMsg','Gagal: '+e.message); }
+}
 async function muat(){
  let d; try{ d=await api('/api/portal/saya'); }catch(e){ tampil('auth'); return; }
+ try{ byr.riwayat=(await api('/api/portal/konfirmasi')).konfirmasi||[]; }catch(e){ byr.riwayat=[]; }
+ const dicek=new Set(byr.riwayat.filter(k=>k.status==='menunggu').flatMap(k=>k.periode.split(',')));
  tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;
  const n=d.internet;
  $('cNet').innerHTML=n.isolir?'<b class="bad">Diisolir</b>':!n.diketahui?'—':n.online?'<b class="ok">Online</b>':'<b class="bad">Offline</b>';
@@ -156,8 +194,9 @@ async function muat(){
  $('cTagih').textContent=d.belum_bayar?rp(d.belum_bayar):'Lunas'; $('cTagih').style.color=d.belum_bayar?'#b45309':'';
  $('cTagihSub').textContent=belum.length?belum.length+' bulan':'tidak ada tunggakan';
  $('tagihan').innerHTML=d.tagihan.length?d.tagihan.map(t=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':''):'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div>
-  <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`).join(''):'<div class="muted">Belum ada tagihan.</div>';
- $('infoBayar').textContent=d.info_bayar?'Cara bayar: '+d.info_bayar:'';
+  <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':dicek.has(t.periode)?'<span class="chip off">Bukti sedang dicek</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`).join(''):'<div class="muted">Belum ada tagihan.</div>';
+ $('infoBayar').textContent=d.info_bayar?'Cara bayar lain: '+d.info_bayar:'';
+ byr.belum=belum.filter(t=>!dicek.has(t.periode)).length; renderBayar();
  muatWifi(); muatTiket();
 }
 async function muatWifi(){

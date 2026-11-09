@@ -38,3 +38,12 @@ misalnya batas kompensasi gangguan (3 hari) atau batas pengajuan pengembalian da
 ## Setelah akun disetujui
 Kunci API **tidak dikirim ke chat**; dimasukkan langsung di VPS. Integrasi pembayaran QRIS di Portal Pelanggan
 (lunas & buka isolir otomatis) dikerjakan terpisah.
+
+## Sebelum ada payment gateway: QRIS toko + konfirmasi bukti bayar
+1. Owner: Penagihan → **QRIS pembayaran** → tempel **isi kode** QRIS toko (teks diawali `000201…`, hasil memindai
+   QRIS dengan aplikasi pemindai QR). INDESO memeriksa kode cek (CRC), membaca nama merchant & NMID, dan mengabari
+   owner lewat Telegram setiap kali QRIS diganti. Hanya owner yang bisa mengganti. Ketik `HAPUS` untuk mematikan.
+2. Pelanggan (Portal) → **Bayar dengan QRIS**: QR bernominal tagihan + peringatan untuk mencocokkan nama penerima.
+   Setelah bayar, pelanggan mengirim foto bukti.
+3. Admin: Penagihan → kotak **Konfirmasi bayar menunggu** → cek mutasi rekening/QRIS → **Terima** (tagihan lunas,
+   dicatat kas Pusat, isolir terbuka otomatis dalam beberapa menit) atau **Tolak** dengan alasan (tampil di portal).

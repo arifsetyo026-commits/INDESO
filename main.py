@@ -174,6 +174,7 @@ CONFIG = {
     "USAHA_WA": "",
     "USAHA_EMAIL": "",
     "USAHA_JAM": "Setiap hari 08.00–20.00 WIB",
+    "QRIS_NOMINAL": "ya",               # ya = QR di portal berisi nominal tagihan; tidak = QRIS toko asli, nominal diketik
     "TEMPLATE_PENGINGAT": ("Yth. Bapak/Ibu {nama} (ID pelanggan {id}),\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n"
                            "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
                            "Terima kasih."),
@@ -3243,6 +3244,10 @@ _PENGATURAN = {
                     "pola": r"^\s*([A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}\.[A-Za-z]{2,24})?\s*$",
                     "contoh": "halo@internetdesa.biz.id"},
     "USAHA_JAM": {"label": "Halaman publik: jam layanan pelanggan", "tipe": "teksbebas", "maks": 80, "owner": True},
+    "QRIS_NOMINAL": {"label": "QRIS di portal dengan nominal tagihan otomatis", "tipe": "pilihan", "pilihan": ["ya", "tidak"],
+                     "owner": True,
+                     "bantuan": "ya = nominal terisi otomatis saat dipindai. Bila ada aplikasi pembayaran yang menolak, pilih "
+                                "tidak: portal menampilkan QRIS toko asli dan pelanggan mengetik nominal yang tertera."},
     "TEMPLATE_PENGINGAT": {"label": "Teks pengingat tagihan WA", "tipe": "teksbebas", "maks": 1500, "baris": 8,
                            "bantuan": "Penanda yang diisi otomatis: {nama} {usaha} {rincian} (daftar bulan & jumlah) "
                                       "{total} {cara_bayar} {username} {id} (ID pelanggan). Huruf di antara *bintang* jadi tebal di WA."},
@@ -9488,6 +9493,387 @@ def portal_saya(request: Request):
                          "uptime": sesi.uptime if sesi else None, "isolir": isolir},
             "tagihan": daftar, "belum_bayar": sum(t["jumlah"] for t in daftar if not t["lunas"]),
             "usaha": CONFIG["NAMA_USAHA"], "info_bayar": CONFIG["INFO_BAYAR"]}
+
+
+# ============================================================
+# QRIS STATIS + KONFIRMASI BUKTI BAYAR (sebelum ada payment gateway)
+# Owner menyimpan ISI kode QRIS (bukan gambar); portal menggambar QR-nya sendiri, bernominal sesuai tagihan, dan
+# menampilkan nama merchant + NMID yang harus dicek pelanggan sebelum membayar. Pelanggan mengunggah bukti; admin
+# menerima (tagihan lunas, kas Pusat, isolir dibuka otomatis di putaran berikutnya) atau menolak dengan alasan.
+# ============================================================
+
+def _crc16_qris(data: str) -> str:
+    crc = 0xFFFF
+    for b in data.encode("utf-8"):
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
+            crc &= 0xFFFF
+    return f"{crc:04X}"
+
+
+def _tlv(s: str) -> list:
+    hasil, i = [], 0
+    while i < len(s):
+        if i + 4 > len(s):
+            raise ValueError("struktur QRIS terpotong")
+        tag, n = s[i:i + 2], s[i + 2:i + 4]
+        if not (tag.isdigit() and n.isdigit()):
+            raise ValueError("struktur QRIS tidak valid")
+        n = int(n)
+        val = s[i + 4:i + 4 + n]
+        if len(val) != n:
+            raise ValueError("struktur QRIS terpotong")
+        hasil.append((tag, val))
+        i += 4 + n
+    return hasil
+
+
+def _baca_qris(payload: str) -> dict:
+    """Periksa kode QRIS (format EMV + CRC) dan ambil nama merchant, kota, NMID. ValueError bila tidak sah."""
+    p = (payload or "").strip()
+    if not p.startswith("000201") or len(p) > 512:
+        raise ValueError("bukan kode QRIS (harus diawali 000201)")
+    if not re.fullmatch(r"6304[0-9A-Fa-f]{4}", p[-8:]):
+        raise ValueError("kode cek (CRC) QRIS tidak ditemukan")
+    if _crc16_qris(p[:-4]) != p[-4:].upper():
+        raise ValueError("kode cek (CRC) QRIS tidak cocok: kode rusak atau sudah diubah")
+    data = dict(_tlv(p))
+    if data.get("53") != "360":
+        raise ValueError("QRIS bukan mata uang Rupiah")
+    nmid = None
+    for tag in [f"{n:02d}" for n in range(26, 52)]:
+        if tag in data:
+            try:
+                for st, v in _tlv(data[tag]):
+                    if st == "02" and v.startswith("ID"):
+                        nmid = nmid or v
+            except ValueError:
+                pass
+    merchant = (data.get("59") or "").strip()
+    if not merchant:
+        raise ValueError("nama merchant tidak ada di QRIS")
+    return {"merchant": merchant, "kota": (data.get("60") or "").strip(), "nmid": nmid,
+            "nominal_tetap": data.get("54"), "statis": data.get("01") == "11"}
+
+
+def _qris_bernominal(payload: str, jumlah: int) -> str:
+    """QRIS statis -> QRIS dengan nominal tagihan (tag 54). Tujuan pembayaran (merchant) tidak berubah."""
+    bagian = [(t, v) for t, v in _tlv(payload.strip()[:-8]) if t not in ("54", "63")]
+    bagian = [(t, "12" if t == "01" else v) for t, v in bagian]
+    nominal = str(int(jumlah))
+    idx = next((i for i, (t, _v) in enumerate(bagian) if t > "54"), len(bagian))
+    bagian.insert(idx, ("54", nominal))
+    isi = "".join(f"{t}{len(v):02d}{v}" for t, v in bagian) + "6304"
+    return isi + _crc16_qris(isi)
+
+
+def _siapkan_qris(conn) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS qris_bayar (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL,
+        merchant TEXT NOT NULL, nmid TEXT, kota TEXT, aktif INTEGER NOT NULL DEFAULT 1, oleh TEXT, pada TEXT NOT NULL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS konfirmasi_bayar (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL, tagihan_ids TEXT NOT NULL, periode TEXT NOT NULL, jumlah INTEGER NOT NULL,
+        catatan TEXT, berkas TEXT NOT NULL, mime TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'menunggu',
+        alasan TEXT, dibuat_pada TEXT NOT NULL, diperiksa_oleh TEXT, diperiksa_pada TEXT, metode TEXT, tgl_bayar TEXT)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_konfirmasi_status ON konfirmasi_bayar(status, username)")
+
+
+def _qris_aktif(conn):
+    _siapkan_qris(conn)
+    return conn.execute("SELECT * FROM qris_bayar WHERE aktif = 1 ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def _kabar_owner(teks: str) -> None:
+    """Ke grup utama, dan juga ke chat owner bila diisi (perubahan QRIS harus diketahui owner)."""
+    try:
+        send_telegram_message(teks)
+        if CONFIG["TELEGRAM_ENABLED"]:
+            for chat in _chat_owner():
+                if chat != str(CONFIG["TELEGRAM_CHAT_ID"]):
+                    requests.post(f"https://api.telegram.org/bot{CONFIG['TELEGRAM_BOT_TOKEN']}/sendMessage",
+                                  data={"chat_id": chat, "text": teks, "parse_mode": "HTML"}, timeout=10)
+    except Exception as e:
+        logger.warning(f"Kabar owner gagal: {e}")
+
+
+@app.get("/api/qris")
+def qris_lihat(request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        q = _qris_aktif(conn)
+    finally:
+        conn.close()
+    return {"aktif": {"merchant": q["merchant"], "nmid": q["nmid"], "kota": q["kota"], "oleh": q["oleh"], "pada": q["pada"]}
+            if q else None, "boleh_ubah": request.state.peran == "owner"}
+
+
+class QrisIn(BaseModel):
+    payload: str
+
+
+@app.put("/api/qris")
+def qris_simpan(d: QrisIn, request: Request):
+    _wajib_owner(request, "QRIS pembayaran hanya bisa diganti owner.")
+    try:
+        info = _baca_qris(d.payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Kode QRIS ditolak: {e}.")
+    if info["nominal_tetap"]:
+        raise HTTPException(status_code=400, detail="Pakai QRIS statis tanpa nominal (QRIS toko), bukan QRIS sekali bayar.")
+    conn = _billing_conn()
+    try:
+        lama = _qris_aktif(conn)
+        conn.execute("UPDATE qris_bayar SET aktif = 0 WHERE aktif = 1")
+        conn.execute("INSERT INTO qris_bayar (payload, merchant, nmid, kota, oleh, pada) VALUES (?,?,?,?,?,?)",
+                     (d.payload.strip(), info["merchant"], info["nmid"], info["kota"], _oleh(request),
+                      datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+    finally:
+        conn.close()
+    ket = (f"{lama['merchant']} ({lama['nmid'] or '-'}) → " if lama else "") + f"{info['merchant']} ({info['nmid'] or '-'})"
+    catat_aktivitas(_oleh(request), "qris", f"QRIS pembayaran diganti: {ket}")
+    _kabar_owner(f"🔐 <b>QRIS pembayaran diganti</b> oleh {_esc(_oleh(request))}\n{_esc(ket)}\n"
+                 "Bila Anda tidak melakukannya, segera ganti sandi owner dan pasang ulang QRIS yang benar.")
+    return {"ok": True, **{k: info[k] for k in ("merchant", "nmid", "kota")}}
+
+
+@app.delete("/api/qris")
+def qris_matikan(request: Request):
+    _wajib_owner(request, "QRIS pembayaran hanya bisa diatur owner.")
+    conn = _billing_conn()
+    try:
+        _siapkan_qris(conn)
+        n = conn.execute("UPDATE qris_bayar SET aktif = 0 WHERE aktif = 1").rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if n:
+        catat_aktivitas(_oleh(request), "qris", "QRIS pembayaran di portal dimatikan")
+        _kabar_owner(f"🔐 QRIS pembayaran di portal dimatikan oleh {_esc(_oleh(request))}.")
+    return {"ok": True}
+
+
+def _tagihan_belum(conn, username: str, periode: Optional[str]) -> list:
+    sql = "SELECT id, periode, jumlah FROM tagihan WHERE username = ? AND status = 'belum'"
+    arg: list = [username]
+    if periode:
+        sql += " AND periode = ?"
+        arg.append(periode)
+    return conn.execute(sql + " ORDER BY periode", arg).fetchall()
+
+
+def _tagihan_menunggu(conn, username: str) -> set:
+    ids = set()
+    for r in conn.execute("SELECT tagihan_ids FROM konfirmasi_bayar WHERE username = ? AND status = 'menunggu'", (username,)):
+        ids.update(json.loads(r[0]))
+    return ids
+
+
+@app.get("/api/portal/bayar")
+def portal_bayar(request: Request, periode: Optional[str] = None):
+    """QRIS bernominal untuk tagihan yang belum dibayar (satu bulan, atau semua bila periode kosong)."""
+    u = request.state.portal["pelanggan"]
+    if periode and not _periode_valid(periode):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    conn = _billing_conn()
+    try:
+        q = _qris_aktif(conn)
+        tg = [t for t in _tagihan_belum(conn, u, periode) if t["id"] not in _tagihan_menunggu(conn, u)]
+    finally:
+        conn.close()
+    if not q:
+        return {"tersedia": False, "pesan": "Pembayaran QRIS dari portal belum tersedia. " + CONFIG["INFO_BAYAR"]}
+    if not tg:
+        return {"tersedia": True, "tagihan": [], "jumlah": 0, "pesan": "Tidak ada tagihan yang perlu dibayar."}
+    jumlah = sum(t["jumlah"] for t in tg)
+    otomatis = CONFIG["QRIS_NOMINAL"] == "ya"
+    return {"tersedia": True, "merchant": q["merchant"], "nmid": q["nmid"], "kota": q["kota"], "jumlah": jumlah,
+            "tagihan": [{"periode": t["periode"], "jumlah": t["jumlah"]} for t in tg], "nominal_otomatis": otomatis,
+            "qris": _qris_bernominal(q["payload"], jumlah) if otomatis else q["payload"]}
+
+
+@app.get("/api/qris/uji")
+def qris_uji(request: Request, jumlah: int = 1000):
+    """QR uji untuk owner (mis. Rp1.000) supaya QRIS bisa dicoba dibayar dari beberapa aplikasi sebelum diumumkan."""
+    _wajib_owner(request, "Uji QRIS hanya untuk owner.")
+    if not 1 <= jumlah <= 1_000_000:
+        raise HTTPException(status_code=400, detail="Nominal uji Rp1–Rp1.000.000.")
+    conn = _billing_conn()
+    try:
+        q = _qris_aktif(conn)
+    finally:
+        conn.close()
+    if not q:
+        raise HTTPException(status_code=400, detail="Pasang QRIS dulu.")
+    return {"merchant": q["merchant"], "nmid": q["nmid"], "jumlah": jumlah,
+            "dengan_nominal": _qris_bernominal(q["payload"], jumlah), "tanpa_nominal": q["payload"]}
+
+
+@app.post("/api/portal/konfirmasi")
+async def portal_konfirmasi(request: Request, periode: str = "", catatan: str = ""):
+    """Pelanggan mengirim bukti bayar (foto/PDF di badan permintaan) untuk tagihan periode (dipisah koma, kosong =
+    semua yang belum dibayar). Tagihan belum lunas sampai admin memeriksa bukti dan mutasi rekeningnya."""
+    u = request.state.portal["pelanggan"]
+    daftar = [p.strip() for p in periode.split(",") if p.strip()]
+    if any(not _periode_valid(p) for p in daftar):
+        raise HTTPException(status_code=400, detail="Periode tidak valid.")
+    batas = CONFIG["NOTA_MAKS_MB"] * 1024 * 1024
+    if int(request.headers.get("content-length") or 0) > batas:
+        raise HTTPException(status_code=413, detail=f"Foto maksimal {CONFIG['NOTA_MAKS_MB']} MB.")
+    isi = await request.body()
+    if not isi or len(isi) > batas:
+        raise HTTPException(status_code=400, detail="Lampirkan foto bukti bayar.")
+    jenis = _jenis_berkas(isi)
+    if not jenis:
+        raise HTTPException(status_code=415, detail="Bukti bayar harus foto (JPG/PNG/WEBP) atau PDF.")
+    catatan = catatan.strip()[:200] or None
+
+    def simpan():
+        conn = _billing_conn()
+        try:
+            _siapkan_qris(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT COUNT(*) FROM konfirmasi_bayar WHERE username = ? AND status = 'menunggu'",
+                            (u,)).fetchone()[0] >= 3:
+                raise HTTPException(status_code=429, detail="Masih ada konfirmasi yang menunggu diperiksa. Mohon tunggu.")
+            menunggu = _tagihan_menunggu(conn, u)
+            tg = [t for p in (daftar or [None]) for t in _tagihan_belum(conn, u, p)]
+            if not tg:
+                raise HTTPException(status_code=400, detail="Tidak ada tagihan belum dibayar untuk dikonfirmasi.")
+            if any(t["id"] in menunggu for t in tg):
+                raise HTTPException(status_code=409, detail="Bukti untuk tagihan ini sudah dikirim dan sedang diperiksa.")
+            berkas = f"konfirmasi/{datetime.now().strftime('%Y%m')}/{secrets.token_hex(12)}.{jenis[1]}"
+            path = os.path.join(_folder_nota(), berkas)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(isi)
+            nama = conn.execute("SELECT nama FROM pelanggan WHERE username = ?", (u,)).fetchone()
+            cur = conn.execute("INSERT INTO konfirmasi_bayar (username, tagihan_ids, periode, jumlah, catatan, berkas, mime, "
+                               "dibuat_pada) VALUES (?,?,?,?,?,?,?,?)",
+                               (u, json.dumps([t["id"] for t in tg]), ",".join(t["periode"] for t in tg),
+                                sum(t["jumlah"] for t in tg), catatan, berkas, jenis[0],
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            conn.commit()
+            return cur.lastrowid, tg, (nama["nama"] if nama else u)
+        finally:
+            conn.close()
+
+    kid, tg, nama = await asyncio.to_thread(simpan)
+    jumlah = sum(t["jumlah"] for t in tg)
+    catat_aktivitas(request.state.user, "konfirmasi_bayar", f"#K{kid} {u} {_rp(jumlah)} ({', '.join(t['periode'] for t in tg)})")
+    try:
+        send_telegram_message(f"💳 <b>Konfirmasi bayar</b> #K{kid}\n{_esc(nama)} ({_esc(u)}): {_rp(jumlah)}\n"
+                              f"Tagihan: {_esc(', '.join(_nama_periode(t['periode']) for t in tg))}\n"
+                              "Cocokkan dengan mutasi rekening/QRIS, lalu Terima di dashboard → Penagihan → Konfirmasi bayar.")
+    except Exception:
+        pass
+    return {"ok": True, "id": kid, "jumlah": jumlah}
+
+
+@app.get("/api/portal/konfirmasi")
+def portal_konfirmasi_daftar(request: Request):
+    u = request.state.portal["pelanggan"]
+    conn = _billing_conn()
+    try:
+        _siapkan_qris(conn)
+        rows = conn.execute("SELECT id, periode, jumlah, status, alasan, dibuat_pada, diperiksa_pada FROM konfirmasi_bayar "
+                            "WHERE username = ? ORDER BY id DESC LIMIT 10", (u,)).fetchall()
+    finally:
+        conn.close()
+    return {"konfirmasi": [dict(r) for r in rows]}
+
+
+@app.get("/api/konfirmasi-bayar")
+def konfirmasi_daftar(request: Request, status: str = "menunggu"):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_qris(conn)
+        sql = (f"SELECT k.*, p.nama, p.lokasi, {_SQL_ID} AS id_pelanggan FROM konfirmasi_bayar k "
+               "LEFT JOIN pelanggan p ON p.username = k.username")
+        arg: list = []
+        if status != "semua":
+            sql += " WHERE k.status = ?"
+            arg.append(status)
+        rows = conn.execute(sql + " ORDER BY k.id DESC LIMIT 100", arg).fetchall()
+        n = conn.execute("SELECT COUNT(*) FROM konfirmasi_bayar WHERE status = 'menunggu'").fetchone()[0]
+    finally:
+        conn.close()
+    return {"menunggu": n, "konfirmasi": [{k: r[k] for k in r.keys() if k not in ("berkas", "tagihan_ids")} for r in rows]}
+
+
+@app.get("/api/konfirmasi-bayar/{kid}/bukti")
+def konfirmasi_bukti(kid: int, request: Request):
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_qris(conn)
+        r = conn.execute("SELECT berkas, mime FROM konfirmasi_bayar WHERE id = ?", (kid,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        raise HTTPException(status_code=404, detail="Konfirmasi tidak ditemukan.")
+    path = os.path.realpath(os.path.join(_folder_nota(), r["berkas"]))
+    if not path.startswith(os.path.realpath(_folder_nota()) + os.sep) or not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Berkas bukti tidak ada di server.")
+    return FileResponse(path, media_type=r["mime"], headers={"Cache-Control": "private, max-age=3600"})
+
+
+class PeriksaKonfirmasiIn(BaseModel):
+    terima: bool
+    alasan: Optional[str] = None
+    tanggal: Optional[str] = None      # tanggal uang masuk (bawaan: tanggal bukti dikirim)
+    metode: str = "qris"
+
+
+@app.post("/api/konfirmasi-bayar/{kid}/periksa")
+def konfirmasi_periksa(kid: int, d: PeriksaKonfirmasiIn, request: Request):
+    """Terima: semua tagihan dalam konfirmasi ditandai lunas (uang masuk ke rekening/QRIS Pusat, bukan kas wilayah);
+    isolir dibuka otomatis di putaran pemantauan berikutnya. Tolak: alasan wajib, tampil di portal pelanggan."""
+    _wajib_admin(request)
+    alasan = (d.alasan or "").strip()
+    if not d.terima and len(alasan) < 3:
+        raise HTTPException(status_code=400, detail="Tuliskan alasan penolakan (tampil ke pelanggan).")
+    if d.metode not in _METODE:
+        raise HTTPException(status_code=400, detail="Metode tidak valid.")
+    sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _billing_conn()
+    try:
+        _siapkan_qris(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        k = conn.execute("SELECT * FROM konfirmasi_bayar WHERE id = ?", (kid,)).fetchone()
+        if not k:
+            raise HTTPException(status_code=404, detail="Konfirmasi tidak ditemukan.")
+        if k["status"] != "menunggu":
+            raise HTTPException(status_code=400, detail="Konfirmasi ini sudah diperiksa.")
+        lunas, sudah = [], []
+        if d.terima:
+            tanggal = d.tanggal or k["dibuat_pada"][:10]
+            _cek_tanggal_lalu(tanggal, "Tanggal bayar")
+            if tanggal > sekarang[:10]:
+                raise HTTPException(status_code=400, detail="Tanggal bayar tidak boleh di masa depan.")
+            _wajib_buku_terbuka(conn, tanggal)
+            for tid in json.loads(k["tagihan_ids"]):
+                # lokasi_kas = 0: uangnya masuk rekening/QRIS Pusat, tidak menambah wajib setor admin wilayah.
+                cur = conn.execute("UPDATE tagihan SET status='lunas', tgl_bayar=?, metode_bayar=?, lunas_oleh=?, lunas_pada=?, "
+                                   "lokasi_kas=0, catatan=TRIM(COALESCE(catatan || '; ', '') || ?) "
+                                   "WHERE id=? AND status != 'lunas'",
+                                   (tanggal, d.metode, _oleh(request), sekarang, f"konfirmasi #K{kid}", tid))
+                (lunas if cur.rowcount else sudah).append(tid)
+            conn.execute("UPDATE konfirmasi_bayar SET status='diterima', diperiksa_oleh=?, diperiksa_pada=?, metode=?, "
+                         "tgl_bayar=? WHERE id=?", (_oleh(request), sekarang, d.metode, tanggal, kid))
+        else:
+            conn.execute("UPDATE konfirmasi_bayar SET status='ditolak', alasan=?, diperiksa_oleh=?, diperiksa_pada=? WHERE id=?",
+                         (alasan[:200], _oleh(request), sekarang, kid))
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "konfirmasi_bayar",
+                    f"#K{kid} {k['username']} {_rp(k['jumlah'])}: " + (f"DITERIMA ({d.metode}), {len(lunas)} tagihan lunas"
+                                                                       + (f", {len(sudah)} sudah lunas sebelumnya" if sudah else "")
+                                                                       if d.terima else f"ditolak: {alasan[:100]}"))
+    return {"ok": True, "status": "diterima" if d.terima else "ditolak", "lunas": len(lunas), "sudah_lunas": len(sudah)}
 
 
 @app.get("/api/portal/wifi")
