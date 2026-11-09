@@ -162,7 +162,7 @@ function renderBayar(){
  $('bayar').innerHTML=`<div class="awas">⚠️ Sebelum membayar, pastikan nama penerima di aplikasi Anda: <b>${esc(d.merchant)}</b>${d.nmid?' (NMID '+esc(d.nmid)+')':''}. Jika berbeda, <b>jangan bayar</b> dan hubungi kami.</div>
   <div class="qrBox">${qr}<div style="font-size:var(--fs-xl);font-weight:800;margin-top:6px">${rp(d.jumlah)}</div>
   <div class="sub">${d.tagihan.map(t=>esc(namaP(t.periode))).join(', ')}</div></div>
-  <div class="sub">Scan dengan aplikasi bank atau dompet digital (DANA, GoPay, OVO, ShopeePay, m-banking). Bila nominal tidak terisi otomatis, ketik ${rp(d.jumlah)}.</div>
+  <div class="sub">Scan dengan aplikasi bank atau dompet digital (DANA, GoPay, OVO, ShopeePay, m-banking). ${d.nominal_otomatis?'Bila nominal tidak terisi otomatis, ketik '+rp(d.jumlah)+'.':'<b>Ketik nominal '+rp(d.jumlah)+'</b> saat membayar.'}</div>
   <div style="margin-top:12px;font-size:var(--fs-sm);font-weight:800">Sudah bayar? Kirim foto/screenshot bukti bayar</div><input type="file" id="bBukti" accept="image/*,application/pdf" style="margin-top:6px;font-size:var(--fs-sm);max-width:100%">
   <div class="btns"><button class="btn go" onclick="kirimBukti()">Kirim bukti</button><button class="btn" onclick="byr.buka=false;renderBayar()">Tutup</button></div><div class="msg" id="bMsg"></div>`+r;
 }

@@ -3981,6 +3981,16 @@ def test_qris_dan_konfirmasi_bukti_bayar(siap):
     c = sqlite3.connect(main.CONFIG["BILLING_DB_PATH"])
     assert {x[0] for x in c.execute("SELECT lokasi_kas FROM tagihan WHERE username='budi'")} == {0}   # kas Pusat
     c.close()
+    # nominal otomatis bisa dimatikan: portal memberi QRIS toko asli
+    o.post("/api/tagihan/buat?periode=2026-12")
+    assert o.put("/api/pengaturan", json={"nilai": {"QRIS_NOMINAL": "tidak"}}).status_code == 200
+    b = p.get("/api/portal/bayar").json()
+    assert b["nominal_otomatis"] is False and b["qris"] == qris and b["jumlah"] == 150000
+    assert o.put("/api/pengaturan", json={"nilai": {"QRIS_NOMINAL": "ya"}}).status_code == 200
+    # QR uji owner
+    assert k.get("/api/qris/uji").status_code == 403
+    u = o.get("/api/qris/uji?jumlah=1000").json()
+    assert main._baca_qris(u["dengan_nominal"])["nominal_tetap"] == "1000" and u["tanpa_nominal"] == qris
     # QRIS dimatikan: portal tidak menawarkan QRIS
     assert o.delete("/api/qris").status_code == 200
     assert p.get("/api/portal/bayar").json()["tersedia"] is False

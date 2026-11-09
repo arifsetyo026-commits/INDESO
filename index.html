@@ -1192,10 +1192,23 @@ async function periksaKonf(id,terima){
   await loadBilling(true); }
  catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
 }
+async function ujiQris(){
+ const w=window.open('','_blank'); if(!w){ alert('Izinkan pop-up untuk menampilkan QR uji.'); return; }
+ try{ const d=await jsonAtauError(await fetch('/api/qris/uji?jumlah=1000',{cache:'no-store'}));
+  const qr=t=>{ const q=qrcode(0,'M'); q.addData(t); q.make(); return q.createSvgTag({cellSize:5,margin:2,scalable:true}); };
+  w.document.write('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Uji QRIS</title><body style="font-family:sans-serif;text-align:center;padding:12px">'
+   +'<h3>Uji QRIS '+esc(d.merchant)+'</h3><p>Bayar Rp1.000 dari 2–3 aplikasi berbeda, cek nama penerima & nominal, lalu pastikan uangnya masuk.</p>'
+   +'<h4>1. Dengan nominal otomatis</h4><div style="max-width:260px;margin:auto">'+qr(d.dengan_nominal)+'</div>'
+   +'<h4>2. QRIS toko asli (ketik Rp1.000)</h4><div style="max-width:260px;margin:auto">'+qr(d.tanpa_nominal)+'</div>'
+   +'<p style="color:#555">Bila QR nomor 1 ditolak aplikasi, matikan "QRIS di portal dengan nominal tagihan otomatis" di Pengaturan.</p></body>');
+  w.document.close(); }
+ catch(e){ w.close(); alert('Gagal: '+e.message); }
+}
 async function aturQris(){
  let q; try{ q=await jsonAtauError(await fetch('/api/qris',{cache:'no-store'})); }catch(e){ alert('Gagal: '+e.message); return; }
  const kini=q.aktif?('QRIS aktif di portal: '+q.aktif.merchant+(q.aktif.nmid?' (NMID '+q.aktif.nmid+')':'')+'\nDipasang '+q.aktif.oleh+' '+q.aktif.pada):'Belum ada QRIS di portal.';
  if(!q.boleh_ubah){ alert(kini+'\n\nHanya owner yang bisa mengganti QRIS.'); return; }
+ if(q.aktif&&confirm(kini+'\n\nOK = tampilkan QR UJI Rp1.000 untuk dicoba bayar dari beberapa aplikasi.\nBatal = ganti/hapus QRIS.')){ ujiQris(); return; }
  const v=prompt(kini+'\n\nTempel ISI kode QRIS toko Anda (teks diawali 000201…, didapat dengan memindai QRIS memakai aplikasi pemindai QR lalu salin teksnya). Ketik HAPUS untuk mematikan QRIS di portal:','');
  if(v==null||!v.trim()) return;
  try{

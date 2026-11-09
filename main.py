@@ -174,6 +174,7 @@ CONFIG = {
     "USAHA_WA": "",
     "USAHA_EMAIL": "",
     "USAHA_JAM": "Setiap hari 08.00–20.00 WIB",
+    "QRIS_NOMINAL": "ya",               # ya = QR di portal berisi nominal tagihan; tidak = QRIS toko asli, nominal diketik
     "TEMPLATE_PENGINGAT": ("Yth. Bapak/Ibu {nama} (ID pelanggan {id}),\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n"
                            "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
                            "Terima kasih."),
@@ -3243,6 +3244,10 @@ _PENGATURAN = {
                     "pola": r"^\s*([A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}\.[A-Za-z]{2,24})?\s*$",
                     "contoh": "halo@internetdesa.biz.id"},
     "USAHA_JAM": {"label": "Halaman publik: jam layanan pelanggan", "tipe": "teksbebas", "maks": 80, "owner": True},
+    "QRIS_NOMINAL": {"label": "QRIS di portal dengan nominal tagihan otomatis", "tipe": "pilihan", "pilihan": ["ya", "tidak"],
+                     "owner": True,
+                     "bantuan": "ya = nominal terisi otomatis saat dipindai. Bila ada aplikasi pembayaran yang menolak, pilih "
+                                "tidak: portal menampilkan QRIS toko asli dan pelanggan mengetik nominal yang tertera."},
     "TEMPLATE_PENGINGAT": {"label": "Teks pengingat tagihan WA", "tipe": "teksbebas", "maks": 1500, "baris": 8,
                            "bantuan": "Penanda yang diisi otomatis: {nama} {usaha} {rincian} (daftar bulan & jumlah) "
                                       "{total} {cara_bayar} {username} {id} (ID pelanggan). Huruf di antara *bintang* jadi tebal di WA."},
@@ -9682,9 +9687,27 @@ def portal_bayar(request: Request, periode: Optional[str] = None):
     if not tg:
         return {"tersedia": True, "tagihan": [], "jumlah": 0, "pesan": "Tidak ada tagihan yang perlu dibayar."}
     jumlah = sum(t["jumlah"] for t in tg)
+    otomatis = CONFIG["QRIS_NOMINAL"] == "ya"
     return {"tersedia": True, "merchant": q["merchant"], "nmid": q["nmid"], "kota": q["kota"], "jumlah": jumlah,
-            "tagihan": [{"periode": t["periode"], "jumlah": t["jumlah"]} for t in tg],
-            "qris": _qris_bernominal(q["payload"], jumlah)}
+            "tagihan": [{"periode": t["periode"], "jumlah": t["jumlah"]} for t in tg], "nominal_otomatis": otomatis,
+            "qris": _qris_bernominal(q["payload"], jumlah) if otomatis else q["payload"]}
+
+
+@app.get("/api/qris/uji")
+def qris_uji(request: Request, jumlah: int = 1000):
+    """QR uji untuk owner (mis. Rp1.000) supaya QRIS bisa dicoba dibayar dari beberapa aplikasi sebelum diumumkan."""
+    _wajib_owner(request, "Uji QRIS hanya untuk owner.")
+    if not 1 <= jumlah <= 1_000_000:
+        raise HTTPException(status_code=400, detail="Nominal uji Rp1–Rp1.000.000.")
+    conn = _billing_conn()
+    try:
+        q = _qris_aktif(conn)
+    finally:
+        conn.close()
+    if not q:
+        raise HTTPException(status_code=400, detail="Pasang QRIS dulu.")
+    return {"merchant": q["merchant"], "nmid": q["nmid"], "jumlah": jumlah,
+            "dengan_nominal": _qris_bernominal(q["payload"], jumlah), "tanpa_nominal": q["payload"]}
 
 
 @app.post("/api/portal/konfirmasi")
