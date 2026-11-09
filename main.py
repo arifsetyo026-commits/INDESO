@@ -165,6 +165,15 @@ CONFIG = {
     "NAMA_USAHA": _env("NAMA_USAHA", "Internet Desa"),   # dipakai di kwitansi & pesan WA
     # Pesan WA ke pelanggan (bisa diubah di Pengaturan). Penanda {..} diisi otomatis.
     "INFO_BAYAR": "Pembayaran dapat dilakukan langsung ke admin atau lewat QRIS.",
+    # Profil usaha di halaman publik (beranda, syarat & ketentuan, privasi, pengembalian dana) — dibutuhkan
+    # untuk verifikasi payment gateway. Diisi owner di Pengaturan.
+    "USAHA_DESKRIPSI": "Layanan internet rumah berlangganan bulanan untuk warga desa, dipasang dan dirawat oleh tim lokal.",
+    "USAHA_PEMILIK": "",
+    "USAHA_ALAMAT": "",
+    "USAHA_AREA": "",
+    "USAHA_WA": "",
+    "USAHA_EMAIL": "",
+    "USAHA_JAM": "Setiap hari 08.00–20.00 WIB",
     "TEMPLATE_PENGINGAT": ("Yth. Bapak/Ibu {nama} (ID pelanggan {id}),\n\nKami informasikan tagihan internet {usaha} yang belum terbayar:\n"
                            "{rincian}\n*Total: {total}*\n\n{cara_bayar}\nBila sudah membayar, mohon abaikan pesan ini.\n\n"
                            "Terima kasih."),
@@ -2295,7 +2304,8 @@ _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 # Alamat yang boleh dibuka tanpa login, dan yang boleh dibuka akun mitra.
 # Selain itu: tanpa login -> 401/ke halaman login, mitra -> 403.
 _JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|api/login|api/setup|api/setup-status|healthz"
-                           r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js)$")
+                           r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js"
+                           r"|syarat-ketentuan|kebijakan-privasi|kebijakan-pengembalian-dana)$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
 # Reseller (warung) voucher hotspot: hanya halaman jual vouchernya sendiri.
 _JALUR_RESELLER = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/reseller/.*)$")
@@ -2537,6 +2547,10 @@ async def wajib_login(request: Request, call_next):
         request.state.user = "portal:" + akun["login"]
     elif not _JALUR_PUBLIK.match(jalur):
         sesi = await asyncio.to_thread(_ambil_sesi, request.state.token)
+        if sesi is None and jalur == "/" and request.method in ("GET", "HEAD"):
+            # Pengunjung (calon pelanggan, pemeriksa payment gateway) melihat beranda publik; staf yang
+            # sudah masuk melihat dashboard seperti biasa.
+            return _respons_publik(await asyncio.to_thread(_halaman_beranda))
         if sesi is None:
             if jalur.startswith("/api/"):
                 return JSONResponse({"detail": "Sesi berakhir, silakan login lagi."}, status_code=401)
@@ -3214,6 +3228,21 @@ _PENGATURAN = {
     "INFO_BAYAR": {"label": "Cara bayar di pesan WA (nomor rekening, QRIS, nama admin)", "tipe": "teksbebas", "maks": 500,
                    "baris": 3, "bantuan": "Contoh: Transfer BRI 1234-01-000123-50-6 a.n. Arif, atau QRIS di kios. "
                                           "Kirim bukti ke nomor ini."},
+    "USAHA_DESKRIPSI": {"label": "Halaman publik: deskripsi singkat usaha", "tipe": "teksbebas", "maks": 400, "baris": 3,
+                        "owner": True, "bantuan": "Tampil di beranda app.internetdesa.biz.id (dibaca pemeriksa payment gateway)."},
+    "USAHA_PEMILIK": {"label": "Halaman publik: nama pemilik / penanggung jawab", "tipe": "teksbebas", "maks": 80,
+                      "owner": True, "boleh_kosong": True,
+                      "bantuan": "Usaha perorangan: isi sesuai KTP yang didaftarkan ke payment gateway."},
+    "USAHA_ALAMAT": {"label": "Halaman publik: alamat usaha", "tipe": "teksbebas", "maks": 200, "baris": 2,
+                     "owner": True, "boleh_kosong": True},
+    "USAHA_AREA": {"label": "Halaman publik: area layanan (desa/kecamatan)", "tipe": "teksbebas", "maks": 200,
+                   "owner": True, "boleh_kosong": True},
+    "USAHA_WA": {"label": "Halaman publik: nomor WhatsApp layanan pelanggan", "tipe": "teks", "owner": True,
+                 "pola": r"^\s*((\+?62|0)8\d{7,12})?\s*$", "contoh": "081234567890"},
+    "USAHA_EMAIL": {"label": "Halaman publik: email layanan pelanggan", "tipe": "teks", "owner": True,
+                    "pola": r"^\s*([A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}\.[A-Za-z]{2,24})?\s*$",
+                    "contoh": "halo@internetdesa.biz.id"},
+    "USAHA_JAM": {"label": "Halaman publik: jam layanan pelanggan", "tipe": "teksbebas", "maks": 80, "owner": True},
     "TEMPLATE_PENGINGAT": {"label": "Teks pengingat tagihan WA", "tipe": "teksbebas", "maks": 1500, "baris": 8,
                            "bantuan": "Penanda yang diisi otomatis: {nama} {usaha} {rincian} (daftar bulan & jumlah) "
                                       "{total} {cara_bayar} {username} {id} (ID pelanggan). Huruf di antara *bintang* jadi tebal di WA."},
@@ -3265,7 +3294,7 @@ def _validasi_pengaturan(kunci: str, nilai, periksa_mikrotik: bool = True):
         return nilai
     if meta["tipe"] == "teksbebas":
         nilai = str(nilai or "").replace("\r\n", "\n").strip()
-        if not nilai:
+        if not nilai and not meta.get("boleh_kosong"):
             raise HTTPException(status_code=400, detail=f"{meta['label']} tidak boleh kosong.")
         if len(nilai) > meta["maks"]:
             raise HTTPException(status_code=400, detail=f"{meta['label']} maksimal {meta['maks']} huruf.")
@@ -9089,6 +9118,218 @@ def _cabut_sesi_portal(login: str, kecuali: Optional[str] = None) -> int:
         return n
     finally:
         conn.close()
+
+
+# ============================================================
+# HALAMAN PUBLIK — beranda, syarat & ketentuan, kebijakan privasi, kebijakan pengembalian dana.
+# Dibaca calon pelanggan dan pemeriksa payment gateway (verifikasi merchant). Isi usaha dari Pengaturan
+# (USAHA_*); angka jatuh tempo & isolir mengikuti pengaturan yang berlaku.
+# ============================================================
+
+_CSS_PUBLIK = """
+@font-face{font-family:Inter;src:url(/static/inter.woff2) format('woff2');font-weight:100 900;font-display:swap}
+:root{--g:#006b37;--g2:#07813f;--ink:#163528;--mut:#5f7268;--line:#dce8df;--bg:#f4f8f5}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;color:var(--ink);background:var(--bg);line-height:1.6}
+a{color:var(--g2)}header{background:linear-gradient(135deg,#004a27,#07813f);color:#fff;padding:28px 16px 34px}
+.w{max-width:860px;margin:0 auto;padding:0 16px}header .w{padding:0}header h1{margin:0;font-size:28px}
+header p{margin:6px 0 0;opacity:.92}nav{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:14px}
+nav a{color:#fff;font-weight:600;text-decoration:none;border-bottom:1px solid rgba(255,255,255,.4)}
+main{padding:20px 0 30px}section{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 18px;margin-bottom:14px}
+h2{font-size:19px;margin:0 0 8px}h3{font-size:16px;margin:16px 0 4px}p,li{font-size:15px}
+table{width:100%;border-collapse:collapse;font-size:15px}th,td{text-align:left;padding:9px 6px;border-bottom:1px solid var(--line)}
+td.r,th.r{text-align:right;white-space:nowrap}.mut{color:var(--mut);font-size:13px}
+.btn{display:inline-block;background:var(--g);color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700;margin:4px 6px 0 0}
+.btn.o{background:#fff;color:var(--g);border:1px solid var(--g)}
+footer{border-top:1px solid var(--line);padding:18px 0 28px;font-size:13px;color:var(--mut)}footer a{margin-right:14px}
+"""
+
+
+def _e(x) -> str:
+    import html as _h
+    return _h.escape(str(x or ""))
+
+
+def _rp_publik(n) -> str:
+    return "Rp" + f"{int(n or 0):,}".replace(",", ".")
+
+
+def _wa_link(no: str) -> str:
+    d = re.sub(r"\D", "", no or "")
+    if d.startswith("0"):
+        d = "62" + d[1:]
+    return f"https://wa.me/{d}" if d else ""
+
+
+def _kontak_html() -> str:
+    c = CONFIG
+    baris = []
+    if c.get("USAHA_PEMILIK"):
+        baris.append(f"<li>Penanggung jawab: <b>{_e(c['USAHA_PEMILIK'])}</b></li>")
+    if c.get("USAHA_ALAMAT"):
+        baris.append(f"<li>Alamat: {_e(c['USAHA_ALAMAT'])}</li>")
+    if c.get("USAHA_WA"):
+        baris.append(f'<li>WhatsApp: <a href="{_e(_wa_link(c["USAHA_WA"]))}" rel="noopener">{_e(c["USAHA_WA"])}</a></li>')
+    if c.get("USAHA_EMAIL"):
+        baris.append(f'<li>Email: <a href="mailto:{_e(c["USAHA_EMAIL"])}">{_e(c["USAHA_EMAIL"])}</a></li>')
+    if c.get("USAHA_JAM"):
+        baris.append(f"<li>Jam layanan: {_e(c['USAHA_JAM'])}</li>")
+    return "<ul>" + "".join(baris) + "</ul>" if baris else "<p class=mut>Kontak belum diisi.</p>"
+
+
+def _halaman_publik(judul: str, isi: str) -> str:
+    usaha = _e(CONFIG.get("NAMA_USAHA") or "Internet Desa")
+    tahun = datetime.now().year
+    return f"""<!doctype html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{_e(judul)} · {usaha}</title>
+<meta name="description" content="{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}"><style>{_CSS_PUBLIK}</style></head><body>
+<header><div class="w"><h1>{usaha}</h1><p>{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}</p>
+<nav><a href="/">Beranda</a><a href="/portal">Portal Pelanggan</a><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a>
+<a href="/kebijakan-privasi">Kebijakan Privasi</a><a href="/kebijakan-pengembalian-dana">Pengembalian Dana</a></nav></div></header>
+<main><div class="w">{isi}</div></main>
+<footer><div class="w"><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a><a href="/kebijakan-privasi">Kebijakan Privasi</a>
+<a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a><a href="/login">Masuk petugas</a>
+<div style="margin-top:8px">© {tahun} {usaha}{(' · ' + _e(CONFIG['USAHA_PEMILIK'])) if CONFIG.get('USAHA_PEMILIK') else ''}</div></div></footer>
+</body></html>"""
+
+
+def _respons_publik(teks: str):
+    return Response(teks, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})
+
+
+def _ketentuan_tagihan() -> dict:
+    tgl = int(CONFIG["JATUH_TEMPO_TANGGAL"])
+    tol = int(CONFIG["ISOLIR_TOLERANSI_HARI"])
+    return {"tempo": tgl, "isolir_tgl": tgl + tol + 1, "isolir_jam": int(CONFIG["ISOLIR_JAM"])}
+
+
+def _halaman_beranda() -> str:
+    conn = _billing_conn()
+    try:
+        paket = conn.execute("SELECT nama, kecepatan_mbps, harga FROM paket WHERE harga > 0 "
+                             "ORDER BY harga, kecepatan_mbps").fetchall()
+    finally:
+        conn.close()
+    k = _ketentuan_tagihan()
+    baris = "".join(f"<tr><td>{_e(p['nama'])}</td><td>{p['kecepatan_mbps']:g} Mbps</td>"
+                    f"<td class=r><b>{_rp_publik(p['harga'])}</b>/bulan</td></tr>" for p in paket)
+    tabel = (f"<table><tr><th>Paket</th><th>Kecepatan</th><th class=r>Harga</th></tr>{baris}</table>"
+             if paket else "<p class=mut>Daftar paket sedang diperbarui. Hubungi kami untuk informasi harga.</p>")
+    wa = _wa_link(CONFIG.get("USAHA_WA") or "")
+    area = CONFIG.get("USAHA_AREA")
+    isi = f"""
+<section><h2>Layanan kami</h2><p>{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}</p>
+{f'<p>Area layanan: <b>{_e(area)}</b></p>' if area else ''}
+<p>{f'<a class=btn href="{_e(wa)}" rel="noopener">Tanya / daftar lewat WhatsApp</a>' if wa else ''}<a class="btn o" href="/portal">Portal Pelanggan</a></p></section>
+<section><h2>Paket &amp; harga</h2>{tabel}
+<p class=mut>Harga dalam Rupiah per bulan. Kecepatan adalah kecepatan maksimum (hingga), dibagi wajar di jaringan bersama.
+Bulan pertama dapat dihitung sebagian (prorata) sesuai tanggal pemasangan, sesuai kesepakatan saat pendaftaran.</p></section>
+<section><h2>Cara berlangganan</h2><ol>
+<li>Hubungi kami lewat WhatsApp atau datang langsung; sebutkan alamat pemasangan dan paket yang dipilih.</li>
+<li>Petugas mengecek jangkauan jaringan di lokasi Anda.</li>
+<li>Pemasangan dan aktivasi; Anda menerima ID pelanggan untuk masuk ke Portal Pelanggan.</li></ol></section>
+<section><h2>Tagihan &amp; cara pembayaran</h2>
+<p>Tagihan diterbitkan setiap bulan dan jatuh tempo tanggal <b>{k['tempo']}</b>. Rincian tagihan, riwayat pembayaran,
+dan kwitansi dapat dilihat di <a href="/portal">Portal Pelanggan</a>.</p>
+<p>{_e(CONFIG.get('INFO_BAYAR') or '')}</p>
+<p>Bila tagihan belum dibayar, layanan dibatasi mulai tanggal {k['isolir_tgl']} pukul {k['isolir_jam']:02d}.00 dan
+pulih otomatis setelah pembayaran tercatat. Ketentuan lengkap: <a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a>
+dan <a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a>.</p></section>
+<section><h2>Bantuan &amp; gangguan</h2><p>Laporkan gangguan lewat Portal Pelanggan (menu Lapor Gangguan) atau kontak di bawah.</p></section>
+<section><h2>Kontak</h2>{_kontak_html()}</section>"""
+    return _halaman_publik("Beranda", isi)
+
+
+@app.get("/syarat-ketentuan")
+def halaman_syarat():
+    k = _ketentuan_tagihan()
+    u = _e(CONFIG.get("NAMA_USAHA") or "Internet Desa")
+    isi = f"""<section><h2>Syarat &amp; Ketentuan Layanan</h2>
+<p class=mut>Berlaku untuk seluruh pelanggan layanan internet {u}. Dengan berlangganan, pelanggan dianggap telah membaca
+dan menyetujui ketentuan ini.</p>
+<h3>1. Layanan</h3><p>{u} menyediakan layanan internet rumah berlangganan bulanan di area layanan kami. Kecepatan paket
+adalah kecepatan maksimum ("hingga") pada jaringan bersama; kecepatan nyata dapat dipengaruhi jumlah pengguna, perangkat
+pelanggan, dan kondisi jaringan penyedia di atas kami.</p>
+<h3>2. Pendaftaran &amp; pemasangan</h3><p>Pelanggan memberikan nama, alamat pemasangan, dan nomor telepon yang benar.
+Pemasangan dilakukan setelah lokasi dinyatakan terjangkau. Status kepemilikan perangkat yang dipasang (dipinjamkan atau
+dibeli) mengikuti kesepakatan saat pemasangan.</p>
+<h3>3. Tagihan &amp; pembayaran</h3><ul>
+<li>Tagihan diterbitkan setiap bulan sesuai harga paket dan jatuh tempo tanggal {k['tempo']}.</li>
+<li>Tagihan bulan pertama dapat dihitung sebagian (prorata) atau penuh sesuai kesepakatan saat pendaftaran.</li>
+<li>Pembayaran dilakukan melalui metode yang kami sediakan (lihat Beranda dan Portal Pelanggan). Pembayaran dianggap
+lunas setelah tercatat di sistem kami; bukti pembayaran (kwitansi) tersedia di Portal Pelanggan.</li>
+<li>Bila tagihan belum dibayar, layanan dibatasi (isolir) mulai tanggal {k['isolir_tgl']} pukul {k['isolir_jam']:02d}.00
+dan pulih otomatis setelah pembayaran tercatat.</li>
+<li>Perubahan harga paket diberitahukan kepada pelanggan sebelum berlaku.</li></ul>
+<h3>4. Penggunaan yang dilarang</h3><p>Layanan tidak boleh dipakai untuk kegiatan yang melanggar hukum Indonesia,
+termasuk perjudian, penipuan, penyebaran konten terlarang, serangan atau gangguan terhadap jaringan dan pengguna lain,
+serta menjual kembali layanan tanpa izin tertulis dari kami. Akses ke situs yang diblokir pemerintah mengikuti
+ketentuan yang berlaku. Pelanggaran dapat mengakibatkan layanan dihentikan.</p>
+<h3>5. Gangguan &amp; perawatan</h3><p>Gangguan dapat dilaporkan lewat Portal Pelanggan atau kontak kami dan ditangani
+secepatnya pada jam layanan. Perawatan jaringan terjadwal diupayakan pada jam sepi dan diberitahukan bila memungkinkan.
+Kompensasi atas gangguan diatur dalam <a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a>.</p>
+<h3>6. Berhenti berlangganan</h3><p>Pelanggan dapat berhenti kapan saja dengan memberi tahu kami sebelum tanggal jatuh
+tempo bulan berikutnya. Tagihan yang telah berjalan tetap wajib dilunasi. Perangkat milik kami dikembalikan atau
+diambil petugas.</p>
+<h3>7. Data pribadi</h3><p>Pengelolaan data pelanggan diatur dalam <a href="/kebijakan-privasi">Kebijakan Privasi</a>.</p>
+<h3>8. Lain-lain</h3><p>Ketentuan ini tunduk pada hukum Republik Indonesia dan dapat diperbarui; versi terbaru selalu
+tersedia di halaman ini. Pertanyaan dapat disampaikan melalui kontak di bawah.</p></section>
+<section><h2>Kontak</h2>{_kontak_html()}</section>"""
+    return _respons_publik(_halaman_publik("Syarat & Ketentuan", isi))
+
+
+@app.get("/kebijakan-privasi")
+def halaman_privasi():
+    u = _e(CONFIG.get("NAMA_USAHA") or "Internet Desa")
+    isi = f"""<section><h2>Kebijakan Privasi</h2>
+<p class=mut>Kebijakan ini menjelaskan data pribadi yang dikelola {u} dan cara kami melindunginya, dengan memperhatikan
+Undang-Undang Nomor 27 Tahun 2022 tentang Pelindungan Data Pribadi.</p>
+<h3>1. Data yang kami kumpulkan</h3><ul>
+<li>Identitas dan kontak: nama, alamat pemasangan, nomor telepon/WhatsApp.</li>
+<li>Data layanan: paket, ID pelanggan, akun koneksi, tagihan, riwayat pembayaran, dan laporan gangguan.</li>
+<li>Data teknis jaringan: status perangkat di rumah pelanggan (model, nama jaringan WiFi, status koneksi), alamat IP,
+waktu tersambung/terputus, dan jumlah pemakaian bandwidth, untuk menjaga mutu layanan.</li>
+<li>Data pembayaran online diproses oleh penyedia layanan pembayaran (payment gateway); kami tidak menyimpan nomor kartu,
+PIN, atau kata sandi rekening/dompet digital Anda.</li></ul>
+<p>Sistem kami tidak mencatat isi komunikasi maupun daftar situs yang Anda kunjungi.</p>
+<h3>2. Penggunaan data</h3><p>Data dipakai untuk memasang dan menjalankan layanan, menagih dan mencatat pembayaran,
+menangani gangguan, menjaga keamanan jaringan, serta memenuhi kewajiban hukum.</p>
+<h3>3. Pembagian data</h3><p>Kami tidak menjual data pribadi. Data hanya dibagikan seperlunya kepada: penyedia layanan
+pembayaran untuk memproses pembayaran Anda, penyedia server/infrastruktur yang menyimpan sistem kami, dan pihak berwenang
+bila diwajibkan peraturan perundang-undangan.</p>
+<h3>4. Penyimpanan &amp; keamanan</h3><p>Data disimpan di server yang hanya dapat diakses petugas berwenang dengan akun
+masing-masing, dan dicadangkan secara berkala. Data tagihan dan pembayaran disimpan selama diperlukan untuk penagihan
+dan pembukuan usaha.</p>
+<h3>5. Hak Anda</h3><p>Anda dapat meminta salinan, perbaikan, atau penghapusan data pribadi Anda (dengan memperhatikan
+kewajiban pembukuan) melalui kontak di bawah. Nama dan nomor telepon juga dapat diperbarui sendiri lewat Portal Pelanggan.</p>
+<h3>6. Perubahan kebijakan</h3><p>Kebijakan ini dapat diperbarui; versi terbaru selalu tersedia di halaman ini.</p></section>
+<section><h2>Kontak</h2>{_kontak_html()}</section>"""
+    return _respons_publik(_halaman_publik("Kebijakan Privasi", isi))
+
+
+@app.get("/kebijakan-pengembalian-dana")
+def halaman_pengembalian():
+    u = _e(CONFIG.get("NAMA_USAHA") or "Internet Desa")
+    isi = f"""<section><h2>Kebijakan Pengembalian Dana</h2>
+<p class=mut>Berlaku untuk pembayaran tagihan layanan internet {u}, baik tunai, transfer, maupun pembayaran online.</p>
+<h3>1. Prinsip umum</h3><p>Tagihan adalah biaya berlangganan untuk periode yang sudah atau sedang berjalan, sehingga
+pembayaran yang sah untuk periode tersebut pada dasarnya tidak dapat dikembalikan, kecuali dalam keadaan di bawah ini.</p>
+<h3>2. Dana dikembalikan bila</h3><ul>
+<li><b>Pembayaran ganda atau kelebihan bayar</b> untuk tagihan yang sama.</li>
+<li><b>Pembayaran untuk tagihan yang keliru</b>, misalnya salah ID pelanggan atau tagihan yang seharusnya tidak terbit.</li>
+<li><b>Layanan tidak dapat dipasang/diaktifkan</b> setelah pembayaran diterima.</li></ul>
+<h3>3. Kompensasi gangguan</h3><p>Bila layanan terputus karena gangguan di pihak kami lebih dari 3 (tiga) hari
+berturut-turut dalam satu periode tagihan, pelanggan dapat mengajukan potongan tagihan sebanding dengan lama gangguan,
+yang diperhitungkan pada tagihan berikutnya. Gangguan akibat perangkat, listrik, atau instalasi di sisi pelanggan,
+maupun pembatasan layanan karena tagihan belum dibayar, tidak termasuk.</p>
+<h3>4. Cara mengajukan</h3><ol>
+<li>Hubungi kami melalui kontak di bawah paling lambat 30 hari setelah pembayaran, sertakan ID pelanggan dan bukti
+pembayaran.</li>
+<li>Kami memeriksa pengajuan dan memberi jawaban paling lambat 3 hari kerja.</li>
+<li>Bila disetujui, dana dikembalikan paling lambat 14 hari kerja ke rekening/dompet digital atas nama pelanggan, atau
+diperhitungkan sebagai saldo tagihan berikutnya sesuai pilihan pelanggan.</li></ol>
+<p>Biaya transfer pengembalian dana ditanggung oleh kami.</p></section>
+<section><h2>Kontak</h2>{_kontak_html()}</section>"""
+    return _respons_publik(_halaman_publik("Kebijakan Pengembalian Dana", isi))
 
 
 @app.get("/portal")
