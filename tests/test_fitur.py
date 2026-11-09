@@ -92,6 +92,10 @@ class FakeRes:
         if hs is not None and self.path in hs:
             hs[self.path] = [r for r in hs[self.path] if r["id"] != id]
             return
+        if self.path == "/ppp/secret":
+            for k in [k for k, v in self.mt.secret.items() if v["id"] == id]:
+                del self.mt.secret[k]
+            return
         for k in list(self.mt.active):
             self.mt.active[k] = [x for x in self.mt.active[k] if x["id"] != id]
 
@@ -4008,6 +4012,39 @@ def test_qris_dan_konfirmasi_bukti_bayar(siap):
     # QRIS dimatikan: portal tidak menawarkan QRIS
     assert o.delete("/api/qris").status_code == 200
     assert p.get("/api/portal/bayar").json()["tersedia"] is False
+
+
+def test_hapus_pelanggan(siap):
+    """Hapus pelanggan salah input: tidak bisa bila sudah pernah membayar / diisolir / ada konfirmasi menunggu; tagihan
+    belum bayar & akun portal ikut terhapus; secret MikroTik dihapus hanya bila diminta."""
+    main, o, k, m = siap
+    mt = main._mt
+    o.post("/api/tagihan/buat?periode=2026-10")
+    tid = lambda u: next(x["id"] for x in o.get("/api/tagihan?periode=2026-10").json()["tagihan"] if x["username"] == u)
+    assert m.delete("/api/data-pelanggan/dwi").status_code == 403                 # mitra tidak bisa
+    assert k.delete("/api/data-pelanggan/tidakada").status_code == 404
+    o.post(f"/api/tagihan/{tid('budi')}/lunas")
+    r = k.delete("/api/data-pelanggan/budi")
+    assert r.status_code == 409 and "Berhenti" in r.json()["detail"]             # punya riwayat bayar
+    assert o.post("/api/isolir/ani").status_code == 200
+    assert k.delete("/api/data-pelanggan/ani").status_code == 409                 # sedang diisolir
+    o.post("/api/isolir/ani/buka")
+    # dwi: belum pernah bayar -> bisa dihapus, secret MikroTik tetap bila tidak diminta
+    r = k.delete("/api/data-pelanggan/dwi").json()
+    assert r["ok"] and r["tagihan_dihapus"] == 1 and r["secret_tetap"] and "dwi" in mt.secret
+    assert "dwi" not in [p["username"] for p in o.get("/api/data-pelanggan").json()["pelanggan"]]
+    assert "dwi" not in [x["username"] for x in o.get("/api/tagihan?periode=2026-10").json()["tagihan"]]
+    assert "dihapus" in o.get("/api/aktivitas").text
+    # ani: hapus beserta secret MikroTik
+    r = k.delete("/api/data-pelanggan/ani?hapus_secret=true").json()
+    assert r["secret"] == "secret PPPoE dihapus dari MikroTik" and "ani" not in mt.secret and not r["secret_tetap"]
+    # MikroTik mati saat diminta hapus secret: pelanggan tidak dihapus
+    o.post("/api/data-pelanggan", json={"username": "eko", "nama": "Eko", "paket_id": 1, "tgl_pasang": "2026-10-01"})
+    mt.secret["eko"] = {"id": "*E1", "profile": "paket-10mbps", "disabled": "no"}
+    mt.mati = True
+    assert k.delete("/api/data-pelanggan/eko?hapus_secret=true").status_code == 502
+    assert "eko" in [p["username"] for p in o.get("/api/data-pelanggan").json()["pelanggan"]]
+    mt.mati = False
 
 
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):

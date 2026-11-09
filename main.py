@@ -4347,6 +4347,88 @@ def gudang_batal_mutasi(mid: int, d: GudangBatalIn, request: Request):
     return {"ok": True}
 
 
+def _hapus_secret_mikrotik(username: str) -> tuple[bool, str]:
+    """Hapus PPP secret pelanggan di MikroTik lokasinya (sesi aktif diputus dulu)."""
+    pool = _pool(_lokasi_pengguna([username])[username])
+    try:
+        api = pool.get_api()
+        aktif = api.get_resource("/ppp/active")
+        for sesi in aktif.get(name=username):
+            aktif.remove(id=sesi["id"])
+        secret = api.get_resource("/ppp/secret")
+        rows = secret.get(name=username)
+        if not rows:
+            return True, "secret tidak ada di MikroTik"
+        secret.remove(id=rows[0]["id"])
+        return True, "secret PPPoE dihapus dari MikroTik"
+    finally:
+        pool.disconnect()
+
+
+@app.delete("/api/data-pelanggan/{username}")
+def hapus_pelanggan(username: str, request: Request, hapus_secret: bool = False):
+    """Hapus pelanggan yang salah input / tidak jadi berlangganan. Pelanggan yang punya riwayat pembayaran tidak bisa
+    dihapus (laporan keuangan & kwitansi harus tetap utuh) — ubah statusnya menjadi Berhenti. Tagihan belum dibayar,
+    pengingat, dan akun portalnya ikut dihapus; tiket & log aktivitas tetap sebagai riwayat.
+    hapus_secret: hapus juga PPP secret di MikroTik lokasinya (bila tidak, Impor dari MikroTik akan memunculkannya lagi)."""
+    _wajib_admin(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_qris(conn)
+        _siapkan_gudang(conn)
+        p = conn.execute(f"SELECT p.username, p.nama, {_SQL_ID} AS id_pelanggan FROM pelanggan p WHERE p.username = ?",
+                         (username,)).fetchone()
+        if not p:
+            raise HTTPException(status_code=404, detail="Pelanggan tidak ditemukan.")
+        n_lunas = conn.execute("SELECT COUNT(*) FROM tagihan WHERE username = ? AND status = 'lunas'", (username,)).fetchone()[0]
+        if n_lunas:
+            raise HTTPException(status_code=409, detail=f"{p['nama']} punya riwayat pembayaran ({n_lunas} tagihan lunas), jadi "
+                                "tidak bisa dihapus supaya laporan keuangan tetap utuh. Ubah statusnya menjadi Berhenti.")
+        if conn.execute("SELECT 1 FROM konfirmasi_bayar WHERE username = ? AND status = 'menunggu'", (username,)).fetchone():
+            raise HTTPException(status_code=409, detail="Ada konfirmasi bayar dari pelanggan ini yang belum diperiksa. "
+                                "Terima atau tolak dulu di Penagihan.")
+        if conn.execute("SELECT 1 FROM isolir WHERE username = ?", (username,)).fetchone():
+            raise HTTPException(status_code=409, detail="Pelanggan sedang diisolir. Buka isolirnya dulu supaya profil "
+                                "PPPoE di MikroTik kembali normal.")
+        if conn.execute("SELECT 1 FROM gudang_mutasi WHERE username = ? AND status = 'aktif'", (username,)).fetchone():
+            raise HTTPException(status_code=409, detail="Ada barang gudang yang tercatat terpasang di pelanggan ini. "
+                                "Batalkan/kembalikan barangnya dulu di Gudang, atau ubah status menjadi Berhenti.")
+        dipantau = _dipantau(conn, username)
+    finally:
+        conn.close()
+    secret = None
+    if hapus_secret and dipantau:
+        try:
+            ok, pesan = _hapus_secret_mikrotik(username)
+        except Exception as e:
+            ok, pesan = False, f"MikroTik tidak terbaca: {e}"
+        if not ok:
+            raise HTTPException(status_code=502, detail=f"Gagal menghapus secret di MikroTik ({pesan[:120]}). Pelanggan belum "
+                                "dihapus; coba lagi atau hapus tanpa menghapus secret.")
+        secret = pesan
+    conn = _billing_conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        n_tagihan = conn.execute("DELETE FROM tagihan WHERE username = ? AND status != 'lunas'", (username,)).rowcount
+        conn.execute("DELETE FROM pengingat WHERE username = ?", (username,))
+        logins = [r[0] for r in conn.execute("SELECT login FROM portal_akun WHERE pelanggan = ?", (username,))]
+        for login in logins:
+            conn.execute("DELETE FROM portal_sesi WHERE login = ?", (login,))
+        conn.execute("DELETE FROM portal_akun WHERE pelanggan = ?", (username,))
+        conn.execute("DELETE FROM konfirmasi_bayar WHERE username = ?", (username,))
+        if conn.execute("DELETE FROM pelanggan WHERE username = ? AND NOT EXISTS (SELECT 1 FROM tagihan WHERE "
+                        "username = ? AND status = 'lunas')", (username, username)).rowcount == 0:
+            raise HTTPException(status_code=409, detail="Pelanggan baru saja membayar; tidak dihapus.")
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "pelanggan_hapus",
+                    f"{p['id_pelanggan']} {username} ({p['nama']}) dihapus · {n_tagihan} tagihan belum bayar ikut dihapus"
+                    + (f" · {len(logins)} akun portal" if logins else "") + (f" · {secret}" if secret else ""))
+    return {"ok": True, "tagihan_dihapus": n_tagihan, "akun_portal_dihapus": len(logins), "secret": secret,
+            "secret_tetap": bool(dipantau and not hapus_secret)}
+
+
 @app.put("/api/data-pelanggan/{username}")
 def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
     nama = d.nama.strip()
