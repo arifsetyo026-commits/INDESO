@@ -278,7 +278,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <label class="plCek"><input type="checkbox" id="plGratis"> Pelanggan gratis (tidak ditagih)</label>
 <label class="plCek"><input type="checkbox" id="plMitra"> Tampilkan ke mitra (ikut dihitung komisi bila lunas)</label>
 <label class="plCek" id="plInsGratisWrap"><input type="checkbox" id="plInsGratis"> Gratis, tetap dihitung komisi mitra tiap bulan</label>
-<div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button><button class="plCancel" onclick="const u=$('plUser').value;closeModal('pelangganModal');openDiagnosa(u)">Diagnosa</button></div>
+<div class="plBtns"><button class="plSave" onclick="savePelanggan()">Simpan</button><button class="plCancel" onclick="backPelanggan()">Batal</button><button class="plCancel" onclick="tiketDariPelanggan()">Buat tiket gangguan</button><button class="plCancel" onclick="const u=$('plUser').value;closeModal('pelangganModal');openDiagnosa(u)">Diagnosa</button><button class="plCancel" style="color:#b42318;border-color:#f3c3bd" onclick="hapusPelanggan()">Hapus pelanggan</button></div>
 <div class="plMsg" id="plMsg"></div></div></div>
 <div id="plLokasiView" style="display:none">
 <div class="blNav"><button class="btnS" onclick="backPelanggan()">‹ Kembali</button></div>
@@ -1412,6 +1412,16 @@ async function savePelanggan(){
   const sc=d.secret, teksSecret=sc?(sc.ok?' · secret PPPoE '+sc.pesan:(sc.tertunda?' · ⚠️ MikroTik gagal ('+sc.pesan+'), dicoba ulang otomatis':' · secret: '+sc.pesan)):'';
   $('plListMsg').style.color=sc&&!sc.ok?'#b45309':'#0b7a3b'; $('plListMsg').textContent='Data '+body.nama+' disimpan'+(d.tagihan_dihapus?(' · '+d.tagihan_dihapus+' tagihan belum bayar dihapus'):'')+teksSecret+'.';
  }catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Gagal menyimpan: '+e.message; }
+}
+async function hapusPelanggan(){
+ const p=pl.data.find(x=>x.username===pl.cur); if(!p) return;
+ if(!confirm('HAPUS pelanggan '+(p.nama||p.username)+' ('+(p.id_pelanggan||p.username)+')?\n\nUntuk data yang salah input / tidak jadi berlangganan. Tagihan yang belum dibayar dan akun portalnya ikut dihapus, tidak bisa dibatalkan.\nPelanggan yang sudah pernah membayar tidak bisa dihapus (pakai status Berhenti).')) return;
+ const l=(pl.lokasi||[]).find(x=>x.kode===p.lokasi), dipantau=!l||l.jaringan;
+ const secret=dipantau&&confirm('Hapus juga akun PPPoE '+p.username+' di MikroTik?\n\nOK = hapus (internetnya langsung putus).\nBatal = biarkan di MikroTik (catatan: "Impor dari MikroTik" akan memunculkan pelanggan ini lagi).');
+ try{ const d=await jsonAtauError(await fetch('/api/data-pelanggan/'+encodeURIComponent(p.username)+'?hapus_secret='+(secret?'true':'false'),{method:'DELETE'}));
+  await loadPelanggan(); backPelanggan();
+  $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=(p.nama||p.username)+' dihapus'+(d.tagihan_dihapus?' · '+d.tagihan_dihapus+' tagihan belum bayar ikut dihapus':'')+(d.secret?' · '+d.secret:'')+(d.secret_tetap?' · akun PPPoE di MikroTik tidak diubah':'')+'.'; }
+ catch(e){ $('plMsg').style.color='#b42318'; $('plMsg').textContent='Tidak dihapus: '+e.message; }
 }
 async function imporPelanggan(){
  if(!confirm('Impor pelanggan dari PPP secret MikroTik?\nPelanggan baru ditambahkan; data yang sudah ada tidak ditimpa.')) return;
