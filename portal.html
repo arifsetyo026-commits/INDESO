@@ -62,6 +62,32 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .wf{border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-top:8px}
 .wf .atas{display:flex;justify-content:space-between;gap:8px;align-items:center}
 .ok{color:#0b7a3b}.bad{color:var(--red)}
+/* --- tampilan baru --- */
+.wrap a{color:#067d40;font-weight:700}
+.hero{display:flex;justify-content:space-between;align-items:center;gap:12px;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:16px;margin-top:-4px}
+.halo small{display:block;color:var(--muted);font-size:var(--fs-xs)}.halo b{display:block;font-size:var(--fs-2xl);letter-spacing:-.02em;line-height:1.2}
+.halo span{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:2px}
+.stat{display:flex;align-items:center;gap:8px;background:#f3faf5;border:1px solid #d5ecdc;border-radius:14px;padding:9px 12px;flex:none;max-width:52%}
+.stat b{display:block;font-size:var(--fs-md)}.stat small{display:block;color:var(--muted);font-size:var(--fs-2xs);line-height:1.35}
+.dot{width:12px;height:12px;border-radius:50%;background:#9db1a5;flex:none;box-shadow:0 0 0 4px rgba(157,177,165,.2)}
+.dot.on{background:#16a34a;box-shadow:0 0 0 4px rgba(22,163,74,.18)}.dot.off{background:#dc2626;box-shadow:0 0 0 4px rgba(220,38,38,.15)}.dot.iso{background:#d97706;box-shadow:0 0 0 4px rgba(217,119,6,.18)}
+.tagHero{margin-top:12px;border-radius:18px;padding:18px 16px;background:linear-gradient(135deg,#e9f9ee,#cfeedb);border:1px solid #bfe6cb;box-shadow:var(--shadow)}
+.tagHero.utang{background:linear-gradient(135deg,#fff8e6,#ffe9bf);border-color:#f1d58a}
+.tagHero small{display:block;font-size:var(--fs-xs);font-weight:700;color:#4b6355}
+.tagHero strong{display:block;font-size:var(--fs-3xl);letter-spacing:-.02em;margin-top:2px;color:#06703a}.tagHero.utang strong{color:#a15c00}
+.tagHero span{display:block;font-size:var(--fs-xs);color:#5f7268;margin-top:2px}
+.tagHero .btn.go{font-size:var(--fs-sm);padding:11px 16px;border-radius:12px}
+.aksiGrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:12px}
+.aksi{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:12px 4px 10px;text-align:center;font-size:var(--fs-2xs);font-weight:800;color:#24463a;cursor:pointer}
+.aksi i{display:grid;place-items:center;width:38px;height:38px;margin:0 auto 6px;border-radius:12px;background:#eaf7ef;color:#067d40}
+.aksi i svg{width:20px;height:20px}.aksi:active{transform:scale(.97)}
+.panel.sec{border-radius:16px;padding:14px}.sec h3{display:flex;align-items:center;gap:8px}
+.sec h3 .n{font-size:var(--fs-2xs);font-weight:800;background:#eaf7ef;color:#067d40;border-radius:999px;padding:2px 9px}
+.wf{border-radius:14px;padding:12px;background:#fbfdfc}
+.wf .ik{width:36px;height:36px;border-radius:11px;background:#eaf7ef;color:#067d40;display:grid;place-items:center;flex:none}.wf .ik svg{width:19px;height:19px}
+.wf .kiri{display:flex;gap:10px;align-items:center;min-width:0}
+.bln{display:flex;gap:10px;align-items:center}.bln .tg{width:40px;height:40px;border-radius:12px;background:#f1f6f2;display:grid;place-items:center;font-size:var(--fs-2xs);font-weight:800;color:#4b6355;text-align:center;line-height:1.1;flex:none}
+@media(max-width:420px){.hero{flex-direction:column;align-items:stretch}.stat{max-width:none}}
 </style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
  <div class="topRow"><div class="mark">ID</div><div class="judul"><b id="usaha">Internet Desa</b><small><span class="peran">Pelanggan</span><span id="akun">Masuk untuk melihat tagihan &amp; WiFi</span></small></div>
@@ -90,16 +116,22 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  </div></div>
 
  <div id="vUtama" style="display:none">
-  <div class="cards">
-   <div class="card main"><small>Status internet</small><strong id="cNet">—</strong><span id="cPaket"></span></div>
-   <div class="card"><small>Belum dibayar</small><strong id="cTagih">—</strong><span id="cTagihSub"></span></div>
-   <div class="card"><small>Perangkat di WiFi</small><strong id="cPerangkat">—</strong><span id="cPerangkatSub">tersambung</span></div>
+  <div class="hero">
+   <div class="halo"><small>Selamat datang,</small><b id="hNama">—</b><span id="hId"></span></div>
+   <div class="stat"><span class="dot" id="hDot"></span><div><b id="cNet">—</b><small id="cPaket"></small></div></div>
+  </div>
+  <div class="tagHero" id="tagHero"><small id="tagJudul">Tagihan belum dibayar</small><strong id="cTagih">—</strong><span id="cTagihSub"></span><div id="bayar"></div></div>
+  <div class="aksiGrid">
+   <div class="aksi" onclick="keBagian('tagHero');if(byr.belum&&!byr.buka)bukaBayar()"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg></i>Bayar</div>
+   <div class="aksi" onclick="keBagian('secRiwayat')"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></i>Riwayat</div>
+   <div class="aksi" onclick="keBagian('secWifi')"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0"/><circle cx="12" cy="19.5" r="1"/></svg></i>WiFi</div>
+   <div class="aksi" onclick="keBagian('secLapor')"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg></i>Lapor</div>
   </div>
   <div class="msg" id="msg"></div>
-  <div class="panel sec"><h3>Tagihan</h3><div id="tagihan"><div class="muted">Memuat…</div></div><div id="bayar"></div><div class="note" id="infoBayar"></div></div>
-  <div class="panel sec form"><h3>WiFi</h3><div id="wifi"><div class="muted">Memuat…</div></div><div class="msg" id="wMsg"></div>
+  <div class="panel sec" id="secRiwayat"><h3>Riwayat tagihan</h3><div id="tagihan"><div class="muted">Memuat…</div></div><div class="note" id="infoBayar"></div></div>
+  <div class="panel sec form" id="secWifi"><h3>WiFi <span class="n" id="cPerangkat">—</span><span class="sub" id="cPerangkatSub" style="margin:0;font-weight:500"></span></h3><div id="wifi"><div class="muted">Memuat…</div></div><div class="msg" id="wMsg"></div>
    <div class="note">Sandi WiFi tidak bisa ditampilkan karena modem tidak mengirimkannya. Bila lupa, buat sandi baru di sini; semua HP perlu disambungkan ulang dengan sandi baru.</div></div>
-  <div class="panel sec form"><h3>Lapor gangguan</h3><div id="tiket"></div>
+  <div class="panel sec form" id="secLapor"><h3>Lapor gangguan</h3><div id="tiket"></div>
    <label>Jenis masalah</label><select id="tKat"></select>
    <label>Keterangan (opsional)</label><textarea id="tKet" maxlength="1000" placeholder="mis. sejak pagi lampu LOS merah"></textarea>
    <div class="btns"><button class="btn go" onclick="lapor()">Kirim laporan</button></div><div class="msg" id="tMsg"></div></div>
@@ -123,6 +155,7 @@ const namaP=p=>{const [y,m]=p.split('-').map(Number);return BLN[m-1]+' '+y};
 const tgl=s=>{if(!s)return '';const [y,m,d]=s.slice(0,10).split('-');return (+d)+' '+BLN[+m-1].slice(0,3)+' '+y};
 function pesan(id,teks,ok){ const m=$(id); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=teks||''; }
 let wajibGanti=false;
+function keBagian(id){ const el=$(id); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); }
 function mintaGanti(){ wajibGanti=true; tampil('pw'); $('pWajib').style.display=''; $('pKembali').style.display='none'; $('pLamaLbl').textContent='Sandi awal (6 angka)'; }
 async function api(url,body){
  const r=await fetch(url,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -160,7 +193,7 @@ async function bukaBayar(){ byr.buka=true; byr.data=null; renderBayar();
  try{ byr.data=await api('/api/portal/bayar'); }catch(e){ byr.data={tersedia:false,pesan:e.message}; } renderBayar(); }
 function renderBayar(){
  const r=byr.riwayat.slice(0,3).map(k=>`<div class="sub" style="margin-top:4px">Bukti ${esc(tgl(k.dibuat_pada))} · ${rp(k.jumlah)} · ${k.status==='menunggu'?'<b>sedang dicek admin</b>':k.status==='diterima'?'<b class="ok">diterima, tagihan lunas</b>':'<b class="bad">ditolak</b>: '+esc(k.alasan||'')}</div>`).join('');
- if(!byr.buka){ $('bayar').innerHTML=(byr.belum?'<div class="btns"><button class="btn go" onclick="bukaBayar()">Bayar dengan QRIS</button></div>':'')+r; return; }
+ if(!byr.buka){ $('bayar').innerHTML=(byr.belum?'<div class="btns"><button class="btn go" onclick="bukaBayar()">Bayar sekarang dengan QRIS</button></div>':'')+r; return; }
  const d=byr.data;
  if(!d){ $('bayar').innerHTML='<div class="muted">Menyiapkan QRIS…</div>'; return; }
  if(!d.tersedia||!d.jumlah){ $('bayar').innerHTML='<div class="note">'+esc(d.pesan||'')+'</div>'+r; return; }
@@ -198,12 +231,17 @@ async function muat(){
  const dicek=new Set(byr.riwayat.filter(k=>k.status==='menunggu').flatMap(k=>k.periode.split(',')));
  tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;
  const n=d.internet;
- $('cNet').innerHTML=n.isolir?'<b class="bad">Diisolir</b>':!n.diketahui?'—':n.online?'<b class="ok">Online</b>':'<b class="bad">Offline</b>';
- $('cPaket').textContent=(d.paket||'')+(d.kecepatan_mbps?' · '+d.kecepatan_mbps+' Mbps':'')+(n.online&&n.uptime?' · tersambung '+n.uptime:'')+(n.isolir?' · lunasi tagihan untuk membuka':'');
- const belum=d.tagihan.filter(t=>!t.lunas);
- $('cTagih').textContent=d.belum_bayar?rp(d.belum_bayar):'Lunas'; $('cTagih').style.color=d.belum_bayar?'#b45309':'';
- $('cTagihSub').textContent=belum.length?belum.length+' bulan':'tidak ada tunggakan';
- $('tagihan').innerHTML=d.tagihan.length?d.tagihan.map(t=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':'')+` · <a href="/api/portal/kwitansi/${esc(t.periode)}" target="_blank" rel="noopener">Kwitansi</a>`:'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div>
+ $('hNama').textContent=d.nama||d.username; $('hId').textContent='ID '+(d.id_pelanggan||d.username)+(d.paket?' · '+d.paket+(d.kecepatan_mbps?' '+d.kecepatan_mbps+' Mbps':''):'');
+ $('cNet').textContent=n.isolir?'Diisolir':!n.diketahui?'Status belum terbaca':n.online?'Internet online':'Internet offline';
+ $('hDot').className='dot '+(n.isolir?'iso':!n.diketahui?'':n.online?'on':'off');
+ $('cPaket').textContent=n.isolir?'Lunasi tagihan untuk membuka kembali':(n.online&&n.uptime?'Tersambung '+n.uptime:(n.diketahui&&!n.online?'Cek listrik modem & kabel':''));
+ const belum=d.tagihan.filter(t=>!t.lunas), tunggu=belum.filter(t=>!dicek.has(t.periode));
+ $('tagHero').classList.toggle('utang',!!tunggu.length);
+ $('tagJudul').textContent=tunggu.length?'Tagihan belum dibayar':belum.length?'Pembayaran sedang dicek':'Status tagihan';
+ $('cTagih').textContent=tunggu.length?rp(tunggu.reduce((a,t)=>a+t.jumlah,0)):belum.length?rp(d.belum_bayar):'Lunas ✓';
+ const tertua=tunggu.slice().sort((a,b)=>a.periode<b.periode?-1:1)[0];
+ $('cTagihSub').textContent=tunggu.length?(tunggu.map(t=>namaP(t.periode)).join(', ')+(tertua?' · jatuh tempo '+tgl(tertua.jatuh_tempo):'')):belum.length?'Bukti bayar Anda sedang dicek admin.':'Terima kasih, semua tagihan sudah dibayar.';
+ $('tagihan').innerHTML=d.tagihan.length?d.tagihan.map(t=>`<div class="row"><div class="info bln" style="cursor:default"><div class="tg">${esc(BLN[+t.periode.slice(5)-1].slice(0,3))}<br>${esc(t.periode.slice(2,4))}</div><div style="min-width:0"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':'')+` · <a href="/api/portal/kwitansi/${esc(t.periode)}" target="_blank" rel="noopener">Kwitansi</a>`:'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div></div>
   <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':dicek.has(t.periode)?'<span class="chip off">Bukti sedang dicek</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`).join(''):'<div class="muted">Belum ada tagihan.</div>';
  $('infoBayar').textContent=d.info_bayar?'Cara bayar lain: '+d.info_bayar:'';
  byr.belum=belum.filter(t=>!dicek.has(t.periode)).length; renderBayar();
@@ -212,15 +250,18 @@ async function muat(){
 async function muatWifi(){
  const el=$('wifi');
  try{ const w=await api('/api/portal/wifi');
-  if(!w.tersedia){ el.innerHTML=`<div class="muted">${esc(w.pesan)}</div>`; $('cPerangkat').textContent='—'; return; }
-  $('cPerangkat').textContent=w.perangkat; $('cPerangkatSub').textContent='tersambung'+(w.menit_lalu!=null?' · data '+w.menit_lalu+' menit lalu':'');
-  el.innerHTML=(w.diam?'<div class="msg bad">Modem sedang tidak terhubung ke sistem; data di bawah adalah data terakhir.</div>':'')+w.wifi.map(x=>`<div class="wf">
-   <div class="atas"><div><div class="name">${esc(x.nama)}</div><div class="sub">${esc(x.band||'')} · ${x.aktif?x.perangkat+' perangkat':'mati'}</div></div>
+  if(!w.tersedia){ el.innerHTML=`<div class="muted">${esc(w.pesan)}</div>`; $('cPerangkat').style.display='none'; return; }
+  $('cPerangkat').style.display='';
+  $('cPerangkat').textContent=w.perangkat+' perangkat'; $('cPerangkatSub').textContent=w.menit_lalu!=null?'data '+w.menit_lalu+' menit lalu':'';
+  const aktif=w.wifi.filter(x=>x.aktif);   // SSID yang dimatikan tidak ditampilkan
+  if(!aktif.length){ el.innerHTML='<div class="muted">Tidak ada WiFi yang menyala di modem Anda.</div>'; return; }
+  el.innerHTML=(w.diam?'<div class="msg bad">Modem sedang tidak terhubung ke sistem; data di bawah adalah data terakhir.</div>':'')+aktif.map(x=>`<div class="wf">
+   <div class="atas"><div class="kiri"><div class="ik"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0"/><circle cx="12" cy="19.5" r="1"/></svg></div><div style="min-width:0"><div class="name">${esc(x.nama)}</div><div class="sub">${esc(x.band||'')}${x.band?' · ':''}${x.perangkat} perangkat tersambung</div></div></div>
    <button class="btn" onclick="formWifi(${x.index})">Ubah</button></div>
    <div id="wf${x.index}" style="display:none"><label>Nama WiFi baru</label><input id="wn${x.index}" maxlength="32" value="${esc(x.nama)}">
    ${x.bisa_ganti_sandi?`<label>Sandi baru (kosongkan bila tidak diganti)</label><input id="ws${x.index}" maxlength="63" autocomplete="new-password" placeholder="8–63 karakter">`:'<div class="note">Sandi WiFi ini tidak bisa diganti dari sini.</div>'}
    <div class="btns"><button class="btn go" onclick="simpanWifi(${x.index},this)">Simpan</button></div></div></div>`).join('');
-  w.wifi.forEach(x=>{ el.querySelector('#wn'+x.index).dataset.lama=x.nama; });
+  aktif.forEach(x=>{ el.querySelector('#wn'+x.index).dataset.lama=x.nama; });
  }catch(e){ el.innerHTML=`<div class="muted">Gagal memuat WiFi: ${esc(e.message)}</div>`; }
 }
 function formWifi(i){ const f=$('wf'+i); f.style.display=f.style.display==='none'?'block':'none'; }
