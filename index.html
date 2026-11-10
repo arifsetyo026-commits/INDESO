@@ -287,7 +287,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="plForm"><label>Tambah lokasi baru</label><div style="display:flex;gap:8px"><input id="lkNama" placeholder="mis. Dusun Krajan" maxlength="60" style="flex:1;min-width:0"><button class="btnS go" onclick="tambahLokasi()">Tambah</button></div></div></div>
 <div id="plPortalView" style="display:none">
 <div class="blNav"><button class="btnS" onclick="backPelanggan()">‹ Kembali</button></div>
-<div class="plSub">Pelanggan mendaftar sendiri di <b id="portalAlamat">/portal</b> dengan nomor HP yang tercatat di data pelanggan (nomor yang tercatat di dua sambungan atau lebih tidak bisa mendaftar sendiri). Periksa dulu, lalu setujui. Pelanggan melihat tagihan, status internet, WiFi (nama &amp; jumlah perangkat; bisa ganti nama/sandi), dan bisa lapor gangguan.</div>
+<div class="plSub">Portal Pelanggan: <b id="portalAlamat">/portal</b>. Cara termudah: <b>buat akun untuk semua pelanggan</b> (login = ID pelanggan, sandi awal acak per pelanggan, wajib diganti saat pertama masuk) lalu kirim lewat tombol <b>Kirim WA</b>. Pelanggan juga bisa mendaftar sendiri dengan nomor HP yang tercatat di data pelanggan (nomor yang tercatat di dua sambungan atau lebih tidak bisa mendaftar sendiri). Periksa dulu, lalu setujui. Pelanggan melihat tagihan, status internet, WiFi (nama &amp; jumlah perangkat; bisa ganti nama/sandi), dan bisa lapor gangguan.</div>
 <div class="plMsg" id="portalMsg"></div><div id="portalList"></div></div>
 <div id="plPaketView" style="display:none">
 <div id="pkList"></div>
@@ -1674,12 +1674,33 @@ async function muatPortal(){
  const el=$('portalList'); el.innerHTML='<div class="muted">Memuat…</div>';
  try{ const d=await jsonAtauError(await fetch('/api/portal-akun',{cache:'no-store'}));
   const n=d.akun.filter(a=>a.status==='menunggu').length; $('portalBadge').textContent=n; $('portalBadge').style.display=n?'':'none';
-  el.innerHTML=d.akun.length?d.akun.map(a=>{ const L=esc(JSON.stringify(a.login));
-   return `<div class="blRow"><div><b>${esc(a.nama||a.pelanggan)}</b> <span class="muted">(${esc(a.pelanggan)})</span><div class="plSub">login <b>${esc(a.login)}</b> · HP ${esc(a.no_hp||'—')} · daftar ${esc((a.dibuat||'').slice(0,16))}${a.login_terakhir?' · terakhir masuk '+esc(a.login_terakhir.slice(0,16)):''}</div></div>
-   <div class="blAksi">${a.status==='menunggu'?`<span class="chip warn">Menunggu</span><button class="btnS go" onclick='statusPortal(${L},"aktif")'>Setujui</button><button class="btnS" onclick='hapusPortal(${L},true)'>Tolak</button>`
-    :`<span class="chip ${a.status==='aktif'?'ok':'off'}">${a.status==='aktif'?'Aktif':'Nonaktif'}</span><button class="btnS" onclick='statusPortal(${L},"${a.status==='aktif'?'nonaktif':'aktif'}")'>${a.status==='aktif'?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick='resetPortal(${L})'>Reset password</button><button class="btnS" onclick='hapusPortal(${L})'>Hapus</button>`}</div></div>`; }).join('')
-   :'<div class="muted">Belum ada pelanggan yang mendaftar.</div>';
+  pa.akun=d.akun;
+  const atas=d.pelanggan_tanpa_akun?`<div class="kuPanel" style="margin-bottom:10px"><b>${d.pelanggan_tanpa_akun} pelanggan aktif belum punya akun portal.</b>
+   <div class="plSub" style="margin:4px 0 8px">Buat sekaligus: login = ID pelanggan, sandi awal 6 angka acak berbeda tiap pelanggan, wajib diganti saat pertama masuk. Lalu kirim ke pelanggan lewat tombol WA.</div>
+   <button class="btnS go" onclick="buatPortalMassal(${d.pelanggan_tanpa_akun})">Buat akun untuk ${d.pelanggan_tanpa_akun} pelanggan</button></div>`:'';
+  el.innerHTML=atas+(d.akun.length?d.akun.map(a=>{ const L=esc(JSON.stringify(a.login));
+   return `<div class="blRow"><div><b>${esc(a.nama||a.pelanggan)}</b> <span class="muted">(${esc(a.pelanggan)})</span><div class="plSub">login <b>${esc(a.login)}</b> · HP ${esc(a.no_hp||a.hp_pelanggan||'—')} · dibuat ${esc((a.dibuat||'').slice(0,16))}${a.login_terakhir?' · terakhir masuk '+esc(a.login_terakhir.slice(0,16)):' · belum pernah masuk'}</div>
+   ${a.wajib_ganti&&a.sandi_awal?`<div class="plSub">Sandi awal: <b>${esc(a.sandi_awal)}</b> <span class="muted">(belum diganti pelanggan)</span></div>`:''}</div>
+   <div class="blAksi">${a.wajib_ganti&&a.sandi_awal?`<button class="btnS go" onclick='kirimAkunWA(${L})'>Kirim WA</button>`:''}${a.status==='menunggu'?`<span class="chip warn">Menunggu</span><button class="btnS go" onclick='statusPortal(${L},"aktif")'>Setujui</button><button class="btnS" onclick='hapusPortal(${L},true)'>Tolak</button>`
+    :`<span class="chip ${a.status==='aktif'?'ok':'off'}">${a.status==='aktif'?'Aktif':'Nonaktif'}</span><button class="btnS" onclick='statusPortal(${L},"${a.status==='aktif'?'nonaktif':'aktif'}")'>${a.status==='aktif'?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick='sandiAwalPortal(${L})'>Buat ulang sandi awal</button><button class="btnS" onclick='hapusPortal(${L})'>Hapus</button>`}</div></div>`; }).join('')
+   :'<div class="muted">Belum ada akun portal.</div>');
  }catch(e){ el.innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
+}
+const pa={akun:[]};
+async function buatPortalMassal(n){
+ if(!confirm('Buat akun portal untuk '+n+' pelanggan aktif?\nLogin = ID pelanggan, sandi awal 6 angka acak (berbeda tiap pelanggan), wajib diganti saat pertama masuk.')) return;
+ aksiPortal('/api/portal-akun/massal',{method:'POST'},'Akun dibuat. Kirim login & sandi awal ke pelanggan dengan tombol "Kirim WA".'); }
+function pesanAkunPortal(a){ return 'Yth. Bapak/Ibu '+(a.nama||a.pelanggan)+',\n\nAkun Portal Pelanggan '+(bl.pesan&&bl.pesan.usaha||'Internet Desa')+' Anda sudah aktif. Di portal Anda bisa cek & bayar tagihan lewat QRIS, cek internet, dan ganti nama/sandi WiFi.\n\nAlamat: '+location.origin+'/portal\nLogin (ID pelanggan): '+a.login+'\nSandi awal: '+a.sandi_awal+'\n\nSaat pertama masuk Anda diminta membuat password sendiri. Jangan berikan sandi ini kepada orang lain.\n\nTerima kasih.'; }
+function kirimAkunWA(login){
+ const a=pa.akun.find(x=>x.login===login); if(!a) return; const n=nomorWA(a.no_hp||a.hp_pelanggan);
+ if(!n){ alert('Nomor HP '+(a.nama||a.pelanggan)+' belum ada. Lengkapi di Data Pelanggan, atau sampaikan langsung:\n\nLogin: '+a.login+'\nSandi awal: '+a.sandi_awal); return; }
+ window.open('https://wa.me/'+n+'?text='+encodeURIComponent(pesanAkunPortal(a)),'_blank');
+}
+async function sandiAwalPortal(login){
+ if(!confirm('Buat sandi awal baru untuk '+login+'? Password lama tidak berlaku lagi dan pelanggan wajib menggantinya saat masuk.')) return;
+ try{ const d=await jsonAtauError(await fetch('/api/portal-akun/'+encodeURIComponent(login)+'/sandi-awal',{method:'POST'}));
+  await muatPortal(); $('portalMsg').style.color='#0b7a3b'; $('portalMsg').textContent='Sandi awal baru '+login+': '+d.sandi_awal+'. Kirim ke pelanggan dengan tombol "Kirim WA".'; }
+ catch(e){ $('portalMsg').style.color='#b42318'; $('portalMsg').textContent='Gagal: '+e.message; }
 }
 async function aksiPortal(url,opsi,pesanOk){
  try{ await jsonAtauError(await fetch(url,opsi)); $('portalMsg').style.color='#0b7a3b'; $('portalMsg').textContent=pesanOk; await muatPortal(); }
