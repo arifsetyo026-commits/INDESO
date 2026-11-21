@@ -1459,7 +1459,7 @@ async def background_monitor_loop():
         except Exception as e:
             logger.error(f"Error saat cek sesi PPPoE ganda: {e}")
         try:
-            await asyncio.to_thread(catat_onu_baru, onu_list)
+            await asyncio.to_thread(catat_onu_baru, onu_list, None, not mikrotik_error)
         except Exception as e:
             logger.error(f"Error saat deteksi ONU baru: {e}")
         try:
@@ -1685,6 +1685,12 @@ def init_history_db() -> None:
         # pengguna: akun PPPoE terakhir yang terlihat lewat ONU ini, untuk mengenali pelanggan yang ganti ONU.
         if "pengguna" not in kolom_ob:
             conn.execute("ALTER TABLE onu_baru ADD COLUMN pengguna TEXT")
+        # online_terakhir: terakhir terlihat online (mengenali ONU yang lama mati lalu menyala lagi).
+        # bekas_dari: akun yang dulu memakai ONU ini, sudah dilepas (ONU bekas dipasang di pelanggan lain,
+        # pelanggan berhenti/dihapus). calon_bekas: sejak kapan ONU itu menyala tanpa PPPoE setelah lama mati.
+        for k in ("online_terakhir", "bekas_dari", "calon_bekas"):
+            if k not in kolom_ob:
+                conn.execute(f"ALTER TABLE onu_baru ADD COLUMN {k} TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_ts ON upstream_history(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_upstream_trafik_ts ON upstream_trafik(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_onu_hist_ts ON onu_history(ts)")
@@ -4467,6 +4473,7 @@ def hapus_pelanggan(username: str, request: Request, hapus_secret: bool = False)
     catat_aktivitas(_oleh(request), "pelanggan_hapus",
                     f"{p['id_pelanggan']} {username} ({p['nama']}) dihapus · {n_tagihan} tagihan belum bayar ikut dihapus"
                     + (f" · {len(logins)} akun portal" if logins else "") + (f" · {secret}" if secret else ""))
+    _lepas_onu_pelanggan(username, "dihapus", _oleh(request))
     return {"ok": True, "tagihan_dihapus": n_tagihan, "akun_portal_dihapus": len(logins), "secret": secret,
             "secret_tetap": bool(dipantau and not hapus_secret)}
 
@@ -4581,6 +4588,8 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
             finally:
                 conn.close()
             catat_aktivitas(_oleh(request), "secret_tertunda", f"{username}: sinkron secret tertunda dibatalkan (status diubah)")
+    if lama["status"] != status and status == "berhenti":
+        _lepas_onu_pelanggan(username, "berhenti", _oleh(request))
     return {"ok": True, "tagihan_dihapus": terhapus, "secret": secret}
 
 
@@ -12183,10 +12192,11 @@ def _cari_perangkat(username: str) -> Optional[dict]:
     _acs_onu_lama.pop(username, None)
     for q in queries:
         res = _acs("GET", "/devices/", params={"query": json.dumps(q)})
-        if res.ok and res.json():
+        docs = [d for d in res.json() if not _dok_acs_milik_lain(d, username)] if res.ok else []
+        if docs:
             # Beberapa dokumen cocok (mis. ONU lama & baru sama-sama menyimpan username PPPoE):
-            # pakai yang paling baru melapor.
-            doc = max(res.json(), key=lambda d: str(d.get("_lastInform") or ""))
+            # pakai yang paling baru melapor. ONU bekas yang kini di rumah pelanggan lain tidak dipakai.
+            doc = max(docs, key=lambda d: str(d.get("_lastInform") or ""))
             if _onu_lama(doc, sn):
                 di = doc.get("_deviceId") or {}
                 _acs_onu_lama[username] = {"sn_olt": sn, "lama": f"{di.get('_Manufacturer') or ''} "
@@ -13976,6 +13986,10 @@ CONFIG.update({
     "ACS_ONU_USER": _env("ACS_ONU_USER", ""),
     "ACS_ONU_PASS": _env("ACS_ONU_PASS", ""),
     "ACS_ONU_INTERVAL": int(_env("ACS_ONU_INTERVAL", "900")),
+    # ONU yang mati >= ONU_BEKAS_JAM lalu menyala tanpa PPPoE akun lamanya selama ONU_BEKAS_MENIT dianggap ONU bekas
+    # yang dipasang di tempat lain: catatan akun lamanya dilepas dan ONU muncul lagi di daftar ONU Baru.
+    "ONU_BEKAS_JAM": float(_env("ONU_BEKAS_JAM", "6")),
+    "ONU_BEKAS_MENIT": float(_env("ONU_BEKAS_MENIT", "10")),
 })
 
 _POLA_AMAN = re.compile(r"^[A-Za-z0-9._:/@+=~-]{1,128}$")   # tanpa spasi/baris baru: tidak bisa menyisipkan perintah
@@ -14800,7 +14814,105 @@ def _history_conn() -> sqlite3.Connection:
     return conn
 
 
-def catat_onu_baru(onu_list: list[ONUStatus], sekarang: Optional[datetime] = None) -> list[dict]:
+_onu_online_lalu: dict = {}     # sn -> online pada putaran sebelumnya (kosong lagi setelah INDESO dinyalakan ulang)
+
+
+def _ubah_onu_bekas(o, sn, pengguna, st, p_lama, untuk, on_akhir, bekas_dari, calon, sekarang, jeda, tunggu,
+                    bekas: list, pindah: list, kembali: list, pppoe_terbaca: bool = True) -> dict:
+    """Kolom onu_baru yang berubah karena ONU berpindah tangan. Tiga keadaan:
+    - pindah: ONU online dengan akun PPPoE lain dari yang tercatat (ONU bekas A kini dipakai B);
+    - bekas: ONU yang >= jeda tidak tersambung dengan akun lamanya, lalu menyala dari mati dan tetap tanpa PPPoE
+      akun itu selama `tunggu` (direset & dipasang di rumah lain, belum diaktifkan). Menunggu dulu supaya pelanggan
+      lama yang ONU-nya baru menyala tidak salah dilepas; keputusan hanya diambil saat PPPoE MikroTik terbaca;
+    - dilepas lalu menyala: akun lamanya sudah dilepas (pelanggan berhenti/dihapus) dan ONU itu menyala lagi.
+    Dalam ketiganya catatan akun lama (pengguna, untuk, WiFi yang dikirim) dilepas dan ONU kembali ke daftar ONU Baru."""
+    ubah: dict = {}
+    sama = lambda a, b: bool(a and b and a.lower() == b.lower())
+    lepas = lambda lama: {"bekas_dari": lama, "wifi": None, "wifi_ssid": None, "calon_bekas": None,
+                          **({"untuk": None} if sama(untuk, lama) else {}),
+                          **({"status": "baru", "selesai": None, "oleh": None} if st != "baru" else {})}
+    if not o.online:
+        return {"calon_bekas": None} if calon else {}       # mati lagi sebelum terbukti bekas
+    lalu = _onu_online_lalu.get(sn)
+    if pengguna:
+        if p_lama and not sama(p_lama, pengguna):
+            ubah.update(lepas(p_lama))
+            pindah.append((sn, p_lama, pengguna, o))
+        elif not p_lama and sama(bekas_dari, pengguna):
+            ubah["bekas_dari"] = None                        # ternyata masih pelanggan lama
+            kembali.append((sn, pengguna))
+        elif calon:
+            ubah["calon_bekas"] = None
+    elif p_lama:
+        if not calon:
+            # Hanya saat ONU baru menyala dari mati (atau INDESO baru dinyalakan ulang): ONU pelanggan sendiri yang terus
+            # menyala tapi PPPoE-nya putus bukan ONU bekas.
+            try:
+                lama_mati = bool(on_akhir) and sekarang - datetime.fromisoformat(on_akhir) >= jeda
+            except ValueError:
+                lama_mati = False
+            # online_terakhir belum pernah tercatat (data lama): cukup terlihat baru menyala dari mati.
+            if lalu is not True and (lama_mati or (not on_akhir and lalu is False)):
+                ubah["calon_bekas"] = sekarang.isoformat(timespec="seconds")
+        elif pppoe_terbaca:
+            try:
+                terbukti = sekarang - datetime.fromisoformat(calon) >= tunggu
+            except ValueError:
+                terbukti = True
+            if terbukti:
+                ubah.update(lepas(p_lama), pengguna=None)
+                bekas.append((sn, p_lama, o))
+    elif bekas_dari and st != "baru" and lalu is False:
+        ubah.update(status="baru", selesai=None, oleh=None)
+        bekas.append((sn, bekas_dari, o))
+    return ubah
+
+
+def _lepas_onu_pelanggan(username: str, alasan: str, oleh: str) -> list:
+    """Pelanggan berhenti/dihapus: ONU yang tercatat miliknya dilepas dari akunnya, supaya bila ONU itu dipasang di
+    pelanggan lain tidak membawa data pelanggan lama (dan muncul lagi di ONU Baru saat menyala)."""
+    conn = _history_conn()
+    try:
+        syarat = "lower(COALESCE(pengguna,''))=lower(?) OR lower(COALESCE(untuk,''))=lower(?)"
+        sns = [r[0] for r in conn.execute(f"SELECT sn FROM onu_baru WHERE {syarat}", (username, username))]
+        if sns:
+            conn.execute(f"UPDATE onu_baru SET bekas_dari=?, pengguna=NULL, untuk=NULL, wifi=NULL, wifi_ssid=NULL, "
+                         f"calon_bekas=NULL WHERE {syarat}", (username, username, username))
+            conn.commit()
+    finally:
+        conn.close()
+    if sns:
+        catat_aktivitas(oleh, "onu_dilepas", f"{username} {alasan}: ONU {', '.join(sns)} dilepas dari akun ini. Bila "
+                                             "dipasang di pelanggan lain, ONU muncul di ONU Baru.")
+    return sns
+
+
+def _dok_acs_milik_lain(doc: dict, username: str) -> bool:
+    """True bila dokumen ACS ini milik ONU yang kini dipakai pelanggan lain, atau ONU bekas yang sudah dilepas dari
+    `username`. Dokumen ONU bekas masih menyimpan username PPPoE & id lama pelanggan sebelumnya; tanpa pemeriksaan ini
+    halaman/portal pelanggan lama bisa membaca dan MENGUBAH WiFi di rumah pelanggan baru."""
+    sn = _sn_gpon((doc.get("_deviceId") or {}).get("_SerialNumber"))
+    if not sn:
+        return False
+    u = username.lower()
+    o = _onu_live(sn)
+    if o and o.online and o.pppoe_username and o.pppoe_username.lower() != u:
+        return True
+    conn = _history_conn()
+    try:
+        r = conn.execute("SELECT pengguna, bekas_dari FROM onu_baru WHERE sn=?", (sn,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return False
+    pengguna, bekas_dari = (x.lower() if x else None for x in r)
+    if pengguna and pengguna != u:
+        return True
+    return bekas_dari == u and pengguna != u
+
+
+def catat_onu_baru(onu_list: list[ONUStatus], sekarang: Optional[datetime] = None,
+                   pppoe_terbaca: bool = True) -> list[dict]:
     """Catat nomor seri ONU yang belum pernah terlihat. Saat pertama kali dijalankan, semua ONU yang
     sudah ada dicatat sebagai 'awal' (bukan baru) supaya tidak membanjiri daftar & Telegram.
     Kembalikan ONU yang baru terdeteksi pada putaran ini.
@@ -14811,9 +14923,14 @@ def catat_onu_baru(onu_list: list[ONUStatus], sekarang: Optional[datetime] = Non
     daftar = [o for o in onu_list if o.serial_number]
     if not daftar:
         return []           # OLT tidak terbaca: jangan simpulkan apa pun
-    waktu = (sekarang or datetime.now()).isoformat(timespec="seconds")
+    waktu_dt = sekarang or datetime.now()
+    waktu = waktu_dt.isoformat(timespec="seconds")
+    jeda_bekas = timedelta(hours=CONFIG["ONU_BEKAS_JAM"])
+    tunggu_bekas = timedelta(minutes=CONFIG["ONU_BEKAS_MENIT"])
+    # MikroTik tidak terbaca = semua ONU tampak "tanpa PPPoE": jangan simpulkan ONU bekas dari keadaan itu.
+    pppoe_terbaca = pppoe_terbaca and any(o.pppoe_username for o in daftar if o.online)
     conn = _history_conn()
-    baru, dilepas = [], []
+    baru, dilepas, bekas, pindah, kembali = [], [], [], [], []
     try:
         awal = conn.execute("SELECT COUNT(*) FROM onu_baru").fetchone()[0] == 0
         online = {o.serial_number.upper() for o in daftar if o.online}
@@ -14827,27 +14944,53 @@ def catat_onu_baru(onu_list: list[ONUStatus], sekarang: Optional[datetime] = Non
                     if sn_lama not in online:
                         conn.execute("DELETE FROM onu_baru WHERE sn=?", (sn_lama,))
                         dilepas.append((sn_lama, pengguna, sn))
-            ada = conn.execute("SELECT status FROM onu_baru WHERE sn=?", (sn,)).fetchone()
+            ada = conn.execute("SELECT status, pengguna, untuk, online_terakhir, bekas_dari, calon_bekas "
+                               "FROM onu_baru WHERE sn=?", (sn,)).fetchone()
             if ada:
+                st, p_lama, untuk, on_akhir, bekas_dari, calon = ada
+                ubah = _ubah_onu_bekas(o, sn, pengguna, st, p_lama, untuk, on_akhir, bekas_dari, calon,
+                                       waktu_dt, jeda_bekas, tunggu_bekas, bekas, pindah, kembali, pppoe_terbaca)
+                if o.online and (pengguna or not p_lama):
+                    ubah["online_terakhir"] = waktu      # terakhir online bersama akunnya (ONU tak terpetakan: online)
                 conn.execute("UPDATE onu_baru SET terakhir=?, pon=?, onu_id=?, vendor=COALESCE(?,vendor), "
                              "model=COALESCE(?,model), pengguna=COALESCE(?,pengguna) WHERE sn=?",
                              (waktu, o.pon, o.onu_id, o.vendor, o.model, pengguna, sn))
+                if ubah:
+                    conn.execute(f"UPDATE onu_baru SET {', '.join(k + '=?' for k in ubah)} WHERE sn=?",
+                                 (*ubah.values(), sn))
                 continue
             if not awal and not o.online:
                 continue        # SN asing yang offline (mis. ONU bekas belum menyala): catat saat online
-            conn.execute("INSERT INTO onu_baru (sn, pertama, terakhir, pon, onu_id, vendor, model, status, pengguna) "
-                         "VALUES (?,?,?,?,?,?,?,?,?)",
-                         (sn, waktu, waktu, o.pon, o.onu_id, o.vendor, o.model, "awal" if awal else "baru", pengguna))
+            conn.execute("INSERT INTO onu_baru (sn, pertama, terakhir, pon, onu_id, vendor, model, status, pengguna, "
+                         "online_terakhir) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                         (sn, waktu, waktu, o.pon, o.onu_id, o.vendor, o.model, "awal" if awal else "baru", pengguna,
+                          waktu if o.online else None))
             if not awal:
                 baru.append({"sn": sn, "pon": o.pon, "onu_id": o.onu_id, "model": o.model, "vendor": o.vendor,
                              "olt_rx": o.olt_rx_dbm})
         conn.commit()
     finally:
         conn.close()
+    _onu_online_lalu.clear()
+    _onu_online_lalu.update({o.serial_number.upper(): o.online for o in daftar})
     for sn_lama, pengguna, sn in dilepas:
         catat_aktivitas("sistem", "onu_dilepas", f"{pengguna} ganti ONU: {sn_lama} → {sn}. SN lama dilepas; bila online "
                                                  "lagi, tercatat sebagai ONU baru.")
         logger.info(f"ONU {sn_lama} dilepas: {pengguna} kini lewat {sn}")
+    for sn, p_lama, p_baru, o in pindah:
+        catat_aktivitas("sistem", "onu_pindah", f"ONU {sn} dulu dipakai {p_lama}, kini tersambung dengan akun {p_baru}. "
+                                                f"Catatan {p_lama} dilepas dari ONU ini.")
+        send_telegram_message(f"♻️ <b>ONU pindah pemakai</b>\n<code>{sn}</code> · PON {o.pon} · ONU {o.onu_id}\n"
+                              f"Dulu: {_esc(p_lama)} → kini: {_esc(p_baru)}\nCek WiFi-nya di menu <b>ONU Baru</b>.")
+    for sn, p_lama, o in bekas:
+        catat_aktivitas("sistem", "onu_bekas", f"ONU {sn} (dulu dipakai {p_lama}) menyala lagi tanpa PPPoE {p_lama}: "
+                                               "dianggap ONU bekas, catatan akun lama dilepas, masuk ONU Baru.")
+        send_telegram_message(f"♻️ <b>ONU bekas menyala lagi</b>\n<code>{sn}</code> · PON {o.pon} · ONU {o.onu_id}\n"
+                              f"Dulu dipakai: {_esc(p_lama)}. Catatan akun lama sudah dilepas.\n"
+                              "Pastikan ONU sudah direset pabrik, lalu aktifkan dari menu <b>ONU Baru</b>.")
+    for sn, user in kembali:
+        catat_aktivitas("sistem", "onu_bekas_batal", f"ONU {sn} tersambung lagi dengan akun lamanya {user}: "
+                                                     "bukan ONU bekas, catatan dikembalikan.")
     if baru:
         baris = []
         for b in baru[:10]:
@@ -14951,6 +15094,10 @@ def _ringkas_onu_baru(r: sqlite3.Row, acs: Optional[dict], nama: dict) -> dict:
         "redaman": o.status if o else None,
         "pppoe_username": user, "nama": nama.get(user) if user else None,
         "untuk": r["untuk"], "nama_untuk": nama.get(r["untuk"]) if r["untuk"] else None,
+        "bekas_dari": r["bekas_dari"], "nama_bekas": nama.get(r["bekas_dari"]) if r["bekas_dari"] else None,
+        # Akun terakhir yang tercatat lewat ONU ini, saat ONU belum tersambung PPPoE (bisa sisa pemakai lama).
+        "tercatat": r["pengguna"] if not user else None,
+        "nama_tercatat": nama.get(r["pengguna"]) if r["pengguna"] and not user else None,
         "tr069": r["tr069"], "wifi": r["wifi"], "selesai": r["selesai"], "oleh": r["oleh"],
         "langkah": langkah, "saran": _saran_onu_baru(o, langkah, r),
     }
@@ -15296,11 +15443,24 @@ def onu_baru_untuk(sn: str, d: OnuBaruUntukIn, request: Request):
 
 @app.post("/api/onu-baru/{sn}/{aksi}")
 def onu_baru_tandai(sn: str, aksi: str, request: Request):
-    """selesai / abaikan (keluar dari daftar aktif) atau buka (kembali ke daftar aktif)."""
+    """selesai / abaikan (keluar dari daftar aktif), buka (kembali ke daftar aktif), atau lepas (lupakan akun
+    pemakai lama ONU ini, mis. ONU bekas yang dipasang di pelanggan baru)."""
     _wajib_admin(request)
-    if aksi not in ("selesai", "abaikan", "buka"):
+    if aksi not in ("selesai", "abaikan", "buka", "lepas"):
         raise HTTPException(status_code=404, detail="Aksi tidak dikenal.")
-    _baris_onu_baru(sn)
+    r = _baris_onu_baru(sn)
+    if aksi == "lepas":
+        o = _onu_live(sn)
+        if o and o.online and o.pppoe_username:
+            raise HTTPException(status_code=409, detail=f"ONU ini sedang tersambung dengan akun {o.pppoe_username}, "
+                                "jadi tidak bisa dilepas. Reset pabrik ONU-nya dulu bila memang dipindah.")
+        lama = r["pengguna"] or r["untuk"]
+        if not lama:
+            raise HTTPException(status_code=409, detail="ONU ini tidak tercatat milik akun mana pun.")
+        _ubah_onu_baru(sn, bekas_dari=lama, pengguna=None, untuk=None, wifi=None, wifi_ssid=None, calon_bekas=None,
+                       status="baru", selesai=None, oleh=None)
+        catat_aktivitas(_oleh(request), "onu_dilepas", f"ONU {sn.upper()} dilepas dari akun {lama} (manual)")
+        return {"ok": True, "dilepas": lama}
     if aksi == "buka":
         _ubah_onu_baru(sn, status="baru", selesai=None, oleh=None)
     else:
