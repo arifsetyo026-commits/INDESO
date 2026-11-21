@@ -8665,8 +8665,9 @@ async def mitra_kas_bukti(sid: int, request: Request):
 def mitra_kas_lihat_bukti(sid: int, request: Request):
     return kas_wilayah_lihat_bukti(sid, request)
 
-# --- Admin wilayah (peran "wilayah"): mengurus pelanggan SATU lokasi (tambah, berhentikan/aktifkan lagi, hapus salah
-# input) dan melihat keuangannya tanpa bisa mengubah. Isolir & penagihan tetap diurus Pusat. Middleware hanya membuka
+# --- Admin wilayah (peran "wilayah"): mengurus pelanggan SATU lokasi (tambah, hapus salah input yang baru dicatat) dan
+# melihat keuangannya tanpa bisa mengubah. Berhenti/aktif, isolir, & penagihan hanya oleh Pusat (supaya pelanggan yang
+# menunggak tidak bisa diaktifkan atau dihapus tunggakannya dari wilayah). Middleware hanya membuka
 # /api/wilayah/* untuk peran ini, dan setiap jalur di bawah menyaring ke lokasi akunnya, jadi data lokasi lain,
 # pengaturan, akun, MikroTik/OLT, dan keuangan Pusat tidak terjangkau.
 
@@ -8708,7 +8709,9 @@ def wilayah_data(request: Request):
             f"k.nama AS paket, k.harga, {_SQL_ID} AS id_pelanggan, "
             f"(SELECT t.status FROM tagihan t WHERE t.username = p.username AND t.periode = ?) AS tagihan_bulan_ini, "
             f"(SELECT COUNT(*) FROM tagihan t WHERE t.username = p.username AND t.status = 'belum') AS n_tunggak, "
-            f"(SELECT COALESCE(SUM(t.jumlah), 0) FROM tagihan t WHERE t.username = p.username AND t.status = 'belum') AS tunggak "
+            f"(SELECT COALESCE(SUM(t.jumlah), 0) FROM tagihan t WHERE t.username = p.username AND t.status = 'belum') AS tunggak, "
+            f"(SELECT COUNT(*) FROM tagihan t WHERE t.username = p.username "
+            f"AND t.periode != substr(COALESCE(p.tgl_pasang, ''), 1, 7)) AS n_tagihan_lain "
             f"FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id WHERE COALESCE(p.lokasi, 1) = ? "
             f"ORDER BY p.status, p.nama COLLATE NOCASE", (bln, lok["kode"])).fetchall()
     finally:
@@ -8734,39 +8737,25 @@ def wilayah_tambah(d: TambahWilayahIn, request: Request):
     return _tambah_pelanggan(TambahPelangganIn(**d.model_dump(), lokasi=lok["kode"]), request)
 
 
-class StatusWilayahIn(BaseModel):
-    status: str     # "berhenti" | "aktif"
-
-
-@app.post("/api/wilayah/pelanggan/{username}/status")
-def wilayah_status(username: str, d: StatusWilayahIn, request: Request):
-    """Berhentikan / aktifkan lagi pelanggan wilayah ini. Sama dengan mengubah status di dashboard Pusat: secret PPPoE
-    di MikroTik lokasi ini ikut dinonaktifkan/diaktifkan, tagihan bulan sesudah bulan berhenti dibatalkan. Paket, diskon,
-    dan data lain tidak diubah."""
-    lok = _lokasi_wilayah(request)
-    if d.status not in ("aktif", "berhenti"):
-        raise HTTPException(status_code=400, detail="Status harus 'aktif' atau 'berhenti'.")
-    conn = _billing_conn()
-    try:
-        r = _pelanggan_wilayah(conn, username, lok["kode"])
-    finally:
-        conn.close()
-    if r["status"] == d.status:
-        return {"ok": True, "tidak_berubah": True}
-    return ubah_data_pelanggan(username, PelangganIn(
-        nama=r["nama"], alamat=r["alamat"], no_hp=r["no_hp"], paket_id=r["paket_id"], gratis=bool(r["gratis"]),
-        status=d.status, atur_secret=True), request)
-
-
 @app.delete("/api/wilayah/pelanggan/{username}")
 def wilayah_hapus(username: str, request: Request, hapus_secret: bool = False):
-    """Hapus pelanggan salah input wilayah ini. Aturan sama dengan Pusat: yang punya riwayat bayar tidak bisa dihapus."""
+    """Hapus pelanggan SALAH INPUT wilayah ini: hanya yang dicatat <= 30 hari lalu dan tagihannya cuma tagihan bulan
+    pasang (belum dibayar). Menghapus pelanggan ikut menghapus tagihan belum bayarnya, jadi pelanggan lama / yang
+    menunggak hanya bisa dihapus atau diberhentikan oleh Pusat (supaya tunggakan tidak bisa dihapus dari wilayah)."""
     lok = _lokasi_wilayah(request)
     conn = _billing_conn()
     try:
-        _pelanggan_wilayah(conn, username, lok["kode"])
+        p = _pelanggan_wilayah(conn, username, lok["kode"])
+        tgl = p["tgl_pasang"] or ""
+        baru = bool(tgl) and tgl >= (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        lain = conn.execute("SELECT COUNT(*) FROM tagihan WHERE username = ? AND periode != ?",
+                            (username, tgl[:7])).fetchone()[0]
     finally:
         conn.close()
+    if p["status"] != "aktif" or not baru or lain:
+        raise HTTPException(status_code=403, detail="Hanya pelanggan salah input yang baru dicatat (maks. 30 hari, tanpa "
+                            "tagihan bulan lain) yang bisa dihapus dari wilayah. Untuk memberhentikan atau menghapus "
+                            "pelanggan lain, hubungi Pusat.")
     return _hapus_pelanggan(username, request, hapus_secret)
 
 

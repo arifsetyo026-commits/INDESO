@@ -4313,22 +4313,27 @@ def test_admin_wilayah_hanya_lokasinya(siap):
     assert [p["username"] for p in s.get("/api/wilayah/data").json()["pelanggan"]] == ["sobo.ani"]
     # Tidak bisa menyentuh pelanggan lokasi lain
     for u in ("sobo.ani", "budi"):
-        assert d.post(f"/api/wilayah/pelanggan/{u}/status", json={"status": "berhenti"}).status_code == 404
         assert d.delete(f"/api/wilayah/pelanggan/{u}").status_code == 404
-    # Berhentikan & aktifkan lagi (paket tidak berubah)
-    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "berhenti"}).status_code == 200
-    conn = main._billing_conn()
-    row = conn.execute("SELECT status, paket_id, lokasi FROM pelanggan WHERE username='dempel.sri'").fetchone()
-    conn.close()
-    assert tuple(row) == ("berhenti", 1, 2)
-    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "aktif"}).status_code == 200
-    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "isolir"}).status_code == 400
+    # Berhenti / aktifkan hanya oleh Pusat: jalur status tidak ada untuk wilayah, jalur Pusat tertutup
+    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "aktif"}).status_code in (404, 405)
+    assert d.put("/api/data-pelanggan/dempel.sri", json={"nama": "Sri", "status": "aktif"}).status_code == 403
+    assert d.get("/api/wilayah/data").json()["pelanggan"][0]["n_tagihan_lain"] == 0
     # Keuangan: hanya lokasinya, lihat saja
     keu = d.get("/api/wilayah/keuangan").json()
     assert keu["lokasi"]["kode"] == 2 and len(keu["per_bulan"]) == 12
     assert {t["username"] for t in keu["tunggakan"]} <= {"dempel.sri"}
     assert d.post("/api/wilayah/keuangan", json={}).status_code == 405
-    # Hapus (belum pernah bayar): boleh
+    # Pelanggan lama / menunggak tidak bisa dihapus dari wilayah (tunggakan ikut terhapus)
+    conn = main._billing_conn()
+    conn.execute("UPDATE pelanggan SET tgl_pasang = '2026-01-05' WHERE username = 'sobo.ani'")
+    conn.execute("INSERT INTO tagihan (username, periode, jumlah, jatuh_tempo) VALUES ('dempel.sri', '2020-01', 110000, '2020-01-10')")
+    conn.commit(); conn.close()
+    assert s.delete("/api/wilayah/pelanggan/sobo.ani").status_code == 403
+    assert d.delete("/api/wilayah/pelanggan/dempel.sri").status_code == 403
+    conn = main._billing_conn()
+    conn.execute("DELETE FROM tagihan WHERE username = 'dempel.sri' AND periode = '2020-01'")
+    conn.commit(); conn.close()
+    # Salah input yang baru dicatat: boleh
     assert d.delete("/api/wilayah/pelanggan/dempel.sri").status_code == 200
     assert d.get("/api/wilayah/data").json()["pelanggan"] == []
     assert "dempel.sri" in o.get("/api/aktivitas").text

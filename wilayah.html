@@ -89,7 +89,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <label for="fPaket">Paket</label><select id="fPaket"></select>
   <label for="fTgl">Tanggal pasang</label><input id="fTgl" type="date">
   <div class="btns"><button class="btn go" id="fSimpan" onclick="simpanTambah()">Simpan pelanggan</button></div>
-  <div class="note">Username harus sama persis dengan secret PPPoE di MikroTik wilayah Anda. Tagihan bulan pertama dihitung prorata otomatis. Diskon, gratis, isolir, dan penagihan diurus Pusat.</div>
+  <div class="note">Username harus sama persis dengan secret PPPoE di MikroTik wilayah Anda. Tagihan bulan pertama dihitung prorata otomatis. Diskon, gratis, isolir, penagihan, serta memberhentikan/mengaktifkan pelanggan diurus Pusat. Salah input bisa dihapus dalam 30 hari.</div>
  </div>
 
  <div id="pwView" class="panel form" style="display:none">
@@ -165,28 +165,18 @@ function render(){
   }
   if(p.n_tunggak>0) chip.push(`<span class="chip bad">Tunggak ${p.n_tunggak} bln · ${rp(p.tunggak)}</span>`);
   const u=esc(p.username);
-  const aksi=p.status==='aktif'?`<button class="btn" onclick="ubahStatus('${u}','berhenti')">Berhentikan</button>`
-   :`<button class="btn" onclick="ubahStatus('${u}','aktif')">Aktifkan lagi</button>`;
+  const hari=(Date.now()-new Date(p.tgl_pasang||0).getTime())/864e5;
+  const bisaHapus=p.status==='aktif'&&p.tgl_pasang&&hari<=30&&!p.n_tagihan_lain;
   return `<div class="row"><div class="info"><div class="name">${esc(p.nama)}</div>
    <div class="sub">${esc(p.id_pelanggan||'')} · ${u} · ${esc(p.paket||'tanpa paket')}${p.alamat?' · '+esc(p.alamat):''}</div>
    <div class="right" style="justify-content:flex-start;margin-top:6px">${chip.join('')}</div></div>
-   <div class="right">${aksi}<button class="btn" onclick="hapus('${u}')">Hapus</button></div></div>`;
+   ${bisaHapus?`<div class="right"><button class="btn" onclick="hapus('${u}')">Hapus</button></div>`:''}</div>`;
  }).join('');
 }
 function cariPel(u){ return D.pelanggan.find(p=>p.username===u)||{nama:u}; }
-async function ubahStatus(u,status){
- const p=cariPel(u);
- const tanya=status==='berhenti'
-  ?`Berhentikan ${p.nama} (${u})?\n\nSecret PPPoE di MikroTik wilayah ikut dinonaktifkan dan tagihan bulan-bulan berikutnya dibatalkan. Tunggakan sampai bulan ini tetap ada.`
-  :`Aktifkan lagi ${p.nama} (${u})?\n\nSecret PPPoE di MikroTik wilayah ikut diaktifkan dan pelanggan ditagih lagi mulai bulan depan.`;
- if(!confirm(tanya)) return;
- try{ const r=await api('/api/wilayah/pelanggan/'+encodeURIComponent(u)+'/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});
-  const s=r.secret&&r.secret.pesan?' '+r.secret.pesan:''; pesan(p.nama+(status==='berhenti'?' diberhentikan.':' aktif lagi.')+s,true); muat(); }
- catch(e){ pesan('Gagal: '+e.message); }
-}
 async function hapus(u){
  const p=cariPel(u);
- if(!confirm(`Hapus ${p.nama} (${u})?\n\nHanya untuk salah input / tidak jadi pasang. Pelanggan yang sudah pernah bayar tidak bisa dihapus: gunakan Berhentikan.`)) return;
+ if(!confirm(`Hapus ${p.nama} (${u})?\n\nHanya untuk salah input yang baru dicatat. Tagihan bulan pasangnya ikut terhapus. Untuk memberhentikan pelanggan, hubungi Pusat.`)) return;
  const secret=confirm('Hapus juga secret PPPoE '+u+' di MikroTik wilayah?\n\nOK = hapus juga · Batal = biarkan secret-nya');
  try{ await api('/api/wilayah/pelanggan/'+encodeURIComponent(u)+(secret?'?hapus_secret=true':''),{method:'DELETE'}); pesan(p.nama+' dihapus.',true); muat(); }
  catch(e){ pesan('Gagal: '+e.message); }
