@@ -692,6 +692,33 @@ def _decode_serial(hex_raw: Optional[str]) -> Optional[str]:
         return None
 
 
+# Semua MAC yang terlihat OLT di belakang tiap ONU (satu ONU bisa punya beberapa: tiap WAN PPPoE ONU punya MAC sendiri).
+# Dipakai detektor "satu ONU, dua sesi PPPoE": caller-id sesi PPPoE di MikroTik -> ONU asalnya.
+_MAC_ONU: dict[str, tuple[int, int]] = {}
+
+
+def _catat_mac_onu(mac_table: dict, location_map: dict) -> None:
+    lokasi = {}
+    for idx, (_, loc_raw) in location_map.items():
+        x = _parse_pon_onu(loc_raw)
+        if x:
+            lokasi[str(idx)] = x
+    peta = {}
+    for suffix, (_, idx) in mac_table.items():
+        parts = suffix.split(".")
+        if len(parts) < 6:
+            continue
+        try:
+            mac = ":".join(f"{int(b):02X}" for b in parts[:6])
+        except ValueError:
+            continue
+        if str(idx) in lokasi:
+            peta[mac] = lokasi[str(idx)]
+    if peta:
+        _MAC_ONU.clear()
+        _MAC_ONU.update(peta)
+
+
 def _build_mac_by_index(mac_table: dict[str, tuple[str, str]]) -> dict[str, str]:
     """OID ini kebalik: suffix-nya adalah byte-byte MAC (desimal), value-nya
     snmp_index si ONU. Kita balik jadi {snmp_index: "AA:BB:CC:DD:EE:FF"}."""
@@ -768,6 +795,7 @@ async def fetch_all_onu() -> list[ONUStatus]:
         snmp_walk(CONFIG["OID_MAC_TABLE"]),
     )
     mac_by_index = _build_mac_by_index(mac_table)
+    _catat_mac_onu(mac_table, location_map)
 
     results: list[ONUStatus] = []
     for snmp_index_str, (_, loc_raw) in location_map.items():
@@ -1426,6 +1454,10 @@ async def background_monitor_loop():
             await asyncio.to_thread(proses_putus_pelanggan, pppoe_users, mikrotik_error, onu_list)
         except Exception as e:
             logger.error(f"Error saat proses putus pelanggan: {e}")
+        try:
+            await asyncio.to_thread(proses_pppoe_ganda, pppoe_users, mikrotik_error, onu_list)
+        except Exception as e:
+            logger.error(f"Error saat cek sesi PPPoE ganda: {e}")
         try:
             await asyncio.to_thread(catat_onu_baru, onu_list)
         except Exception as e:
@@ -10855,6 +10887,94 @@ def _pesan_massal(users, data, onu_by_key, sekarang, tunggu):
         f"Dugaan: {dugaan}\nPON terdampak: {pon_txt}\n"
         f"Waktu: {sekarang.strftime('%H:%M')}"
     )
+
+
+# --- Detektor "satu ONU, dua sesi PPPoE" ---
+# Dua WAN PPPoE di satu ONU (mis. sisa dari OLT + dari web ONU) saling tendang sesi: IP berganti-ganti, game putus;
+# bila akunnya berbeda, satu ONU login sebagai dua pelanggan. Sesi dikelompokkan per ONU asal: lewat tabel MAC OLT
+# (semua MAC di belakang ONU), atau, tanpa OLT (mis. W2), MAC yang hanya beda di byte terakhir (WAN satu perangkat).
+_ganda_hitung: dict[str, int] = {}
+_ganda_dikabari: dict[str, str] = {}
+_GANDA_PUTARAN = 2          # harus terlihat 2 putaran berturut-turut (sesi lama yang sedang tutup tidak dihitung)
+
+
+def _mac_int(mac: str) -> Optional[int]:
+    try:
+        return int(mac.replace(":", "").replace("-", ""), 16)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _kelompok_sesi_ganda(pppoe_users, onu_list) -> list[dict]:
+    onu_by_key = {(o.pon, o.onu_id): o for o in onu_list}
+    sesi = [u for u in pppoe_users if u.caller_id and u.caller_id != "-"]
+    grup: dict = {}
+    sisa = []
+    for u in sesi:
+        k = _MAC_ONU.get(u.caller_id.upper())
+        if k:
+            grup.setdefault(("onu",) + tuple(k), []).append(u)
+        else:
+            sisa.append(u)
+    # Tanpa OLT: MAC yang sama 5 byte pertamanya dan beda byte terakhir <= 4 dianggap satu perangkat.
+    sisa.sort(key=lambda u: _mac_int(u.caller_id) or 0)
+    for u in sisa:
+        m = _mac_int(u.caller_id)
+        cocok = next((key for key, isi in grup.items() if key[0] == "mac" and m is not None
+                      and any((_mac_int(x.caller_id) or -99) >> 8 == m >> 8 and abs((_mac_int(x.caller_id) or 0) - m) <= 4
+                              for x in isi)), None)
+        grup.setdefault(cocok or ("mac", u.caller_id.upper()), []).append(u)
+    hasil = []
+    for key, isi in grup.items():
+        if len(isi) < 2:
+            continue
+        o = onu_by_key.get((key[1], key[2])) if key[0] == "onu" else None
+        nama_onu = (f"PON {key[1]} ONU {key[2]}" + (f" ({o.serial_number})" if o and o.serial_number else "")) if key[0] == "onu" \
+            else f"perangkat MAC {key[1]}"
+        hasil.append({"kunci": "|".join(map(str, key)), "onu": nama_onu,
+                      "akun": sorted({u.username for u in isi}), "sesi": len(isi),
+                      "detail": [(u.username, u.caller_id, u.ip_address, u.uptime) for u in isi]})
+    # Satu akun login dari dua perangkat berbeda (only-one tidak aktif di profil PPP).
+    per_akun: dict = {}
+    for u in sesi:
+        per_akun.setdefault(u.username, []).append(u)
+    for akun, isi in per_akun.items():
+        perangkat = {x.caller_id.upper() for x in isi}
+        if len(isi) >= 2 and len(perangkat) >= 2 and not any(akun in h["akun"] and h["sesi"] == len(isi) for h in hasil):
+            hasil.append({"kunci": f"akun|{akun}", "onu": f"akun {akun}", "akun": [akun], "sesi": len(isi),
+                          "detail": [(x.username, x.caller_id, x.ip_address, x.uptime) for x in isi], "dua_perangkat": True})
+    return hasil
+
+
+def proses_pppoe_ganda(pppoe_users, mikrotik_error, onu_list) -> None:
+    if mikrotik_error is not None:
+        return
+    temuan = {h["kunci"]: h for h in _kelompok_sesi_ganda(pppoe_users, onu_list)}
+    for k in list(_ganda_hitung):
+        if k not in temuan:
+            _ganda_hitung.pop(k, None)
+            teks = _ganda_dikabari.pop(k, None)
+            if teks:
+                send_telegram_message(f"✅ <b>Sesi PPPoE ganda sudah beres</b>\n{_esc(teks)}")
+    for k, h in temuan.items():
+        _ganda_hitung[k] = _ganda_hitung.get(k, 0) + 1
+        ringkas = f"{h['onu']}: {', '.join(h['akun'])}"
+        if _ganda_hitung[k] < _GANDA_PUTARAN or _ganda_dikabari.get(k) == ringkas:
+            continue
+        _ganda_dikabari[k] = ringkas
+        rinci = "\n".join(f"• {_esc(a)} · MAC {_esc(m)} · IP {_esc(ip)} · {_esc(up)}" for a, m, ip, up in h["detail"])
+        if h.get("dua_perangkat"):
+            judul = f"Akun {_esc(h['akun'][0])} login dari {h['sesi']} perangkat sekaligus"
+            saran = "Kemungkinan akun dipakai di dua ONU/router. Aktifkan only-one di profil PPP atau cek perangkatnya."
+        elif len(h["akun"]) > 1:
+            judul = f"{_esc(h['onu'])} login dengan {len(h['akun'])} akun berbeda"
+            saran = ("Kemungkinan sisa PPPoE akun lama dari OLT atau dari web ONU. Hapus WAN yang bukan milik pelanggan ini "
+                     "(Diagnosa → WAN, atau bersihkan PPPoE di OLT).")
+        else:
+            judul = f"{_esc(h['onu'])} punya {h['sesi']} sesi PPPoE akun yang sama"
+            saran = "Dua WAN PPPoE (mis. dari OLT dan dari web ONU) saling tendang: IP berganti-ganti, game putus. Sisakan satu WAN."
+        send_telegram_message(f"⚠️ <b>{judul}</b>\n{rinci}\n{saran}")
+        catat_aktivitas("sistem", "pppoe_ganda", f"{h['onu']}: {', '.join(h['akun'])} ({h['sesi']} sesi)")
 
 
 def proses_putus_pelanggan(pppoe_users, mikrotik_error, onu_list, sekarang=None) -> None:
