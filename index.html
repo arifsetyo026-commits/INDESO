@@ -469,7 +469,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="overlay" id="gudangModal"><div class="modal"><div class="modalHead"><h3>Warehouse</h3><button class="close" onclick="closeModal('gudangModal')">Tutup</button></div><div class="modalBody">
 <div class="khSum" id="gdSum"></div>
 <div class="plSub" id="gdLive" style="margin:-2px 0 8px"></div>
-<div class="blFilters gdTabs"><button data-v="stok" class="on" onclick="gdTab('stok')">Stok</button><button data-v="pakai" onclick="gdTab('pakai')">Pakai untuk pelanggan</button><button data-v="riwayat" onclick="gdTab('riwayat')">Riwayat</button><button data-v="baru" onclick="gdTab('baru')">+ Barang baru</button></div>
+<div class="blFilters gdTabs"><button data-v="stok" class="on" onclick="gdTab('stok')">Stok</button><button data-v="pakai" onclick="gdTab('pakai')">Pakai untuk pelanggan</button><button data-v="minta" onclick="gdTab('minta')">Permintaan wilayah <span id="gdMintaN" class="badge" style="display:none">0</span></button><button data-v="riwayat" onclick="gdTab('riwayat')">Riwayat</button><button data-v="baru" onclick="gdTab('baru')">+ Barang baru</button></div>
 <div class="plMsg" id="gdMsg"></div>
 <div id="gdIsi"><div class="muted">Memuat…</div></div>
 </div></div></div>
@@ -3397,16 +3397,21 @@ const gd={tab:'stok',data:null,versi:null,cari:'',filter:'semua',form:null,perlu
 async function openGudang(){ $('gudangModal').classList.add('show'); gdPesan(''); gd.form=null; await gdMuatData(); gdTab(gd.tab);
  clearInterval(gd.timer); gd.timer=setInterval(gdCekVersi,8000); }
 async function gdMuatData(diam){
- try{ gd.data=await jsonAtauError(await fetch('/api/gudang?riwayat=150',{cache:'no-store'})); gd.versi=gd.data.versi; gd.diperbarui=new Date(); gd.perlu=false; gdBadge(gd.data.barang.filter(b=>b.menipis).length); }
+ try{ gd.data=await jsonAtauError(await fetch('/api/gudang?riwayat=150',{cache:'no-store'})); gd.versi=gd.data.versi; gd.diperbarui=new Date(); gd.perlu=false; gdBadge(gd.data.barang.filter(b=>b.menipis).length);
+  gd.minta=await jsonAtauError(await fetch('/api/gudang/permintaan',{cache:'no-store'})); gdMintaN(gd.minta.terbuka); }
  catch(e){ if(!diam) $('gdIsi').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
-function gdBadge(n){ const b=$('gudangBadge'); if(b){ b.textContent=n; b.style.display=n?'':'none'; } }
+function gdMintaN(n){ gd.mintaN=n||0; const b=$('gdMintaN'); if(b){ b.textContent=n||0; b.style.display=n?'':'none'; } gdBadgeTampil(); }
+function gdBadge(n){ gd.menipisN=n; gdBadgeTampil(); }
+// Lencana menu Warehouse: barang menipis + permintaan material wilayah yang belum selesai.
+function gdBadgeTampil(){ const b=$('gudangBadge'); if(!b) return; const t=gd.menipisN||0, m=gd.mintaN||0;
+ b.textContent=t+m; b.style.display=(t+m)?'':'none'; b.title=[t?t+' barang menipis':'',m?m+' permintaan material':''].filter(Boolean).join(' · '); }
 // Cek perubahan dari pengguna lain. Selama ada isian yang sedang diketik, tampilan tidak ditimpa: angka baru
 // dimuat begitu isian ditutup/disimpan.
 async function gdCekVersi(){
  if(!$('gudangModal').classList.contains('show')){ clearInterval(gd.timer); return; }
  let v; try{ v=await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'})); }catch(e){ return; }
- gdBadge(v.menipis);
+ gdBadge(v.menipis); gdMintaN(v.permintaan);
  if(v.versi===gd.versi){ gdLive(); return; }
  if(gd.form||(gd.tab==='pakai'||gd.tab==='baru')){ gd.perlu=true; gdLive(); return; }
  await gdMuatData(true); gdRender();
@@ -3438,6 +3443,16 @@ function gdRender(){
     return `<div class="blRow"${x.status!=='aktif'?' style="opacity:.55"':''}><div style="min-width:0"><div class="plName" style="font-size:var(--fs-xs)"><span class="chip ${j[0]}">${j[1]}</span> ${esc(x.nama)} <b>${jml} ${esc(x.satuan)}</b></div>
      <div class="plSub">${esc(tglPendek(x.tanggal))}${x.username?' · untuk <b>'+esc(x.nama_pelanggan||x.username)+'</b>':''}${x.keterangan?' · '+esc(x.keterangan):''} · ${esc(x.oleh)}${x.status!=='aktif'?' · <b>dibatalkan</b> oleh '+esc(x.batal_oleh||'')+': '+esc(x.batal_alasan||''):''}</div></div>
      ${bisa?`<button class="btnS" style="align-self:flex-start" onclick="gdBatal(${x.id})">Batalkan</button>`:''}</div>`; }).join('')||'<div class="muted">Belum ada catatan.</div>');
+ } else if(gd.tab==='minta'){
+  const L=(gd.minta||{}).permintaan||[], ST={menunggu:['warn','Menunggu'],diproses:['info','Diproses'],dikirim:['ok','Dikirim'],ditolak:['bad','Ditolak'],batal:['off','Dibatalkan peminta']};
+  el.innerHTML='<div class="plSub" style="margin-bottom:8px">Permintaan material dari admin wilayah. Saat ditandai <b>Dikirim</b>, barang warehouse di permintaan ini bisa langsung dicatat keluar dari stok Pusat.</div>'
+   +(L.length?L.map(m=>{ const [c,t]=ST[m.status]||['off',m.status], buka=m.status==='menunggu'||m.status==='diproses';
+    return `<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div class="plName">#${esc(m.nomor)} · ${esc(m.nama_lokasi||'Lokasi '+m.lokasi)} <span class="chip ${c}">${t}</span></div>
+     <div class="plSub">${esc(m.dibuat.slice(0,16))} · diminta ${esc(m.peminta)}${m.diproses_oleh&&m.status!=='menunggu'?' · '+esc(m.diproses_oleh)+' '+esc((m.diproses_pada||'').slice(0,16)):''}${m.stok_dikurangi?' · stok dikurangi':''}</div></div></div>
+     <div style="margin-top:6px;font-size:var(--fs-sm)">${m.item.map(i=>`• ${esc(i.nama)}: <b>${gdAngka(i.jumlah)}</b> ${esc(i.satuan||'')}${i.barang_id==null?' <span class="plSub">(belum ada di warehouse)</span>':buka?` <span class="plSub" style="color:${i.stok<i.jumlah?'#b42318':'inherit'}">· stok ${gdAngka(i.stok)}</span>`:''}`).join('<br>')}</div>
+     ${m.catatan?`<div class="plSub">Catatan: ${esc(m.catatan)}</div>`:''}${m.alasan?`<div class="plSub" style="color:#b42318">Alasan: ${esc(m.alasan)}</div>`:''}
+     ${buka?`<div class="blAksi" style="justify-content:flex-start">${m.status==='menunggu'?`<button class="btnS" onclick="gdProsesMinta(${m.id},'diproses')">Proses</button>`:''}<button class="btnS go" onclick="gdProsesMinta(${m.id},'dikirim')">✓ Dikirim</button><button class="btnS" onclick="gdProsesMinta(${m.id},'ditolak')">Tolak</button></div>`:''}</div>`; }).join('')
+   :'<div class="muted">Belum ada permintaan material dari wilayah.</div>');
  } else if(gd.tab==='pakai'){
   const pel=(dg.pelanggan||[]);
   el.innerHTML=`<div class="plForm"><div class="plSub">Catat barang yang dipakai untuk satu pelanggan (ganti ONU, perbaikan, tarik kabel). Semua baris tersimpan sekaligus, atau tidak sama sekali bila ada stok yang kurang.</div>
@@ -3456,6 +3471,18 @@ function gdRender(){
    <label>Stok minimum <span class="plSub">(di bawah ini ditandai menipis & dikabarkan lewat Telegram; 0 = tidak dipantau)</span></label><input id="gbMin" type="number" min="0" step="any" inputmode="decimal" value="0">
    <div class="plBtns"><button class="plSave" onclick="gdSimpanBarang(this)">Simpan barang</button></div></div>`;
  }
+}
+async function gdProsesMinta(id,status){
+ const m=((gd.minta||{}).permintaan||[]).find(x=>x.id===id)||{item:[]}; const body={status};
+ if(status==='ditolak'){ const a=prompt('Alasan menolak #M'+id+' (dibaca admin wilayah):'); if(!a||!a.trim()) return; body.alasan=a.trim(); }
+ if(status==='dikirim'){
+  const ada=m.item.some(i=>i.barang_id!=null);
+  if(!confirm('Tandai #M'+id+' sudah DIKIRIM ke '+(m.nama_lokasi||'wilayah')+'?')) return;
+  body.kurangi_stok=ada?confirm('Kurangi stok warehouse Pusat sesuai barang di permintaan ini?\n\nOK = kurangi stok · Batal = jangan kurangi (mis. dibeli langsung)'):false;
+ }
+ try{ const r=await jsonAtauError(await fetch('/api/gudang/permintaan/'+id,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  gdPesan('#M'+id+' '+({diproses:'sedang diproses',dikirim:'ditandai dikirim'+(r.stok_dikurangi?', stok dikurangi':''),ditolak:'ditolak'}[status])+'.',true); await gdMuatData(); gdRender(); }
+ catch(e){ gdPesan('Gagal: '+e.message); }
 }
 function gdRiwayatBarang(id){ gd.riwayatId=id; gdTab('riwayat'); }
 function gdBukaForm(id,jenis){ gd.form=(gd.form&&gd.form.id===id&&gd.form.jenis===jenis)?null:{id,jenis}; gdPesan(''); gdRender(); if(gd.form){ const i=document.querySelector('#gdF'+id+' input'); if(i) i.focus(); } }
@@ -3515,10 +3542,10 @@ async function gdBatal(id){
  catch(e){ gdPesan('Gagal: '+e.message); }
 }
 // Lencana "menipis" di menu Warehouse (dicek berkala, ringan).
-async function gdCekBadge(){ try{ gdBadge((await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'}))).menipis); }catch(e){} }
+async function gdCekBadge(){ try{ const v=await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'})); gd.mintaN=v.permintaan||0; gdBadge(v.menipis); }catch(e){} }
 setTimeout(gdCekBadge,4000); setInterval(()=>{ if(!$('gudangModal').classList.contains('show')) gdCekBadge(); },300000);
 AKSI_LABEL.onu_amankan='Amankan ONU'; AKSI_LABEL.gudang_barang='Warehouse: barang'; AKSI_LABEL.gudang_masuk='Warehouse: barang masuk'; AKSI_LABEL.gudang_keluar='Warehouse: pemakaian';
-AKSI_LABEL.gudang_opname='Warehouse: hitung fisik'; AKSI_LABEL.gudang_batal='Warehouse: batal catatan';
+AKSI_LABEL.gudang_opname='Warehouse: hitung fisik'; AKSI_LABEL.material_minta='Permintaan material'; AKSI_LABEL.material_dikirim='Material dikirim'; AKSI_LABEL.material_ditolak='Material ditolak'; AKSI_LABEL.material_diproses='Material diproses'; AKSI_LABEL.material_batal='Permintaan material batal'; AKSI_LABEL.gudang_batal='Warehouse: batal catatan';
 AKSI_LABEL.insentif_bayar='Pembayaran komisi mitra'; AKSI_LABEL.komisi_kunci='Kunci komisi mitra'; AKSI_LABEL.secret_nonaktif='Nonaktifkan secret PPPoE'; AKSI_LABEL.secret_aktif='Aktifkan secret PPPoE'; AKSI_LABEL.secret_tertunda='Secret PPPoE tertunda';
 new MutationObserver(_simpanModalAktif).observe(document.body,{subtree:true,attributes:true,attributeFilter:['class']});
 pulihkanModal();

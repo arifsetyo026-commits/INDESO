@@ -4337,3 +4337,57 @@ def test_admin_wilayah_hanya_lokasinya(siap):
     assert d.delete("/api/wilayah/pelanggan/dempel.sri").status_code == 200
     assert d.get("/api/wilayah/data").json()["pelanggan"] == []
     assert "dempel.sri" in o.get("/api/aktivitas").text
+
+
+def test_permintaan_material_wilayah(siap):
+    """Admin wilayah minta material: dikabarkan ke Telegram admin; Pusat memproses di Warehouse (dikirim = stok
+    warehouse dikurangi; ditolak wajib alasan). Wilayah lain tidak melihat/membatalkan permintaan wilayah ini."""
+    main, o, k, m = siap
+    assert o.post("/api/lokasi", json={"nama": "Dempel"}).json()["kode"] == 2
+    assert o.post("/api/lokasi", json={"nama": "Soborejo"}).json()["kode"] == 3
+    for u, pw, lok in (("admdempel", "dempelpass1", 2), ("admsobo", "sobopass12", 3)):
+        assert o.post("/api/akun", json={"username": u, "password": pw, "peran": "wilayah", "lokasi": lok}).status_code == 200
+    d, s = klien(main, "admdempel", "dempelpass1"), klien(main, "admsobo", "sobopass12")
+    kabel = k.post("/api/gudang/barang", json={"nama": "Kabel dropcore", "satuan": "meter", "stok_awal": 500}).json()["id"]
+    onu = k.post("/api/gudang/barang", json={"nama": "ONU F670L", "satuan": "unit", "stok_awal": 1}).json()["id"]
+    data = d.get("/api/wilayah/material").json()
+    assert {b["nama"] for b in data["barang"]} == {"Kabel dropcore", "ONU F670L"} and "stok" not in data["barang"][0]
+    assert d.get("/api/gudang").status_code == 403 and d.get("/api/gudang/permintaan").status_code == 403
+    assert d.post("/api/wilayah/material", json={"item": []}).status_code == 400
+    assert d.post("/api/wilayah/material", json={"item": [{"barang_id": kabel, "jumlah": 0}]}).status_code == 400
+    sebelum = len(main._terkirim)
+    r = d.post("/api/wilayah/material", json={"item": [{"barang_id": kabel, "jumlah": 200}, {"barang_id": onu, "jumlah": 1},
+                                                       {"nama": "Klem kabel", "jumlah": 50, "satuan": "pcs"}],
+                                              "catatan": "pasang RT 02"})
+    assert r.status_code == 200 and r.json()["nomor"] == "M1"
+    pesan = " ".join(str(x["data"].get("text", "")) for x in main._terkirim[sebelum:])
+    assert "Permintaan material #M1" in pesan and "Dempel" in pesan and "Kabel dropcore" in pesan and "Klem kabel" in pesan
+    # Soborejo tidak melihat & tidak bisa membatalkan permintaan Dempel
+    assert s.get("/api/wilayah/material").json()["permintaan"] == []
+    assert s.post("/api/wilayah/material/1/batal").status_code == 409
+    # Pusat melihat stok saat ini; tolak tanpa alasan ditolak
+    p = k.get("/api/gudang/permintaan").json()
+    assert p["terbuka"] == 1 and p["permintaan"][0]["nama_lokasi"] == "Dempel"
+    assert {i["nama"]: i["stok"] for i in p["permintaan"][0]["item"]} == {"Kabel dropcore": 500, "ONU F670L": 1, "Klem kabel": None}
+    assert k.get("/api/gudang/versi").json()["permintaan"] == 1
+    assert k.post("/api/gudang/permintaan/1", json={"status": "ditolak"}).status_code == 400
+    assert k.post("/api/gudang/permintaan/1", json={"status": "diproses"}).status_code == 200
+    assert d.post("/api/wilayah/material/1/batal").status_code == 409            # sudah diproses Pusat
+    # Dikirim: stok warehouse berkurang (barang ketik bebas dilewati)
+    assert k.post("/api/gudang/permintaan/1", json={"status": "dikirim"}).json()["stok_dikurangi"] is True
+    stok = {b["nama"]: b["stok"] for b in k.get("/api/gudang").json()["barang"]}
+    assert stok == {"Kabel dropcore": 300, "ONU F670L": 0}
+    assert k.post("/api/gudang/permintaan/1", json={"status": "ditolak", "alasan": "x"}).status_code == 409
+    assert d.get("/api/wilayah/material").json()["permintaan"][0]["status"] == "dikirim"
+    # Stok tidak cukup: dikirim ditolak sampai stok ditambah (atau dikirim tanpa mengurangi stok)
+    d.post("/api/wilayah/material", json={"item": [{"barang_id": onu, "jumlah": 2}]})
+    assert k.post("/api/gudang/permintaan/2", json={"status": "dikirim"}).status_code == 409
+    assert k.post("/api/gudang/permintaan/2", json={"status": "dikirim", "kurangi_stok": False}).json()["stok_dikurangi"] is False
+    # Ditolak dengan alasan & batal oleh peminta
+    d.post("/api/wilayah/material", json={"item": [{"nama": "Tiang", "jumlah": 2}]})
+    assert k.post("/api/gudang/permintaan/3", json={"status": "ditolak", "alasan": "beli sendiri"}).status_code == 200
+    d.post("/api/wilayah/material", json={"item": [{"nama": "Tiang", "jumlah": 1}]})
+    assert d.post("/api/wilayah/material/4/batal").status_code == 200
+    st = {x["nomor"]: (x["status"], x["alasan"]) for x in d.get("/api/wilayah/material").json()["permintaan"]}
+    assert st["M3"] == ("ditolak", "beli sendiri") and st["M4"][0] == "batal"
+    assert k.get("/api/gudang/permintaan").json()["terbuka"] == 0

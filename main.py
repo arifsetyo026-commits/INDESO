@@ -4135,7 +4135,11 @@ def _versi_gudang(conn) -> str:
     r = conn.execute("SELECT (SELECT COALESCE(MAX(id),0) FROM gudang_mutasi), "
                      "(SELECT COUNT(*) FROM gudang_mutasi WHERE status <> 'aktif'), "
                      "(SELECT COALESCE(MAX(diubah_pada),'') FROM gudang_barang), (SELECT COUNT(*) FROM gudang_barang)").fetchone()
-    return ":".join(str(x) for x in r)
+    try:   # permintaan material dari wilayah ikut memperbarui layar Warehouse yang terbuka
+        m = conn.execute("SELECT COALESCE(MAX(id),0), COALESCE(MAX(diproses_pada),'') FROM material_minta").fetchone()
+    except sqlite3.OperationalError:
+        m = (0, "")
+    return ":".join(str(x) for x in (*r, *m))
 
 
 @app.get("/api/gudang/versi")
@@ -4147,7 +4151,9 @@ def gudang_versi(request: Request):
         _siapkan_gudang(conn)
         menipis = conn.execute(f"SELECT COUNT(*) FROM gudang_barang b WHERE b.aktif = 1 AND b.stok_min > 0 "
                                f"AND {_SQL_STOK} <= b.stok_min").fetchone()[0]
-        return {"versi": _versi_gudang(conn), "menipis": menipis}
+        _siapkan_material(conn)
+        minta = conn.execute("SELECT COUNT(*) FROM material_minta WHERE status IN ('menunggu','diproses')").fetchone()[0]
+        return {"versi": _versi_gudang(conn), "menipis": menipis, "permintaan": minta}
     finally:
         conn.close()
 
@@ -8798,6 +8804,210 @@ def wilayah_keuangan(request: Request, bulan: int = 12):
     per_bulan = [{**kosong, **tag.get(p, {}), "periode": p, "uang_masuk": masuk.get(p, 0)} for p in periode]
     return {"lokasi": lok, "per_bulan": per_bulan, "tunggakan": tunggakan,
             "total_tunggakan": sum(x["jumlah"] for x in tunggakan), "transaksi": transaksi, "kas": kas}
+
+
+# --- Permintaan material: admin wilayah meminta barang ke Pusat (dikabarkan ke grup admin Telegram); Pusat memproses
+# di Warehouse → Permintaan: diproses → dikirim (stok warehouse Pusat bisa langsung dikurangi) atau ditolak.
+
+_STATUS_MATERIAL = ("menunggu", "diproses", "dikirim", "ditolak", "batal")
+
+
+def _siapkan_material(conn) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS material_minta (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, lokasi INTEGER NOT NULL, peminta TEXT NOT NULL, dibuat TEXT NOT NULL,
+        catatan TEXT, status TEXT NOT NULL DEFAULT 'menunggu', diproses_oleh TEXT, diproses_pada TEXT, alasan TEXT,
+        stok_dikurangi INTEGER NOT NULL DEFAULT 0)""")
+    # barang_id: barang warehouse (NULL = barang yang belum ada di warehouse, diketik bebas)
+    conn.execute("""CREATE TABLE IF NOT EXISTS material_minta_item (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, minta_id INTEGER NOT NULL REFERENCES material_minta(id),
+        barang_id INTEGER, nama TEXT NOT NULL, jumlah REAL NOT NULL, satuan TEXT)""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_material_lokasi ON material_minta(lokasi, id)")
+
+
+def _daftar_material(conn, lokasi: Optional[int] = None, status: Optional[str] = None, limit: int = 50) -> list[dict]:
+    syarat, nilai = ["1=1"], []
+    if lokasi is not None:
+        syarat.append("m.lokasi = ?"); nilai.append(lokasi)
+    if status:
+        syarat.append("m.status = ?"); nilai.append(status)
+    rows = conn.execute(f"SELECT m.*, l.nama AS nama_lokasi FROM material_minta m LEFT JOIN lokasi l ON l.kode = m.lokasi "
+                        f"WHERE {' AND '.join(syarat)} ORDER BY (m.status IN ('menunggu','diproses')) DESC, m.id DESC "
+                        f"LIMIT ?", (*nilai, limit)).fetchall()
+    hasil = []
+    for r in rows:
+        item = [dict(i) for i in conn.execute(
+            f"SELECT i.barang_id, i.nama, i.jumlah, COALESCE(i.satuan, b.satuan) AS satuan, "
+            f"CASE WHEN b.id IS NULL THEN NULL ELSE {_SQL_STOK} END AS stok FROM material_minta_item i "
+            f"LEFT JOIN gudang_barang b ON b.id = i.barang_id WHERE i.minta_id = ? ORDER BY i.id", (r["id"],))]
+        hasil.append(dict(r) | {"nomor": f"M{r['id']}", "item": item})
+    return hasil
+
+
+def _teks_item_material(item: list) -> str:
+    return "\n".join(f"• {_esc(i['nama'])}: {_angka_stok(i['jumlah'])} {_esc(i.get('satuan') or '')}".rstrip() for i in item)
+
+
+class MaterialItemIn(BaseModel):
+    barang_id: Optional[int] = None
+    nama: Optional[str] = None        # barang yang belum ada di warehouse
+    jumlah: float
+    satuan: Optional[str] = None
+
+
+class MaterialIn(BaseModel):
+    item: list[MaterialItemIn]
+    catatan: Optional[str] = None
+
+
+@app.get("/api/wilayah/material")
+def wilayah_material(request: Request):
+    """Daftar barang warehouse (tanpa angka stok Pusat) untuk dipilih, dan permintaan wilayah ini."""
+    lok = _lokasi_wilayah(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        _siapkan_material(conn)
+        barang = [dict(r) for r in conn.execute("SELECT id, nama, satuan, kategori FROM gudang_barang WHERE aktif = 1 "
+                                                "ORDER BY kategori IS NULL, kategori COLLATE NOCASE, nama COLLATE NOCASE")]
+        minta = _daftar_material(conn, lok["kode"], limit=30)
+    finally:
+        conn.close()
+    for m in minta:
+        for i in m["item"]:
+            i.pop("stok", None)
+    return {"barang": barang, "permintaan": minta}
+
+
+@app.post("/api/wilayah/material")
+def wilayah_minta_material(d: MaterialIn, request: Request):
+    lok = _lokasi_wilayah(request)
+    if not d.item or len(d.item) > 30:
+        raise HTTPException(status_code=400, detail="Isi 1–30 barang.")
+    catatan = (d.catatan or "").strip()[:300] or None
+    sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        _siapkan_material(conn)
+        item = []
+        for it in d.item:
+            jumlah = _cek_jumlah_gudang(it.jumlah)
+            if it.barang_id:
+                b = conn.execute("SELECT id, nama, satuan FROM gudang_barang WHERE id = ? AND aktif = 1",
+                                 (it.barang_id,)).fetchone()
+                if not b:
+                    raise HTTPException(status_code=404, detail="Barang tidak ditemukan di warehouse.")
+                item.append({"barang_id": b["id"], "nama": b["nama"], "jumlah": jumlah, "satuan": b["satuan"]})
+            else:
+                nama = (it.nama or "").strip()[:80]
+                if len(nama) < 2:
+                    raise HTTPException(status_code=400, detail="Nama barang minimal 2 huruf.")
+                item.append({"barang_id": None, "nama": nama, "jumlah": jumlah,
+                             "satuan": (it.satuan or "").strip()[:20] or None})
+        conn.execute("BEGIN IMMEDIATE")
+        mid = conn.execute("INSERT INTO material_minta (lokasi, peminta, dibuat, catatan) VALUES (?,?,?,?)",
+                           (lok["kode"], _oleh(request), sekarang, catatan)).lastrowid
+        conn.executemany("INSERT INTO material_minta_item (minta_id, barang_id, nama, jumlah, satuan) VALUES (?,?,?,?,?)",
+                         [(mid, i["barang_id"], i["nama"], i["jumlah"], i["satuan"]) for i in item])
+        conn.commit()
+    finally:
+        conn.close()
+    catat_aktivitas(_oleh(request), "material_minta", f"#M{mid} {lok['nama']}: " + ", ".join(
+        f"{i['nama']} {_angka_stok(i['jumlah'])} {i['satuan'] or ''}".rstrip() for i in item) + (f" · {catatan}" if catatan else ""))
+    send_telegram_message(f"📦 <b>Permintaan material #M{mid}</b>\nDari: {_esc(lok['nama'])} ({_esc(_oleh(request))})\n\n"
+                          + _teks_item_material(item) + (f"\n\nCatatan: {_esc(catatan)}" if catatan else "")
+                          + "\n\nProses di dashboard → <b>Warehouse → Permintaan</b>.")
+    return {"ok": True, "id": mid, "nomor": f"M{mid}"}
+
+
+@app.post("/api/wilayah/material/{mid}/batal")
+def wilayah_batal_material(mid: int, request: Request):
+    lok = _lokasi_wilayah(request)
+    conn = _billing_conn()
+    try:
+        _siapkan_material(conn)
+        n = conn.execute("UPDATE material_minta SET status = 'batal', diproses_oleh = ?, diproses_pada = ? "
+                         "WHERE id = ? AND lokasi = ? AND status = 'menunggu'",
+                         (_oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), mid, lok["kode"])).rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    if not n:
+        raise HTTPException(status_code=409, detail="Permintaan tidak ditemukan atau sudah diproses Pusat.")
+    catat_aktivitas(_oleh(request), "material_batal", f"#M{mid} {lok['nama']} dibatalkan peminta")
+    send_telegram_message(f"📦 Permintaan material #M{mid} dari {_esc(lok['nama'])} <b>dibatalkan</b> peminta.")
+    return {"ok": True}
+
+
+@app.get("/api/gudang/permintaan")
+def gudang_permintaan(request: Request, status: Optional[str] = None):
+    _wajib_admin(request)
+    if status and status not in _STATUS_MATERIAL:
+        raise HTTPException(status_code=400, detail="Status tidak dikenal.")
+    conn = _billing_conn()
+    try:
+        _siapkan_gudang(conn)
+        _siapkan_material(conn)
+        minta = _daftar_material(conn, status=status, limit=100)
+        n = conn.execute("SELECT COUNT(*) FROM material_minta WHERE status IN ('menunggu','diproses')").fetchone()[0]
+    finally:
+        conn.close()
+    for m in minta:
+        for i in m["item"]:
+            if i["stok"] is not None:
+                i["stok"] = round(i["stok"], 2)
+    return {"permintaan": minta, "terbuka": n}
+
+
+class ProsesMaterialIn(BaseModel):
+    status: str                      # diproses | dikirim | ditolak
+    alasan: Optional[str] = None     # wajib bila ditolak
+    kurangi_stok: bool = True        # saat dikirim: catat barang warehouse keluar
+
+
+@app.post("/api/gudang/permintaan/{mid}")
+def gudang_proses_permintaan(mid: int, d: ProsesMaterialIn, request: Request):
+    _wajib_admin(request)
+    if d.status not in ("diproses", "dikirim", "ditolak"):
+        raise HTTPException(status_code=400, detail="Status harus diproses, dikirim, atau ditolak.")
+    alasan = (d.alasan or "").strip()[:300] or None
+    if d.status == "ditolak" and not alasan:
+        raise HTTPException(status_code=400, detail="Tulis alasan penolakan (dibaca admin wilayah).")
+    sekarang = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = _billing_conn()
+    keluar = []
+    try:
+        _siapkan_gudang(conn)
+        _siapkan_material(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        m = conn.execute("SELECT m.*, l.nama AS nama_lokasi FROM material_minta m LEFT JOIN lokasi l ON l.kode = m.lokasi "
+                         "WHERE m.id = ?", (mid,)).fetchone()
+        if not m:
+            raise HTTPException(status_code=404, detail="Permintaan tidak ditemukan.")
+        if m["status"] not in ("menunggu", "diproses"):
+            raise HTTPException(status_code=409, detail=f"Permintaan ini sudah {m['status']}.")
+        item = [dict(i) for i in conn.execute("SELECT * FROM material_minta_item WHERE minta_id = ?", (mid,))]
+        kurangi = d.status == "dikirim" and d.kurangi_stok
+        if kurangi:
+            dari_gudang = [{"barang_id": i["barang_id"], "jumlah": i["jumlah"]} for i in item if i["barang_id"]]
+            if dari_gudang:
+                keluar = _gudang_keluar(conn, dari_gudang, None, _oleh(request), sekarang[:10],
+                                        f"Dikirim ke {m['nama_lokasi'] or 'lokasi ' + str(m['lokasi'])} (#M{mid})")
+        conn.execute("UPDATE material_minta SET status = ?, diproses_oleh = ?, diproses_pada = ?, alasan = ?, "
+                     "stok_dikurangi = ? WHERE id = ?", (d.status, _oleh(request), sekarang, alasan, int(bool(keluar)), mid))
+        conn.commit()
+    finally:
+        conn.close()
+    lok = m["nama_lokasi"] or f"lokasi {m['lokasi']}"
+    catat_aktivitas(_oleh(request), "material_" + d.status, f"#M{mid} {lok}: {d.status}"
+                    + (f" · stok warehouse dikurangi ({len(keluar)} barang)" if keluar else "")
+                    + (f" · {alasan}" if alasan else ""))
+    judul = {"diproses": "sedang diproses", "dikirim": "DIKIRIM", "ditolak": "DITOLAK"}[d.status]
+    send_telegram_message(f"📦 Permintaan material #M{mid} ({_esc(lok)}) {judul} oleh {_esc(_oleh(request))}."
+                          + (f"\nAlasan: {_esc(alasan)}" if alasan else ""))
+    if keluar:
+        _kabar_stok_menipis(keluar)
+    return {"ok": True, "stok_dikurangi": bool(keluar)}
 
 
 # ============================================================

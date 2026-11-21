@@ -56,12 +56,13 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .tabs button.on{background:#fff;color:#06703a;border-color:#fff}
 .tw{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:var(--fs-sm);min-width:480px}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}th{font-size:var(--fs-2xs);color:var(--muted);text-transform:uppercase;letter-spacing:.04em}td small{display:block;color:var(--muted);font-size:var(--fs-2xs)}
 .chip.info{background:#e3effd;color:#1d4f91}
+.tabs button{padding:10px 6px}
 </style></head><body>
 <div class="top"><div class="topIn">
  <div class="topRow"><div class="mark">ID</div><div class="judul"><b id="judulLok">Internet Desa</b><small><span class="peran">Admin wilayah</span><span id="akun">Memuat…</span></small></div>
   <button class="ib" onclick="bukaPassword()" aria-label="Ganti password" title="Ganti password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M18.5 4.5l2 2"/></svg></button>
   <button class="ib" onclick="keluar()" aria-label="Keluar" title="Keluar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button></div>
- <div class="tabs" role="tablist"><button id="tbPel" class="on" onclick="tab('pel')" role="tab">Pelanggan</button><button id="tbKeu" onclick="tab('keu')" role="tab">Keuangan</button></div>
+ <div class="tabs" role="tablist"><button id="tbPel" class="on" onclick="tab('pel')" role="tab">Pelanggan</button><button id="tbMat" onclick="tab('mat')" role="tab">Material</button><button id="tbKeu" onclick="tab('keu')" role="tab">Keuangan</button></div>
 </div></div>
 <div class="wrap">
  <div class="msg" id="msg"></div>
@@ -101,6 +102,18 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <div class="btns"><button class="btn go" onclick="simpanPassword()">Simpan</button></div>
  </div>
 
+ <div id="matView" style="display:none">
+  <div class="panel form" style="margin-bottom:12px">
+   <div class="nav"><b>Minta material ke Pusat</b></div>
+   <div id="mItem"></div>
+   <div class="btns" style="margin-top:8px"><button class="btn" onclick="mTambahBaris()">+ Barang lain</button></div>
+   <label for="mCatatan">Catatan untuk Pusat</label><textarea id="mCatatan" maxlength="300" placeholder="mis. untuk pasang 3 pelanggan baru di RT 02, butuh minggu ini"></textarea>
+   <div class="btns"><button class="btn go" id="mKirim" onclick="mKirim()">Kirim permintaan</button></div>
+   <div class="note">Permintaan langsung dikabarkan ke admin Pusat lewat Telegram. Status (diproses, dikirim, ditolak) tampil di bawah.</div>
+  </div>
+  <div class="panel"><div class="nav"><b>Permintaan wilayah</b></div><div id="mDaftar"><div class="muted">Memuat…</div></div></div>
+ </div>
+
  <div id="keuView" style="display:none">
   <div class="note" style="margin:0 0 10px"><span class="chip off">Hanya lihat</span> Keuangan wilayah Anda. Perubahan pembayaran dan transaksi dicatat oleh Pusat.</div>
   <div class="cards">
@@ -125,9 +138,10 @@ let D=null, F='aktif', K=null;
 async function api(url,opt){ const r=await fetch(url,opt); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status)); return d; }
 function pesan(t,ok){ const m=$('msg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t; if(t) window.scrollTo({top:0,behavior:'smooth'}); }
 async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{await _fetchAsli('/api/logout',{method:'POST'});}catch(e){} location.replace('/login'); }
-function tampil(v){ for(const [id,on] of [['pelView',v==='pel'],['keuView',v==='keu'],['formView',v==='form'],['pwView',v==='pw']]) $(id).style.display=on?'block':'none'; }
-function tab(t){ $('tbPel').classList.toggle('on',t==='pel'); $('tbKeu').classList.toggle('on',t==='keu'); pesan(''); tampil(t); if(t==='keu') muatKeuangan(); }
-function tutupForm(){ tab($('tbKeu').classList.contains('on')?'keu':'pel'); }
+let TAB='pel';
+function tampil(v){ for(const [id,on] of [['pelView',v==='pel'],['matView',v==='mat'],['keuView',v==='keu'],['formView',v==='form'],['pwView',v==='pw']]) $(id).style.display=on?'block':'none'; }
+function tab(t){ TAB=t; for(const [id,k] of [['tbPel','pel'],['tbMat','mat'],['tbKeu','keu']]) $(id).classList.toggle('on',t===k); pesan(''); tampil(t); if(t==='keu') muatKeuangan(); if(t==='mat') muatMaterial(); }
+function tutupForm(){ tab(TAB); }
 function bukaPassword(){ tampil('pw'); $('pwMsg').textContent=''; $('pwLama').focus(); }
 async function simpanPassword(){
  const lama=$('pwLama').value, baru=$('pwBaru').value, m=$('pwMsg');
@@ -206,6 +220,51 @@ async function muatKeuangan(){
  $('kBulan').innerHTML=K.per_bulan.map(b=>`<tr><td>${namaBulan(b.periode)}</td><td>${rp(b.ditagih)}<small>${b.n} tagihan</small></td><td>${rp(b.lunas)}<small>${b.n_lunas} lunas</small></td><td>${rp(b.belum)}<small>${b.n_belum} belum</small></td><td><b>${rp(b.uang_masuk)}</b></td></tr>`).join('');
  $('kTunggakList').innerHTML=K.tunggakan.length?K.tunggakan.map(t=>`<div class="row"><div class="info"><div class="name">${esc(t.nama)}</div><div class="sub">${esc(t.id_pelanggan||'')} · ${esc(t.username)} · ${t.n} bulan sejak ${namaBulan(t.sejak)}</div></div><div class="right"><b>${rp(t.jumlah)}</b></div></div>`).join(''):'<div class="muted">Tidak ada tunggakan.</div>';
  $('kTrx').innerHTML=K.transaksi.length?K.transaksi.map(t=>`<div class="row"><div class="info"><div class="name">${esc(t.kategori||'Transaksi')}</div><div class="sub">${esc(t.tanggal)}${t.keterangan?' · '+esc(t.keterangan):''}</div></div><div class="right"><b style="color:${t.jenis==='masuk'?'#0b7a3b':'#b42318'}">${t.jenis==='masuk'?'+':'−'}${rp(t.jumlah)}</b></div></div>`).join(''):'<div class="muted">Belum ada transaksi kas wilayah.</div>';
+}
+let M=null;
+const STATUS_M={menunggu:['warn','Menunggu Pusat'],diproses:['info','Diproses'],dikirim:['ok','Dikirim'],ditolak:['bad','Ditolak'],batal:['off','Dibatalkan']};
+async function muatMaterial(){
+ try{ M=await api('/api/wilayah/material',{cache:'no-store'}); }
+ catch(e){ $('mDaftar').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
+ if(!$('mItem').children.length) mTambahBaris();
+ else document.querySelectorAll('.mBarang').forEach(sel=>{ const v=sel.value; sel.innerHTML=mOpsi(); sel.value=v; });
+ $('mDaftar').innerHTML=M.permintaan.length?M.permintaan.map(m=>{ const [c,t]=STATUS_M[m.status]||['off',m.status];
+  return `<div class="row" style="display:block"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div class="info"><div class="name">#${esc(m.nomor)} <span class="chip ${c}">${t}</span></div>
+   <div class="sub">${esc(m.dibuat.slice(0,16))} · ${esc(m.peminta)}${m.diproses_pada&&m.status!=='menunggu'?' · '+t.toLowerCase()+' '+esc(m.diproses_pada.slice(0,16))+(m.diproses_oleh?' oleh '+esc(m.diproses_oleh):''):''}</div></div>
+   ${m.status==='menunggu'?`<button class="btn" onclick="mBatal(${m.id})">Batalkan</button>`:''}</div>
+   <div class="sub" style="margin-top:6px;color:var(--ink)">${m.item.map(i=>`• ${esc(i.nama)}: <b>${Number(i.jumlah).toLocaleString('id-ID')}</b> ${esc(i.satuan||'')}`).join('<br>')}</div>
+   ${m.catatan?`<div class="sub">Catatan: ${esc(m.catatan)}</div>`:''}${m.alasan?`<div class="sub" style="color:#b42318">Alasan Pusat: ${esc(m.alasan)}</div>`:''}</div>`; }).join('')
+  :'<div class="muted">Belum ada permintaan material.</div>';
+}
+function mOpsi(){ return '<option value="">— pilih barang —</option>'+(M?M.barang:[]).map(b=>`<option value="${b.id}">${esc(b.nama)} (${esc(b.satuan)})</option>`).join('')+'<option value="lain">Barang lain (ketik sendiri)…</option>'; }
+function mTambahBaris(){
+ const d=document.createElement('div'); d.className='mRow'; d.style.cssText='display:grid;grid-template-columns:minmax(0,1fr) 90px 36px;gap:6px;margin-top:8px;align-items:center';
+ d.innerHTML=`<select class="mBarang" aria-label="Barang" onchange="this.parentNode.querySelector('.mNama').style.display=this.value==='lain'?'':'none'">${mOpsi()}</select>
+  <input class="mJml" type="number" min="0" step="any" inputmode="decimal" placeholder="Jumlah" aria-label="Jumlah">
+  <button class="btn" type="button" aria-label="Hapus baris" onclick="this.parentNode.remove()">×</button>
+  <input class="mNama" style="display:none;grid-column:1/-1" maxlength="80" placeholder="Nama barang & satuan, mis. Tiang besi 6 m" aria-label="Nama barang">`;
+ $('mItem').appendChild(d);
+}
+async function mKirim(){
+ const item=[];
+ for(const r of document.querySelectorAll('.mRow')){
+  const v=r.querySelector('.mBarang').value, j=Number(r.querySelector('.mJml').value), nama=r.querySelector('.mNama').value.trim();
+  if(!v&&!j) continue;
+  if(!v||(v==='lain'&&!nama)){ pesan('Pilih barang (atau ketik nama barang lain) di setiap baris.'); return; }
+  if(!(j>0)){ pesan('Isi jumlah lebih dari 0 di setiap baris.'); return; }
+  item.push(v==='lain'?{nama,jumlah:j}:{barang_id:Number(v),jumlah:j});
+ }
+ if(!item.length){ pesan('Isi minimal satu barang.'); return; }
+ const b=$('mKirim'); b.disabled=true;
+ try{ const r=await api('/api/wilayah/material',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({item,catatan:$('mCatatan').value.trim()||null})});
+  $('mItem').innerHTML=''; $('mCatatan').value=''; pesan('Permintaan #'+r.nomor+' terkirim ke Pusat.',true); muatMaterial(); }
+ catch(e){ pesan('Gagal: '+e.message); }
+ finally{ b.disabled=false; }
+}
+async function mBatal(id){
+ if(!confirm('Batalkan permintaan #M'+id+'?')) return;
+ try{ await api('/api/wilayah/material/'+id+'/batal',{method:'POST'}); pesan('Permintaan #M'+id+' dibatalkan.',true); muatMaterial(); }
+ catch(e){ pesan('Gagal: '+e.message); }
 }
 muat();
 </script>
