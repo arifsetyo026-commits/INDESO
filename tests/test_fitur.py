@@ -1017,6 +1017,22 @@ def test_acs_dan_diagnosa(siap, monkeypatch):
         ["InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1.KeyPassphrase", "rahasia123", "xsd:string"]]
     k.post("/api/acs/budi/wifi", json={"index": 5, "password": "rahasia123"})
     assert acs.tugas[-1]["parameterValues"][0][0].endswith("WLANConfiguration.5.KeyPassphrase")
+    # ZTE F670L V9: nama yang dipakai saat menyala ada di .Name dan sandi WPA di PreSharedKey.1.KeyPassphrase (ONU juga
+    # punya KeyPassphrase yang diterima tapi diabaikan). Kolom yang belum terbaca ACS diminta dilaporkan dulu.
+    wl = acs.dev["ZTEGC1234567"]["InternetGatewayDevice"]["LANDevice"]["1"]["WLANConfiguration"]
+    wl["1"]["KeyPassphrase"] = {"_value": "", "_writable": True}
+    wl["5"]["Name"] = {"_value": "ZTE5G", "_writable": True}
+    wl["5"]["PreSharedKey"] = {"1": {"KeyPassphrase": {"_value": "", "_writable": True}}}
+    acs.tugas.clear()
+    assert k.post("/api/acs/budi/wifi", json={"index": 1, "ssid": "AS3", "password": "rahasia123"}).json()["status"] == "selesai"
+    assert acs.tugas[0] == {"name": "refreshObject", "objectName": "InternetGatewayDevice.LANDevice.1.WLANConfiguration.1"}
+    assert [x[0].rsplit("WLANConfiguration.1.", 1)[1] for x in acs.tugas[-1]["parameterValues"]] == [
+        "SSID", "PreSharedKey.1.KeyPassphrase", "KeyPassphrase"]              # .Name tidak dilaporkan ONU ini: dilewati
+    acs.tugas.clear()
+    k.post("/api/acs/budi/wifi", json={"index": 5, "ssid": "AS3_5G", "password": "rahasia123"})
+    assert acs.tugas[0]["name"] == "setParameterValues"                      # .Name & PreSharedKey sudah ada: tanpa baca ulang
+    assert [x[0].rsplit("WLANConfiguration.5.", 1)[1] for x in acs.tugas[-1]["parameterValues"]] == [
+        "SSID", "Name", "PreSharedKey.1.KeyPassphrase", "KeyPassphrase"]
     log = " ".join(x["detail"] for x in o.get("/api/aktivitas").json()["aktivitas"])
     assert "password WiFi diganti" in log and "rahasia123" not in log
     acs.antre = True
