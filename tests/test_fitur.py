@@ -4276,3 +4276,59 @@ def test_tagihan_pertama_pilihan_dan_ubah_jumlah(siap):
     assert "Rp 75.000 → Rp 80.000" in o.get("/api/aktivitas").text
     o.post(f"/api/tagihan/{tid}/lunas")
     assert k.post(f"/api/tagihan/{tid}/jumlah", json={"jumlah": 90000, "alasan": "telat"}).status_code == 400
+
+
+def test_admin_wilayah_hanya_lokasinya(siap):
+    """Admin wilayah: hanya halaman & data lokasinya. Bisa tambah/berhentikan/aktifkan/hapus pelanggan lokasinya dan
+    melihat keuangannya; tidak bisa membuka jalur lain (pelanggan lokasi lain, penagihan, isolir, akun, pengaturan)."""
+    main, o, k, m = siap
+    assert o.post("/api/lokasi", json={"nama": "Dempel"}).json()["kode"] == 2
+    assert o.post("/api/lokasi", json={"nama": "Soborejo"}).json()["kode"] == 3
+    assert o.post("/api/akun", json={"username": "admdempel", "password": "dempelpass1", "peran": "wilayah",
+                                     "lokasi": 2}).status_code == 200
+    assert o.post("/api/akun", json={"username": "admsobo", "password": "sobopass12", "peran": "wilayah",
+                                     "lokasi": 3}).status_code == 200
+    d = klien(main, "admdempel", "dempelpass1")
+    s = klien(main, "admsobo", "sobopass12")
+    assert "Admin wilayah" in d.get("/").text and "Keuangan" in d.get("/").text
+    # Jalur lain tertutup
+    for jalur in ("/api/data-pelanggan", "/api/tagihan", "/api/akun", "/api/status", "/api/keuangan/ringkasan",
+                  "/api/mitra/pelanggan", "/api/kas-wilayah", "/api/pengaturan"):
+        assert d.get(jalur).status_code == 403, jalur
+    assert d.post("/api/data-pelanggan", json={}).status_code == 403
+    assert d.delete("/api/data-pelanggan/budi").status_code == 403
+    # Pusat (admin) tidak memakai jalur wilayah
+    assert k.get("/api/wilayah/data").status_code == 403
+    # Lokasi 2 masih kosong: pelanggan lokasi 1 (budi dkk.) tidak terlihat
+    data = d.get("/api/wilayah/data").json()
+    assert data["lokasi"]["nama"] == "Dempel" and data["pelanggan"] == [] and data["paket"]
+    hari = __import__("datetime").date.today().isoformat()
+    baru = {"username": "dempel.sri", "nama": "Sri", "alamat": "RT 01", "no_hp": "0812", "paket_id": 1, "tgl_pasang": hari}
+    r = d.post("/api/wilayah/pelanggan", json=dict(baru, lokasi=1))         # lokasi dari klien diabaikan
+    assert r.status_code == 200 and r.json()["id_pelanggan"].split("-")[1] == "2"
+    assert d.post("/api/wilayah/pelanggan", json=baru).status_code == 409     # username unik
+    assert s.post("/api/wilayah/pelanggan", json=dict(baru, username="sobo.ani", nama="Ani S")).status_code == 200
+    pel = d.get("/api/wilayah/data").json()["pelanggan"]
+    assert [p["username"] for p in pel] == ["dempel.sri"]
+    assert [p["username"] for p in s.get("/api/wilayah/data").json()["pelanggan"]] == ["sobo.ani"]
+    # Tidak bisa menyentuh pelanggan lokasi lain
+    for u in ("sobo.ani", "budi"):
+        assert d.post(f"/api/wilayah/pelanggan/{u}/status", json={"status": "berhenti"}).status_code == 404
+        assert d.delete(f"/api/wilayah/pelanggan/{u}").status_code == 404
+    # Berhentikan & aktifkan lagi (paket tidak berubah)
+    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "berhenti"}).status_code == 200
+    conn = main._billing_conn()
+    row = conn.execute("SELECT status, paket_id, lokasi FROM pelanggan WHERE username='dempel.sri'").fetchone()
+    conn.close()
+    assert tuple(row) == ("berhenti", 1, 2)
+    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "aktif"}).status_code == 200
+    assert d.post("/api/wilayah/pelanggan/dempel.sri/status", json={"status": "isolir"}).status_code == 400
+    # Keuangan: hanya lokasinya, lihat saja
+    keu = d.get("/api/wilayah/keuangan").json()
+    assert keu["lokasi"]["kode"] == 2 and len(keu["per_bulan"]) == 12
+    assert {t["username"] for t in keu["tunggakan"]} <= {"dempel.sri"}
+    assert d.post("/api/wilayah/keuangan", json={}).status_code == 405
+    # Hapus (belum pernah bayar): boleh
+    assert d.delete("/api/wilayah/pelanggan/dempel.sri").status_code == 200
+    assert d.get("/api/wilayah/data").json()["pelanggan"] == []
+    assert "dempel.sri" in o.get("/api/aktivitas").text

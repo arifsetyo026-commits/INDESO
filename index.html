@@ -498,8 +498,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
  <div class="plForm" style="margin-top:14px"><b style="font-size:var(--fs-sm)">Tambah pengguna</b>
   <label>Username</label><input id="akUser" autocapitalize="none" spellcheck="false" placeholder="mis. kasir1">
   <label>Password awal (min. 8 karakter)</label><input id="akPass" type="password" autocomplete="new-password">
-  <label>Peran</label><select id="akPeran"><option value="admin">Admin — operasional (catat keuangan, billing, isolir)</option><option value="owner">Owner — akses penuh + laporan keuangan saat login</option><option value="mitra">Mitra — hanya halaman mitra</option><option value="reseller">Reseller — jual voucher hotspot (warung)</option></select>
-  <label>Lokasi mitra/reseller <span class="plSub">(mitra & reseller hanya melihat data lokasinya)</span></label><select id="akLokasi"></select>
+  <label>Peran</label><select id="akPeran"><option value="admin">Admin — operasional (catat keuangan, billing, isolir)</option><option value="owner">Owner — akses penuh + laporan keuangan saat login</option><option value="wilayah">Admin wilayah — tambah/berhentikan pelanggan & lihat keuangan satu lokasi</option><option value="mitra">Mitra — hanya halaman mitra</option><option value="reseller">Reseller — jual voucher hotspot (warung)</option></select>
+  <label>Lokasi admin wilayah/mitra/reseller <span class="plSub">(akun ini hanya melihat data lokasinya)</span></label><select id="akLokasi"></select>
   <div class="plBtns"><button class="plSave" onclick="tambahAkun()">Tambah pengguna</button></div>
  </div>
 </div>
@@ -1792,13 +1792,13 @@ async function loadAkun(){
   $('akLokasi').innerHTML=st.lokasi.map(x=>`<option value="${x.kode}">${x.kode} · ${esc(x.nama)}</option>`).join('');
   $('akunList').innerHTML=d.akun.map((a,i)=>{
    const diri=a.username===d.saya;
-   const chip=({owner:'<span class="chip info">Owner</span>',admin:'<span class="chip ok">Admin</span>',mitra:'<span class="chip warn">Mitra</span>',reseller:'<span class="chip warn">Reseller</span>'}[a.peran]||'')+(a.aktif?'':'<span class="chip bad">Nonaktif</span>');
-   const lokM=(a.peran==='mitra'||a.peran==='reseller')?(st.lokasi.find(x=>x.kode===(a.lokasi||1))||{nama:'Lokasi '+(a.lokasi||1)}):null;
+   const chip=({owner:'<span class="chip info">Owner</span>',admin:'<span class="chip ok">Admin</span>',wilayah:'<span class="chip info">Admin wilayah</span>',mitra:'<span class="chip warn">Mitra</span>',reseller:'<span class="chip warn">Reseller</span>'}[a.peran]||'')+(a.aktif?'':'<span class="chip bad">Nonaktif</span>');
+   const lokM=['mitra','reseller','wilayah'].includes(a.peran)?(st.lokasi.find(x=>x.kode===(a.lokasi||1))||{nama:'Lokasi '+(a.lokasi||1)}):null;
    const sub=(lokM?'Lokasi: <b>'+esc(lokM.nama)+'</b> · ':'')+'Login terakhir: '+(a.login_terakhir?esc(khWaktu(a.login_terakhir)):'belum pernah')+' · '+a.sesi_aktif+' sesi aktif'+(diri?' · <b>akun Anda</b>':'');
    const tombol=`<button class="btnS" onclick="resetPassword(${i})">Reset password</button>`
-    +((a.peran==='mitra'||a.peran==='reseller')&&st.lokasi.length>1?`<select class="btnS" onchange="ubahLokasiMitra(${i},this.value);this.value=''"><option value="">Pindah lokasi…</option>${st.lokasi.filter(x=>x.kode!==(a.lokasi||1)).map(x=>`<option value="${x.kode}">${esc(x.nama)}</option>`).join('')}</select>`:'')
+    +(['mitra','reseller','wilayah'].includes(a.peran)&&st.lokasi.length>1?`<select class="btnS" onchange="ubahLokasiMitra(${i},this.value);this.value=''"><option value="">Pindah lokasi…</option>${st.lokasi.filter(x=>x.kode!==(a.lokasi||1)).map(x=>`<option value="${x.kode}">${esc(x.nama)}</option>`).join('')}</select>`:'')
     +(a.sesi_aktif&&!diri?`<button class="btnS" onclick="cabutSesi(${i})">Keluarkan</button>`:'')
-    +(diri&&a.peran!=='admin'?'':`<select class="btnS" onchange="ubahPeran(${i},this.value);this.value=''"><option value="">Ubah peran…</option>${['owner','admin','mitra','reseller'].filter(p=>p!==a.peran&&!(diri&&p==='mitra')).map(p=>`<option value="${p}">Jadikan ${p}</option>`).join('')}</select>`)+(diri?'':`<button class="btnS" onclick="toggleAktif(${i})">${a.aktif?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick="hapusAkun(${i})">Hapus</button>`);
+    +(diri&&a.peran!=='admin'?'':`<select class="btnS" onchange="ubahPeran(${i},this.value);this.value=''"><option value="">Ubah peran…</option>${['owner','admin','wilayah','mitra','reseller'].filter(p=>p!==a.peran&&!(diri&&p==='mitra')).map(p=>`<option value="${p}">Jadikan ${p==='wilayah'?'admin wilayah':p}</option>`).join('')}</select>`)+(diri?'':`<button class="btnS" onclick="toggleAktif(${i})">${a.aktif?'Nonaktifkan':'Aktifkan'}</button><button class="btnS" onclick="hapusAkun(${i})">Hapus</button>`);
    return `<div class="blRow akRow"><div><div class="plName">${esc(a.username)}</div><div class="plSub">${sub}</div></div><div class="blKanan"><div class="blAksi">${chip}</div><div class="blAksi">${tombol}</div></div></div>`;
   }).join('')||'<div class="muted">Belum ada pengguna.</div>';
  }catch(e){ $('akunList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
