@@ -4101,6 +4101,38 @@ def test_akun_portal_massal_sandi_awal(siap):
     assert r.status_code == 400
 
 
+def test_detektor_pppoe_ganda(siap):
+    """Satu ONU dengan dua sesi PPPoE (akun sama: dua WAN saling tendang; akun beda: sisa akun lama) dan satu akun
+    dari dua perangkat dikabarkan sekali setelah 2 putaran; kabar beres saat hilang. Sesi normal tidak dikabarkan."""
+    main, o, k, m = siap
+    U = lambda n, mac, ip="10.0.0.9": main.PPPoEUser(username=n, ip_address=ip, uptime="5m", caller_id=mac)
+    onu = [main.ONUStatus.model_construct(pon="0/0/1", onu_id=1, serial_number="ZTEGD33C6275", online=True)]
+    main._MAC_ONU.clear()
+    main._MAC_ONU.update({"3C:A7:AE:3D:7C:81": ("0/0/1", 1), "3C:A7:AE:3D:7C:83": ("0/0/1", 1)})
+    sesi = [U("astri", "3C:A7:AE:3D:7C:81"), U("budi", "3C:A7:AE:3D:7C:83"),          # satu ONU, dua akun
+            U("ani", "AA:BB:CC:00:00:01"), U("ani", "AA:BB:CC:00:00:02"),             # tanpa OLT: WAN satu perangkat
+            U("dwi", "11:22:33:44:55:66"), U("dwi", "77:88:99:AA:BB:CC"),             # satu akun, dua perangkat
+            U("eko", "DE:AD:BE:EF:00:01")]                                             # normal
+    main._terkirim.clear()
+    main.proses_pppoe_ganda(sesi, None, onu)
+    assert not main._terkirim                                                          # putaran pertama: belum
+    main.proses_pppoe_ganda(sesi, None, onu)
+    kabar = [str(t["data"].get("text", "")) for t in main._terkirim]
+    assert any("PON 0/0/1 ONU 1 (ZTEGD33C6275) login dengan 2 akun berbeda" in x and "astri" in x and "budi" in x for x in kabar)
+    assert any("2 sesi PPPoE akun yang sama" in x and "ani" in x for x in kabar)
+    assert any("Akun dwi login dari 2 perangkat" in x for x in kabar)
+    assert not any("eko" in x for x in kabar) and len(kabar) == 3
+    main._terkirim.clear()
+    main.proses_pppoe_ganda(sesi, None, onu)                                          # tidak diulang
+    assert not main._terkirim
+    main.proses_pppoe_ganda(sesi, "MikroTik mati", onu)                               # data tak bisa dipercaya: diam
+    assert not main._terkirim
+    main.proses_pppoe_ganda([U("astri", "3C:A7:AE:3D:7C:81"), U("eko", "DE:AD:BE:EF:00:01")], None, onu)
+    beres = [str(t["data"].get("text", "")) for t in main._terkirim]
+    assert len(beres) == 3 and all("sudah beres" in x for x in beres)
+    assert "pppoe_ganda" in o.get("/api/aktivitas").text
+
+
 def test_tagihan_pertama_tidak_pernah_prorata_otomatis(siap):
     """Pelanggan baru yang belum ditagih bulan pertamanya: pembuatan tagihan otomatis/tombol "Buat tagihan" tidak
     membuat prorata sendiri; admin memilih lewat Buat tagihan pertama (prorata / penuh / manual)."""
