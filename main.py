@@ -11864,6 +11864,59 @@ _KUNCI_WIFI = ("KeyPassphrase", "PreSharedKey.1.KeyPassphrase", "PreSharedKey.1.
 _KUNCI_WIFI_HUAWEI = ("PreSharedKey.1.PreSharedKey", "PreSharedKey.1.KeyPassphrase", "KeyPassphrase")
 
 
+def _zte(doc: dict) -> bool:
+    return "zte" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
+
+
+def _boleh_tulis(doc: dict, path: str) -> bool:
+    p = _param(doc, path)
+    return "_value" in p and p.get("_writable") is not False
+
+
+def _lengkapi_wifi_zte(doc: dict, indeks: list) -> dict:
+    """ONU ZTE (mis. F670L V9) menyimpan nama WiFi yang dipakai saat menyala di WLANConfiguration.N.Name dan sandi WPA
+    yang dipakai di PreSharedKey.1.KeyPassphrase. Mengubah SSID/KeyPassphrase saja diterima ("sukses") tetapi nama
+    kembali ke nilai lama setelah ONU mati dan sandi tidak berubah sama sekali (ONU Astri, Nov 2026). Kedua kolom itu
+    sering belum terbaca ACS: minta ONU melaporkannya dulu (hanya membaca), lalu ambil dokumen terbaru."""
+    if not _zte(doc):
+        return doc
+    kurang = [i for i in indeks
+              if not _ada(doc, f"{_IGD}.LANDevice.1.WLANConfiguration.{i}.Name")
+              or not _ada(doc, f"{_IGD}.LANDevice.1.WLANConfiguration.{i}.PreSharedKey.1.KeyPassphrase")]
+    for i in kurang:
+        try:
+            _tugas_acs(doc["_id"], {"name": "refreshObject", "objectName": f"{_IGD}.LANDevice.1.WLANConfiguration.{i}"})
+        except HTTPException as e:
+            logger.warning(f"Baca ulang WLAN {i} {doc['_id']} gagal: {e.detail}")
+    if not kurang:
+        return doc
+    try:
+        baru = _acs("GET", "/devices/", params={"query": json.dumps({"_id": doc["_id"]})}).json()
+        return baru[0] if baru else doc
+    except (HTTPException, ValueError, IndexError):
+        return doc
+
+
+def _nilai_nama_sandi(doc: dict, b: str, ssid: Optional[str], pw: Optional[str]) -> tuple[list, bool]:
+    """Parameter setParameterValues untuk nama & sandi satu WiFi. Hasil kedua: sandi bisa diatur atau tidak.
+    ZTE: nama juga ditulis ke .Name, sandi ke PreSharedKey.1.KeyPassphrase (dan KeyPassphrase bila ada)."""
+    nilai = []
+    if ssid:
+        nilai.append([f"{b}.SSID", ssid, "xsd:string"])
+        if _zte(doc) and _boleh_tulis(doc, f"{b}.Name"):
+            nilai.append([f"{b}.Name", ssid, "xsd:string"])
+    bisa = True
+    if pw:
+        if _zte(doc):
+            kunci = [k for k in ("PreSharedKey.1.KeyPassphrase", "KeyPassphrase") if _boleh_tulis(doc, f"{b}.{k}")]
+        else:
+            k = _kunci_wifi(doc, b)
+            kunci = [k] if k else []
+        bisa = bool(kunci)
+        nilai += [[f"{b}.{k}", pw, "xsd:string"] for k in kunci]
+    return nilai, bisa
+
+
 def _kunci_wifi(doc: dict, b: str) -> Optional[str]:
     """Parameter password WiFi untuk WLANConfiguration `b`, sesuai urutan yang diterima pabrikan ONU."""
     huawei = "huawei" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
@@ -12520,14 +12573,11 @@ def _ganti_wifi(username: str, d: WifiIn, oleh: str) -> dict:
     b = f"{_IGD}.LANDevice.1.WLANConfiguration.{d.index}"
     if _nilai(doc, f"{b}.SSID") is None:
         raise HTTPException(status_code=404, detail="Jaringan WiFi itu tidak ditemukan di ONU.")
-    nilai = []
-    if ssid:
-        nilai.append([f"{b}.SSID", ssid, "xsd:string"])
-    if pw:
-        kunci = _kunci_wifi(doc, b)
-        if not kunci:
-            raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
-        nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
+    if ssid or pw:
+        doc = _lengkapi_wifi_zte(doc, [d.index])
+    nilai, bisa = _nilai_nama_sandi(doc, b, ssid, pw)
+    if pw and not bisa:
+        raise HTTPException(status_code=400, detail="Model ONU ini tidak membuka pengaturan password WiFi lewat TR-069.")
     if lebar:
         par, _ = _lebar_kanal(doc, b)
         band = _band_wifi(doc, b, _nilai(doc, f"{b}.SSID"))
@@ -15065,18 +15115,17 @@ def _nilai_wifi_utama(doc: dict, ssid: str, pw: str, akhir: str) -> tuple[list, 
     target = _wifi_utama(wlan)
     if not target:
         raise HTTPException(status_code=404, detail="ONU tidak melaporkan jaringan WiFi apa pun.")
+    doc = _lengkapi_wifi_zte(doc, [w["index"] for w in target])
     nilai, diatur = [], []
     for w in target:
         b = f"{_IGD}.LANDevice.1.WLANConfiguration.{w['index']}"
         nama = ssid + akhir if w["band"] == "5 GHz" and akhir else ssid
-        nilai.append([f"{b}.SSID", nama, "xsd:string"])
+        isi, bisa = _nilai_nama_sandi(doc, b, nama, pw)
+        nilai += isi
         if not w["aktif"] and _ada(doc, f"{b}.Enable"):
             # ONU baru (mis. Huawei) bisa memancar mati: nyalakan juga, bukan hanya ganti nama.
             nilai.append([f"{b}.Enable", True, _param(doc, f"{b}.Enable").get("_type") or "xsd:boolean"])
-        kunci = _kunci_wifi(doc, b)
-        if kunci:
-            nilai.append([f"{b}.{kunci}", pw, "xsd:string"])
-        diatur.append(f"{nama} ({w['band']}{'' if kunci else ', password tidak bisa diatur lewat TR-069'})")
+        diatur.append(f"{nama} ({w['band']}{'' if bisa else ', password tidak bisa diatur lewat TR-069'})")
     return nilai, diatur
 
 
