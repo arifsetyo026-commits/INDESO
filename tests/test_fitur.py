@@ -2961,6 +2961,102 @@ def test_ganti_onu_sn_lama_dilepas(siap):
     assert [b["sn"] for b in baru] == ["ZTEGCAGUS0001"] and status("ZTEGCAGUS0001") == "baru"
 
 
+def test_onu_bekas_tidak_membawa_data_pelanggan_lama(siap, monkeypatch):
+    """ONU bekas budi dipasang di rumah lain: catatan akun budi dilepas, ONU muncul lagi di ONU Baru, dan
+    halaman/portal budi tidak lagi membaca (atau mengubah WiFi) ONU yang kini di rumah pelanggan lain."""
+    main, o, k, m = siap
+    from datetime import datetime, timedelta
+    O = main.ONUStatus
+    onu = lambda sn, online, user=None, i=7: O(pon="0/0/1", onu_id=i, snmp_index=i, serial_number=sn, olt_rx_dbm=-20.0,
+                                              online=online, status="OK" if online else "OFFLINE", pppoe_username=user)
+    kol = lambda sn: dict(main._history_conn().execute(
+        "SELECT status, pengguna, untuk, bekas_dari, calon_bekas FROM onu_baru WHERE sn=?", (sn,)).fetchone())
+    t0 = datetime(2026, 11, 1, 8, 0)
+    SN = "ZTEGC1234567"
+    main.catat_onu_baru([onu(SN, True, "budi")], t0)                              # isi awal
+    main.catat_onu_baru([onu(SN, True, "budi")], t0 + timedelta(minutes=1))
+    main._ubah_onu_baru(SN, status="selesai", untuk="budi", wifi="2026-11-01T08:00:00", wifi_ssid="RUMAH_BUDI")
+    assert kol(SN)["pengguna"] == "budi"
+
+    # 1) Mati sebentar lalu menyala tanpa PPPoE, budi tersambung lagi sebelum batas tunggu: tidak dilepas
+    main.catat_onu_baru([onu(SN, False)], t0 + timedelta(hours=1))
+    main.catat_onu_baru([onu(SN, True), onu("ZTEGCLAIN0001", True, "ani", 9)], t0 + timedelta(hours=8))  # mati 7 jam
+    assert kol(SN)["calon_bekas"] and kol(SN)["pengguna"] == "budi" and kol(SN)["status"] == "selesai"
+    main.catat_onu_baru([onu(SN, True, "budi")], t0 + timedelta(hours=8, minutes=3))
+    assert kol(SN)["calon_bekas"] is None and kol(SN)["pengguna"] == "budi" and kol(SN)["status"] == "selesai"
+
+    # 2) Mati lama, direset, dipasang di rumah lain: menyala tanpa PPPoE >= 10 menit -> ONU bekas
+    main.catat_onu_baru([onu(SN, False)], t0 + timedelta(hours=9))
+    lain = onu("ZTEGCLAIN0001", True, "ani", 9)                                   # ONU lain: bukti PPPoE terbaca
+    main.catat_onu_baru([onu(SN, True), lain], t0 + timedelta(days=3), False)     # MikroTik tak terbaca
+    main.catat_onu_baru([onu(SN, True), lain], t0 + timedelta(days=3, minutes=30), False)
+    assert kol(SN)["calon_bekas"] and kol(SN)["pengguna"] == "budi"               # belum diputuskan
+    main.catat_onu_baru([onu(SN, True), lain], t0 + timedelta(days=3, minutes=31))
+    r = kol(SN)
+    assert (r["status"], r["pengguna"], r["untuk"], r["bekas_dari"]) == ("baru", None, None, "budi")
+    assert "dianggap ONU bekas" in o.get("/api/aktivitas").text
+    obj = next(x for x in k.get("/api/onu-baru").json()["onu"] if x["sn"] == SN)
+    assert obj["bekas_dari"] == "budi" and obj["untuk"] is None and obj["tercatat"] is None
+    assert main._peta_pemakai_onu().get("budi") is None                         # tidak lagi tampil sebagai ONU budi
+
+    # 3) ACS: dokumen ONU bekas masih berisi username PPPoE & id lama budi -> tidak dipakai untuk budi
+    acs = FakeACS()
+    main.CONFIG["GENIEACS_URL"] = "http://acs.test/nbi"
+    monkeypatch.setattr(main.requests, "request", acs.request)
+    conn = main._billing_conn()
+    conn.execute("UPDATE pelanggan SET acs_id='ZTE-F609-ZTEGC1234567' WHERE username='budi'")
+    conn.commit(); conn.close()
+    assert main._cari_perangkat("budi") is None
+    assert main._dok_acs_milik_lain(acs.dev[SN], "ani") is False
+
+    # 4) Pelanggan baru (ani) tersambung lewat ONU itu: pindah tercatat, budi tetap tidak bisa membacanya
+    main.catat_onu_baru([onu(SN, True, "ani")], t0 + timedelta(days=3, minutes=20))
+    assert kol(SN)["pengguna"] == "ani"
+    assert main._cari_perangkat("budi") is None
+
+    # 5) ONU yang tercatat dipakai ani langsung tersambung dengan akun lain (tanpa jeda): pindah pemakai
+    main.catat_onu_baru([onu(SN, True, "server")], t0 + timedelta(days=4))
+    r = kol(SN)
+    assert (r["pengguna"], r["bekas_dari"]) == ("server", "ani")
+    assert "kini tersambung dengan akun server" in o.get("/api/aktivitas").text
+
+
+def test_onu_dilepas_saat_pelanggan_berhenti(siap):
+    """Pelanggan berhenti: ONU-nya dilepas dari akunnya; saat ONU itu menyala lagi (dipasang di tempat lain) ia
+    kembali ke daftar ONU Baru. Tombol Lepas manual menolak ONU yang sedang tersambung PPPoE."""
+    main, o, k, m = siap
+    from datetime import datetime, timedelta
+    O = main.ONUStatus
+    onu = lambda sn, online, user=None: O(pon="0/0/1", onu_id=3, snmp_index=3, serial_number=sn, olt_rx_dbm=-20.0,
+                                         online=online, status="OK" if online else "OFFLINE", pppoe_username=user)
+    t0 = datetime(2026, 11, 1, 8, 0)
+    SN = "ZTEGCANI00001"
+    main.catat_onu_baru([onu(SN, True, "ani")], t0)
+    main.catat_onu_baru([onu(SN, True, "ani")], t0 + timedelta(minutes=1))
+    main._ubah_onu_baru(SN, status="selesai")
+    # Tombol lepas: ONU sedang tersambung akun ani -> ditolak
+    main._latest_data = main._build_dashboard([], None, [onu(SN, True, "ani")])
+    assert k.post(f"/api/onu-baru/{SN}/lepas").status_code == 409
+    main._latest_data = main._build_dashboard([], None, [onu(SN, False)])
+    assert o.put("/api/data-pelanggan/ani", json={"nama": "Ani", "paket_id": 1, "status": "berhenti",
+                                                    "atur_secret": False}).status_code == 200
+    st = lambda: tuple(main._history_conn().execute("SELECT status, pengguna, bekas_dari FROM onu_baru WHERE sn=?",
+                                                      (SN,)).fetchone())
+    assert st() == ("selesai", None, "ani")
+    assert "ani berhenti: ONU ZTEGCANI00001 dilepas" in o.get("/api/aktivitas").text
+    main.catat_onu_baru([onu(SN, False)], t0 + timedelta(days=1))
+    main.catat_onu_baru([onu(SN, True)], t0 + timedelta(days=5))                 # dipasang di rumah lain
+    assert st() == ("baru", None, "ani")
+    # Lepas manual: ONU dengan catatan pemakai lama (tanpa PPPoE) -> dilepas
+    SN2 = "ZTEGCBUDI0009"
+    main.catat_onu_baru([onu(SN2, True, "budi")], t0)
+    main._latest_data = main._build_dashboard([], None, [onu(SN2, True)])
+    r = k.post(f"/api/onu-baru/{SN2}/lepas")
+    assert r.status_code == 200 and r.json()["dilepas"] == "budi"
+    assert tuple(main._history_conn().execute("SELECT pengguna, bekas_dari, status FROM onu_baru WHERE sn=?",
+                                              (SN2,)).fetchone()) == (None, "budi", "baru")
+
+
 def test_bersihkan_onu_mati(siap):
     """Hapus pendaftaran ONU mati dari OLT: hanya owner; ONU pelanggan yang mungkin hanya mati listrik tidak boleh;
     satu per satu (`ont delete P O`, tidak pernah all/offline-list), lalu save; catatan ONU Baru ikut dilepas."""

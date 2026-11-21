@@ -2335,6 +2335,8 @@ function kartuOnuBaru(o,i){
  const aktif=ob.tab==='aktif', D=ob.data||{}, olt=o.online&&D.olt_telnet?'':' disabled';
  const pilihUntuk=(aktif&&!o.pppoe_username&&ob.akun)?`<div style="margin-top:8px"><label class="plSub" for="obUntuk${i}">Dipasang untuk pelanggan</label><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:3px"><select id="obUntuk${i}" class="btnS" style="flex:1;min-width:0" onchange="untukOnuBaru('${sn}',this.value)"><option value="">— pilih —</option>${ob.akun.map(a=>`<option value="${esc(a.username)}"${a.username===o.untuk?' selected':''}>${esc(a.nama||a.username)} (${esc(a.username)})${a.di_indeso?'':' · baru'}</option>`).join('')}</select><button class="btnS" onclick="closeModal('onuBaruModal');openPelanggan().then(()=>bukaPasangBaru())">+ Tambah pelanggan</button></div></div>`
   :(o.untuk&&!o.pppoe_username?`<div class="plSub" style="margin-top:6px">Dipasang untuk: <b>${esc(o.nama_untuk||o.untuk)}</b></div>`:'');
+ const bekas=o.bekas_dari?`<div class="plSub" style="margin-top:6px;color:#8a5a00">♻️ ONU bekas <b>${esc(o.nama_bekas||o.bekas_dari)}</b>. Catatan akun lamanya sudah dilepas. Pastikan ONU sudah direset pabrik sebelum diaktifkan.</div>`
+  :(aktif&&o.tercatat?`<div class="plSub" style="margin-top:6px">Tercatat terakhir dipakai <b>${esc(o.nama_tercatat||o.tercatat)}</b>. ONU bekas untuk pelanggan lain? <a href="#" onclick="lepasOnuBaru('${sn}');return false">Lepas dari akun ini</a></div>`:'');
  const lain=`<button class="btnS${o.pppoe_username?' go':''}" onclick="tr069OnuBaru('${sn}',true,this)"${olt}>Kirim TR-069 + restart ONU</button>
    <button class="btnS" onclick="tr069OnuBaru('${sn}',false,this)"${olt}>Kirim TR-069 saja</button>
    <button class="btnS" onclick="restartOnuBaru('${sn}',this)"${o.terbaca&&D.olt_telnet?'':' disabled'}>Restart ONU</button>
@@ -2351,7 +2353,7 @@ function kartuOnuBaru(o,i){
   <div class="plSub">OLT-RX ${dbm(o.olt_rx)} dBm · ONU-RX ${dbm(o.onu_rx)} dBm${o.redaman&&o.redaman!=='OK'&&o.redaman!=='UNKNOWN'?' · <b style="color:#b42318">'+esc(o.redaman==='CRITICAL'?'kritis':'perlu dicek')+'</b>':''}</div></div>${status}</div>
   <div style="margin-top:8px">${ceklis}</div>
   ${aktif?`<div style="margin-top:8px;background:#f7faf8;border-radius:9px;padding:8px 10px;font-size:var(--fs-xs)"><b>Langkah berikutnya:</b> ${esc(o.saran)}</div>`:''}
-  ${pilihUntuk}${tombol}</div>`;
+  ${bekas}${pilihUntuk}${tombol}</div>`;
 }
 // ONU tanpa pelanggan di daftar PON & ONU (mis. ONU bekas yang sudah direset): masukkan ke ONU Baru untuk aktivasi.
 async function aktivasiOnuTakTerpetakan(sn){
@@ -2411,6 +2413,11 @@ async function simpanWifiOnuBaru(sn,i){
   obPesan('✅ Diterapkan di ONU: '+r.diatur.join(', '),true);
   $('obWifi'+i).innerHTML=''; setTimeout(muatOnuBaru,800);
  }catch(e){ obPesan('Gagal: '+e.message); }
+}
+async function lepasOnuBaru(sn){
+ if(!confirm('Lepas ONU '+sn+' dari akun pemakai lamanya? Lakukan ini bila ONU bekas dipasang di pelanggan lain. Pastikan ONU sudah direset pabrik.')) return;
+ try{ const r=await jsonAtauError(await fetch('/api/onu-baru/'+sn+'/lepas',{method:'POST'})); obPesan('ONU '+sn+' dilepas dari akun '+r.dilepas+'.',true); muatOnuBaru(); }
+ catch(e){ obPesan('Gagal: '+e.message); }
 }
 async function tandaiOnuBaru(sn,aksi){
  if(aksi==='abaikan'&&!confirm('Abaikan ONU '+sn+'? (mis. ONU uji coba / bukan pelanggan)')) return;
