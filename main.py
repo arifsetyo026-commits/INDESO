@@ -397,6 +397,12 @@ class DashboardData(BaseModel):
     onu_online_count: int
     onu_critical_count: int
     onu_warning_count: int
+    # Ringkasan pelanggan untuk kartu menu utama (diisi /api/status): online = sesi PPPoE pelanggan terdaftar
+    pelanggan_online: Optional[int] = None      # pelanggan PPPoE terdaftar yang sedang online
+    pelanggan_pppoe: Optional[int] = None       # pelanggan aktif PPPoE di lokasi yang dipantau
+    pelanggan_ap: Optional[int] = None          # pelanggan aktif lewat akses point (tidak ada di MikroTik)
+    pelanggan_lain: Optional[int] = None        # pelanggan aktif di lokasi yang MikroTik-nya belum tersambung
+    sesi_tak_terdaftar: Optional[int] = None    # sesi PPPoE online yang bukan pelanggan terdaftar (server, uji)
 
 
 # ============================================================
@@ -1729,6 +1735,10 @@ def init_billing_db() -> None:
         # Pasang baru & prorata: tanggal mulai berlangganan, potongan tetap per bulan (Rp).
         if "tgl_pasang" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN tgl_pasang TEXT")
+        # koneksi: 'pppoe' (akun PPPoE di MikroTik, dipantau & diisolir otomatis) atau 'ap' (lewat akses point tanpa
+        # secret PPPoE: hanya penagihan; isolir dikabarkan untuk dikerjakan manual).
+        if "koneksi" not in kolom:
+            conn.execute("ALTER TABLE pelanggan ADD COLUMN koneksi TEXT NOT NULL DEFAULT 'pppoe'")
         if "diskon" not in kolom:
             conn.execute("ALTER TABLE pelanggan ADD COLUMN diskon INTEGER NOT NULL DEFAULT 0")
         # ID pelanggan 463376-L-NNNN ("INDESO" di tombol HP, kode lokasi, nomor urut per lokasi).
@@ -1780,8 +1790,11 @@ def init_billing_db() -> None:
 _AWALAN_ID = "463376"
 # Bentuk SQL-nya untuk tabel pelanggan beralias p.
 _SQL_ID = f"('{_AWALAN_ID}-' || p.lokasi || '-' || substr('0000' || p.no_urut, -4))"
-# Pelanggan yang jaringannya dikendalikan INDESO (lokasi dengan jaringan = 1), juga untuk tabel beralias p.
-_SQL_DIPANTAU = "p.lokasi IN (SELECT kode FROM lokasi WHERE jaringan = 1)"
+# Pelanggan yang jaringannya dikendalikan INDESO: lokasi dengan jaringan = 1 DAN tersambung lewat PPPoE (pelanggan akses
+# point tidak punya secret di MikroTik). Dipakai untuk isolir otomatis, sinkron secret, dan pantauan putus. Tabel alias p.
+_SQL_DIPANTAU = ("(p.lokasi IN (SELECT kode FROM lokasi WHERE jaringan = 1) "
+                 "AND COALESCE(p.koneksi, 'pppoe') = 'pppoe')")
+_KONEKSI = {"pppoe": "PPPoE", "ap": "Akses point"}
 
 
 def _dipantau(conn, username: str) -> bool:
@@ -2943,8 +2956,8 @@ def _salin(model, **perubahan):
 def _perkaya_pelanggan(data: DashboardData) -> DashboardData:
     with db() as conn:
         rows = conn.execute(
-            "SELECT p.username, p.nama, k.nama AS paket, k.kecepatan_mbps "
-            "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id"
+            f"SELECT p.username, p.nama, p.status, COALESCE(p.koneksi, 'pppoe') AS koneksi, {_SQL_DIPANTAU} AS dipantau, "
+            "k.nama AS paket, k.kecepatan_mbps FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id"
         ).fetchall()
     info = {r["username"]: r for r in rows}
     users = []
@@ -2953,7 +2966,15 @@ def _perkaya_pelanggan(data: DashboardData) -> DashboardData:
         if r:
             u = _salin(u, nama=r["nama"], paket=r["paket"], kecepatan_paket=r["kecepatan_mbps"])
         users.append(u)
-    return _salin(data, pppoe_users=users)
+    aktif = [r for r in rows if r["status"] == "aktif"]
+    online = {u.username for u in data.pppoe_users}
+    return _salin(
+        data, pppoe_users=users,
+        pelanggan_pppoe=sum(1 for r in aktif if r["dipantau"]),
+        pelanggan_online=sum(1 for r in aktif if r["dipantau"] and r["username"] in online),
+        pelanggan_ap=sum(1 for r in aktif if r["koneksi"] == "ap"),
+        pelanggan_lain=sum(1 for r in aktif if not r["dipantau"] and r["koneksi"] != "ap"),
+        sesi_tak_terdaftar=sum(1 for u in online if u not in info))
 
 @app.get("/api/status", response_model=DashboardData)
 async def get_status():
@@ -3595,6 +3616,13 @@ class PelangganIn(BaseModel):
     tgl_pasang: Optional[str] = None   # None = tidak diubah, "" = dikosongkan
     diskon: Optional[int] = None       # None = tidak diubah
     lokasi: Optional[int] = None       # None = tidak diubah; pindah lokasi = nomor urut baru di lokasi itu
+    koneksi: Optional[str] = None      # None = tidak diubah; 'pppoe' | 'ap' (akses point, tanpa secret PPPoE)
+
+
+def _cek_koneksi(koneksi: Optional[str]) -> str:
+    if koneksi not in _KONEKSI:
+        raise HTTPException(status_code=400, detail="Cara tersambung harus 'pppoe' atau 'ap' (akses point).")
+    return koneksi
 
 
 def _cek_lokasi(conn, kode) -> int:
@@ -3764,8 +3792,8 @@ def list_data_pelanggan():
         rows = conn.execute(
             "SELECT p.username, p.nama, p.alamat, p.no_hp, p.paket_id, p.gratis, "
             "p.status, p.berhenti_sejak, p.tampil_mitra, p.insentif_gratis, p.secret_target, p.secret_nonaktif, "
-            f"p.tgl_pasang, p.diskon, p.lokasi, {_SQL_ID} AS id_pelanggan, k.nama AS paket, k.harga "
-            "FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
+            f"p.tgl_pasang, p.diskon, p.lokasi, COALESCE(p.koneksi, 'pppoe') AS koneksi, {_SQL_ID} AS id_pelanggan, "
+            "k.nama AS paket, k.harga FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id "
             "ORDER BY p.nama COLLATE NOCASE"
         ).fetchall()
         return {"pelanggan": [dict(r) for r in rows]}
@@ -3852,6 +3880,7 @@ class TambahPelangganIn(BaseModel):
     tgl_pasang: str
     diskon: int = 0
     lokasi: int = 1
+    koneksi: str = "pppoe"             # 'pppoe' | 'ap' (akses point, tanpa secret PPPoE di MikroTik)
     tagih_bulan_ini: bool = True       # langsung buat tagihan bulan pasang (dan bulan-bulan sesudahnya s/d sekarang)
     tagihan_pertama: str = "prorata"   # prorata | penuh | manual — cara menghitung tagihan bulan pasang
     jumlah_pertama: Optional[int] = None   # wajib bila tagihan_pertama = manual
@@ -3892,9 +3921,10 @@ def _tambah_pelanggan(d: TambahPelangganIn, request: Request) -> dict:
         if conn.execute("SELECT 1 FROM pelanggan WHERE username = ? COLLATE NOCASE", (username,)).fetchone():
             raise HTTPException(status_code=409, detail=f"Username {username} sudah terdaftar di INDESO. "
                                                         "Username harus unik di semua lokasi.")
-        conn.execute("INSERT INTO pelanggan (username, nama, alamat, no_hp, paket_id, tgl_pasang, diskon, lokasi) "
-                     "VALUES (?,?,?,?,?,?,?,?)", (username, nama, (d.alamat or "").strip() or None,
-                                                  (d.no_hp or "").strip() or None, d.paket_id, tgl, diskon, lokasi))
+        conn.execute("INSERT INTO pelanggan (username, nama, alamat, no_hp, paket_id, tgl_pasang, diskon, lokasi, koneksi) "
+                     "VALUES (?,?,?,?,?,?,?,?,?)", (username, nama, (d.alamat or "").strip() or None,
+                                                    (d.no_hp or "").strip() or None, d.paket_id, tgl, diskon, lokasi,
+                                                    _cek_koneksi(d.koneksi)))
         _nomori_pelanggan(conn)
         tagihan, n_tagihan = None, 0
         if d.tagih_bulan_ini:
@@ -3913,6 +3943,7 @@ def _tambah_pelanggan(d: TambahPelangganIn, request: Request) -> dict:
         conn.commit()
     catat_aktivitas(_oleh(request), "pelanggan_tambah",
                     f"{id_pel} {username} ({nama}) lokasi {lokasi}, paket {paket['nama']}, pasang {tgl}"
+                    + (" · akses point" if d.koneksi == "ap" else "")
                     + (f", diskon {_rp(diskon)}/bln" if diskon else "")
                     + (f", tagihan {periode} {_rp(tagihan['jumlah'])}" if tagihan else "")
                     + (f" (+{n_tagihan - 1} bulan berikutnya)" if n_tagihan > 1 else ""))
@@ -4393,6 +4424,9 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
             conn.execute("UPDATE pelanggan SET lokasi = ?, no_urut = NULL WHERE username = ?",
                          (_cek_lokasi(conn, d.lokasi), username))
             _nomori_pelanggan(conn)
+        koneksi_lama = lama["koneksi"] or "pppoe"
+        if d.koneksi is not None and d.koneksi != koneksi_lama:
+            conn.execute("UPDATE pelanggan SET koneksi = ? WHERE username = ?", (_cek_koneksi(d.koneksi), username))
         terhapus, hapus_rinci = 0, []
         syarat = None
         if d.gratis:
@@ -4427,6 +4461,8 @@ def ubah_data_pelanggan(username: str, d: PelangganIn, request: Request):
         perubahan.append(f"diskon {_rp(lama['diskon'] or 0)} → {_rp(diskon)}/bulan")
     if d.lokasi is not None and int(d.lokasi) != lama["lokasi"]:
         perubahan.append(f"lokasi {lama['lokasi']} → {d.lokasi} (ID {_id_pelanggan(lama['lokasi'], lama['no_urut'])} diganti)")
+    if d.koneksi is not None and d.koneksi != (lama["koneksi"] or "pppoe"):
+        perubahan.append(f"cara tersambung {_KONEKSI[lama['koneksi'] or 'pppoe']} → {_KONEKSI[d.koneksi]}")
     if (lama["alamat"] or "") != (d.alamat or "").strip() or (lama["no_hp"] or "") != (d.no_hp or "").strip():
         perubahan.append("kontak/alamat diubah")
     if terhapus:
@@ -8245,7 +8281,7 @@ def wilayah_data(request: Request):
             isolir = set()
         rows = conn.execute(
             f"SELECT p.username, p.nama, p.alamat, p.no_hp, p.status, p.tgl_pasang, p.berhenti_sejak, p.gratis, "
-            f"k.nama AS paket, k.harga, {_SQL_ID} AS id_pelanggan, "
+            f"COALESCE(p.koneksi, 'pppoe') AS koneksi, k.nama AS paket, k.harga, {_SQL_ID} AS id_pelanggan, "
             f"(SELECT t.status FROM tagihan t WHERE t.username = p.username AND t.periode = ?) AS tagihan_bulan_ini, "
             f"(SELECT COUNT(*) FROM tagihan t WHERE t.username = p.username AND t.status = 'belum') AS n_tunggak, "
             f"(SELECT COALESCE(SUM(t.jumlah), 0) FROM tagihan t WHERE t.username = p.username AND t.status = 'belum') AS tunggak, "
@@ -8264,6 +8300,7 @@ class TambahWilayahIn(BaseModel):
     no_hp: Optional[str] = None
     paket_id: int
     tgl_pasang: str
+    koneksi: str = "pppoe"
 
 
 @app.post("/api/wilayah/pelanggan")
@@ -11128,13 +11165,15 @@ def proses_isolir(sekarang=None) -> None:
         manual = conn.execute(
             "SELECT p.username, p.nama, p.lokasi, l.nama AS nama_lokasi, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
             "FROM tagihan t JOIN pelanggan p ON p.username = t.username JOIN lokasi l ON l.kode = p.lokasi "
-            "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' AND l.jaringan = 0 "
+            "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' "
+            f"AND NOT {_SQL_DIPANTAU} "
             "GROUP BY p.username ORDER BY p.lokasi, p.nama COLLATE NOCASE", (batas,)).fetchall()
         if manual and not conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='isolir_manual'", (hari,)).fetchone():
             conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, "isolir_manual"))
             conn.commit()
             send_telegram_message(
-                f"📋 <b>Perlu diisolir manual</b> (lokasi yang jaringannya belum tersambung ke INDESO): {len(manual)} pelanggan\n"
+                f"📋 <b>Perlu diisolir manual</b> (pelanggan akses point / lokasi yang jaringannya belum tersambung ke "
+                f"INDESO): {len(manual)} pelanggan\n"
                 + "\n".join(f"• {_esc(r['nama'] or r['username'])} ({_esc(r['username'])}, {_esc(r['nama_lokasi'])}): "
                             f"{_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}" for r in manual[:25])
                 + (f"\n… dan {len(manual) - 25} lainnya" if len(manual) > 25 else ""))

@@ -4476,3 +4476,39 @@ def test_skema_sekali_dan_backup_riwayat(app, tmp_path):
     info = main.buat_backup()
     assert info["riwayat"]["integritas"] == "ok" and os.path.exists(info["riwayat"]["berkas"])
     assert os.path.basename(info["riwayat"]["berkas"]).startswith("riwayat-")
+
+
+def test_pelanggan_akses_point(siap):
+    """Pelanggan lewat akses point (tanpa secret PPPoE): tidak dianggap hilang dari MikroTik, tidak diisolir otomatis
+    (dikabarkan untuk isolir manual), secret tidak disentuh, dan kartu menu utama memisahkan hitungannya."""
+    from datetime import datetime
+    main, o, k, m = siap
+    mt = main._mt
+    assert k.post("/api/data-pelanggan", json={"username": "ap.wati", "nama": "Wati", "paket_id": 1, "koneksi": "ap",
+                                               "tgl_pasang": "2026-09-01"}).status_code == 200
+    assert k.post("/api/data-pelanggan", json={"username": "ap.x", "nama": "X", "paket_id": 1, "koneksi": "wifi",
+                                               "tgl_pasang": "2026-09-01"}).status_code == 400
+    p = {x["username"]: x for x in k.get("/api/data-pelanggan").json()["pelanggan"]}
+    assert p["ap.wati"]["koneksi"] == "ap" and p["budi"]["koneksi"] == "pppoe"
+    # Impor dari MikroTik: ap.wati tidak punya secret, tapi tidak dilaporkan "tidak ada di MikroTik"
+    imp = o.post("/api/impor-pelanggan").json()
+    assert "ap.wati" not in {x["username"] for x in imp["tidak_ada_di_mikrotik"]}
+    # Kartu menu utama: akses point dipisah dari hitungan online PPPoE
+    main._latest_data = None
+    st = k.get("/api/status").json()
+    assert st["pelanggan_ap"] == 1 and st["pelanggan_online"] <= st["pelanggan_pppoe"]
+    # Isolir otomatis melewati akses point; dikabarkan untuk isolir manual
+    o.post("/api/tagihan/buat?periode=2026-10")
+    main._terkirim.clear()
+    main.proses_isolir(datetime(2026, 10, 11, 9))
+    iso = {x["username"] for x in o.get("/api/isolir").json()["terisolir"]}
+    assert "ap.wati" not in iso
+    pesan = " ".join(str(x["data"].get("text") or "") for x in main._terkirim)
+    assert "Perlu diisolir manual" in pesan and "ap.wati" in pesan
+    # Berhenti: secret PPPoE tidak disentuh (memang tidak ada)
+    sebelum = dict(mt.secret)
+    r = o.put("/api/data-pelanggan/ap.wati", json={"nama": "Wati", "paket_id": 1, "status": "berhenti", "atur_secret": True})
+    assert r.status_code == 200 and r.json()["secret"] is None and mt.secret == sebelum
+    # Ubah cara tersambung tercatat di aktivitas
+    assert o.put("/api/data-pelanggan/ap.wati", json={"nama": "Wati", "paket_id": 1, "koneksi": "pppoe"}).status_code == 200
+    assert "cara tersambung Akses point → PPPoE" in o.get("/api/aktivitas").text
