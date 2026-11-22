@@ -622,20 +622,22 @@ def reseller_ringkas(request: Request):
         _siapkan_hotspot(conn)
         lok = _hs_lokasi(conn, me["lokasi"])
         stok = [dict(r, durasi=_teks_durasi(r["menit"])) for r in conn.execute(
-            "SELECT p.id, p.nama, p.menit, p.harga, COUNT(*) AS stok FROM hs_voucher v JOIN hs_paket p ON p.id = v.paket_id "
+            "SELECT p.id, p.nama, p.menit, p.harga, p.mbps, p.perangkat, COUNT(*) AS stok FROM hs_voucher v JOIN hs_paket p ON p.id = v.paket_id "
             "WHERE v.reseller = ? AND v.status = 'stok' GROUP BY p.id ORDER BY p.menit", (me["username"],))]
         belum = conn.execute("SELECT COUNT(*), COALESCE(SUM(b.harga_reseller), 0), COALESCE(SUM(b.harga), 0) FROM hs_voucher v "
                              "JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? AND v.status = 'terjual' "
                              "AND v.setoran_id IS NULL", (me["username"],)).fetchone()
-        hari_ini = conn.execute("SELECT COUNT(*) FROM hs_voucher WHERE reseller = ? AND status = 'terjual' AND terjual_pada >= ?",
-                                (me["username"], hari)).fetchone()[0]
+        hari_ini, hari_ini_rp, hari_ini_untung = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(b.harga), 0), COALESCE(SUM(b.harga - b.harga_reseller), 0) FROM hs_voucher v "
+            "JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? AND v.status = 'terjual' AND v.terjual_pada >= ?",
+            (me["username"], hari)).fetchone()
         riwayat = [dict(r) for r in conn.execute(
             "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, b.menit, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
             "JOIN hs_paket p ON p.id = v.paket_id JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? "
             "AND v.status = 'terjual' ORDER BY v.terjual_pada DESC LIMIT 30", (me["username"],))]
         conn.commit()
     return {"akun": me["username"], "usaha": inti.CONFIG["NAMA_USAHA"], "lokasi": lok["nama"], "ssid": lok["ssid"],
-            "stok": stok, "hari_ini": hari_ini, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
+            "stok": stok, "hari_ini": hari_ini, "hari_ini_rp": hari_ini_rp, "hari_ini_untung": hari_ini_untung, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
             "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"]), durasi=_teks_durasi(r["menit"])) for r in riwayat]}
 
 

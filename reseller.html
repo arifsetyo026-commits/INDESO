@@ -67,23 +67,67 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .qrBesar{max-width:280px;margin:0 auto}
 .btn.wa{width:100%;margin-top:8px;padding:11px;background:#1fa855;border-color:#1fa855;color:#fff;font-weight:800}
 .kode{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--fs-2xl);font-weight:800;letter-spacing:.12em;margin-top:6px}
+
+/* ---- tampilan warung (kasir voucher) ---- */
+.hari{margin-top:16px;display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.hari small{display:block;color:#bfe3cb;font-size:var(--fs-xs);font-weight:600}
+.hari .rp{display:block;font-size:34px;font-weight:900;letter-spacing:-.02em;line-height:1.1;margin-top:2px}
+.hari .jml{flex:none;text-align:right;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:8px 12px}
+.hari .jml b{display:block;font-size:var(--fs-2xl);line-height:1}.hari .jml small{margin-top:3px}
+.duit{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0 12px}
+.duit div{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:12px}
+.duit small{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:var(--fs-xs);font-weight:700}
+.duit small i{width:22px;height:22px;border-radius:7px;display:grid;place-items:center;font-style:normal;font-size:12px}
+.duit strong{display:block;font-size:var(--fs-xl);margin-top:6px}
+.duit span{display:block;color:var(--muted);font-size:var(--fs-2xs);margin-top:2px}
+.duit .untung{background:linear-gradient(135deg,#effbe6,#dcf5cf);border-color:#c5ebb0}.duit .untung strong{color:#2f7d0a}
+.duit .untung i{background:#75dc2e;color:#06381f}.duit .setor i{background:#e6f1fb;color:#1d6fb8}
+.judulBag{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:18px 2px 10px}
+.judulBag b{font-size:var(--fs-lg)}
+.chipStok{font-size:var(--fs-xs);font-weight:800;color:#0b7a3b;background:#dcf5e5;border-radius:999px;padding:4px 10px}
+.ubin{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.ub{position:relative;text-align:left;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:14px 14px 12px;color:var(--ink);overflow:hidden}
+.ub:before{content:"";position:absolute;inset:0 0 auto 0;height:4px;background:linear-gradient(90deg,#75dc2e,#07813f)}
+.ub:active{transform:scale(.97)}
+.ub .nm{display:block;font-weight:800;font-size:var(--fs-md)}
+.ub .ds{display:block;color:var(--muted);font-size:var(--fs-2xs);margin-top:2px}
+.ub .hg{display:block;font-size:var(--fs-2xl);font-weight:900;color:#06703a;margin:10px 0 8px;letter-spacing:-.01em}
+.ub .ft{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.ub .sk{font-size:var(--fs-2xs);font-weight:800;color:#4b6355;background:#eef3ef;border-radius:999px;padding:3px 8px}
+.ub .sk.tipis{color:#8a5a00;background:#fff1c9}
+.ub .go{font-size:var(--fs-xs);font-weight:800;color:#fff;background:#067d40;border-radius:9px;padding:6px 12px}
+.ub:disabled{opacity:.5}
+.kosong{background:#fff;border:1px dashed #bcd7c5;border-radius:16px;padding:22px 16px;text-align:center}
+.kosong svg{width:64px;height:64px;display:block;margin:0 auto 8px}
+.kosong b{display:block;font-size:var(--fs-lg)}.kosong p{margin:6px auto 0;max-width:300px;color:var(--muted);font-size:var(--fs-sm);line-height:1.5}
+.cara{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.cara div{background:#f4f8f5;border-radius:12px;padding:10px 6px;text-align:center;font-size:var(--fs-2xs);font-weight:600;color:#4b6355;line-height:1.35}
+.cara i{display:grid;place-items:center;width:24px;height:24px;margin:0 auto 5px;border-radius:50%;background:#067d40;color:#fff;font-style:normal;font-weight:800;font-size:12px}
+.jual1{display:flex;align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid var(--line)}
+.jual1:last-child{border-bottom:0}
+.jual1 .jam{flex:none;width:46px;text-align:center;font-weight:800;font-size:var(--fs-sm);color:#06703a;background:#e9f7ee;border-radius:10px;padding:6px 0;line-height:1.1}
+.jual1 .jam small{display:block;font-size:9px;font-weight:700;color:var(--muted);margin-top:2px}
+.jual1 .isi{flex:1;min-width:0}
 </style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
  <div class="topRow"><div class="mark">ID</div><div class="judul"><b id="usaha">Internet Desa</b><small><span class="peran">Reseller</span><span id="akun">Memuat…</span></small></div>
   <button class="ib" onclick="tampil('pw')" aria-label="Ganti password" title="Ganti password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M18.5 4.5l2 2"/></svg></button>
   <button class="ib" onclick="keluar()" aria-label="Keluar" title="Keluar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button></div>
+ <div class="hari"><div><small id="sapa">Penjualan hari ini</small><span class="rp" id="cHariRp">Rp 0</span></div>
+  <div class="jml"><b id="cHari">0</b><small>voucher</small></div></div>
 </div></div>
 <div class="wrap">
  <div id="vUtama">
-  <div class="cards">
-   <div class="card main"><small>Belum disetor ke admin</small><strong id="cSetor">—</strong><span id="cSetorSub"></span></div>
-   <div class="card"><small>Terjual hari ini</small><strong id="cHari">—</strong><span>voucher</span></div>
-   <div class="card"><small>Stok voucher</small><strong id="cStok">—</strong><span>siap dijual</span></div>
+  <div class="duit">
+   <div class="untung"><small><i>＋</i>Untung Anda</small><strong id="cUntung">Rp 0</strong><span id="cUntungSub">dari voucher yang terjual</span></div>
+   <div class="setor"><small><i>⇄</i>Setor ke admin</small><strong id="cSetor">Rp 0</strong><span id="cSetorSub">belum ada</span></div>
   </div>
   <div class="msg" id="msg"></div>
-  <div class="panel"><div class="nav"><b>Jual voucher</b></div><div id="stok"><div class="muted">Memuat…</div></div>
-   <div class="note">Tekan <b>Jual</b>, lalu tunjukkan layar ke pembeli: setelah tersambung ke WiFi hotspot (tanpa sandi), pindai QR-nya untuk langsung masuk. Voucher tercatat terjual begitu QR-nya tampil.</div></div>
-  <div class="panel" style="margin-top:12px"><div class="nav"><b>Penjualan terakhir</b></div><div id="riwayat"></div></div>
+  <div class="judulBag"><b>Jual voucher</b><span class="chipStok" id="cStok">Stok 0</span></div>
+  <div id="stok"><div class="muted">Memuat…</div></div>
+  <div class="cara"><div><i>1</i>Sentuh paket yang dibeli</div><div><i>2</i>Pembeli pindai QR di layar ini</div><div><i>3</i>Kirim kodenya lewat WA</div></div>
+  <div class="judulBag"><b>Penjualan terakhir</b></div>
+  <div class="panel"><div id="riwayat"></div></div>
  </div>
  <div id="vPw" class="panel form" style="display:none;max-width:420px;margin:0 auto">
   <div class="nav"><b>Ganti password</b><button class="btn" onclick="tampil('utama')">‹ Kembali</button></div>
@@ -117,12 +161,17 @@ async function gantiPw(){
 async function muat(){
  try{ const d=await api('/api/reseller/ringkas'); st.data=d;
   $('akun').textContent=d.akun+' · '+d.lokasi; if(d.usaha) $('usaha').textContent=d.usaha;
-  $('cSetor').textContent=rp(d.belum_setor.setor); $('cSetorSub').textContent=d.belum_setor.voucher+' voucher terjual · harga jual '+rp(d.belum_setor.eceran);
-  $('cHari').textContent=d.hari_ini; $('cStok').textContent=d.stok.reduce((a,x)=>a+x.stok,0);
-  $('stok').innerHTML=d.stok.length?d.stok.map(p=>`<div class="paket"><div><div class="name">${esc(p.nama)} · ${rp(p.harga)}</div><div class="sub">${esc(p.durasi)} pemakaian · stok ${p.stok}</div></div><button class="jual" onclick="jual(${p.id},this)">Jual</button></div>`).join('')
-   :'<div class="muted">Stok voucher kosong. Minta admin menitipkan voucher.</div>';
-  $('riwayat').innerHTML=d.riwayat.length?d.riwayat.map((v,i)=>`<div class="row"><div class="info" style="cursor:default"><div class="name">${esc(v.paket)} · ${rp(v.harga)}</div><div class="sub">${esc((v.terjual_pada||'').slice(0,16))} · kode ${esc(v.kode)}${v.disetor?' · sudah disetor':''}</div></div><div class="right"><button class="btn" onclick="tampilUlang(${i})">QR</button></div></div>`).join('')
-   :'<div class="muted">Belum ada penjualan.</div>';
+  const bs=d.belum_setor, untung=bs.eceran-bs.setor, jam=new Date().getHours();
+  $('sapa').textContent=(jam<11?'Selamat pagi':jam<15?'Selamat siang':jam<18?'Selamat sore':'Selamat malam')+' · penjualan hari ini';
+  $('cHariRp').textContent=rp(d.hari_ini_rp); $('cHari').textContent=d.hari_ini;
+  $('cUntung').textContent=rp(untung); $('cUntungSub').textContent=bs.voucher?('dari '+bs.voucher+' voucher, belum disetor'):'jual voucher untuk mulai untung';
+  $('cSetor').textContent=rp(bs.setor); $('cSetorSub').textContent=bs.voucher?('harga jual '+rp(bs.eceran)+' − untung '+rp(untung)):'belum ada';
+  const total=d.stok.reduce((a,x)=>a+x.stok,0); $('cStok').textContent='Stok '+total;
+  $('stok').innerHTML=d.stok.length?'<div class="ubin">'+d.stok.map(p=>`<button class="ub" onclick="jual(${p.id},this)"><span class="nm">${esc(p.nama)}</span><span class="ds">${esc(p.durasi)}${p.mbps?' · '+p.mbps+' Mbps':''}${p.perangkat?' · '+p.perangkat+' HP':''}</span><span class="hg">${rp(p.harga)}</span><span class="ft"><span class="sk${p.stok<=3?' tipis':''}">sisa ${p.stok}</span><span class="go">Jual</span></span></button>`).join('')+'</div>'
+   :`<div class="kosong"><svg viewBox="0 0 64 64" fill="none"><rect x="6" y="16" width="52" height="32" rx="7" fill="#e9f7ee" stroke="#07813f" stroke-width="2.5"/><path d="M44 16v32" stroke="#07813f" stroke-width="2.5" stroke-dasharray="3 4"/><path d="M16 28h18M16 36h12" stroke="#75dc2e" stroke-width="3" stroke-linecap="round"/><circle cx="51" cy="32" r="3" fill="#07813f"/></svg>
+     <b>Belum ada stok voucher</b><p>Minta admin menitipkan voucher ke akun ini. Setelah dititipkan, paketnya muncul di sini dan tinggal disentuh untuk dijual.</p></div>`;
+  $('riwayat').innerHTML=d.riwayat.length?d.riwayat.map((v,i)=>{const t=v.terjual_pada||''; return `<div class="jual1"><div class="jam">${esc(t.slice(11,16))}<small>${esc(t.slice(8,10)+'/'+t.slice(5,7))}</small></div><div class="isi"><div class="name">${esc(v.paket)} · ${rp(v.harga)}</div><div class="sub">kode ${esc(v.kode)} · ${v.disetor?'<span style="color:#0b7a3b;font-weight:700">sudah disetor</span>':'belum disetor'}</div></div><button class="btn" onclick="tampilUlang(${i})">QR / WA</button></div>`}).join('')
+   :'<div class="muted">Belum ada penjualan. Penjualan pertama Anda akan muncul di sini.</div>';
  }catch(e){ pesan('msg','Gagal memuat: '+e.message); }
 }
 function kartu(v){
