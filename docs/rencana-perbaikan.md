@@ -75,5 +75,9 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   bukti yang sama; `main.py` 14.680 → 14.154 baris.
 - **Tahap 4 (bagian 4, hotspot):** `indeso/hotspot.py` (15 jalur API, 36 fungsi/kelas/konstanta); `main.py` → 13.634
   baris. Komentar judul bagian yang tertinggal di `main.py` (QRIS, gudang, hotspot) diganti penunjuk ke modulnya.
+- **Tahap 4 (bagian 5, admin wilayah):** `indeso/wilayah.py` (4 jalur API); `_latest_data` dibaca lewat `inti` supaya
+  selalu nilai terbaru (bukan nilai saat modul dimuat). `main.py` → 13.495 baris. Daftar fitur awal Tahap 4 selesai;
+  bagian besar yang masih di `main.py` (keuangan, tagihan & isolir, ONU/ACS, OLT, portal, pemantauan) bisa dipindah
+  dengan cara yang sama bila diperlukan.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
