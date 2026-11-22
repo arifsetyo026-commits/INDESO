@@ -77,8 +77,26 @@ Buka `https://indeso.139-190-100-136.sslip.io` dan login dengan akun yang sama s
 Mulai sekarang, **jangan nyalakan lagi INDESO di HP.**
 
 ## Perawatan
+
+**Ada yang tidak beres? Jalankan ini dulu:**
+
+```
+sudo bash /opt/indeso/deploy/indeso/cek.sh
+```
+
+Perintah ini memeriksa semuanya sekali jalan dan memberi ✅ / ⚠️ / ❌ beserta saran perbaikan:
+- layanan INDESO dan versinya;
+- ruang disk, memori, dan jam server;
+- keutuhan database dan umur backup terakhir;
+- MikroTik setiap lokasi, OLT (ping & telnet), server ACS, dan bot Telegram;
+- terowongan WireGuard/OpenVPN;
+- ringkasan galat 24 jam terakhir.
+
+Perintah ini hanya membaca dan tidak menampilkan password, jadi hasilnya aman dikirim ke pengembang.
+
 | Keperluan | Perintah di VPS |
 |---|---|
+| **Periksa semuanya** | `sudo bash /opt/indeso/deploy/indeso/cek.sh` |
 | Lihat log langsung | `sudo journalctl -u indeso -f` |
 | Restart | `sudo systemctl restart indeso` |
 | Update INDESO (setelah PR di-merge) | `sudo bash /opt/indeso/deploy/indeso/update.sh` (otomatis kembali ke versi lama bila gagal) |
