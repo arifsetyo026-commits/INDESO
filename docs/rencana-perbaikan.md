@@ -73,5 +73,7 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   tidak berubah; tidak ada nama yang tak terdefinisi.
 - **Tahap 4 (bagian 3, gudang & material):** `indeso/gudang.py` (13 jalur API, 35 fungsi/kelas/konstanta), cara &
   bukti yang sama; `main.py` 14.680 → 14.154 baris.
+- **Tahap 4 (bagian 4, hotspot):** `indeso/hotspot.py` (15 jalur API, 36 fungsi/kelas/konstanta); `main.py` → 13.634
+  baris. Komentar judul bagian yang tertinggal di `main.py` (QRIS, gudang, hotspot) diganti penunjuk ke modulnya.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
