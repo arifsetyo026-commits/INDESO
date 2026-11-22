@@ -664,7 +664,7 @@ async function lunasTunggakan(id){
  try{
   const r=await fetch('/api/tagihan/'+id+'/lunas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
-  bl.bayar=null; bl.kw=id; await muatTunggakan(true);
+  bl.bayar=null; delete _kwSiap[id]; bl.kw=id; await muatTunggakan(true);
  }catch(e){ $('tgMsg').style.color='#b42318'; $('tgMsg').textContent='Gagal: '+e.message; }
 }
 function ingatkanTunggakanWA(u){
@@ -677,7 +677,7 @@ function ingatkanTunggakanWA(u){
 // ===== Kwitansi =====
 const METODE_LBL={tunai:'Tunai',transfer:'Transfer bank',qris:'QRIS / e-wallet',lainnya:'Lainnya'};
 function kotakKwitansi(){
- return `<div class="kuPanel" style="margin:8px 0;border-color:#bfe6cb;background:#f3faf5;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><div><b style="color:#0b7a3b">✓ Pembayaran tercatat.</b><div class="plSub">Kirim kwitansi ke pelanggan sebagai bukti bayar?</div></div><div class="blAksi" style="margin:0"><button class="btnS go" onclick="kirimKwitansiWA(${bl.kw})">Kirim kwitansi WA</button><a class="btnS" href="/kwitansi/${bl.kw}" target="_blank" rel="noopener" style="text-decoration:none">Cetak</a><button class="btnS" onclick="bl.kw=null;bl.view==='tunggakan'?renderTunggakan():renderBilling()">Nanti</button></div></div>`;
+ return `<div class="kuPanel" style="margin:8px 0;border-color:#bfe6cb;background:#f3faf5;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between"><div><b style="color:#0b7a3b">✓ Pembayaran tercatat.</b><div class="plSub">Kirim kwitansi ke pelanggan sebagai bukti bayar?</div></div><div class="blAksi" style="margin:0">${tombolKwitansiWA(bl.kw)}<a class="btnS" href="/kwitansi/${bl.kw}" target="_blank" rel="noopener" style="text-decoration:none">Cetak</a><button class="btnS" onclick="bl.kw=null;bl.view==='tunggakan'?renderTunggakan():renderBilling()">Nanti</button></div></div>`;
 }
 function teksKwitansi(k){
  return '*KWITANSI PEMBAYARAN*\n'+bl.pesan.usaha+'\nNo. '+k.nomor+'\n\n'
@@ -690,17 +690,24 @@ function teksKwitansi(k){
   +(k.sisa_bulan?('Catatan: masih ada '+k.sisa_bulan+' bulan belum lunas, total '+rp(k.sisa_total)+'.\n'):'')
   +'\nTerima kasih atas pembayarannya. Simpan pesan ini sebagai bukti bayar.';
 }
-async function kirimKwitansiWA(id){
- // Jendela dibuka dulu saat tombol ditekan (sebelum menunggu server) supaya tidak diblokir browser HP.
- const w=window.open('about:blank','_blank');
- try{
-  const k=await jsonAtauError(await fetch('/api/tagihan/'+id+'/kwitansi',{cache:'no-store'}));
-  const n=nomorWA(k.no_hp);
-  if(!n){ if(w) w.close(); alert('Nomor HP '+k.nama+' belum diisi. Lengkapi dulu di menu Pelanggan, atau pakai tombol Cetak.'); return; }
-  const url='https://wa.me/'+n+'?text='+encodeURIComponent(teksKwitansi(k));
-  if(w) w.location.href=url; else location.href=url;
-  bl.kw=null; bl.view==='tunggakan'?renderTunggakan():renderBilling();
- }catch(e){ if(w) w.close(); alert('Gagal menyiapkan kwitansi: '+e.message); }
+// Tombol WA kwitansi berupa TAUTAN yang disiapkan lebih dulu (data diambil begitu kotak kwitansi tampil). Dulu tab
+// dibuka kosong lalu diarahkan ke wa.me setelah menunggu server; Chrome Android menganggapnya bukan ketukan pengguna dan
+// memblokir aplikasi WhatsApp terbuka. Tautan biasa = sama seperti tombol WA lain yang berjalan.
+const _kwSiap={};
+function tombolKwitansiWA(id){
+ const k=_kwSiap[id];
+ if(!k){ siapkanKwitansi(id); return `<button class="btnS go" disabled>Menyiapkan kwitansi…</button>`; }
+ if(k.galat) return `<button class="btnS go" onclick="delete _kwSiap[${id}];bl.view==='tunggakan'?renderTunggakan():renderBilling()">Coba lagi</button><span class="plSub" style="color:#b42318">${esc(k.galat)}</span>`;
+ const n=nomorWA(k.no_hp);
+ if(!n) return `<span class="plSub" style="color:#b42318">Nomor HP ${esc(k.nama)} belum diisi (menu Pelanggan). Pakai tombol Cetak.</span>`;
+ return `<a class="btnS go" style="text-decoration:none" href="https://wa.me/${n}?text=${encodeURIComponent(teksKwitansi(k))}" target="_blank" rel="noopener" onclick="setTimeout(()=>{bl.kw=null;bl.view==='tunggakan'?renderTunggakan():renderBilling()},300)">Kirim kwitansi WA</a>`;
+}
+async function siapkanKwitansi(id){
+ if(_kwSiap[id]||_kwSiap['_'+id]) return; _kwSiap['_'+id]=1;
+ try{ _kwSiap[id]=await jsonAtauError(await fetch('/api/tagihan/'+id+'/kwitansi',{cache:'no-store'})); }
+ catch(e){ _kwSiap[id]={galat:'Gagal menyiapkan kwitansi: '+e.message}; }
+ delete _kwSiap['_'+id];
+ if(bl.kw===id) bl.view==='tunggakan'?renderTunggakan():renderBilling();
 }
 async function ubahPeriode(n){ bl.periode=geserPeriode(bl.periode,n); await loadBilling(); }
 async function ubahJumlahTagihan(id){
@@ -760,7 +767,7 @@ async function ubahLunas(id,lunas){
   const r=await fetch('/api/tagihan/'+id+(lunas?'/lunas':'/batal'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   bl.bayar=null;
   if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.detail||('HTTP '+r.status)); }
-  bl.kw=lunas?id:null;
+  delete _kwSiap[id]; bl.kw=lunas?id:null;
   $('blMsg').textContent=''; await loadBilling(true);
  }catch(e){ $('blMsg').style.color='#b42318'; $('blMsg').textContent='Gagal: '+e.message; }
 }
