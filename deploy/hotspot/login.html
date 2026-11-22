@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="pragma" content="no-cache">
+<meta http-equiv="expires" content="-1">
+<meta name="theme-color" content="#004a27">
+<title>{{USAHA}} · WiFi Hotspot</title>
+<style>
+:root{--g9:#003a20;--g7:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318}
+*{box-sizing:border-box}html,body{margin:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
+.atas{background:linear-gradient(115deg,#003a1f,#00632f 60%,#07813f);color:#fff;padding:22px 18px 64px;text-align:center}
+.mark{width:52px;height:52px;margin:0 auto 10px;border-radius:15px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:900;font-size:20px}
+.atas h1{margin:0;font-size:22px;letter-spacing:-.01em}
+.atas p{margin:4px 0 0;color:#cfe8d8;font-size:13px}
+.wifi{display:inline-block;margin-top:10px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:3px 12px;font-size:12px;font-weight:700}
+.isi{max-width:440px;margin:-46px auto 0;padding:0 16px 28px}
+.kartu{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 6px 20px rgba(0,55,28,.10);padding:20px}
+.kartu h2{margin:0 0 4px;font-size:17px}
+.sub{color:var(--muted);font-size:13px;margin:0 0 14px}
+label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin-bottom:6px}
+.kode{width:100%;border:2px solid var(--line);border-radius:12px;padding:14px;font-size:22px;font-weight:800;letter-spacing:.18em;text-align:center;text-transform:lowercase;outline:none;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
+.kode:focus{border-color:var(--g7)}
+.tombol{width:100%;margin-top:12px;border:0;border-radius:12px;padding:14px;background:#067d40;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
+.tombol:active{transform:scale(.99)}
+.galat{background:#fde4e1;color:var(--red);border-radius:10px;padding:10px 12px;font-size:13px;font-weight:700;margin-bottom:12px}
+.catatan{font-size:12px;color:var(--muted);margin-top:12px;text-align:center}
+.paket{margin-top:16px}
+.paket h3{font-size:14px;margin:0 0 8px}
+.pk{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;background:#fbfdfb}
+.pk b{display:block;font-size:14px}.pk small{color:var(--muted);font-size:12px}
+.harga{font-weight:900;color:#067d40;white-space:nowrap;font-size:15px}
+.beli{font-size:12px;color:var(--muted);text-align:center;margin:6px 0 0}
+.kontak{margin-top:16px;text-align:center;font-size:13px;color:var(--muted)}
+.kontak a{color:#067d40;font-weight:800;text-decoration:none}
+.kaki{text-align:center;font-size:11px;color:#8a9b92;margin-top:18px}
+</style>
+</head>
+<body>
+$(if chap-id)
+<form name="sendin" action="$(link-login-only)" method="post" style="display:none">
+<input type="hidden" name="username">
+<input type="hidden" name="password">
+<input type="hidden" name="dst" value="$(link-orig)">
+<input type="hidden" name="popup" value="true">
+</form>
+<script src="md5.js"></script>
+$(endif)
+<div class="atas">
+  <div class="mark">ID</div>
+  <h1>{{USAHA}}</h1>
+  <p>WiFi Hotspot · {{LOKASI}}</p>
+  <span class="wifi">Internet cepat dengan voucher</span>
+</div>
+<div class="isi">
+  <div class="kartu">
+    <h2>Masukkan kode voucher</h2>
+    <p class="sub">Kode tertulis di kartu voucher yang Anda beli. Atau pindai QR di kartu itu.</p>
+    $(if error)<div class="galat">$(error)</div>$(endif)
+    <form name="login" action="$(link-login-only)" method="post" onsubmit="return masuk()">
+      <input type="hidden" name="dst" value="$(link-orig)">
+      <input type="hidden" name="popup" value="true">
+      <input type="hidden" name="username" value="$(username)">
+      <input type="hidden" name="password">
+      <label for="kode">Kode voucher</label>
+      <input class="kode" id="kode" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false"
+             placeholder="abcd2345" value="$(username)" required autofocus>
+      <button class="tombol" type="submit">Masuk</button>
+    </form>
+    <p class="catatan">Satu voucher untuk jumlah HP sesuai paketnya. Waktu pakai berjalan selama terhubung.</p>
+  </div>
+  {{PAKET}}
+  {{KONTAK}}
+  <div class="kaki">© {{USAHA}} · dikelola dengan INDESO</div>
+</div>
+<script>
+function masuk(){
+  var k=document.getElementById('kode').value.replace(/\s+/g,'').toLowerCase();
+  if(!k) return false;
+  var f=document.login;
+  f.username.value=k; f.password.value=k;
+  $(if chap-id)
+  if(window.hexMD5){
+    document.sendin.username.value=k;
+    document.sendin.password.value=hexMD5('$(chap-id)'+k+'$(chap-challenge)');
+    document.sendin.submit();
+    return false;
+  }
+  $(endif)
+  return true;
+}
+</script>
+</body>
+</html>

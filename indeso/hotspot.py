@@ -12,13 +12,16 @@ menyetor (harga reseller × terjual) → kas masuk "Pendapatan voucher hotspot".
 Dipindah dari main.py (Tahap 4, docs/rencana-perbaikan.md). Pembantu inti dipanggil lewat `inti.<nama>`;
 jalur API didaftarkan main.py lewat `app.include_router(router)`.
 """
+import html
 import re
 import secrets
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from indeso import inti
@@ -497,7 +500,82 @@ def hotspot_skrip_pengaturan(request: Request, lokasi: int = 1):
              f"# Nama WiFi (SSID) terbuka tanpa sandi: {lok['ssid']}"]
     for p in paket:
         baris += _skrip_profil(p)
+    baris += ["# Halaman login INDESO (kode voucher, daftar paket & harga, nomor WA): diunduh ke folder hotspot.",
+              "# Jalankan ulang baris ini setiap kali paket/harga/nomor WA diubah.",
+              _skrip_unduh_halaman(_url_dasar(request), lokasi)]
     return {"skrip": "\n".join(baris) + "\n", "lokasi": lok}
+
+
+# --- Halaman login hotspot (disajikan INDESO, diunduh MikroTik ke folder html-directory) -------------------------
+
+_FOLDER_HALAMAN = Path(__file__).resolve().parent.parent / "deploy" / "hotspot"
+_HALAMAN_HS = ("login.html", "alogin.html", "status.html", "logout.html")
+
+
+def _url_dasar(request: Request) -> str:
+    """Alamat INDESO seperti yang dilihat dari luar (di VPS lewat Caddy/terowongan: https://app.…)."""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}"
+
+
+def _skrip_unduh_halaman(dasar: str, lokasi: int) -> str:
+    daftar = ";".join(f'"{f}"' for f in _HALAMAN_HS)
+    return ('{:local d [/ip hotspot profile get [find name="hsprof1"] html-directory]; '
+            f':foreach f in={{{daftar}}} do={{/tool fetch url=("{dasar}/hotspot/{int(lokasi)}/" . $f) '
+            'dst-path=("$d/" . $f)}}')
+
+
+def _aman(t) -> str:
+    """Teks dari database untuk halaman MikroTik: di-escape HTML, dan `$` dijadikan &#36; supaya tidak dibaca
+    MikroTik sebagai variabel $(...)."""
+    return html.escape(str(t or "")).replace("$", "&#36;")
+
+
+def _angka(x) -> str:
+    return f"{float(x):g}"
+
+
+def _html_paket(paket) -> str:
+    if not paket:
+        return ""
+    kartu = "".join(
+        f'<div class="pk"><div><b>{_aman(p["nama"])}</b><small>{_aman(_teks_durasi(p["menit"]))} · '
+        f'{_aman(_angka(p["mbps"]))} Mbps · {int(p["perangkat"])} HP</small></div>'
+        f'<div class="harga">{_aman(_rp(p["harga"]))}</div></div>' for p in paket)
+    return (f'<div class="kartu paket"><h3>Paket voucher</h3>{kartu}'
+            '<p class="beli">Voucher dijual di warung/agen terdekat.</p></div>')
+
+
+def _html_kontak() -> str:
+    wa = (inti.CONFIG.get("USAHA_WA") or "").strip()
+    link = inti._wa_link(wa)
+    if not link:
+        return ""
+    return (f'<div class="kontak">Butuh bantuan atau ingin jadi agen voucher?<br>'
+            f'<a href="{_aman(link)}">WhatsApp {_aman(wa)}</a></div>')
+
+
+@router.get("/hotspot/{lokasi}/{berkas}")
+def hotspot_halaman(lokasi: int, berkas: str):
+    """Halaman login/status/logout hotspot untuk lokasi ini. Publik (dibaca MikroTik lewat /tool fetch); isinya hanya
+    nama usaha, nama lokasi, paket & harga, dan nomor WA usaha. Variabel MikroTik $(...) dibiarkan utuh."""
+    if berkas not in _HALAMAN_HS:
+        raise HTTPException(status_code=404, detail="Halaman tidak ada.")
+    with inti.db() as conn:
+        _siapkan_hotspot(conn)
+        lok = _hs_lokasi(conn, lokasi)
+        paket = conn.execute("SELECT * FROM hs_paket WHERE lokasi = ? AND aktif = 1 ORDER BY menit, harga",
+                             (lokasi,)).fetchall()
+    isi = (_FOLDER_HALAMAN / berkas).read_text(encoding="utf-8")
+    ganti = {"{{USAHA}}": _aman(inti.CONFIG.get("NAMA_USAHA") or "Internet Desa"),
+             "{{LOKASI}}": _aman(lok["nama"]),
+             "{{PAKET}}": _html_paket(paket),
+             "{{KONTAK}}": _html_kontak()}
+    for k, v in ganti.items():
+        isi = isi.replace(k, v)
+    return Response(content=isi, media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _reseller(request: Request) -> dict:

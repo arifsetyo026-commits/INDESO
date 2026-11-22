@@ -3694,6 +3694,38 @@ def test_hotspot_reseller_voucher(siap):
     assert o.put("/api/akun/warungsri", json={"lokasi": 2}).status_code == 400
 
 
+def test_hotspot_halaman_login(siap):
+    """Halaman login hotspot disajikan INDESO tanpa login (diunduh MikroTik dengan /tool fetch): nama usaha, paket
+    aktif & harganya, nomor WA; variabel MikroTik $(...) utuh, teks dari database tidak bisa menyisipkan $(...)."""
+    main, o, k, m = siap
+    from fastapi.testclient import TestClient
+    publik = TestClient(main.app)
+    pk = {"nama": "Harian $(ip)", "lokasi": 1, "menit": 1440, "mbps": 2.5, "perangkat": 2, "harga": 5000,
+          "harga_reseller": 4000}
+    pid = o.post("/api/hotspot/paket", json=pk).json()["id"]
+    o.post("/api/hotspot/paket", json=dict(pk, nama="Lama", harga=1000, harga_reseller=900))
+    o.put(f"/api/hotspot/paket/{pid + 1}", json=dict(pk, nama="Lama", harga=1000, harga_reseller=900, aktif=False))
+    main.CONFIG["USAHA_WA"] = "0812-3456-7890"
+    try:
+        r = publik.get("/hotspot/1/login.html")
+    finally:
+        main.CONFIG["USAHA_WA"] = ""
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    t = r.text
+    assert "{{" not in t and "$(link-login-only)" in t and "$(chap-challenge)" in t and "$(if error)" in t
+    assert "Harian &#36;(ip)" in t and "Rp" in t and "2.5 Mbps" in t and "2 HP" in t
+    assert "Lama" not in t                                  # paket nonaktif tidak tampil
+    assert "https://wa.me/6281234567890" in t
+    for f in ("alogin.html", "status.html", "logout.html"):
+        h = publik.get(f"/hotspot/1/{f}")
+        assert h.status_code == 200 and "{{" not in h.text, f
+    for jalur in ("/hotspot/1/md5.js", "/hotspot/1/..%2Fmain.py", "/hotspot/x/login.html"):
+        h = publik.get(jalur, follow_redirects=False)
+        assert h.status_code != 200 and "import" not in h.text, jalur
+    sk = o.get("/api/hotspot/skrip-pengaturan?lokasi=1").json()["skrip"]
+    assert "/tool fetch url=(\"http://testserver/hotspot/1/\" . $f)" in sk and '"login.html";"alogin.html"' in sk
+
+
 def test_kas_wilayah_dan_setoran(siap):
     """Uang masuk tiap wilayah dipegang penanggung jawabnya (W2 = mitra W2). Setelah tutup buku seluruh saldonya wajib
     disetor ke Pusat: tidak otomatis, penanggung jawab mencatat setoran + foto bukti, owner (CFO) menerima/menolak.
