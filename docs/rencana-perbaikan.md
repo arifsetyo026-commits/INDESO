@@ -48,7 +48,7 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
 |---|---|---|---|
 | **1** ✅ | Perintah **`cek.sh`** (periksa INDESO sekali jalan, hasil ✅/⚠️/❌ + saran) · kompresi gzip · banner jadi berkas statis yang di-cache · rapikan keterangan & penyamaran log | Rendah | Troubleshooting jauh lebih mudah; halaman ±80% lebih ringan |
 | **2** ✅ | Satu tempat untuk struktur database (daftar migrasi bernomor, dijalankan sekali saat INDESO menyala); `_siapkan_*` tidak lagi dipanggil di tiap permintaan; backup ikut `isp_history.db` | Sedang | Lebih cepat; struktur database jelas |
-| **3** | Pembantu `with db() as conn:` menggantikan pola buka/tutup manual, dikerjakan per fitur | Rendah–sedang | Kode lebih pendek, tidak ada koneksi yang lupa ditutup |
+| **3** ✅ | Pembantu `with db() as conn:` menggantikan pola buka/tutup manual, dikerjakan per fitur | Rendah–sedang | Kode lebih pendek, tidak ada koneksi yang lupa ditutup |
 | **4** | Pecah `main.py` menjadi modul per fitur (`indeso/pelanggan.py`, `keuangan.py`, `olt.py`, `acs.py`, …), satu modul per PR, `main:app` tetap sama | Sedang | Mudah dicari, perubahan tidak merembet |
 | **5** | Pecah fungsi > 100 baris (isolir, tagihan harian, laporan bulanan) menjadi langkah-langkah kecil bernama jelas | Sedang | Mudah dibaca & diuji |
 
@@ -59,5 +59,9 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   `@_skema_sekali` sehingga tidak lagi membuat tabel di setiap permintaan (2,4 ms → 0,04 ms per panggilan, belum
   termasuk tulis ke disk); backup harian ikut menyalin `isp_history.db` (3 hari, hanya di VPS);
   peta tabel di `docs/database.md`.
+- **Tahap 3:** pembantu `db()` (`with db() as conn:` / `db("riwayat")` / `db(polos=True)`) menggantikan 241 pola
+  buka–`try`–`finally: close()`; `main.py` ±700 baris lebih pendek. Diubah mekanis dan **dibuktikan setara** dengan
+  membandingkan pohon kode (AST) lama yang dinormalkan dengan yang baru. 21 sisanya sengaja dibiarkan (blok dengan
+  `except`, backup yang membuka dua database, dan definisi pembantunya sendiri).
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
