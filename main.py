@@ -6739,7 +6739,26 @@ def _chat_owner() -> list[str]:
 
 
 def susun_laporan_bulanan(periode: str) -> str:
-    """Teks laporan (HTML Telegram, < 4096 karakter) untuk satu periode YYYY-MM."""
+    """Teks laporan (HTML Telegram, < 4096 karakter) untuk satu periode YYYY-MM. Setiap bagian laporan disusun oleh
+    fungsi _lap_* sendiri dari angka yang dikumpulkan _data_laporan_bulanan."""
+    d = _data_laporan_bulanan(periode)
+    nama_bln = _nama_periode(periode)
+    L = [f"📊 <b>Laporan Keuangan {nama_bln}</b>", ""]
+    L += _lap_laba_rugi(d["r"], d["lalu"])
+    L += _lap_kas(d["r"], d["saldo_awal"], d["saldo_akhir"])
+    L += _lap_tagihan(nama_bln, d["tag"], d["piutang"], d["penunggak"])
+    L += _lap_liabilitas(d["utang"])
+    L += _lap_komisi(periode, nama_bln, d["insentif"], d["ins_bayar"], d["ins_tunggak"])
+    L += _lap_pelanggan(d["pel"], d["n_isolir"])
+    L += _lap_jaringan(d["ev"], d["ev_top"])
+    L += _lap_nota(d["tn"])
+    L += _lap_penutup(periode, nama_bln, d["n_trx"], d["n_batal"])
+    teks = "\n".join(L)
+    return teks if len(teks) < 4000 else teks[:3990] + "…"
+
+
+def _data_laporan_bulanan(periode: str) -> dict:
+    """Semua angka untuk laporan bulanan: keuangan & pelanggan dari billing.db, event jaringan dari isp_history.db."""
     awal, akhir = _batas_periode(periode)
     with db() as conn:
         r = _ringkas_periode(conn, periode)
@@ -6779,10 +6798,15 @@ def susun_laporan_bulanan(periode: str) -> str:
                                 "GROUP BY judul ORDER BY n DESC LIMIT 3", (awal, akhir)).fetchall()
     except Exception:
         ev, ev_top = {}, []
+    return {"r": r, "lalu": lalu, "saldo_awal": saldo_awal, "saldo_akhir": saldo_akhir, "tag": tag, "piutang": piutang,
+            "penunggak": penunggak, "utang": utang, "insentif": insentif, "ins_bayar": ins_bayar,
+            "ins_tunggak": ins_tunggak, "pel": pel, "n_isolir": n_isolir, "n_trx": n_trx, "n_batal": n_batal,
+            "tn": tn, "ev": ev, "ev_top": ev_top}
 
-    nama_bln = _nama_periode(periode)
-    L = [f"📊 <b>Laporan Keuangan {nama_bln}</b>", ""]
-    L.append("<b>Laba rugi</b>")
+
+def _lap_laba_rugi(r: dict, lalu: dict) -> list:
+    """Laba rugi: pendapatan (langganan & lain), pengeluaran + 3 kategori terbesar, laba bersih, margin."""
+    L = ["<b>Laba rugi</b>"]
     L.append(f"Pendapatan: <b>{_rp(r['pendapatan'])}</b>{_persen_ubah(r['pendapatan'], lalu['pendapatan'])}")
     L.append(f"  • Langganan ({r['jumlah_pembayaran']}x bayar): {_rp(r['pendapatan_langganan'])}")
     if r["pendapatan_lain"]:
@@ -6796,7 +6820,12 @@ def susun_laporan_bulanan(periode: str) -> str:
     L.append(f"{ikon} Laba bersih: <b>{_rp(r['laba'])}</b>{_persen_ubah(r['laba'], lalu['laba'])}")
     if r["pendapatan"]:
         L.append(f"Margin: {round(r['laba'] * 100 / r['pendapatan'])}%")
-    L += ["", "<b>Kas</b>", f"Saldo awal {_rp(saldo_awal)} → akhir <b>{_rp(saldo_akhir)}</b>"]
+    return L
+
+
+def _lap_kas(r: dict, saldo_awal: int, saldo_akhir: int) -> list:
+    """Kas: saldo awal → akhir, serta modal masuk / prive / bayar liabilitas bila ada."""
+    L = ["", "<b>Kas</b>", f"Saldo awal {_rp(saldo_awal)} → akhir <b>{_rp(saldo_akhir)}</b>"]
     lain = []
     if r["modal_masuk"]:
         lain.append(f"modal masuk {_rp(r['modal_masuk'])}")
@@ -6806,7 +6835,12 @@ def susun_laporan_bulanan(periode: str) -> str:
         lain.append(f"bayar liabilitas {_rp(r['bayar_utang'])}")
     if lain:
         L.append("Termasuk " + ", ".join(lain))
-    L += ["", "<b>Tagihan pelanggan</b>"]
+    return L
+
+
+def _lap_tagihan(nama_bln: str, tag, piutang, penunggak) -> list:
+    """Tagihan pelanggan bulan ini (lunas berapa), piutang s/d bulan ini, dan 5 penunggak terbesar."""
+    L = ["", "<b>Tagihan pelanggan</b>"]
     if tag[1]:
         L.append(f"Tagihan {nama_bln}: {tag[3]}/{tag[1]} lunas ({round(tag[2] * 100 / tag[0]) if tag[0] else 0}%), "
                  f"{_rp(tag[2])} dari {_rp(tag[0])}")
@@ -6815,6 +6849,12 @@ def susun_laporan_bulanan(periode: str) -> str:
     L.append(f"Piutang s/d bulan ini: <b>{_rp(piutang[0])}</b> ({piutang[1]} tagihan)")
     for p in penunggak:
         L.append(f"  • {_esc(p['nama'] or p['username'])}: {_rp(p['total'])}" + (f" ({p['n']} bulan)" if p["n"] > 1 else ""))
+    return L
+
+
+def _lap_liabilitas(utang: dict) -> list:
+    """Liabilitas ke pemasok (hanya bila ada): sisa, lewat jatuh tempo, dan yang terdekat."""
+    L = []
     if utang["jumlah"]:
         L += ["", "<b>Liabilitas ke pemasok</b>", f"Sisa: <b>{_rp(utang['sisa'])}</b> ({utang['jumlah']} liabilitas)"]
         if utang["lewat_tempo"]:
@@ -6824,6 +6864,12 @@ def susun_laporan_bulanan(periode: str) -> str:
             L.append(f"Terdekat: {_esc(t['pemasok'])} {_rp(t['sisa'])}"
                      + (f" (angsuran ke-{t['cicilan_ke']}/{t['tenor']})" if t.get("cicilan_ke") else "")
                      + f", {t['jatuh_tempo'][8:10]}/{t['jatuh_tempo'][5:7]}")
+    return L
+
+
+def _lap_komisi(periode: str, nama_bln: str, insentif: dict, ins_bayar: int, ins_tunggak: dict) -> list:
+    """Komisi mitra (hanya bila ada): terhitung vs dibayar bulan ini, dan tunggakan bulan lain."""
+    L = []
     if insentif["total"] or ins_bayar or ins_tunggak["total"]:
         sisa = max(0, insentif["total"] - ins_bayar)
         L += ["", "<b>Komisi mitra</b>",
@@ -6832,26 +6878,45 @@ def susun_laporan_bulanan(periode: str) -> str:
         lain = [b for b in ins_tunggak["bulan"] if b["periode"] != periode]
         if lain:
             L.append("Tunggakan bulan lain: " + ", ".join(f"{_nama_periode(b['periode'])} {_rp(b['sisa'])}" for b in lain[:4]))
-    L += ["", "<b>Pelanggan</b>",
-          f"Aktif berbayar {pel[0] or 0}, gratis {pel[1] or 0}, berhenti bulan ini {pel[2] or 0}, terisolir saat ini {n_isolir}"]
+    return L
+
+
+def _lap_pelanggan(pel, n_isolir: int) -> list:
+    return ["", "<b>Pelanggan</b>",
+            f"Aktif berbayar {pel[0] or 0}, gratis {pel[1] or 0}, berhenti bulan ini {pel[2] or 0}, terisolir saat ini {n_isolir}"]
+
+
+def _lap_jaringan(ev: dict, ev_top) -> list:
+    """Event jaringan bulan ini (hanya bila ada): jumlah kritis/peringatan dan 3 kritis terbanyak."""
+    L = []
     if ev:
         L += ["", "<b>Jaringan</b>",
               f"Event: {ev.get('kritis', 0)} kritis, {ev.get('peringatan', 0)} peringatan"]
         if ev_top:
             L.append("Kritis terbanyak: " + ", ".join(f"{_esc(e[0])} ({e[1]}x)" for e in ev_top))
+    return L
+
+
+def _lap_nota(tn: dict) -> list:
+    """Pengeluaran besar yang belum ada notanya (hanya bila ada), maks. 5 contoh."""
+    L = []
     if tn["jumlah"]:
         L += ["", f"📎 <b>{tn['jumlah']} pengeluaran ≥ {_rp(tn['batas'])} belum ada nota</b> (total {_rp(tn['total'])})"]
         for d in tn["daftar"][:5]:
             L.append(f"  • {d['kode']} {d['tanggal'][8:10]}/{d['tanggal'][5:7]} {_esc(d['kategori'])}: {_rp(d['jumlah'])}"
                      f" ({_esc(d['dicatat_oleh'])})")
+    return L
+
+
+def _lap_penutup(periode: str, nama_bln: str, n_trx, n_batal: int) -> list:
+    """Status tutup buku bulan itu dan jumlah transaksi/petugas."""
     with db() as conn:
         tb = _buku_tertutup(conn, periode)
-    L += ["", (f"🔒 Buku {nama_bln} sudah ditutup oleh {_esc(tb['oleh'])}." if tb else
-               f"⚠️ Buku {nama_bln} belum ditutup — periksa transaksinya lalu tutup buku di menu Keuangan → Ringkasan.")]
+    L = ["", (f"🔒 Buku {nama_bln} sudah ditutup oleh {_esc(tb['oleh'])}." if tb else
+              f"⚠️ Buku {nama_bln} belum ditutup — periksa transaksinya lalu tutup buku di menu Keuangan → Ringkasan.")]
     L += ["", f"<i>{n_trx[0]} transaksi dicatat oleh {n_trx[1]} petugas"
           + (f", {n_batal} dibatalkan" if n_batal else "") + ". Rincian di berkas CSV terlampir.</i>"]
-    teks = "\n".join(L)
-    return teks if len(teks) < 4000 else teks[:3990] + "…"
+    return L
 
 
 def kirim_laporan_bulanan(periode: str, chat_ids: Optional[list[str]] = None) -> tuple[int, int]:
