@@ -4416,7 +4416,7 @@ def test_cek_sh_tanpa_rahasia(tmp_path):
     env = tmp_path / "indeso.env"
     env.write_text("TELEGRAM_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef\nTELEGRAM_CHAT_ID=-1\n"
                    "MIKROTIK_HOST=127.0.0.1\nMIKROTIK_PORT=9\nMIKROTIK_USER=indeso\nMIKROTIK_PASSWORD=RahasiaMikrotik9\n"
-                   "OLT_HOST=127.0.0.1\nNAMA_USAHA=Internet Desa\nGENIEACS_URL=\n")
+                   "NAMA_USAHA=Internet Desa\nGENIEACS_URL=\n")
     c = sqlite3.connect(data / "billing.db")
     c.execute("CREATE TABLE pelanggan (username, status)")
     c.execute("CREATE TABLE lokasi (kode, nama, mt_host, mt_port)")
@@ -4428,4 +4428,5 @@ def test_cek_sh_tanpa_rahasia(tmp_path):
     keluar = p.stdout + p.stderr
     assert "RINGKASAN" in keluar and "billing.db utuh" in keluar and "NAMA_USAHA" in keluar
     assert "Belum ada backup billing.db" in keluar
+    assert "Isian wajib" not in keluar                     # OLT_HOST dll. punya nilai bawaan, tidak wajib
     assert "RahasiaMikrotik9" not in keluar and "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef" not in keluar
