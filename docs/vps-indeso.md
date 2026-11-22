@@ -107,7 +107,7 @@ Perintah ini hanya membaca dan tidak menampilkan password, jadi hasilnya aman di
 
 Sertifikat HTTPS diperbarui otomatis oleh certbot.
 
-**Backup.** Setiap hari setelah jam 02.00, `billing.db` dibackup ke `/var/lib/indeso/backup` (14 hari terakhir) dan dikirim ke Telegram owner tanpa bunyi notifikasi. Hari Minggu, kirimannya berbunyi dan ikut mengirim ZIP nota. Untuk kembali ke pengiriman mingguan saja, isi `BACKUP_KIRIM_HARIAN=0` di `.env`.
+**Backup.** Setiap hari setelah jam 02.00, `billing.db` dibackup ke `/var/lib/indeso/backup` (14 hari terakhir) dan dikirim ke Telegram owner tanpa bunyi notifikasi. Hari Minggu, kirimannya berbunyi dan ikut mengirim ZIP nota. Untuk kembali ke pengiriman mingguan saja, isi `BACKUP_KIRIM_HARIAN=0` di `.env`. Riwayat teknis (`isp_history.db`: catatan ONU, event, redaman & trafik 30 hari) ikut dibackup ke folder yang sama sebagai `riwayat-TANGGAL.db`, 3 hari terakhir, hanya di VPS karena terlalu besar untuk Telegram. Peta isi database: `docs/database.md`.
 
 **Pemantau dari luar.** Daftarkan `https://<alamat-dashboard>/healthz` di layanan pemantau gratis (mis. UptimeRobot, cek tiap 5 menit, kirim notifikasi ke email/Telegram). Alamat ini membalas 503 bila loop pemantauan INDESO macet, dan tidak bisa dihubungi sama sekali bila VPS/INDESO mati. Server GenieACS yang tidak merespons ±15 menit dilaporkan otomatis ke Telegram.
 

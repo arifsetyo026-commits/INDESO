@@ -3597,6 +3597,7 @@ def test_mitra_dan_komisi_per_lokasi(siap):
                      "oleh TEXT, pada TEXT, catatan TEXT)")
         conn.execute("INSERT INTO komisi_kunci (periode, jumlah, total, sumber) VALUES ('2026-09', 3, 30000, 'manual')")
         conn.commit()
+        main._siapkan_kunci_komisi.lupakan()            # seperti INDESO dinyalakan ulang dengan tabel lama
         main._siapkan_kunci_komisi(conn)
         assert [tuple(r) for r in conn.execute("SELECT periode, lokasi, total FROM komisi_kunci")] == [("2026-09", 1, 30000)]
     finally:
@@ -4430,3 +4431,48 @@ def test_cek_sh_tanpa_rahasia(tmp_path):
     assert "Belum ada backup billing.db" in keluar
     assert "Isian wajib" not in keluar                     # OLT_HOST dll. punya nilai bawaan, tidak wajib
     assert "RahasiaMikrotik9" not in keluar and "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef" not in keluar
+
+
+def test_skema_sekali_dan_backup_riwayat(app, tmp_path):
+    """Tahap 2: struktur tabel disiapkan sekali per berkas database (bukan tiap permintaan), dicek ulang bila berkasnya
+    diganti; di tengah transaksi pemanggil tetap dijalankan tanpa ditandai. Backup ikut menyalin isp_history.db."""
+    import sqlite3
+    main = app
+    main.siapkan_database()
+    main.siapkan_database()                                              # aman dijalankan berulang
+    panggil = []
+
+    @main._skema_sekali
+    def contoh(conn):
+        panggil.append(1)
+        conn.execute("CREATE TABLE IF NOT EXISTS contoh (a)")
+        conn.execute("INSERT INTO contoh VALUES (1)")                    # perubahan milik fungsi ikut disimpan
+
+    db = tmp_path / "x.db"
+    c = sqlite3.connect(db)
+    contoh(c); contoh(c)
+    assert len(panggil) == 1
+    c.close()
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM contoh").fetchone()[0] == 1
+    c = sqlite3.connect(db)
+    c.execute("BEGIN"); contoh(c); c.rollback()                          # di tengah transaksi: jalan, tidak ditandai
+    assert len(panggil) == 2
+    c.close()
+    os.remove(db)                                                        # berkas diganti (mis. dipulihkan) -> dicek ulang
+    c = sqlite3.connect(db)
+    contoh(c)
+    assert len(panggil) == 3 and c.execute("SELECT name FROM sqlite_master WHERE name='contoh'").fetchone()
+    c.close()
+    # data awal fitur tidak dibuat saat menyala: kategori Hotspot & bulan mulai kas wilayah baru saat fiturnya dipakai
+    k = main._billing_conn()
+    assert not k.execute("SELECT 1 FROM kategori_kas WHERE nama = ?", (main._KAT_HOTSPOT,)).fetchone()
+    assert not k.execute("SELECT 1 FROM pengaturan WHERE kunci = ?", (main._KUNCI_KAS_MULAI,)).fetchone()
+    assert k.execute("SELECT name FROM sqlite_master WHERE name IN ('hs_voucher', 'kas_setoran')").fetchall()
+    main._siapkan_hotspot(k)                                             # dipakai pertama kali, tanpa commit pemanggil
+    k.close()
+    k = main._billing_conn()
+    assert k.execute("SELECT 1 FROM kategori_kas WHERE nama = ?", (main._KAT_HOTSPOT,)).fetchone()
+    k.close()
+    info = main.buat_backup()
+    assert info["riwayat"]["integritas"] == "ok" and os.path.exists(info["riwayat"]["berkas"])
+    assert os.path.basename(info["riwayat"]["berkas"]).startswith("riwayat-")

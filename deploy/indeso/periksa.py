@@ -177,6 +177,11 @@ def cek_database() -> None:
         umur = (time.time() - os.path.getmtime(os.path.join(folder, berkas[-1]))) / 3600
         lapor("ok" if umur <= 30 else "peringatan", "Backup terakhir", f"{berkas[-1]} ({umur:.0f} jam lalu, {len(berkas)} tersimpan)",
               "Backup harian tidak berjalan. Cek log: sudo journalctl -u indeso | grep -i backup")
+    riwayat = sorted(f for f in (os.listdir(folder) if os.path.isdir(folder) else []) if re.fullmatch(r"riwayat-\d{4}-\d{2}-\d{2}\.db", f))
+    if riwayat:
+        umur = (time.time() - os.path.getmtime(os.path.join(folder, riwayat[-1]))) / 3600
+        lapor("ok" if umur <= 30 else "peringatan", "Backup riwayat (isp_history.db)", f"{riwayat[-1]} ({umur:.0f} jam lalu)",
+              "Backup riwayat tidak berjalan. Cek log: sudo journalctl -u indeso | grep -i 'isp_history'")
 
 
 def cek_tcp(judul: str, host: str, port: int, saran: str) -> bool:

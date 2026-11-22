@@ -32,6 +32,7 @@ mapping manual.
 
 import asyncio
 import csv
+import functools
 import io
 import hashlib
 import json
@@ -163,6 +164,7 @@ CONFIG = {
     "NOTA_WAJIB_DI_ATAS": 100_000,      # pengeluaran >= ini tanpa nota ditandai di laporan
     "BACKUP_JAM": 2,                    # backup dibuat setelah jam ini tiap hari
     "BACKUP_SIMPAN": 14,                # jumlah backup harian yang disimpan
+    "BACKUP_RIWAYAT_SIMPAN": 3,         # salinan isp_history.db yang disimpan di VPS (0 = tidak dibackup)
     "BACKUP_KIRIM_TELEGRAM": True,      # kirim berkas backup ke Telegram (ke tujuan laporan owner bila diisi)
     "BACKUP_NOTA_TELEGRAM": True,       # backup mingguan ikut mengirim nota baru (ZIP)
     "BACKUP_NOTA_MAKS_MB": 45,          # batas per ZIP (batas Telegram 50 MB per berkas)
@@ -3026,15 +3028,30 @@ def hapus_akun(username: str, request: Request):
 _background_tasks: list[asyncio.Task] = []
 
 
+def siapkan_database() -> None:
+    """SATU tempat untuk menyiapkan struktur semua database saat INDESO menyala: tabel dibuat dan kolom baru
+    ditambahkan bila belum ada; data yang sudah ada tidak diubah. Urutan penting (mis. keuangan sebelum hotspot,
+    karena hotspot menambah kategori kas). Fungsi _siapkan_* yang masih dipanggil di dalam fitur tidak lagi
+    mengulang pekerjaan ini (lihat _skema_sekali).
+    Berkas: isp_history.db = riwayat ONU/trafik, event, catatan ONU baru; billing.db = semua data usaha."""
+    for f in (init_history_db, init_event_db, init_billing_db, init_akun_db, init_keuangan_db, init_nota_db,
+              init_tiket_db):
+        f()
+    conn = _billing_conn()
+    try:
+        # Hanya struktur tabel; data awal fitur (bulan mulai kas wilayah, kategori Hotspot) tetap dibuat saat fiturnya
+        # pertama kali dipakai, seperti sebelumnya.
+        for f in (_siapkan_gudang, _siapkan_kunci_komisi, _skema_kas_wilayah, _siapkan_material, _skema_hotspot,
+                  _siapkan_qris):
+            f(conn)
+    finally:
+        conn.close()
+    _siapkan_tabel_isolir()
+
+
 @app.on_event("startup")
 async def on_startup():
-    await asyncio.to_thread(init_history_db)
-    await asyncio.to_thread(init_event_db)
-    await asyncio.to_thread(init_billing_db)
-    await asyncio.to_thread(init_akun_db)
-    await asyncio.to_thread(init_keuangan_db)
-    await asyncio.to_thread(init_nota_db)
-    await asyncio.to_thread(init_tiket_db)
+    await asyncio.to_thread(siapkan_database)
     await asyncio.to_thread(_muat_pengaturan)
     logger.info(
         f"Target: MikroTik {CONFIG['MIKROTIK_HOST']}:{CONFIG['MIKROTIK_PORT']}, "
@@ -3231,6 +3248,38 @@ class PaketIn(BaseModel):
     nama: str
     kecepatan_mbps: float
     harga: int
+
+
+def _kunci_db(conn) -> tuple:
+    """Identitas berkas database: jalur + inode (berkas yang diganti, mis. dipulihkan dari backup, dianggap baru)."""
+    jalur = conn.execute("PRAGMA database_list").fetchone()[2] or ":memory:"
+    try:
+        return jalur, os.stat(jalur).st_ino
+    except OSError:
+        return jalur, None
+
+
+def _skema_sekali(fungsi):
+    """Penanda untuk fungsi yang membuat/mengubah tabel (_siapkan_*): cukup dijalankan SEKALI per berkas database
+    selama INDESO menyala, bukan di setiap permintaan. Dipanggil di tengah transaksi milik pemanggil = dijalankan
+    seperti biasa tanpa ditandai (bisa saja dibatalkan pemanggil). Perubahan milik fungsi itu sendiri (mis. baris
+    kategori bawaan) langsung disimpan supaya tidak ikut hilang bila pemanggil batal."""
+    sudah: set = set()
+
+    @functools.wraps(fungsi)
+    def bungkus(conn):
+        if conn.in_transaction:
+            return fungsi(conn)
+        kunci = _kunci_db(conn)
+        if kunci in sudah:
+            return None
+        hasil = fungsi(conn)
+        if conn.in_transaction:
+            conn.commit()
+        sudah.add(kunci)
+        return hasil
+    bungkus.lupakan = sudah.clear          # untuk tes / setelah memulihkan database
+    return bungkus
 
 
 def _billing_conn():
@@ -4059,6 +4108,7 @@ def _tambah_pelanggan(d: TambahPelangganIn, request: Request) -> dict:
 # Stok tidak disimpan sebagai angka yang bisa ditimpa: dihitung dari riwayat mutasi yang tidak bisa diubah
 # (hanya dibatalkan dengan alasan), jadi setiap perubahan stok jelas siapa, kapan, dan untuk apa.
 
+@_skema_sekali
 def _siapkan_gudang(conn) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS gudang_barang (
         id INTEGER PRIMARY KEY AUTOINCREMENT, nama TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -7653,6 +7703,7 @@ def kirim_laporan_sekarang(periode: str, request: Request):
 # 6e. HALAMAN MITRA — hanya pelanggan tampil_mitra=1, kontak saja yang bisa diubah
 # ============================================================
 
+@_skema_sekali
 def _siapkan_kunci_komisi(conn) -> None:
     """Kunci komisi per (bulan tagihan, lokasi): tiap lokasi punya mitra & komisinya sendiri."""
     kolom = [r[1] for r in conn.execute("PRAGMA table_info(komisi_kunci)").fetchall()]
@@ -8358,13 +8409,19 @@ _KUNCI_KAS_MULAI = "KAS_WILAYAH_MULAI"
 SETOR_INGAT_HARI = 3
 
 
-def _siapkan_kas_wilayah(conn) -> str:
+@_skema_sekali
+def _skema_kas_wilayah(conn) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS kas_setoran (
         id INTEGER PRIMARY KEY AUTOINCREMENT, lokasi INTEGER NOT NULL, jumlah INTEGER NOT NULL, tanggal TEXT NOT NULL,
         metode TEXT NOT NULL, catatan TEXT, dibuat_oleh TEXT NOT NULL, dibuat_pada TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'tanpa_bukti', berkas TEXT, mime TEXT, diperiksa_oleh TEXT, diperiksa_pada TEXT,
         alasan_tolak TEXT)""")
     conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+
+
+def _siapkan_kas_wilayah(conn) -> str:
+    """Tabel kas wilayah + bulan mulai pencatatannya (dibuat saat pertama kali dipakai)."""
+    _skema_kas_wilayah(conn)
     r = conn.execute("SELECT nilai FROM pengaturan WHERE kunci = ?", (_KUNCI_KAS_MULAI,)).fetchone()
     if not r:
         # Pertama kali dipakai: kas wilayah dihitung mulai bulan ini (riwayat sebelumnya sudah di tangan Pusat).
@@ -8827,6 +8884,7 @@ def wilayah_keuangan(request: Request, bulan: int = 12):
 _STATUS_MATERIAL = ("menunggu", "diproses", "dikirim", "ditolak", "batal")
 
 
+@_skema_sekali
 def _siapkan_material(conn) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS material_minta (
         id INTEGER PRIMARY KEY AUTOINCREMENT, lokasi INTEGER NOT NULL, peminta TEXT NOT NULL, dibuat TEXT NOT NULL,
@@ -9041,7 +9099,8 @@ _HURUF_VOUCHER = "abcdefghjkmnpqrstuvwxyz23456789"     # tanpa 0/o dan 1/l/i: ti
 _KOMENTAR_HS = "INDESO voucher"
 
 
-def _siapkan_hotspot(conn) -> None:
+@_skema_sekali
+def _skema_hotspot(conn) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS hs_paket (
         id INTEGER PRIMARY KEY AUTOINCREMENT, nama TEXT NOT NULL, lokasi INTEGER NOT NULL DEFAULT 1,
         menit INTEGER NOT NULL, mbps REAL NOT NULL, perangkat INTEGER NOT NULL DEFAULT 1, harga INTEGER NOT NULL,
@@ -9060,9 +9119,16 @@ def _siapkan_hotspot(conn) -> None:
         id INTEGER PRIMARY KEY AUTOINCREMENT, reseller TEXT NOT NULL, lokasi INTEGER NOT NULL, waktu TEXT NOT NULL,
         jumlah_voucher INTEGER NOT NULL, nominal INTEGER NOT NULL, metode TEXT, transaksi_id INTEGER, oleh TEXT,
         status TEXT NOT NULL DEFAULT 'aktif', batal_alasan TEXT)""")
-    conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'masuk', 1)", (_KAT_HOTSPOT,))
     if "hotspot_setoran_id" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
         conn.execute("ALTER TABLE transaksi ADD COLUMN hotspot_setoran_id INTEGER")
+
+
+@_skema_sekali
+def _siapkan_hotspot(conn) -> None:
+    """Tabel hotspot + kategori kas "Hotspot". Kategori baru dibuat saat fitur hotspot pertama kali dipakai, supaya
+    usaha yang tidak berjualan voucher tidak melihat kategori itu di Keuangan."""
+    _skema_hotspot(conn)
+    conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'masuk', 1)", (_KAT_HOTSPOT,))
 
 
 def _teks_durasi(menit: int) -> str:
@@ -10111,6 +10177,7 @@ def _qris_bernominal(payload: str, jumlah: int) -> str:
     return isi + _crc16_qris(isi)
 
 
+@_skema_sekali
 def _siapkan_qris(conn) -> None:
     conn.execute("""CREATE TABLE IF NOT EXISTS qris_bayar (id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL,
         merchant TEXT NOT NULL, nmid TEXT, kota TEXT, aktif INTEGER NOT NULL DEFAULT 1, oleh TEXT, pada TEXT NOT NULL)""")
@@ -11632,23 +11699,27 @@ def proses_tagihan_harian(sekarang=None) -> None:
 def _siapkan_tabel_isolir() -> None:
     conn = sqlite3.connect(CONFIG["BILLING_DB_PATH"], timeout=15)
     try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS isolir ("
-            "username TEXT PRIMARY KEY, profile_asal TEXT, "
-            "sejak TEXT NOT NULL, otomatis INTEGER NOT NULL DEFAULT 1)"
-        )
-        # buka_saat_lunas = 0: isolir manual tanpa tunggakan (mis. pelanggan gratis),
-        # hanya bisa dibuka manual — otomasi tidak boleh membukanya.
-        kolom = [r[1] for r in conn.execute("PRAGMA table_info(isolir)").fetchall()]
-        if "buka_saat_lunas" not in kolom:
-            conn.execute("ALTER TABLE isolir ADD COLUMN buka_saat_lunas INTEGER NOT NULL DEFAULT 1")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS otomasi_log ("
-            "tanggal TEXT NOT NULL, jenis TEXT NOT NULL, PRIMARY KEY (tanggal, jenis))"
-        )
-        conn.commit()
+        _skema_isolir(conn)
     finally:
         conn.close()
+
+
+@_skema_sekali
+def _skema_isolir(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS isolir ("
+        "username TEXT PRIMARY KEY, profile_asal TEXT, "
+        "sejak TEXT NOT NULL, otomatis INTEGER NOT NULL DEFAULT 1)"
+    )
+    # buka_saat_lunas = 0: isolir manual tanpa tunggakan (mis. pelanggan gratis),
+    # hanya bisa dibuka manual — otomasi tidak boleh membukanya.
+    kolom = [r[1] for r in conn.execute("PRAGMA table_info(isolir)").fetchall()]
+    if "buka_saat_lunas" not in kolom:
+        conn.execute("ALTER TABLE isolir ADD COLUMN buka_saat_lunas INTEGER NOT NULL DEFAULT 1")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS otomasi_log ("
+        "tanggal TEXT NOT NULL, jenis TEXT NOT NULL, PRIMARY KEY (tanggal, jenis))"
+    )
 
 
 _siapkan_tabel_isolir()
@@ -12055,7 +12126,36 @@ def buat_backup(sekarang=None) -> dict:
     for lama in _daftar_backup(folder)[:-CONFIG["BACKUP_SIMPAN"]]:
         if os.path.join(folder, lama) != tujuan:    # berkas yang baru dibuat tidak pernah dihapus
             os.remove(os.path.join(folder, lama))
-    return {"berkas": tujuan, "ukuran_kb": ukuran_kb, "integritas": integritas, "jumlah": jumlah}
+    riwayat = _backup_riwayat(folder, sekarang)
+    return {"berkas": tujuan, "ukuran_kb": ukuran_kb, "integritas": integritas, "jumlah": jumlah, "riwayat": riwayat}
+
+
+def _backup_riwayat(folder: str, sekarang: datetime) -> Optional[dict]:
+    """Salinan isp_history.db (catatan ONU baru/pemakai ONU, event, riwayat redaman & trafik 30 hari). Hanya disimpan
+    di VPS (BACKUP_RIWAYAT_SIMPAN hari terakhir): ukurannya ratusan MB, melebihi batas kiriman Telegram (50 MB).
+    Gagal di sini tidak menggagalkan backup billing.db."""
+    simpan = int(CONFIG.get("BACKUP_RIWAYAT_SIMPAN", 3))
+    if simpan <= 0 or not os.path.exists(CONFIG["HISTORY_DB_PATH"]):
+        return None
+    tujuan = os.path.join(folder, f"riwayat-{sekarang.strftime('%Y-%m-%d')}.db")
+    try:
+        sumber = sqlite3.connect(CONFIG["HISTORY_DB_PATH"], timeout=15)
+        salinan = sqlite3.connect(tujuan)
+        try:
+            sumber.backup(salinan)
+            salinan.execute("PRAGMA journal_mode=DELETE")
+            cek = salinan.execute("PRAGMA quick_check").fetchone()[0]
+        finally:
+            salinan.close()
+            sumber.close()
+    except sqlite3.Error as e:
+        logger.error(f"Backup isp_history.db gagal: {e}")
+        return {"berkas": tujuan, "galat": str(e)}
+    lama = sorted(f for f in os.listdir(folder) if re.fullmatch(r"riwayat-\d{4}-\d{2}-\d{2}\.db", f))
+    for f in lama[:-simpan]:
+        if os.path.join(folder, f) != tujuan:
+            os.remove(os.path.join(folder, f))
+    return {"berkas": tujuan, "ukuran_kb": round(os.path.getsize(tujuan) / 1024, 1), "integritas": cek}
 
 
 def kirim_dokumen_telegram(path: str, caption: str, chat_id: Optional[str] = None, senyap: bool = False) -> bool:
