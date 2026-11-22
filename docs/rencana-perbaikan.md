@@ -67,5 +67,9 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   7 konstanta). Dipindah apa adanya (dibuktikan identik per fungsi; sisa `main.py` tidak berubah) dan diimpor kembali
   oleh `main.py`. `update.sh` ikut memeriksa folder `indeso/`. Berikutnya: fitur yang punya jalur API sendiri
   (QRIS & konfirmasi bayar, gudang & material, hotspot, wilayah) dipindah satu per satu memakai `APIRouter`.
+- **Tahap 4 (bagian 2, QRIS):** `indeso/qris_bayar.py` (10 jalur API, 16 fungsi/kelas) memakai `APIRouter`; pembantu
+  inti lewat `indeso/inti.py` (dibaca saat dipakai, jadi tidak ada impor melingkar dan tiruan di tes tetap berlaku).
+  Dibuktikan: kode fitur identik dengan aslinya setelah aturan `nama → inti.nama` & `@app → @router`; sisa `main.py`
+  tidak berubah; tidak ada nama yang tak terdefinisi.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
