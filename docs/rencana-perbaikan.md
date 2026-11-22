@@ -88,5 +88,9 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   (`_periode_tagihan_otomatis`, `_kabar_tagihan_dibuat`), `_tagihan_otomatis_ingatkan` (`_judul_jatuh_tempo`), dan
   penanda `_otomasi_sudah` / `_otomasi_tandai`. Uji banding 1.500 skenario (buat_tagihan asli ikut jalan; semua
   variasi: dibuat, terlambat, diperbarui, sudah siap, N hari lagi, hari ini, lewat, semua lunas): identik.
+- **Tahap 5 (bagian 3, laporan bulanan):** `susun_laporan_bulanan` dipecah menjadi `_data_laporan_bulanan` (semua angka)
+  dan satu fungsi per bagian laporan (`_lap_laba_rugi`, `_lap_kas`, `_lap_tagihan`, `_lap_liabilitas`, `_lap_komisi`,
+  `_lap_pelanggan`, `_lap_jaringan`, `_lap_nota`, `_lap_penutup`). Uji banding 1.200 laporan dari data keuangan acak:
+  teks identik karakter demi karakter, semua bagian ikut muncul.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
