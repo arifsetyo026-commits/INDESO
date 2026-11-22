@@ -71,5 +71,7 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   inti lewat `indeso/inti.py` (dibaca saat dipakai, jadi tidak ada impor melingkar dan tiruan di tes tetap berlaku).
   Dibuktikan: kode fitur identik dengan aslinya setelah aturan `nama → inti.nama` & `@app → @router`; sisa `main.py`
   tidak berubah; tidak ada nama yang tak terdefinisi.
+- **Tahap 4 (bagian 3, gudang & material):** `indeso/gudang.py` (13 jalur API, 35 fungsi/kelas/konstanta), cara &
+  bukti yang sama; `main.py` 14.680 → 14.154 baris.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
