@@ -60,6 +60,9 @@ kembalikan() {
 
 pasang_library "$LAMA" "$BARU" || kembalikan "pemasangan library gagal"
 "$PY" -m py_compile "$APP/main.py" || kembalikan "kode baru tidak bisa dibaca Python"
+if [ -d "$APP/indeso" ]; then
+  "$PY" -m compileall -q "$APP/indeso" >/dev/null || kembalikan "modul di folder indeso/ tidak bisa dibaca Python"
+fi
 systemctl restart indeso
 sehat || kembalikan "INDESO tidak sehat setelah restart"
 echo "BERHASIL: INDESO jalan dengan versi ${BARU:0:7}."

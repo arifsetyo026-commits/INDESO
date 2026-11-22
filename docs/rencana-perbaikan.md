@@ -63,5 +63,9 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   buka–`try`–`finally: close()`; `main.py` ±700 baris lebih pendek. Diubah mekanis dan **dibuktikan setara** dengan
   membandingkan pohon kode (AST) lama yang dinormalkan dengan yang baru. 21 sisanya sengaja dibiarkan (blok dengan
   `except`, backup yang membuka dua database, dan definisi pembantunya sendiri).
+- **Tahap 4 (bagian 1):** folder `indeso/` dengan modul fungsi murni: `format`, `keamanan`, `onu`, `qris` (44 fungsi +
+  7 konstanta). Dipindah apa adanya (dibuktikan identik per fungsi; sisa `main.py` tidak berubah) dan diimpor kembali
+  oleh `main.py`. `update.sh` ikut memeriksa folder `indeso/`. Berikutnya: fitur yang punya jalur API sendiri
+  (QRIS & konfirmasi bayar, gudang & material, hotspot, wilayah) dipindah satu per satu memakai `APIRouter`.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
