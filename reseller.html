@@ -132,7 +132,7 @@ function kartu(v){
   <div class="langkah form"><b>3. Kirim kode ke WhatsApp pembeli <span class="sub" style="display:inline">(boleh dilewati)</span></b>
    <input id="waNo" type="tel" inputmode="tel" placeholder="Nomor WA pembeli, mis. 0812…  (kosongkan untuk pilih kontak)" autocomplete="off">
    <button class="btn go wa" type="button" onclick="kirimWa()">Kirim lewat WA</button>
-   <div class="sub">Pembeli menyimpan kodenya untuk dipakai lagi sampai waktunya habis. Gratis, tanpa cetak.</div></div>
+   <div class="sub">Pembeli menyimpan kode &amp; cara pakainya. Gratis, tanpa cetak.</div></div>
   <div class="btns" style="justify-content:center"><button class="btn" onclick="$('lapis').classList.remove('on')">Selesai</button></div>`;
  st.kartu=v; $('lapis').classList.add('on'); window.scrollTo(0,0);
 }
@@ -142,7 +142,7 @@ function teksWa(v){
  const usaha=(st.data&&st.data.usaha)||'Internet Desa';
  return `*Voucher WiFi ${usaha}*\nPaket: ${v.paket}${v.durasi?' ('+v.durasi+')':''}\nKode voucher: *${v.kode}*\n\n`
   +`Cara pakai:\n1. Sambungkan HP ke WiFi "${v.ssid}" (tanpa sandi).\n2. Halaman login muncul sendiri, ketik kode di atas lalu tekan Masuk.\n`
-  +`   Atau setelah tersambung, buka: ${v.login}\n\nSimpan pesan ini: kode bisa dipakai lagi sampai waktunya habis. Terima kasih!`;
+  +`   Atau setelah tersambung, buka: ${v.login}\n\nMasa pakai dihitung sejak pertama masuk. Selama masa pakai, HP yang sama tersambung lagi otomatis tanpa memasukkan kode. Terima kasih!`;
 }
 function kirimWa(){
  const v=st.kartu; if(!v) return;

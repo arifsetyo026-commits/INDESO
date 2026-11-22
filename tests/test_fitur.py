@@ -3635,6 +3635,12 @@ def test_hotspot_reseller_voucher(siap):
     d = o.post("/api/hotspot/paket", json=pk).json()
     pid = d["id"]
     assert d["mikrotik"] is True and mt.hs["/ip/hotspot/user/profile"][0]["rate-limit"] == "5M/5M"
+    # voucher 1 sesi: masa pakai sejak pertama masuk (penjadwal menghapus voucher), 1 HP = terkunci ke MAC HP pertama,
+    # sambung ulang otomatis lewat MAC cookie selama masa pakai
+    prof = mt.hs["/ip/hotspot/user/profile"][0]
+    assert prof["add-mac-cookie"] == "yes" and prof["mac-cookie-timeout"] == "3h"
+    assert "/system scheduler add" in prof["on-login"] and 'mac-address=$"mac-address"' in prof["on-login"]
+    assert '/ip hotspot user remove [find where name=\\"" . $u . "\\"]' in prof["on-login"]
     # titip 3 voucher (lokasi 1 berjaringan): langsung dibuat di MikroTik
     b = k.post("/api/hotspot/batch", json={"paket_id": pid, "jumlah": 3, "reseller": "warungsri"}).json()
     assert b["status"] == "siap" and b["skrip"] is None
@@ -3671,7 +3677,7 @@ def test_hotspot_reseller_voucher(siap):
     assert k.post("/api/hotspot/batch", json={"paket_id": p2, "jumlah": 2, "reseller": "warungsri"}).status_code == 400  # beda lokasi
     b2 = k.post("/api/hotspot/batch", json={"paket_id": p2, "jumlah": 2, "reseller": "warungtono"}).json()
     assert b2["status"] == "menunggu" and len(mt.hs["/ip/hotspot/user"]) == 3
-    assert "limit-uptime=5h" in b2["skrip"] and "/ip hotspot user profile" in b2["skrip"] and b2["skrip"].count("add name=") == 3
+    assert "limit-uptime=5h" in b2["skrip"] and "/ip hotspot user profile" in b2["skrip"] and b2["skrip"].count('add name="') == 3
     rt = TestClient(main.app)
     rt.post("/api/login", json={"username": "warungtono", "password": "warungtono1"})
     assert rt.post("/api/reseller/jual", json={"paket_id": p2}).status_code == 409                  # belum terpasang
@@ -3686,7 +3692,7 @@ def test_hotspot_reseller_voucher(siap):
     ring = o.get("/api/hotspot?lokasi=2").json()
     assert ring["reseller"][0]["username"] == "warungtono" and ring["reseller"][0]["belum_setor"] == 1
     sk = o.get("/api/hotspot/skrip-pengaturan?lokasi=2").json()["skrip"]
-    assert 'dns-name="hs.desa2"' in sk and "login-by=http-pap" in sk
+    assert 'dns-name="hs.desa2"' in sk and "login-by=http-chap,http-pap,cookie,mac-cookie" in sk
     # kode voucher tidak pernah masuk log aktivitas
     assert j["kode"] not in o.get("/api/aktivitas").text
     # reseller yang masih memegang stok / uang voucher tidak bisa dihapus atau dipindah lokasi

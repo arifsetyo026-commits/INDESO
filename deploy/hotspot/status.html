@@ -28,21 +28,15 @@ body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;back
 <div class="atas"><h1>Terhubung ✓</h1><p>{{USAHA}} · {{LOKASI}}</p></div>
 <div class="isi">
   <div class="kartu">
-    $(if session-time-left)
-    <div class="besar"><small>SISA WAKTU VOUCHER</small><b>$(session-time-left)</b></div>
-    $(else)
-    <div class="besar"><small>LAMA TERHUBUNG</small><b>$(uptime)</b></div>
-    $(endif)
+    <div class="besar"><small>LAMA TERHUBUNG SESI INI</small><b>$(uptime)</b></div>
     <div class="baris"><span>Voucher</span><b>$(username)</b></div>
-    <div class="baris"><span>Lama terhubung</span><b>$(uptime)</b></div>
     <div class="baris"><span>Unduh</span><b>$(bytes-out-nice)</b></div>
     <div class="baris"><span>Unggah</span><b>$(bytes-in-nice)</b></div>
     <div class="baris"><span>Alamat IP</span><b>$(ip)</b></div>
     <form action="$(link-logout)" name="logout" method="post">
-      <input type="hidden" name="erase-cookie" value="on">
-      <button class="tombol" type="submit">Keluar (hentikan pemakaian)</button>
+      <button class="tombol" type="submit">Keluar</button>
     </form>
-    <p class="catatan">Simpan halaman ini untuk melihat sisa waktu: buka <b>$(hostname)/status</b>.</p>
+    <p class="catatan">Masa pakai dihitung sejak pertama masuk dan tetap berjalan walau HP terputus. Selama masa pakai, HP ini tersambung lagi otomatis tanpa memasukkan kode.</p>
   </div>
 </div>
 </body>

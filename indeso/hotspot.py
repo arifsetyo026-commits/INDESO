@@ -83,9 +83,33 @@ def _rate_mikrotik(mbps: float) -> str:
     return f"{int(mbps)}M" if mbps.is_integer() else f"{int(round(mbps * 1000))}k"
 
 
+def _skrip_masuk_hs(kunci_hp: bool) -> str:
+    """Skrip on-login profil voucher (RouterOS v6/v7). Berjalan setiap voucher masuk, tapi hanya bertindak saat
+    PERTAMA kali masuk (komentar user belum diawali "AKTIF:"):
+    - masa pakai dihitung SEJAK PERTAMA MASUK, tidak berhenti saat HP terputus: dibuat penjadwal (scheduler)
+      yang menghapus voucher, sesi aktif, dan cookie-nya ketika masa pakai habis (sisa = limit-uptime - uptime);
+    - voucher 1 HP dikunci ke MAC HP pertama, jadi QR/kode yang difoto/diteruskan tidak bisa dipakai HP lain.
+    HP yang sama tersambung lagi otomatis lewat MAC cookie (login-by=mac-cookie) tanpa memasukkan kode."""
+    kunci = '/ip hotspot user set $h mac-address=$"mac-address"; ' if kunci_hp else ""
+    return (':local u $user; :local h [/ip hotspot user find where name=$u]; '
+            ':if ([:len $h] > 0) do={ :local c [/ip hotspot user get $h comment]; '
+            ':if ([:pick $c 0 6] != "AKTIF:") do={ '
+            ':local t ([/ip hotspot user get $h limit-uptime] - [/ip hotspot user get $h uptime]); '
+            '/ip hotspot user set $h comment=("AKTIF: " . [/system clock get date] . " " . [/system clock get time] . " | " . $c); '
+            + kunci +
+            ':local n ("INDESO-HS-" . $u); /system scheduler remove [find where name=$n]; '
+            '/system scheduler add name=$n interval=$t start-date=[/system clock get date] comment="INDESO: hapus voucher saat masa pakai habis" '
+            'on-event=("/ip hotspot active remove [find where user=\\"" . $u . "\\"]; '
+            '/ip hotspot cookie remove [find where user=\\"" . $u . "\\"]; '
+            '/ip hotspot user remove [find where name=\\"" . $u . "\\"]; '
+            '/system scheduler remove [find where name=\\"" . $n . "\\"]") } }')
+
+
 def _profil_hs(p) -> tuple[str, dict]:
     rate = _rate_mikrotik(p["mbps"])
-    return f"INDESO-HS-{p['id']}", {"rate-limit": f"{rate}/{rate}", "shared-users": str(int(p["perangkat"]))}
+    return f"INDESO-HS-{p['id']}", {"rate-limit": f"{rate}/{rate}", "shared-users": str(int(p["perangkat"])),
+                                    "add-mac-cookie": "yes", "mac-cookie-timeout": _waktu_mikrotik(p["menit"]),
+                                    "on-login": _skrip_masuk_hs(int(p["perangkat"]) == 1)}
 
 
 def _hs_lokasi(conn, kode: int) -> dict:
@@ -108,7 +132,8 @@ def _skrip_profil(p) -> list[str]:
     nama, nilai = _profil_hs(p)
     return ["/ip hotspot user profile",
             f":if ([:len [find name={_kutip_rsc(nama)}]] = 0) do={{ add name={_kutip_rsc(nama)} }}",
-            f"set [find name={_kutip_rsc(nama)}] " + " ".join(f"{k}={v}" for k, v in nilai.items())]
+            f"set [find name={_kutip_rsc(nama)}] " + " ".join(
+                f"{k}={_kutip_rsc(v) if k == 'on-login' else v}" for k, v in nilai.items())]
 
 
 @router.get("/api/hotspot")
@@ -495,8 +520,10 @@ def hotspot_skrip_pengaturan(request: Request, lokasi: int = 1):
         paket = conn.execute("SELECT * FROM hs_paket WHERE lokasi = ? ORDER BY id", (lokasi,)).fetchall()
     baris = [f"# INDESO: pengaturan hotspot {lok['nama']} (RouterOS v6/v7)",
              "# Ganti hsprof1 dengan nama server profile hotspot Anda (lihat /ip hotspot profile print).",
-             f"/ip hotspot profile set [find name=\"hsprof1\"] dns-name={_kutip_rsc(lok['dns'])} "
-             "login-by=http-pap,http-chap,cookie",
+             f"/ip hotspot profile set [find name=\"hsprof1\"] dns-name={_kutip_rsc(lok['dns'])}",
+             "# Masuk dengan kode/QR; HP yang sama tersambung lagi otomatis (mac-cookie) selama masa pakai voucher.",
+             ':do { /ip hotspot profile set [find name="hsprof1"] login-by=http-chap,http-pap,cookie,mac-cookie } '
+             'on-error={ /ip hotspot profile set [find name="hsprof1"] login-by=http-chap,http-pap,cookie }',
              f"# Nama WiFi (SSID) terbuka tanpa sandi: {lok['ssid']}"]
     for p in paket:
         baris += _skrip_profil(p)
