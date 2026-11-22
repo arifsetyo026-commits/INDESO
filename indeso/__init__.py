@@ -12,6 +12,7 @@ Fitur lengkap (punya jalur API sendiri, didaftarkan main.py lewat app.include_ro
                    wilayah (/api/gudang/*, /api/wilayah/material*)
     hotspot.py     voucher WiFi, paket, cetakan, setoran reseller, skrip MikroTik, halaman reseller
                    (/api/hotspot/*, /api/reseller/*)
+    wilayah.py     halaman admin wilayah: pelanggan & keuangan satu lokasi (/api/wilayah/data|pelanggan|keuangan)
 
     inti.py      pintu ke pembantu yang masih di main.py (db, CONFIG, cek login, aktivitas, Telegram), dibaca saat dipakai
 
