@@ -121,7 +121,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <div class="filters"><button data-f="semua" class="on" onclick="setFilter('semua')">Semua</button><button data-f="belum" onclick="setFilter('belum')">Belum bayar</button><button data-f="lunas" onclick="setFilter('lunas')">Sudah bayar</button><button data-f="telat" onclick="setFilter('telat')">Terlambat</button><button data-f="kontak" onclick="setFilter('kontak')">Kontak belum lengkap</button></div>
   <div class="msg" id="msg"></div>
   <div id="list"><div class="muted">Memuat…</div></div>
-  <div class="note">Komisi dihitung dari pelanggan yang tagihan bulan tersebut sudah <b>lunas</b>. Ketuk nama pelanggan untuk memperbarui nama, alamat, atau nomor HP.</div>
+  <div class="note">Pelanggan membayar langsung ke INDESO; INDESO membayar komisi Anda dari pelanggan yang tagihan bulan tersebut sudah <b>lunas</b>. Ketuk nama pelanggan untuk memperbarui nama, alamat, atau nomor HP.</div>
  </div>
  <div class="panel form" id="tiketView" style="display:none">
   <div class="nav" style="margin-bottom:4px"><b>Laporan gangguan</b><button class="btn" onclick="tutupForm()">‹ Kembali</button></div>
@@ -198,10 +198,10 @@ async function muat(){
   $('insJudul').textContent='Komisi hasil kerja '+namaP(geserP(st.periode,-1))+' (tagihan '+namaP(st.periode)+')';
   $('insRumus').textContent=(ins.final&&ins.total!==ins.jumlah*ins.per_pelanggan?'Angka disepakati':ins.jumlah_lunas+' pelanggan lunas'+(ins.jumlah_susulan?' + '+ins.jumlah_susulan+' susulan':'')+' × '+rp(ins.per_pelanggan)+' = '+rp(ins.total));
   $('insPil').innerHTML=(ins.final?'<span class="pil">🔒 Final</span>':'<span class="pil">⏳ Masih berjalan · final saat tutup buku</span>')
-   +(ins.total?(ins.sisa?'<span class="pil utang">Belum dibayar '+esc(rp(ins.sisa))+'</span>':'<span class="pil ok">✓ Sudah dibayar</span>'):'')
-   +'<span class="pil">Dibayar awal '+esc(bayarBln)+'</span>';
+   +(ins.total?(ins.sisa?'<span class="pil utang">INDESO belum membayar '+esc(rp(ins.sisa))+'</span>':'<span class="pil ok">✓ Sudah dibayar INDESO</span>'):'')
+   +'<span class="pil">Dibayar INDESO awal '+esc(bayarBln)+'</span>';
   const byr=(ins.pembayaran||[]).map(p=>rp(p.jumlah)+' ('+tgl(p.tanggal)+', '+p.metode+')').join(', ');
-  $('insBayar').innerHTML=byr?'Pembayaran komisi: '+esc(byr):(ins.total?'Komisi belum dibayarkan.':'Belum ada pelanggan lunas di bulan ini.');
+  $('insBayar').innerHTML=byr?'Komisi dari INDESO sudah masuk: '+esc(byr):(ins.total?'Komisi akan dibayarkan INDESO kepada Anda.':'Belum ada pelanggan lunas di bulan ini.');
   $('insBayar').innerHTML+=(ins.tertunggak_lain||[]).length?'<br>Belum dibayar bulan lain: '+ins.tertunggak_lain.map(b=>esc('hasil kerja '+namaP(geserP(b.periode,-1)))+' '+esc(rp(b.sisa))).join(', '):'';
   if((ins.susulan||[]).length) $('insBayar').innerHTML+='<br>Susulan (pelanggan telat bayar): '+ins.susulan.map(x=>esc(x.nama)+' — '+(x.baru?'pelanggan baru, ':'')+'tagihan '+esc(namaP(x.periode))).join(', ');
   const lunas=d.pelanggan.filter(p=>p.status_bayar==='lunas'&&!p.komisi_bulan_depan).length, telat=d.pelanggan.filter(p=>p.komisi_bulan_depan).length;
