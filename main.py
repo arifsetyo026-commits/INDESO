@@ -9363,92 +9363,119 @@ def proses_tagihan_harian(sekarang=None) -> None:
             "tanggal TEXT NOT NULL, jenis TEXT NOT NULL, PRIMARY KEY (tanggal, jenis))"
         )
         conn.commit()
+        _tagihan_otomatis_buat(conn, sekarang, hari, periode_ini, periode_depan, jatuh_tempo, akhir_bulan)   # 1
+        _tagihan_otomatis_ingatkan(conn, sekarang, hari, periode_ini, jatuh_tempo)                           # 2
 
-        def sudah(jenis):
-            return conn.execute(
-                "SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis=?", (hari, jenis)
-            ).fetchone() is not None
 
-        def tandai(jenis):
-            conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, jenis))
-            conn.commit()
+def _otomasi_sudah(conn, hari: str, jenis: str) -> bool:
+    """Pekerjaan otomatis `jenis` sudah dikerjakan pada `hari` (tabel otomasi_log)."""
+    return conn.execute(
+        "SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis=?", (hari, jenis)
+    ).fetchone() is not None
 
-        # --- 1. Buat tagihan ---
-        periode_buat, terlambat = None, False
-        if akhir_bulan:
-            periode_buat = periode_depan
-        elif sekarang.day <= 3:
-            ada = conn.execute(
-                "SELECT COUNT(*) FROM tagihan WHERE periode=?", (periode_ini,)
-            ).fetchone()[0]
-            if ada == 0:
-                periode_buat, terlambat = periode_ini, True
 
-        if periode_buat and not sudah("buat"):
-            hasil = buat_tagihan(periode_buat)
-            catat_aktivitas("sistem", "tagihan_buat",
-                            f"otomatis periode {periode_buat}: {hasil['baru']} baru, {hasil['sudah_ada']} sudah ada")
-            jumlah, total = conn.execute(
-                "SELECT COUNT(*), COALESCE(SUM(jumlah),0) FROM tagihan WHERE periode=?",
-                (periode_buat,),
-            ).fetchone()
-            tanpa_hp = conn.execute(
-                "SELECT COUNT(*) FROM tagihan t JOIN pelanggan p ON p.username=t.username "
-                "WHERE t.periode=? AND (p.no_hp IS NULL OR p.no_hp='')",
-                (periode_buat,),
-            ).fetchone()[0]
-            catatan = []
-            if hasil.get("tanpa_paket"):
-                catatan.append(f"{hasil['tanpa_paket']} pelanggan belum punya paket (tidak ditagih)")
-            if tanpa_hp:
-                catatan.append(f"{tanpa_hp} pelanggan belum punya nomor HP")
-            if hasil.get("menunggu_pertama"):
-                catatan.append(f"{hasil['menunggu_pertama']} pelanggan baru: tagihan bulan pertama belum dibuat "
-                               "(Penagihan → Buat tagihan pertama)")
-            if hasil["sudah_ada"] == 0:
-                status = "dibuat (terlambat)" if terlambat else "dibuat"
-            elif hasil["baru"] > 0:
-                status = f"diperbarui (+{hasil['baru']} tagihan baru)"
-            else:
-                status = "sudah siap"
+def _otomasi_tandai(conn, hari: str, jenis: str) -> None:
+    conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, jenis))
+    conn.commit()
+
+
+def _periode_tagihan_otomatis(conn, sekarang: datetime, akhir_bulan: bool, periode_ini: str,
+                              periode_depan: str) -> tuple[Optional[str], bool]:
+    """1. Periode yang perlu dibuat hari ini: bulan depan di hari terakhir bulan; bulan berjalan pada tanggal 1-3 bila
+    belum ada satu pun tagihannya (terlambat). Selain itu None."""
+    periode_buat, terlambat = None, False
+    if akhir_bulan:
+        periode_buat = periode_depan
+    elif sekarang.day <= 3:
+        ada = conn.execute(
+            "SELECT COUNT(*) FROM tagihan WHERE periode=?", (periode_ini,)
+        ).fetchone()[0]
+        if ada == 0:
+            periode_buat, terlambat = periode_ini, True
+    return periode_buat, terlambat
+
+
+def _tagihan_otomatis_buat(conn, sekarang: datetime, hari: str, periode_ini: str, periode_depan: str,
+                           jatuh_tempo: int, akhir_bulan: bool) -> None:
+    """1. Buat tagihan (sekali per hari), catat aktivitas, dan kabarkan ringkasannya ke Telegram."""
+    periode_buat, terlambat = _periode_tagihan_otomatis(conn, sekarang, akhir_bulan, periode_ini, periode_depan)
+    if periode_buat and not _otomasi_sudah(conn, hari, "buat"):
+        hasil = buat_tagihan(periode_buat)
+        catat_aktivitas("sistem", "tagihan_buat",
+                        f"otomatis periode {periode_buat}: {hasil['baru']} baru, {hasil['sudah_ada']} sudah ada")
+        _kabar_tagihan_dibuat(conn, periode_buat, hasil, terlambat, jatuh_tempo)
+        _otomasi_tandai(conn, hari, "buat")
+        logger.warning(f"Tagihan {periode_buat} dibuat otomatis: {hasil}")
+
+
+def _kabar_tagihan_dibuat(conn, periode_buat: str, hasil: dict, terlambat: bool, jatuh_tempo: int) -> None:
+    """1. Pesan "Tagihan <bulan> dibuat/diperbarui/sudah siap" + catatan yang perlu ditindaklanjuti pengurus."""
+    jumlah, total = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(jumlah),0) FROM tagihan WHERE periode=?",
+        (periode_buat,),
+    ).fetchone()
+    tanpa_hp = conn.execute(
+        "SELECT COUNT(*) FROM tagihan t JOIN pelanggan p ON p.username=t.username "
+        "WHERE t.periode=? AND (p.no_hp IS NULL OR p.no_hp='')",
+        (periode_buat,),
+    ).fetchone()[0]
+    catatan = []
+    if hasil.get("tanpa_paket"):
+        catatan.append(f"{hasil['tanpa_paket']} pelanggan belum punya paket (tidak ditagih)")
+    if tanpa_hp:
+        catatan.append(f"{tanpa_hp} pelanggan belum punya nomor HP")
+    if hasil.get("menunggu_pertama"):
+        catatan.append(f"{hasil['menunggu_pertama']} pelanggan baru: tagihan bulan pertama belum dibuat "
+                       "(Penagihan → Buat tagihan pertama)")
+    if hasil["sudah_ada"] == 0:
+        status = "dibuat (terlambat)" if terlambat else "dibuat"
+    elif hasil["baru"] > 0:
+        status = f"diperbarui (+{hasil['baru']} tagihan baru)"
+    else:
+        status = "sudah siap"
+    send_telegram_message(
+        f"🧾 <b>Tagihan {_nama_periode(periode_buat)} {status}</b>\n"
+        f"{jumlah} tagihan, total {_rp(total)}\n"
+        f"Jatuh tempo tanggal {jatuh_tempo}\n"
+        + ("\n".join(f"• {c}" for c in catatan) + "\n" if catatan else "")
+        + "Saatnya kirim pemberitahuan: dashboard → Penagihan → Ingatkan WA."
+    )
+
+
+def _judul_jatuh_tempo(selisih: int) -> str:
+    """2. Judul pengingat menurut sisa hari ke jatuh tempo (negatif = sudah lewat)."""
+    if selisih > 0:
+        return f"⏰ <b>Jatuh tempo {selisih} hari lagi</b>"
+    if selisih == 0:
+        return "⏰ <b>Hari ini jatuh tempo</b>"
+    return f"⚠️ <b>Lewat jatuh tempo {-selisih} hari</b>"
+
+
+def _tagihan_otomatis_ingatkan(conn, sekarang: datetime, hari: str, periode_ini: str, jatuh_tempo: int) -> None:
+    """2. Pada tanggal di TAGIHAN_PENGINGAT_HARI (sekali per hari): daftar yang belum bayar untuk pengurus, atau kabar
+    "semua lunas" bila sudah lewat jatuh tempo dan tidak ada yang tersisa."""
+    if sekarang.day in CONFIG["TAGIHAN_PENGINGAT_HARI"] and not _otomasi_sudah(conn, hari, "ingatkan"):
+        rows = conn.execute(
+            "SELECT p.nama, p.username, t.jumlah FROM tagihan t "
+            "JOIN pelanggan p ON p.username = t.username "
+            "WHERE t.periode=? AND t.status='belum' ORDER BY p.nama COLLATE NOCASE",
+            (periode_ini,),
+        ).fetchall()
+        selisih = jatuh_tempo - sekarang.day
+        if rows:
+            judul = _judul_jatuh_tempo(selisih)
+            total = sum(r["jumlah"] for r in rows)
+            nama = [f"• {_esc(r['nama'] or r['username'])} ({_rp(r['jumlah'])})" for r in rows[:15]]
+            sisa = len(rows) - len(nama)
             send_telegram_message(
-                f"🧾 <b>Tagihan {_nama_periode(periode_buat)} {status}</b>\n"
-                f"{jumlah} tagihan, total {_rp(total)}\n"
-                f"Jatuh tempo tanggal {jatuh_tempo}\n"
-                + ("\n".join(f"• {c}" for c in catatan) + "\n" if catatan else "")
-                + "Saatnya kirim pemberitahuan: dashboard → Penagihan → Ingatkan WA."
+                f"{judul}\nTagihan {_nama_periode(periode_ini)}: {len(rows)} belum bayar, "
+                f"total {_rp(total)}\n" + "\n".join(nama)
+                + (f"\n… dan {sisa} lainnya" if sisa > 0 else "")
+                + "\nBuka dashboard → Penagihan untuk kirim pengingat WhatsApp."
             )
-            tandai("buat")
-            logger.warning(f"Tagihan {periode_buat} dibuat otomatis: {hasil}")
-
-        # --- 2. Pengingat belum bayar untuk pengurus ---
-        if sekarang.day in CONFIG["TAGIHAN_PENGINGAT_HARI"] and not sudah("ingatkan"):
-            rows = conn.execute(
-                "SELECT p.nama, p.username, t.jumlah FROM tagihan t "
-                "JOIN pelanggan p ON p.username = t.username "
-                "WHERE t.periode=? AND t.status='belum' ORDER BY p.nama COLLATE NOCASE",
-                (periode_ini,),
-            ).fetchall()
-            selisih = jatuh_tempo - sekarang.day
-            if rows:
-                if selisih > 0:
-                    judul = f"⏰ <b>Jatuh tempo {selisih} hari lagi</b>"
-                elif selisih == 0:
-                    judul = "⏰ <b>Hari ini jatuh tempo</b>"
-                else:
-                    judul = f"⚠️ <b>Lewat jatuh tempo {-selisih} hari</b>"
-                total = sum(r["jumlah"] for r in rows)
-                nama = [f"• {_esc(r['nama'] or r['username'])} ({_rp(r['jumlah'])})" for r in rows[:15]]
-                sisa = len(rows) - len(nama)
-                send_telegram_message(
-                    f"{judul}\nTagihan {_nama_periode(periode_ini)}: {len(rows)} belum bayar, "
-                    f"total {_rp(total)}\n" + "\n".join(nama)
-                    + (f"\n… dan {sisa} lainnya" if sisa > 0 else "")
-                    + "\nBuka dashboard → Penagihan untuk kirim pengingat WhatsApp."
-                )
-            elif sekarang.day >= jatuh_tempo:
-                send_telegram_message(f"✅ Semua tagihan {_nama_periode(periode_ini)} sudah lunas.")
-            tandai("ingatkan")
+        elif sekarang.day >= jatuh_tempo:
+            send_telegram_message(f"✅ Semua tagihan {_nama_periode(periode_ini)} sudah lunas.")
+        _otomasi_tandai(conn, hari, "ingatkan")
 def _siapkan_tabel_isolir() -> None:
     with db(polos=True) as conn:
         _skema_isolir(conn)
