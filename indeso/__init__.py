@@ -10,6 +10,8 @@ Fitur lengkap (punya jalur API sendiri, didaftarkan main.py lewat app.include_ro
                    /api/konfirmasi-bayar)
     gudang.py      Warehouse: barang, stok dari riwayat mutasi, pakai/opname/batal + permintaan material dari admin
                    wilayah (/api/gudang/*, /api/wilayah/material*)
+    hotspot.py     voucher WiFi, paket, cetakan, setoran reseller, skrip MikroTik, halaman reseller
+                   (/api/hotspot/*, /api/reseller/*)
 
     inti.py      pintu ke pembantu yang masih di main.py (db, CONFIG, cek login, aktivitas, Telegram), dibaca saat dipakai
 
