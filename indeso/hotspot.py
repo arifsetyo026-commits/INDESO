@@ -16,7 +16,7 @@ import html
 import re
 import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -631,13 +631,26 @@ def reseller_ringkas(request: Request):
             "SELECT COUNT(*), COALESCE(SUM(b.harga), 0), COALESCE(SUM(b.harga - b.harga_reseller), 0) FROM hs_voucher v "
             "JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? AND v.status = 'terjual' AND v.terjual_pada >= ?",
             (me["username"], hari)).fetchone()
+        # grafik pemasukan 14 hari terakhir (harga jual & untung warung per hari, termasuk hari tanpa penjualan)
+        awal = (datetime.now() - timedelta(days=13)).strftime("%Y-%m-%d")
+        per_hari = {r[0]: r for r in conn.execute(
+            "SELECT substr(v.terjual_pada, 1, 10), COUNT(*), SUM(b.harga), SUM(b.harga - b.harga_reseller) FROM hs_voucher v "
+            "JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? AND v.status = 'terjual' AND v.terjual_pada >= ? "
+            "GROUP BY 1", (me["username"], awal))}
+        grafik = []
+        for i in range(13, -1, -1):
+            t = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            r = per_hari.get(t)
+            grafik.append({"tanggal": t, "voucher": r[1] if r else 0, "rp": r[2] if r else 0, "untung": r[3] if r else 0})
+        st = conn.execute("SELECT waktu, nominal FROM hs_setoran WHERE reseller = ? AND status = 'aktif' ORDER BY id DESC LIMIT 1",
+                          (me["username"],)).fetchone()
         riwayat = [dict(r) for r in conn.execute(
             "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, b.menit, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
             "JOIN hs_paket p ON p.id = v.paket_id JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? "
             "AND v.status = 'terjual' ORDER BY v.terjual_pada DESC LIMIT 30", (me["username"],))]
         conn.commit()
     return {"akun": me["username"], "usaha": inti.CONFIG["NAMA_USAHA"], "lokasi": lok["nama"], "ssid": lok["ssid"],
-            "stok": stok, "hari_ini": hari_ini, "hari_ini_rp": hari_ini_rp, "hari_ini_untung": hari_ini_untung, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
+            "stok": stok, "hari_ini": hari_ini, "hari_ini_rp": hari_ini_rp, "hari_ini_untung": hari_ini_untung, "grafik": grafik, "setor_terakhir": dict(st) if st else None, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
             "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"]), durasi=_teks_durasi(r["menit"])) for r in riwayat]}
 
 

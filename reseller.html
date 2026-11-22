@@ -108,6 +108,41 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .jual1 .jam{flex:none;width:46px;text-align:center;font-weight:800;font-size:var(--fs-sm);color:#06703a;background:#e9f7ee;border-radius:10px;padding:6px 0;line-height:1.1}
 .jual1 .jam small{display:block;font-size:9px;font-weight:700;color:var(--muted);margin-top:2px}
 .jual1 .isi{flex:1;min-width:0}
+
+/* ---- kartu setor & grafik pemasukan ---- */
+.setor{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:14px;margin:14px 0 12px;position:relative;overflow:hidden}
+.setor:before{content:"";position:absolute;inset:0 auto 0 0;width:5px;background:#1d6fb8}
+.setor.lunas:before{background:#75dc2e}
+.setor .lb{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font-size:var(--fs-xs);font-weight:800;letter-spacing:.03em;text-transform:uppercase}
+.setor .lb span{font-size:var(--fs-2xs);font-weight:700;text-transform:none;letter-spacing:0;color:var(--muted)}
+.setor .nom{display:block;font-size:30px;font-weight:900;letter-spacing:-.02em;margin:4px 0 10px;color:#123c6b}
+.setor.lunas .nom{color:#06703a}
+.rinci{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:4px;background:#f4f8f5;border-radius:12px;padding:9px 8px;text-align:center}
+.rinci small{display:block;color:var(--muted);font-size:var(--fs-2xs);font-weight:700}
+.rinci b{display:block;font-size:var(--fs-sm);margin-top:1px}
+.rinci .op{color:#9fb3a7;font-weight:800;font-size:var(--fs-md)}
+.rinci .hijau b{color:#2f7d0a}
+.setor .ket{font-size:var(--fs-xs);color:var(--muted);margin-top:9px;line-height:1.45}
+.grafik{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:14px}
+.grafik .kepala{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.grafik .kepala b{display:block;font-size:var(--fs-md)}
+.grafik .kepala small{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:2px}
+.grafik .total{text-align:right}.grafik .total b{font-size:var(--fs-lg);color:#06703a}
+.baca{margin:12px 0 6px;min-height:38px;background:#f4f8f5;border-radius:10px;padding:7px 10px;font-size:var(--fs-xs);color:#4b6355;line-height:1.4}
+.baca b{color:var(--ink)}
+.plot{position:relative;height:150px;margin-left:34px}
+.plot .gr{position:absolute;left:0;right:0;border-top:1px solid #edf2ee}
+.plot .gr span{position:absolute;right:calc(100% + 6px);top:-7px;font-size:10px;color:#8a9b92;white-space:nowrap}
+.plot .gr.dasar{border-top:1px solid #cfdcd3}
+.batang{position:absolute;inset:0;display:flex;align-items:flex-end;gap:2px}
+.batang button{flex:1;height:100%;border:0;background:none;padding:0;display:flex;align-items:flex-end;cursor:pointer;position:relative}
+.batang i{display:block;width:100%;max-width:22px;margin:0 auto;background:#07813f;border-radius:4px 4px 0 0;min-height:2px;transition:background .15s}
+.batang i.nol{background:#dce8df}
+.batang button.on i{background:#004a27}
+.batang button.on i.nol{background:#9fb3a7}
+.sumbux{display:flex;gap:2px;margin:5px 0 0 34px}
+.sumbux span{flex:1;text-align:center;font-size:9.5px;color:#8a9b92}
+.sumbux span.hr{color:var(--ink);font-weight:800}
 </style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
  <div class="topRow"><div class="mark">ID</div><div class="judul"><b id="usaha">Internet Desa</b><small><span class="peran">Reseller</span><span id="akun">Memuat…</span></small></div>
@@ -118,14 +153,27 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 </div></div>
 <div class="wrap">
  <div id="vUtama">
-  <div class="duit">
-   <div class="untung"><small><i>＋</i>Untung Anda</small><strong id="cUntung">Rp 0</strong><span id="cUntungSub">dari voucher yang terjual</span></div>
-   <div class="setor"><small><i>⇄</i>Setor ke admin</small><strong id="cSetor">Rp 0</strong><span id="cSetorSub">belum ada</span></div>
+  <div class="setor" id="kSetor">
+   <div class="lb">Wajib setor ke INDESO<span id="cSetorJml"></span></div>
+   <span class="nom" id="cSetor">Rp 0</span>
+   <div class="rinci">
+    <div><small>Harga jual</small><b id="cJual">Rp 0</b></div><span class="op">−</span>
+    <div class="hijau"><small>Untung Anda</small><b id="cUntung">Rp 0</b></div><span class="op">=</span>
+    <div><small>Disetor</small><b id="cSetor2">Rp 0</b></div>
+   </div>
+   <div class="ket" id="cSetorKet"></div>
   </div>
   <div class="msg" id="msg"></div>
   <div class="judulBag"><b>Jual voucher</b><span class="chipStok" id="cStok">Stok 0</span></div>
   <div id="stok"><div class="muted">Memuat…</div></div>
   <div class="cara"><div><i>1</i>Sentuh paket yang dibeli</div><div><i>2</i>Pembeli pindai QR di layar ini</div><div><i>3</i>Kirim kodenya lewat WA</div></div>
+  <div class="grafik" style="margin-top:18px">
+   <div class="kepala"><div><b>Pemasukan 14 hari terakhir</b><small>harga jual voucher per hari</small></div>
+    <div class="total"><b id="gTotal">Rp 0</b><small id="gTotalSub">0 voucher</small></div></div>
+   <div class="baca" id="gBaca">Sentuh batang untuk melihat rincian hari itu.</div>
+   <div class="plot" id="gPlot" role="img" aria-label="Grafik pemasukan 14 hari terakhir"></div>
+   <div class="sumbux" id="gX"></div>
+  </div>
   <div class="judulBag"><b>Penjualan terakhir</b></div>
   <div class="panel"><div id="riwayat"></div></div>
  </div>
@@ -164,8 +212,14 @@ async function muat(){
   const bs=d.belum_setor, untung=bs.eceran-bs.setor, jam=new Date().getHours();
   $('sapa').textContent=(jam<11?'Selamat pagi':jam<15?'Selamat siang':jam<18?'Selamat sore':'Selamat malam')+' · penjualan hari ini';
   $('cHariRp').textContent=rp(d.hari_ini_rp); $('cHari').textContent=d.hari_ini;
-  $('cUntung').textContent=rp(untung); $('cUntungSub').textContent=bs.voucher?('dari '+bs.voucher+' voucher, belum disetor'):'jual voucher untuk mulai untung';
-  $('cSetor').textContent=rp(bs.setor); $('cSetorSub').textContent=bs.voucher?('harga jual '+rp(bs.eceran)+' − untung '+rp(untung)):'belum ada';
+  $('cSetor').textContent=rp(bs.setor); $('cSetor2').textContent=rp(bs.setor);
+  $('cJual').textContent=rp(bs.eceran); $('cUntung').textContent=rp(untung);
+  $('cSetorJml').textContent=bs.voucher?bs.voucher+' voucher belum disetor':'';
+  $('kSetor').classList.toggle('lunas',!bs.setor);
+  const ts=d.setor_terakhir;
+  $('cSetorKet').innerHTML=(bs.setor?'Serahkan <b>'+rp(bs.setor)+'</b> ke admin INDESO. Untung <b>'+rp(untung)+'</b> menjadi milik Anda.':'✓ Lunas, tidak ada yang perlu disetor saat ini.')
+   +(ts?' Terakhir setor '+esc(tglPendek(ts.waktu))+' ('+rp(ts.nominal)+').':' Belum pernah setor.');
+  grafik(d.grafik||[]);
   const total=d.stok.reduce((a,x)=>a+x.stok,0); $('cStok').textContent='Stok '+total;
   $('stok').innerHTML=d.stok.length?'<div class="ubin">'+d.stok.map(p=>`<button class="ub" onclick="jual(${p.id},this)"><span class="nm">${esc(p.nama)}</span><span class="ds">${esc(p.durasi)}${p.mbps?' · '+p.mbps+' Mbps':''}${p.perangkat?' · '+p.perangkat+' HP':''}</span><span class="hg">${rp(p.harga)}</span><span class="ft"><span class="sk${p.stok<=3?' tipis':''}">sisa ${p.stok}</span><span class="go">Jual</span></span></button>`).join('')+'</div>'
    :`<div class="kosong"><svg viewBox="0 0 64 64" fill="none"><rect x="6" y="16" width="52" height="32" rx="7" fill="#e9f7ee" stroke="#07813f" stroke-width="2.5"/><path d="M44 16v32" stroke="#07813f" stroke-width="2.5" stroke-dasharray="3 4"/><path d="M16 28h18M16 36h12" stroke="#75dc2e" stroke-width="3" stroke-linecap="round"/><circle cx="51" cy="32" r="3" fill="#07813f"/></svg>
@@ -207,6 +261,28 @@ async function jual(pid,btn){
  try{ const v=await api('/api/reseller/jual',{paket_id:pid}); kartu(v); pesan('msg',''); await muat(); }
  catch(e){ pesan('msg','Gagal: '+e.message); }
  finally{ st.sibuk=false; btn.disabled=false; }
+}
+const HARI=['Min','Sen','Sel','Rab','Kam','Jum','Sab'],BLN=['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+function tglObj(t){ const [y,m,d]=String(t).slice(0,10).split('-').map(Number); return new Date(y,m-1,d); }
+function tglPendek(t){ const o=tglObj(t); return o.getDate()+' '+BLN[o.getMonth()]; }
+function rpPendek(n){ return n>=1e6?(n/1e6).toLocaleString('id-ID',{maximumFractionDigits:1})+' jt':n>=1e3?Math.round(n/1e3)+' rb':String(n); }
+function skalaAtas(m){ if(m<=0) return 10000; const p=Math.pow(10,Math.floor(Math.log10(m))); for(const k of [1,2,2.5,5,10]) if(k*p>=m) return k*p; return 10*p; }
+function grafik(g){
+ st.grafik=g; const atas=skalaAtas(Math.max(...g.map(x=>x.rp),0));
+ const tot=g.reduce((a,x)=>a+x.rp,0), vc=g.reduce((a,x)=>a+x.voucher,0);
+ $('gTotal').textContent=rp(tot); $('gTotalSub').textContent=vc+' voucher';
+ let h=''; for(const f of [1,.5]) h+=`<div class="gr" style="top:${(1-f)*100}%"><span>${rpPendek(atas*f)}</span></div>`;
+ h+='<div class="gr dasar" style="top:100%"><span>0</span></div><div class="batang">'+g.map((x,i)=>
+  `<button type="button" aria-label="${esc(tglPendek(x.tanggal))}: ${rp(x.rp)}" onclick="bacaHari(${i})" onmouseenter="bacaHari(${i})"><i class="${x.rp?'':'nol'}" style="height:${x.rp?Math.max(x.rp/atas*100,2):0}%"></i></button>`).join('')+'</div>';
+ $('gPlot').innerHTML=h;
+ $('gX').innerHTML=g.map((x,i)=>`<span class="${i===g.length-1?'hr':''}">${i===g.length-1?'Ini':tglObj(x.tanggal).getDate()}</span>`).join('');
+ if(g.length) bacaHari(g.length-1);
+}
+function bacaHari(i){
+ const x=st.grafik[i]; if(!x) return; const o=tglObj(x.tanggal);
+ document.querySelectorAll('#gPlot .batang button').forEach((b,j)=>b.classList.toggle('on',j===i));
+ $('gBaca').innerHTML=`<b>${HARI[o.getDay()]}, ${o.getDate()} ${BLN[o.getMonth()]}</b>${i===st.grafik.length-1?' (hari ini)':''} · `
+  +(x.voucher?`${x.voucher} voucher · <b>${rp(x.rp)}</b> · untung Anda ${rp(x.untung)}`:'belum ada penjualan');
 }
 function tampilUlang(i){ const v=st.data.riwayat[i]; kartu({paket:v.paket,harga:v.harga,durasi:v.durasi,ssid:st.data.ssid,login:v.login,kode:v.kode}); }
 muat();

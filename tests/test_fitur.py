@@ -3661,10 +3661,14 @@ def test_hotspot_reseller_voucher(siap):
     s1 = r.get("/api/reseller/ringkas").json()
     assert s1["stok"][0]["stok"] == 1 and s1["belum_setor"] == {"voucher": 2, "setor": 5000, "eceran": 6000}
     assert s1["hari_ini"] == 2 and s1["hari_ini_rp"] == 6000 and s1["hari_ini_untung"] == 1000
+    g = s1["grafik"]
+    assert len(g) == 14 and g[-1]["rp"] == 6000 and g[-1]["voucher"] == 2 and g[-1]["untung"] == 1000
+    assert all(x["rp"] == 0 for x in g[:-1]) and s1["setor_terakhir"] is None
     assert s1["riwayat"][0]["durasi"] == "3 jam"     # untuk pesan "Kirim lewat WA" saat QR ditampilkan ulang
     # setoran → kas masuk, tidak bisa diubah/dibatalkan dari Keuangan
     st = k.post("/api/hotspot/setoran", json={"reseller": "warungsri"}).json()
     assert st["nominal"] == 5000 and st["nomor"].startswith("BKM-")
+    assert r.get("/api/reseller/ringkas").json()["setor_terakhir"]["nominal"] == 5000
     assert k.post("/api/hotspot/setoran", json={"reseller": "warungsri"}).status_code == 400
     trx = next(t for t in o.get("/api/keuangan/transaksi?periode=" + datetime.now().strftime("%Y-%m")).json()["transaksi"]
                if t["jumlah"] == 5000)
