@@ -79,5 +79,10 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   selalu nilai terbaru (bukan nilai saat modul dimuat). `main.py` → 13.495 baris. Daftar fitur awal Tahap 4 selesai;
   bagian besar yang masih di `main.py` (keuangan, tagihan & isolir, ONU/ACS, OLT, portal, pemantauan) bisa dipindah
   dengan cara yang sama bila diperlukan.
+- **Tahap 5 (bagian 1, isolir):** `proses_isolir` (133 baris) dipecah menjadi langkah bernama: `_isolir_layak_dibuka`,
+  `_isolir_buka_yang_lunas` (A), `_isolir_harian`, `_isolir_kandidat`, `_kabar_isolir_manual`, `_teks_daftar_isolir`,
+  `_jalankan_isolir` (B). Isi & urutan perintah sama. Dibuktikan dengan **uji banding**: versi lama dan baru dijalankan
+  pada 500 skenario acak dari keadaan database yang sama (semua jalur: buka, isolir, gagal, simulasi, ditahan, isolir
+  manual); pesan Telegram, log, aktivitas, panggilan MikroTik, dan isi database setelahnya identik.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.

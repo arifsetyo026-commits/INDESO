@@ -9634,80 +9634,112 @@ def proses_isolir(sekarang=None) -> None:
        tempo diisolir. Mode "simulasi" hanya mengirim daftarnya ke Telegram."""
     sekarang = sekarang or datetime.now()
     batas = _batas_menunggak(sekarang)
-
-    # --- A. Buka isolir yang sudah lunas ---
-    # Isolir otomatis dibuka begitu tidak ada lagi tagihan lewat jatuh tempo.
-    # Isolir manual dibuka begitu semua tagihan lunas (termasuk yang belum jatuh
-    # tempo). Isolir manual tanpa tunggakan (buka_saat_lunas=0) tidak disentuh.
-    with db() as conn:
-        terisolir = conn.execute(
-            "SELECT username, otomatis FROM isolir WHERE buka_saat_lunas = 1"
-        ).fetchall()
-        nama = {r["username"]: r["nama"] for r in conn.execute("SELECT username, nama FROM pelanggan")}
-        layak = []
-        if terisolir:
-            masih_telat, masih_belum = set(), set()
-            for r in conn.execute(
-                "SELECT DISTINCT t.username, t.jatuh_tempo < ? AS telat FROM tagihan t "
-                "JOIN pelanggan p ON p.username = t.username "
-                "WHERE t.status = 'belum' AND p.gratis = 0", (batas,)
-            ):
-                masih_belum.add(r[0])
-                if r[1]:
-                    masih_telat.add(r[0])
-            layak = [
-                r["username"] for r in terisolir
-                if r["username"] not in (masih_telat if r["otomatis"] else masih_belum)
-            ]
-    if layak:
-        hasil = buka_isolir_pelanggan(layak)
-        dibuka = [u for u, (ok, _k) in hasil.items() if ok]
-        gagal = [u for u, (ok, _k) in hasil.items() if not ok]
-        if dibuka:
-            send_telegram_message(
-                "🔓 <b>Isolir dibuka</b> (tagihan lunas atau pelanggan dibebaskan)\n"
-                + "\n".join(f"• {_esc(nama.get(u) or u)}" for u in dibuka)
-            )
-            logger.warning(f"Isolir dibuka: {dibuka}")
-            catat_aktivitas("sistem", "isolir_buka", "otomatis (lunas): " + ", ".join(dibuka))
-        if gagal:
-            _kabar_gagal(
-                "⚠️ <b>Gagal membuka isolir</b>\n"
-                + "\n".join(f"• {_esc(nama.get(u) or u)}: {_esc(str(hasil[u][1]))}" for u in gagal)
-                + "\nAkan dicoba lagi otomatis.", sekarang
-            )
-
-    # --- B. Isolir yang menunggak, sekali per hari ---
+    _isolir_buka_yang_lunas(batas, sekarang)                 # A
     if sekarang.hour < CONFIG["ISOLIR_JAM"]:
         return
+    _isolir_harian(batas, sekarang)                          # B
+
+
+def _isolir_layak_dibuka(conn, batas: str) -> tuple[list, dict]:
+    """A. Pelanggan terisolir yang boleh dibuka sekarang, dan {username: nama} untuk pesan.
+    Isolir otomatis dibuka begitu tidak ada lagi tagihan lewat jatuh tempo.
+    Isolir manual dibuka begitu semua tagihan lunas (termasuk yang belum jatuh
+    tempo). Isolir manual tanpa tunggakan (buka_saat_lunas=0) tidak disentuh."""
+    terisolir = conn.execute(
+        "SELECT username, otomatis FROM isolir WHERE buka_saat_lunas = 1"
+    ).fetchall()
+    nama = {r["username"]: r["nama"] for r in conn.execute("SELECT username, nama FROM pelanggan")}
+    layak = []
+    if terisolir:
+        masih_telat, masih_belum = set(), set()
+        for r in conn.execute(
+            "SELECT DISTINCT t.username, t.jatuh_tempo < ? AS telat FROM tagihan t "
+            "JOIN pelanggan p ON p.username = t.username "
+            "WHERE t.status = 'belum' AND p.gratis = 0", (batas,)
+        ):
+            masih_belum.add(r[0])
+            if r[1]:
+                masih_telat.add(r[0])
+        layak = [
+            r["username"] for r in terisolir
+            if r["username"] not in (masih_telat if r["otomatis"] else masih_belum)
+        ]
+    return layak, nama
+
+
+def _isolir_buka_yang_lunas(batas: str, sekarang: datetime) -> None:
+    """A. Buka isolir pelanggan yang sudah lunas (tiap siklus), lalu kabarkan yang berhasil & gagal."""
+    with db() as conn:
+        layak, nama = _isolir_layak_dibuka(conn, batas)
+    if not layak:
+        return
+    hasil = buka_isolir_pelanggan(layak)
+    dibuka = [u for u, (ok, _k) in hasil.items() if ok]
+    gagal = [u for u, (ok, _k) in hasil.items() if not ok]
+    if dibuka:
+        send_telegram_message(
+            "🔓 <b>Isolir dibuka</b> (tagihan lunas atau pelanggan dibebaskan)\n"
+            + "\n".join(f"• {_esc(nama.get(u) or u)}" for u in dibuka)
+        )
+        logger.warning(f"Isolir dibuka: {dibuka}")
+        catat_aktivitas("sistem", "isolir_buka", "otomatis (lunas): " + ", ".join(dibuka))
+    if gagal:
+        _kabar_gagal(
+            "⚠️ <b>Gagal membuka isolir</b>\n"
+            + "\n".join(f"• {_esc(nama.get(u) or u)}: {_esc(str(hasil[u][1]))}" for u in gagal)
+            + "\nAkan dicoba lagi otomatis.", sekarang
+        )
+
+
+def _isolir_kandidat(conn, batas: str) -> list:
+    """B. Pelanggan menunggak yang diisolir otomatis: lewat jatuh tempo, tidak gratis, aktif, belum terisolir, dan
+    jaringannya dikendalikan INDESO (PPPoE di lokasi yang dipantau)."""
+    return conn.execute(
+        "SELECT p.username, p.nama, COUNT(*) AS n, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
+        "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
+        "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' "
+        f"AND p.username NOT IN (SELECT username FROM isolir) AND {_SQL_DIPANTAU} "
+        "GROUP BY p.username ORDER BY p.nama COLLATE NOCASE", (batas,)
+    ).fetchall()
+
+
+def _kabar_isolir_manual(conn, batas: str, hari: str) -> None:
+    """B. Pelanggan akses point / lokasi yang jaringannya belum tersambung ke INDESO: tidak diisolir otomatis, cukup
+    dikabarkan sekali sehari supaya diisolir manual (di akses point / MikroTik lokasi itu)."""
+    manual = conn.execute(
+        "SELECT p.username, p.nama, p.lokasi, l.nama AS nama_lokasi, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
+        "FROM tagihan t JOIN pelanggan p ON p.username = t.username JOIN lokasi l ON l.kode = p.lokasi "
+        "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' "
+        f"AND NOT {_SQL_DIPANTAU} "
+        "GROUP BY p.username ORDER BY p.lokasi, p.nama COLLATE NOCASE", (batas,)).fetchall()
+    if manual and not conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='isolir_manual'", (hari,)).fetchone():
+        conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, "isolir_manual"))
+        conn.commit()
+        send_telegram_message(
+            f"📋 <b>Perlu diisolir manual</b> (pelanggan akses point / lokasi yang jaringannya belum tersambung ke "
+            f"INDESO): {len(manual)} pelanggan\n"
+            + "\n".join(f"• {_esc(r['nama'] or r['username'])} ({_esc(r['username'])}, {_esc(r['nama_lokasi'])}): "
+                        f"{_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}" for r in manual[:25])
+            + (f"\n… dan {len(manual) - 25} lainnya" if len(manual) > 25 else ""))
+
+
+def _teks_daftar_isolir(kandidat: list) -> str:
+    """B. Daftar singkat (maks. 15 nama) untuk pesan simulasi / isolir ditahan."""
+    return "\n".join(
+        f"• {_esc(r['nama'] or r['username'])}: {_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}"
+        for r in kandidat[:15]
+    ) + (f"\n… dan {len(kandidat) - 15} lainnya" if len(kandidat) > 15 else "")
+
+
+def _isolir_harian(batas: str, sekarang: datetime) -> None:
+    """B. Isolir yang menunggak, sekali per hari. Urutan pengaman: sudah jalan hari ini? → kabar isolir manual →
+    tidak ada kandidat? → mode simulasi? → terlalu banyak sekaligus (ISOLIR_MAKS_SEKALI)? → isolir."""
     hari = sekarang.strftime("%Y-%m-%d")
     with db() as conn:
         if conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='isolir'", (hari,)).fetchone():
             return
-        kandidat = conn.execute(
-            "SELECT p.username, p.nama, COUNT(*) AS n, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
-            "FROM tagihan t JOIN pelanggan p ON p.username = t.username "
-            "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' "
-            f"AND p.username NOT IN (SELECT username FROM isolir) AND {_SQL_DIPANTAU} "
-            "GROUP BY p.username ORDER BY p.nama COLLATE NOCASE", (batas,)
-        ).fetchall()
-        # Lokasi yang jaringannya belum tersambung ke INDESO: tidak diisolir otomatis, cukup dikabarkan
-        # sekali sehari supaya diisolir manual di MikroTik lokasi itu.
-        manual = conn.execute(
-            "SELECT p.username, p.nama, p.lokasi, l.nama AS nama_lokasi, SUM(t.jumlah) AS total, MIN(t.jatuh_tempo) AS tertua "
-            "FROM tagihan t JOIN pelanggan p ON p.username = t.username JOIN lokasi l ON l.kode = p.lokasi "
-            "WHERE t.status = 'belum' AND t.jatuh_tempo < ? AND p.gratis = 0 AND p.status = 'aktif' "
-            f"AND NOT {_SQL_DIPANTAU} "
-            "GROUP BY p.username ORDER BY p.lokasi, p.nama COLLATE NOCASE", (batas,)).fetchall()
-        if manual and not conn.execute("SELECT 1 FROM otomasi_log WHERE tanggal=? AND jenis='isolir_manual'", (hari,)).fetchone():
-            conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, "isolir_manual"))
-            conn.commit()
-            send_telegram_message(
-                f"📋 <b>Perlu diisolir manual</b> (pelanggan akses point / lokasi yang jaringannya belum tersambung ke "
-                f"INDESO): {len(manual)} pelanggan\n"
-                + "\n".join(f"• {_esc(r['nama'] or r['username'])} ({_esc(r['username'])}, {_esc(r['nama_lokasi'])}): "
-                            f"{_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}" for r in manual[:25])
-                + (f"\n… dan {len(manual) - 25} lainnya" if len(manual) > 25 else ""))
+        kandidat = _isolir_kandidat(conn, batas)
+        _kabar_isolir_manual(conn, batas, hari)
 
         def tandai():
             conn.execute("INSERT OR IGNORE INTO otomasi_log VALUES (?,?)", (hari, "isolir"))
@@ -9716,10 +9748,7 @@ def proses_isolir(sekarang=None) -> None:
         if not kandidat:
             tandai()
             return
-        daftar_teks = "\n".join(
-            f"• {_esc(r['nama'] or r['username'])}: {_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}"
-            for r in kandidat[:15]
-        ) + (f"\n… dan {len(kandidat) - 15} lainnya" if len(kandidat) > 15 else "")
+        daftar_teks = _teks_daftar_isolir(kandidat)
 
         if CONFIG["ISOLIR_MODE"] != "aktif":
             send_telegram_message(
@@ -9737,29 +9766,34 @@ def proses_isolir(sekarang=None) -> None:
             )
             tandai()
             return
+        _jalankan_isolir(kandidat, sekarang, tandai)
 
-        hasil = isolir_pelanggan([r["username"] for r in kandidat], otomatis=True)
-        ok = [r for r in kandidat if hasil.get(r["username"], (False,))[0]]
-        gagal = [r for r in kandidat if not hasil.get(r["username"], (False,))[0]]
-        if ok:
-            send_telegram_message(
-                f"🔒 <b>ISOLIR otomatis: {len(ok)} pelanggan</b>\nTagihan lewat jatuh tempo:\n"
-                + "\n".join(
-                    f"• {_esc(r['nama'] or r['username'])}: {_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}"
-                    for r in ok
-                )
-                + "\nIsolir dibuka otomatis begitu tagihannya ditandai lunas di dashboard."
+
+def _jalankan_isolir(kandidat: list, sekarang: datetime, tandai) -> None:
+    """B. Isolir di MikroTik, kabarkan yang berhasil & gagal. Hari ini ditandai selesai bila ada yang berhasil atau
+    tidak ada yang gagal; kalau semuanya gagal, dicoba lagi di siklus berikutnya."""
+    hasil = isolir_pelanggan([r["username"] for r in kandidat], otomatis=True)
+    ok = [r for r in kandidat if hasil.get(r["username"], (False,))[0]]
+    gagal = [r for r in kandidat if not hasil.get(r["username"], (False,))[0]]
+    if ok:
+        send_telegram_message(
+            f"🔒 <b>ISOLIR otomatis: {len(ok)} pelanggan</b>\nTagihan lewat jatuh tempo:\n"
+            + "\n".join(
+                f"• {_esc(r['nama'] or r['username'])}: {_rp(r['total'])}, jatuh tempo {r['tertua'][8:10]}/{r['tertua'][5:7]}"
+                for r in ok
             )
-            logger.warning(f"Isolir otomatis: {[r['username'] for r in ok]}")
-            catat_aktivitas("sistem", "isolir", "otomatis (menunggak): " + ", ".join(r["username"] for r in ok))
-        if gagal:
-            _kabar_gagal(
-                "⚠️ <b>Gagal mengisolir</b>\n"
-                + "\n".join(f"• {_esc(r['nama'] or r['username'])}: {_esc(str(hasil.get(r['username'], (False, '?'))[1]))}" for r in gagal),
-                sekarang,
-            )
-        if ok or not gagal:
-            tandai()      # kalau semuanya gagal, dicoba lagi di siklus berikutnya
+            + "\nIsolir dibuka otomatis begitu tagihannya ditandai lunas di dashboard."
+        )
+        logger.warning(f"Isolir otomatis: {[r['username'] for r in ok]}")
+        catat_aktivitas("sistem", "isolir", "otomatis (menunggak): " + ", ".join(r["username"] for r in ok))
+    if gagal:
+        _kabar_gagal(
+            "⚠️ <b>Gagal mengisolir</b>\n"
+            + "\n".join(f"• {_esc(r['nama'] or r['username'])}: {_esc(str(hasil.get(r['username'], (False, '?'))[1]))}" for r in gagal),
+            sekarang,
+        )
+    if ok or not gagal:
+        tandai()      # kalau semuanya gagal, dicoba lagi di siklus berikutnya
 
 
 @app.get("/api/isolir")
