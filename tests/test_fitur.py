@@ -3654,6 +3654,7 @@ def test_hotspot_reseller_voucher(siap):
     r.post("/api/reseller/jual", json={"paket_id": pid})
     s1 = r.get("/api/reseller/ringkas").json()
     assert s1["stok"][0]["stok"] == 1 and s1["belum_setor"] == {"voucher": 2, "setor": 5000, "eceran": 6000}
+    assert s1["riwayat"][0]["durasi"] == "3 jam"     # untuk pesan "Kirim lewat WA" saat QR ditampilkan ulang
     # setoran → kas masuk, tidak bisa diubah/dibatalkan dari Keuangan
     st = k.post("/api/hotspot/setoran", json={"reseller": "warungsri"}).json()
     assert st["nominal"] == 5000 and st["nomor"].startswith("BKM-")

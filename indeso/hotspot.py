@@ -603,13 +603,13 @@ def reseller_ringkas(request: Request):
         hari_ini = conn.execute("SELECT COUNT(*) FROM hs_voucher WHERE reseller = ? AND status = 'terjual' AND terjual_pada >= ?",
                                 (me["username"], hari)).fetchone()[0]
         riwayat = [dict(r) for r in conn.execute(
-            "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
+            "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, b.menit, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
             "JOIN hs_paket p ON p.id = v.paket_id JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? "
             "AND v.status = 'terjual' ORDER BY v.terjual_pada DESC LIMIT 30", (me["username"],))]
         conn.commit()
     return {"akun": me["username"], "usaha": inti.CONFIG["NAMA_USAHA"], "lokasi": lok["nama"], "ssid": lok["ssid"],
             "stok": stok, "hari_ini": hari_ini, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
-            "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"])) for r in riwayat]}
+            "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"]), durasi=_teks_durasi(r["menit"])) for r in riwayat]}
 
 
 class ResellerJualIn(BaseModel):

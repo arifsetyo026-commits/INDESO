@@ -65,6 +65,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .langkah b{display:block;font-size:var(--fs-md);margin-bottom:6px}
 .qr svg{width:100%;height:auto;display:block;margin:0 auto}
 .qrBesar{max-width:280px;margin:0 auto}
+.btn.wa{width:100%;margin-top:8px;padding:11px;background:#1fa855;border-color:#1fa855;color:#fff;font-weight:800}
 .kode{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:var(--fs-2xl);font-weight:800;letter-spacing:.12em;margin-top:6px}
 </style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
@@ -128,8 +129,27 @@ function kartu(v){
  $('kartu').innerHTML=`<h3>${esc(v.paket)}</h3><div class="harga">${rp(v.harga)}</div><div class="sub">${esc(v.durasi||'')} pemakaian</div>
   <div class="langkah"><b>1. Sambung ke WiFi "${esc(v.ssid)}"</b><div class="sub">WiFi terbuka, tanpa sandi.</div></div>
   <div class="langkah"><b>2. Pindai QR ini untuk masuk</b><div class="qr qrBesar">${qrSvg(v.login)}</div><div class="kode">${esc(v.kode)}</div><div class="sub">Bila QR tidak bisa, ketik kode ini di halaman login hotspot.</div></div>
-  <div class="btns" style="justify-content:center"><button class="btn go" onclick="$('lapis').classList.remove('on')">Selesai</button></div>`;
- $('lapis').classList.add('on'); window.scrollTo(0,0);
+  <div class="langkah form"><b>3. Kirim kode ke WhatsApp pembeli <span class="sub" style="display:inline">(boleh dilewati)</span></b>
+   <input id="waNo" type="tel" inputmode="tel" placeholder="Nomor WA pembeli, mis. 0812…  (kosongkan untuk pilih kontak)" autocomplete="off">
+   <button class="btn go wa" type="button" onclick="kirimWa()">Kirim lewat WA</button>
+   <div class="sub">Pembeli menyimpan kodenya untuk dipakai lagi sampai waktunya habis. Gratis, tanpa cetak.</div></div>
+  <div class="btns" style="justify-content:center"><button class="btn" onclick="$('lapis').classList.remove('on')">Selesai</button></div>`;
+ st.kartu=v; $('lapis').classList.add('on'); window.scrollTo(0,0);
+}
+// Nomor WA: 08xx / +62xx / 62xx -> 62xx. Kosong / tidak sah -> WA terbuka di daftar kontak (pilih sendiri).
+function nomorWa(t){ let d=(t||'').replace(/\D/g,''); if(d.startsWith('0')) d='62'+d.slice(1); else if(d.startsWith('8')) d='62'+d; return /^62\d{8,13}$/.test(d)?d:''; }
+function teksWa(v){
+ const usaha=(st.data&&st.data.usaha)||'Internet Desa';
+ return `*Voucher WiFi ${usaha}*\nPaket: ${v.paket}${v.durasi?' ('+v.durasi+')':''}\nKode voucher: *${v.kode}*\n\n`
+  +`Cara pakai:\n1. Sambungkan HP ke WiFi "${v.ssid}" (tanpa sandi).\n2. Halaman login muncul sendiri, ketik kode di atas lalu tekan Masuk.\n`
+  +`   Atau setelah tersambung, buka: ${v.login}\n\nSimpan pesan ini: kode bisa dipakai lagi sampai waktunya habis. Terima kasih!`;
+}
+function kirimWa(){
+ const v=st.kartu; if(!v) return;
+ const isi=$('waNo').value.trim(), no=nomorWa(isi);
+ if(isi && !no){ pesan('msg',''); alert('Nomor WA tidak dikenali. Contoh: 081234567890. Kosongkan untuk memilih kontak di WhatsApp.'); return; }
+ const url='https://wa.me/'+no+'?text='+encodeURIComponent(teksWa(v));
+ const w=window.open(url,'_blank'); if(!w) location.href=url;
 }
 async function jual(pid,btn){
  if(st.sibuk) return; const p=st.data.stok.find(x=>x.id===pid);
@@ -139,6 +159,6 @@ async function jual(pid,btn){
  catch(e){ pesan('msg','Gagal: '+e.message); }
  finally{ st.sibuk=false; btn.disabled=false; }
 }
-function tampilUlang(i){ const v=st.data.riwayat[i]; kartu({paket:v.paket,harga:v.harga,ssid:st.data.ssid,login:v.login,kode:v.kode}); }
+function tampilUlang(i){ const v=st.data.riwayat[i]; kartu({paket:v.paket,harga:v.harga,durasi:v.durasi,ssid:st.data.ssid,login:v.login,kode:v.kode}); }
 muat();
 </script></body></html>
