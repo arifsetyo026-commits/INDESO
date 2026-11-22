@@ -60,6 +60,67 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
+# Fungsi murni yang sudah dipisah per topik (lihat folder indeso/).
+from indeso.qris import (  # noqa: E402,F401
+    _crc16_qris,
+    _tlv,
+    _baca_qris,
+    _qris_bernominal,
+)
+from indeso.keamanan import (  # noqa: E402,F401
+    _PBKDF2_ITERASI,
+    _hash_password,
+    _cek_password,
+    _hash_token,
+)
+from indeso.onu import (  # noqa: E402,F401
+    _parse_pon_onu,
+    _tanpa_kutip,
+    _to_scaled_float,
+    _decode_serial,
+    _mac_int,
+    _IGD,
+    _zte,
+    _query_pppoe,
+    _POLA_SN_GPON,
+    _sn_gpon,
+    _query_sn,
+    _MEREK_SN,
+    _merek,
+    _onu_lama,
+    _model_onu,
+)
+from indeso.format import (  # noqa: E402,F401
+    _UPTIME_RE,
+    _RATE_TOKEN_RE,
+    parse_uptime_to_seconds,
+    _parse_rate_token_to_mbps,
+    _parse_rate_limit,
+    _ringkas_limit,
+    _angka_stok,
+    _periode_valid,
+    _tgl_indo,
+    _tanggal_valid,
+    _bulan_ke,
+    _geser_periode,
+    _tambah_bulan,
+    _angka_qty,
+    _teks_qty,
+    _persen_ubah,
+    _sekarang_str,
+    _durasi_teks,
+    _teks_menit,
+    _teks_durasi,
+    _hp_baku,
+    _rp_publik,
+    _BLN_PANJANG,
+    _rp,
+    _nama_periode,
+    _waktu_iso,
+    _ms,
+    _ya,
+)
+
 # ============================================================
 # 1. KONFIGURASI — SESUAIKAN DENGAN JARINGAN ANDA
 # ============================================================
@@ -342,64 +403,6 @@ class DashboardData(BaseModel):
 # 3. FETCHER — MIKROTIK (routeros-api)
 # ============================================================
 
-_UPTIME_RE = re.compile(r"(?:(\d+)w)?(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?")
-_RATE_TOKEN_RE = re.compile(r"([\d.]+)([kKmMgG]?)")
-
-
-def parse_uptime_to_seconds(uptime: str) -> Optional[int]:
-    """'3d8h27m32s' -> total detik. Format MikroTik: w(minggu) d h m s, semua opsional."""
-    if not uptime or uptime == "-":
-        return None
-    m = _UPTIME_RE.fullmatch(uptime.strip())
-    if not m:
-        return None
-    w, d, h, mi, s = (int(x) if x else 0 for x in m.groups())
-    return ((w * 7 + d) * 24 + h) * 3600 + mi * 60 + s
-
-
-def _parse_rate_token_to_mbps(token: str) -> Optional[float]:
-    """'5M' -> 5.0, '512k' -> 0.512, '1G' -> 1000.0, '2000000' -> 2.0 (tanpa satuan = bit/s).
-    Satuan MikroTik: k/M/G (desimal, bukan biner)."""
-    m = _RATE_TOKEN_RE.match(token.strip())
-    if not m:
-        return None
-    value, unit = m.groups()
-    try:
-        value = float(value)
-    except ValueError:
-        return None
-    multiplier = {"": 0.000001, "k": 0.001, "K": 0.001, "m": 1.0, "M": 1.0, "g": 1000.0, "G": 1000.0}.get(unit, 1.0)
-    return value * multiplier
-
-
-def _parse_rate_limit(raw: Optional[str]) -> tuple[Optional[str], Optional[float]]:
-    """'5M/10M' -> ("5M/10M", 10.0) — ambil angka TERBESAR dari dua sisi sebagai
-    acuan kapasitas (biasanya sisi download yang jadi ukuran pemakaian utama)."""
-    if not raw or raw in ("-", ""):
-        return None, None
-    parts = raw.split("/")
-    values = [v for v in (_parse_rate_token_to_mbps(p) for p in parts) if v is not None]
-    if not values:
-        return raw, None
-    return raw, max(values)
-
-
-def _ringkas_limit(raw: str) -> str:
-    """API mengembalikan max-limit dalam bit ("10000000/10000000") — jadikan
-    "10M/10M" biar sama dengan tampilan Winbox."""
-    def satu(v: str) -> str:
-        v = v.strip()
-        if not v.isdigit():
-            return v
-        n = int(v)
-        if n >= 1_000_000_000 and n % 1_000_000_000 == 0:
-            return f"{n // 1_000_000_000}G"
-        if n >= 1_000_000:
-            return f"{n / 1_000_000:g}M"
-        return f"{n / 1_000:g}k" if n >= 1_000 else v
-    return "/".join(satu(p) for p in raw.split("/"))
-
-
 # Bandwidth & batas paket semua pelanggan cukup dibaca sekali per catatan riwayat (5 menit), bukan tiap
 # putaran pemantauan. Di antara itu nilai terakhir dipakai ulang. Diagnosa membaca satu pelanggan langsung.
 _trafik = {"terakhir": 0.0, "bw": {}, "limit": {}}
@@ -647,21 +650,6 @@ async def snmp_walk(base_oid: str) -> dict[str, tuple[str, str]]:
     return result
 
 
-def _parse_pon_onu(location_raw: str) -> Optional[tuple[str, int]]:
-    """'\"0/0/1 onu 3\"' -> ("0/0/1", 3)"""
-    text = location_raw.strip('"')
-    m = re.search(r"(\d+/\d+/\d+)\s+onu\s+(\d+)", text, re.IGNORECASE)
-    return (m.group(1), int(m.group(2))) if m else None
-
-
-def _tanpa_kutip(teks: Optional[str]) -> Optional[str]:
-    """Nilai teks SNMP datang berkutip ('"F670LV9.0"'); buang kutipnya supaya rapi di pesan & dashboard."""
-    if teks is None:
-        return None
-    t = str(teks).strip().strip('"').strip()
-    return t or None
-
-
 def _nama_pelanggan(username: Optional[str]) -> str:
     """'Nama (username)' untuk pesan Telegram; username saja bila nama belum diisi."""
     if not username:
@@ -673,29 +661,6 @@ def _nama_pelanggan(username: Optional[str]) -> str:
         r = None
     nama = r[0] if r and r[0] else None
     return f"{_esc(nama)} ({_esc(username)})" if nama and nama != username else _esc(username)
-
-
-def _to_scaled_float(raw_value: Optional[str], scale: float = 0.01) -> Optional[float]:
-    if raw_value is None:
-        return None
-    try:
-        return round(int(raw_value) * scale, 2)
-    except (ValueError, TypeError):
-        return None
-
-
-def _decode_serial(hex_raw: Optional[str]) -> Optional[str]:
-    """SN OLT C-Data: 4 byte pertama = vendor ID ASCII, sisanya hex uppercase."""
-    if not hex_raw:
-        return None
-    try:
-        parts = hex_raw.strip().split()
-        if len(parts) < 5:
-            return None
-        vendor = "".join(chr(int(b, 16)) for b in parts[:4])
-        return vendor + "".join(b.upper() for b in parts[4:])
-    except Exception:
-        return None
 
 
 # Semua MAC yang terlihat OLT di belakang tiap ONU (satu ONU bisa punya beberapa: tiap WAN PPPoE ONU punya MAC sendiri).
@@ -2310,7 +2275,6 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # terkirim dari situs lain -> aman dari CSRF), Secure bila lewat HTTPS.
 
 _COOKIE_SESI = "indeso_sesi"
-_PBKDF2_ITERASI = 600_000   # rekomendasi OWASP untuk PBKDF2-SHA256; hash lama di-upgrade saat login
 _POLA_USERNAME = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
 _PERAN = ("owner", "admin", "mitra", "reseller", "wilayah")
 _PERAN_LOKASI = ("mitra", "reseller", "wilayah")   # akun yang diikat ke satu lokasi
@@ -2328,28 +2292,9 @@ _JALUR_RESELLER = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/
 _JALUR_WILAYAH = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/wilayah/.*)$")
 
 
-def _hash_password(pw: str) -> str:
-    garam = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(garam), _PBKDF2_ITERASI).hex()
-    return f"pbkdf2_sha256${_PBKDF2_ITERASI}${garam}${h}"
-
-
-def _cek_password(pw: str, tersimpan: Optional[str]) -> bool:
-    try:
-        _alg, iterasi, garam, h = (tersimpan or "").split("$")
-        hitung = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(garam), int(iterasi)).hex()
-        return secrets.compare_digest(hitung, h)
-    except Exception:
-        return False
-
-
 # Hash palsu untuk username yang tidak ada, supaya lama prosesnya sama
 # (penyerang tidak bisa menebak username dari waktu respons).
 _HASH_PALSU = _hash_password(secrets.token_hex(8))
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def _cek_password_baru(pw: str) -> None:
@@ -4005,10 +3950,6 @@ def _stok_barang(conn, barang_id: int) -> float:
     return float(r[0]) if r else 0.0
 
 
-def _angka_stok(x: float) -> str:
-    return f"{x:g}"
-
-
 def _cek_jumlah_gudang(x) -> float:
     try:
         v = round(float(x), 2)
@@ -4589,10 +4530,6 @@ def proses_sinkron_secret() -> None:
                                   f"{_esc(hasil['pesan'][:150])}\nDicoba ulang otomatis tiap siklus.")
 
 
-def _periode_valid(periode: str) -> bool:
-    return bool(re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", periode))
-
-
 @app.post("/api/tagihan/buat")
 def buat_tagihan_api(periode: str, request: Request):
     hasil = buat_tagihan(periode)
@@ -4853,13 +4790,6 @@ def kwitansi_tagihan(tagihan_id: int):
 
 
 _METODE_LABEL = {"tunai": "Tunai", "transfer": "Transfer bank", "qris": "QRIS / e-wallet", "lainnya": "Lainnya"}
-
-
-def _tgl_indo(tgl: Optional[str]) -> str:
-    if not tgl:
-        return "-"
-    y, m, d = tgl[:10].split("-")
-    return f"{int(d)} {_BLN_PANJANG[int(m) - 1]} {y}"
 
 
 @app.get("/kwitansi/{tagihan_id}")
@@ -5225,14 +5155,6 @@ def init_keuangan_db() -> None:
         conn.commit()
 
 
-def _tanggal_valid(t: str) -> bool:
-    try:
-        datetime.strptime(t, "%Y-%m-%d")
-        return True
-    except (ValueError, TypeError):
-        return False
-
-
 def _batas_periode(periode: str) -> tuple[str, str]:
     """('2026-10-01', '2026-11-01') — awal inklusif, akhir eksklusif. 'semua' = seluruh riwayat."""
     if periode == "semua":
@@ -5267,10 +5189,6 @@ def _perolehan_aset(conn, sebelum: str = "9999-12-31") -> list[dict]:
         "u.pemasok || COALESCE(' — ' || u.keterangan, '') FROM utang u JOIN kategori_kas k ON k.id = u.kategori_id "
         "WHERE u.status='aktif' AND k.umur_bulan > 0 AND u.tanggal < ? ORDER BY 3", (sebelum, sebelum)).fetchall()
     return [dict(r) for r in rows]
-
-
-def _bulan_ke(tanggal: str) -> int:
-    return int(tanggal[:4]) * 12 + int(tanggal[5:7]) - 1
 
 
 def _susut_aset(a: dict, bulan_awal: int, bulan_akhir: int) -> int:
@@ -5425,12 +5343,6 @@ def _kas_terendah(conn, awal: str, akhir: str, saldo_awal: int) -> dict:
         if saldo < terendah["saldo"]:
             terendah = {"tanggal": tgl, "saldo": saldo}
     return terendah
-
-
-def _geser_periode(periode: str, n: int) -> str:
-    th, bl = map(int, periode.split("-"))
-    total = th * 12 + (bl - 1) + n
-    return f"{total // 12}-{total % 12 + 1:02d}"
 
 
 _KUNCI_ABAIKAN_KAS = "KAS_MINUS_DIABAIKAN_SAMPAI"
@@ -5929,15 +5841,6 @@ class UtangIn(BaseModel):
     cicilan: Optional[int] = None       # nominal per bulan (termasuk bunga/biaya)
     qty: Optional[float] = None
     satuan: Optional[str] = None
-
-
-def _tambah_bulan(tanggal: str, n: int) -> str:
-    """Tanggal yang sama n bulan kemudian; tanggal 29-31 menyesuaikan akhir bulan."""
-    d = datetime.strptime(tanggal, "%Y-%m-%d")
-    total = d.year * 12 + (d.month - 1) + n
-    th, bl = total // 12, total % 12 + 1
-    akhir = ((datetime(th + (bl == 12), bl % 12 + 1, 1)) - timedelta(days=1)).day
-    return f"{th}-{bl:02d}-{min(d.day, akhir):02d}"
 
 
 class BayarUtangIn(BaseModel):
@@ -6760,19 +6663,6 @@ def _cek_qty(qty: Optional[float], satuan: Optional[str]) -> tuple[Optional[floa
     return (int(qty) if float(qty).is_integer() else round(qty, 3)), satuan
 
 
-def _angka_qty(qty):
-    """SQLite REAL mengembalikan 3.0 — tampilkan 3 bila bulat."""
-    if qty is None:
-        return None
-    return int(qty) if float(qty).is_integer() else qty
-
-
-def _teks_qty(qty, satuan) -> str:
-    if not qty:
-        return ""
-    return f"{int(qty) if float(qty).is_integer() else qty:g} {satuan or 'pcs'}"
-
-
 def _cek_transaksi(conn, d: TransaksiIn) -> str:
     if not _tanggal_valid(d.tanggal):
         raise HTTPException(status_code=400, detail="Tanggal tidak valid.")
@@ -7156,13 +7046,6 @@ def ekspor_tunggakan(request: Request):
 
 def _chat_owner() -> list[str]:
     return [x.strip() for x in str(CONFIG["TELEGRAM_OWNER_CHAT_ID"] or "").split(",") if x.strip()]
-
-
-def _persen_ubah(ini: int, lalu: int) -> str:
-    if not lalu:
-        return ""
-    p = round((ini - lalu) * 100 / abs(lalu))
-    return " (sama)" if p == 0 else f" ({'▲' if p > 0 else '▼'}{abs(p)}%)"
 
 
 def susun_laporan_bulanan(periode: str) -> str:
@@ -7719,32 +7602,6 @@ def init_tiket_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tiket_status ON tiket(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tiket_log ON tiket_log(tiket_id)")
         conn.commit()
-
-
-def _sekarang_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _durasi_teks(mulai: str, sampai: Optional[str] = None) -> str:
-    try:
-        a = datetime.strptime(mulai, "%Y-%m-%d %H:%M:%S")
-        b = datetime.strptime(sampai, "%Y-%m-%d %H:%M:%S") if sampai else datetime.now()
-    except (TypeError, ValueError):
-        return "-"
-    return _teks_menit(int((b - a).total_seconds() // 60))
-
-
-def _teks_menit(menit: int) -> str:
-    menit = max(0, menit)
-    if menit < 1:
-        return "kurang dari 1 menit"
-    if menit < 60:
-        return f"{menit} menit"
-    jam, menit = divmod(menit, 60)
-    if jam < 24:
-        return f"{jam} jam {menit} menit" if menit else f"{jam} jam"
-    hari, jam = divmod(jam, 24)
-    return f"{hari} hari {jam} jam" if jam else f"{hari} hari"
 
 
 def _log_tiket(conn, tid: int, oleh: str, aksi: str, catatan: Optional[str] = None) -> None:
@@ -8715,13 +8572,6 @@ def _siapkan_hotspot(conn) -> None:
     conn.execute("INSERT OR IGNORE INTO kategori_kas (nama, jenis, pengaruh_laba) VALUES (?, 'masuk', 1)", (_KAT_HOTSPOT,))
 
 
-def _teks_durasi(menit: int) -> str:
-    hari, sisa = divmod(int(menit), 1440)
-    jam, mnt = divmod(sisa, 60)
-    return " ".join(b for b in (f"{hari} hari" if hari else "", f"{jam} jam" if jam else "",
-                                f"{mnt} menit" if mnt else "") if b) or "0 menit"
-
-
 def _waktu_mikrotik(menit: int) -> str:
     """Format waktu RouterOS (v6 & v7): 3h, 1d, 1h30m."""
     hari, sisa = divmod(int(menit), 1440)
@@ -9227,11 +9077,6 @@ _BATAS_GANTI_WIFI = 5            # per pelanggan per jam
 _ganti_wifi_portal: dict[str, list[datetime]] = {}
 
 
-def _hp_baku(hp: Optional[str]) -> str:
-    n = re.sub(r"\D", "", hp or "")
-    return "0" + n[2:] if n.startswith("62") else ("0" + n if n.startswith("8") else n)
-
-
 def _ambil_sesi_portal(token: str) -> Optional[dict]:
     if not token:
         return None
@@ -9288,10 +9133,6 @@ footer{border-top:1px solid var(--line);padding:18px 0 28px;font-size:13px;color
 def _e(x) -> str:
     import html as _h
     return _h.escape(str(x or ""))
-
-
-def _rp_publik(n) -> str:
-    return "Rp" + f"{int(n or 0):,}".replace(",", ".")
 
 
 def _wa_link(no: str) -> str:
@@ -9622,72 +9463,6 @@ def portal_saya(request: Request):
 # menampilkan nama merchant + NMID yang harus dicek pelanggan sebelum membayar. Pelanggan mengunggah bukti; admin
 # menerima (tagihan lunas, kas Pusat, isolir dibuka otomatis di putaran berikutnya) atau menolak dengan alasan.
 # ============================================================
-
-def _crc16_qris(data: str) -> str:
-    crc = 0xFFFF
-    for b in data.encode("utf-8"):
-        crc ^= b << 8
-        for _ in range(8):
-            crc = ((crc << 1) ^ 0x1021) if crc & 0x8000 else (crc << 1)
-            crc &= 0xFFFF
-    return f"{crc:04X}"
-
-
-def _tlv(s: str) -> list:
-    hasil, i = [], 0
-    while i < len(s):
-        if i + 4 > len(s):
-            raise ValueError("struktur QRIS terpotong")
-        tag, n = s[i:i + 2], s[i + 2:i + 4]
-        if not (tag.isdigit() and n.isdigit()):
-            raise ValueError("struktur QRIS tidak valid")
-        n = int(n)
-        val = s[i + 4:i + 4 + n]
-        if len(val) != n:
-            raise ValueError("struktur QRIS terpotong")
-        hasil.append((tag, val))
-        i += 4 + n
-    return hasil
-
-
-def _baca_qris(payload: str) -> dict:
-    """Periksa kode QRIS (format EMV + CRC) dan ambil nama merchant, kota, NMID. ValueError bila tidak sah."""
-    p = (payload or "").strip()
-    if not p.startswith("000201") or len(p) > 512:
-        raise ValueError("bukan kode QRIS (harus diawali 000201)")
-    if not re.fullmatch(r"6304[0-9A-Fa-f]{4}", p[-8:]):
-        raise ValueError("kode cek (CRC) QRIS tidak ditemukan")
-    if _crc16_qris(p[:-4]) != p[-4:].upper():
-        raise ValueError("kode cek (CRC) QRIS tidak cocok: kode rusak atau sudah diubah")
-    data = dict(_tlv(p))
-    if data.get("53") != "360":
-        raise ValueError("QRIS bukan mata uang Rupiah")
-    nmid = None
-    for tag in [f"{n:02d}" for n in range(26, 52)]:
-        if tag in data:
-            try:
-                for st, v in _tlv(data[tag]):
-                    if st == "02" and v.startswith("ID"):
-                        nmid = nmid or v
-            except ValueError:
-                pass
-    merchant = (data.get("59") or "").strip()
-    if not merchant:
-        raise ValueError("nama merchant tidak ada di QRIS")
-    return {"merchant": merchant, "kota": (data.get("60") or "").strip(), "nmid": nmid,
-            "nominal_tetap": data.get("54"), "statis": data.get("01") == "11"}
-
-
-def _qris_bernominal(payload: str, jumlah: int) -> str:
-    """QRIS statis -> QRIS dengan nominal tagihan (tag 54). Tujuan pembayaran (merchant) tidak berubah."""
-    bagian = [(t, v) for t, v in _tlv(payload.strip()[:-8]) if t not in ("54", "63")]
-    bagian = [(t, "12" if t == "01" else v) for t, v in bagian]
-    nominal = str(int(jumlah))
-    idx = next((i for i, (t, _v) in enumerate(bagian) if t > "54"), len(bagian))
-    bagian.insert(idx, ("54", nominal))
-    isi = "".join(f"{t}{len(v):02d}{v}" for t, v in bagian) + "6304"
-    return isi + _crc16_qris(isi)
-
 
 @_skema_sekali
 def _siapkan_qris(conn) -> None:
@@ -10787,13 +10562,6 @@ _ganda_dikabari: dict[str, str] = {}
 _GANDA_PUTARAN = 2          # harus terlihat 2 putaran berturut-turut (sesi lama yang sedang tutup tidak dihitung)
 
 
-def _mac_int(mac: str) -> Optional[int]:
-    try:
-        return int(mac.replace(":", "").replace("-", ""), 16)
-    except (ValueError, AttributeError):
-        return None
-
-
 def _kelompok_sesi_ganda(pppoe_users, onu_list) -> list[dict]:
     onu_by_key = {(o.pon, o.onu_id): o for o in onu_list}
     sesi = [u for u in pppoe_users if u.caller_id and u.caller_id != "-"]
@@ -10979,20 +10747,6 @@ def proses_putus_pelanggan(pppoe_users, mikrotik_error, onu_list, sekarang=None)
                 )
                 st["alert"] = True
                 logger.warning(f"Alert PUTUS terkirim untuk {u}")
-_BLN_PANJANG = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
-                "Agustus", "September", "Oktober", "November", "Desember"]
-
-
-def _rp(n) -> str:
-    n = int(n)
-    return ("-" if n < 0 else "") + "Rp " + f"{abs(n):,}".replace(",", ".")
-
-
-def _nama_periode(p: str) -> str:
-    tahun, bulan = p.split("-")
-    return f"{_BLN_PANJANG[int(bulan) - 1]} {tahun}"
-
-
 def proses_lengkapi_tagihan(sekarang=None) -> None:
     """Sekali sehari: bila tagihan bulan berjalan sudah dibuat, lengkapi untuk pelanggan aktif yang belum punya
     (mis. ditambahkan atau diaktifkan lagi setelah tagihan bulanan dibuat). Tidak pernah menimpa tagihan yang ada;
@@ -11854,15 +11608,10 @@ CONFIG.update({
     "GENIEACS_TIMEOUT": int(_env("GENIEACS_TIMEOUT", "15")),
 })
 
-_IGD = "InternetGatewayDevice"
 _KUNCI_WIFI = ("KeyPassphrase", "PreSharedKey.1.KeyPassphrase", "PreSharedKey.1.PreSharedKey")
 # Huawei (HG8145V5) melaporkan KeyPassphrase tapi menolak diisi (9007 Invalid parameter value); password WPA-nya
 # diterima di PreSharedKey.1.PreSharedKey.
 _KUNCI_WIFI_HUAWEI = ("PreSharedKey.1.PreSharedKey", "PreSharedKey.1.KeyPassphrase", "KeyPassphrase")
-
-
-def _zte(doc: dict) -> bool:
-    return "zte" in str((doc.get("_deviceId") or {}).get("_Manufacturer") or "").lower()
 
 
 def _boleh_tulis(doc: dict, path: str) -> bool:
@@ -11972,67 +11721,6 @@ def _sn_onu(username: str) -> Optional[str]:
         return None
     onu = next((o for o in _latest_data.onu_list if o.pppoe_username == username), None)
     return onu.serial_number if onu else None
-
-
-def _query_pppoe(username: str) -> dict:
-    jalur = [f"{_IGD}.WANDevice.1.WANConnectionDevice.{w}.WANPPPConnection.{p}.Username._value"
-             for w in range(1, 11) for p in range(1, 6)]
-    return {"$or": [{"VirtualParameters.pppoeUsername._value": username}] + [{j: username} for j in jalur]}
-
-
-_POLA_SN_GPON = re.compile(r"^[A-Z]{4}[0-9A-F]{8}$")
-
-
-def _sn_gpon(sn) -> str:
-    """Samakan bentuk nomor seri: sebagian ONU (mis. Huawei) melapor ke ACS dengan 4 huruf vendor dalam heksadesimal,
-    '4857544398B2DFBA' = 'HWTC' + '98B2DFBA' = SN di OLT 'HWTC98B2DFBA'."""
-    s = str(sn or "").strip().upper()
-    if re.fullmatch(r"[0-9A-F]{16}", s):
-        try:
-            vendor = bytes.fromhex(s[:8]).decode("ascii")
-        except (ValueError, UnicodeDecodeError):
-            return s
-        if re.fullmatch(r"[A-Z]{4}", vendor):
-            return vendor + s[8:]
-    return s
-
-
-def _query_sn(sn: str) -> dict:
-    """Query GenieACS untuk SN GPON dalam dua bentuk: 'HWTC98B2DFBA' dan '4857544398B2DFBA'."""
-    s = _sn_gpon(sn)
-    bentuk = [s] + ([s[:4].encode().hex().upper() + s[4:]] if _POLA_SN_GPON.match(s) else [])
-    if str(sn) not in bentuk:
-        bentuk.append(str(sn))
-    return {"$or": [{"_deviceId._SerialNumber": b} for b in bentuk]}
-_MEREK_SN = {"ZTEG": "zte", "FHTT": "fiberhome", "HWTC": "huawei", "ALCL": "nokia", "GPON": None}
-
-
-def _merek(teks: str) -> Optional[str]:
-    t = (teks or "").lower()
-    for kata, m in (("zte", "zte"), ("fiberhome", "fiberhome"), ("fhtt", "fiberhome"), ("huawei", "huawei"),
-                    ("hwtc", "huawei"), ("nokia", "nokia"), ("alcl", "nokia")):
-        if kata in t:
-            return m
-    return None
-
-
-def _onu_lama(doc: dict, sn_olt: Optional[str]) -> bool:
-    """True bila dokumen ACS jelas milik ONU lain dari yang sekarang terpasang menurut OLT
-    (ONU pelanggan sudah diganti, ONU baru belum lapor ke ACS)."""
-    if not sn_olt:
-        return False
-    di = doc.get("_deviceId") or {}
-    sn_acs = _sn_gpon(di.get("_SerialNumber"))
-    sn_olt = _sn_gpon(sn_olt)
-    if sn_acs == sn_olt:
-        return False
-    # Nomor seri ACS berformat SN GPON tapi berbeda → ONU lain. Format lain (sebagian ZTE melapor
-    # dengan nomor seri versi TR-069) hanya dianggap lain bila mereknya jelas berbeda.
-    if _POLA_SN_GPON.match(sn_acs) and _POLA_SN_GPON.match(sn_olt):
-        return True
-    m_olt = _MEREK_SN.get(sn_olt[:4]) or _merek(sn_olt[:4])
-    m_acs = _merek(f"{di.get('_Manufacturer') or ''} {sn_acs[:4]}")
-    return bool(m_olt and m_acs and m_olt != m_acs)
 
 
 _acs_onu_lama: dict = {}     # username -> ringkasan ONU lama yang tertolak (untuk pesan ke admin)
@@ -12672,11 +12360,6 @@ _ping_tugas: dict = {}          # id tugas -> (acs_id, lewat_wan, username, mode
 _ping_tanpa_wan: set = set()    # acs_id yang menolak kolom Interface
 
 
-def _model_onu(doc: dict) -> str:
-    di = doc.get("_deviceId") or {}
-    return f"{di.get('_Manufacturer') or ''} {di.get('_ProductClass') or ''}".strip() or "?"
-
-
 def _cara_ping_model(model: str) -> Optional[str]:
     with db("riwayat", polos=True) as conn:
         r = conn.execute("SELECT cara FROM ping_cara2 WHERE model=?", (model,)).fetchone()
@@ -12882,22 +12565,6 @@ def _url_speedtest() -> str:
     from urllib.parse import urlparse
     host = urlparse(CONFIG.get("ACS_ONU_URL") or "http://10.99.0.1:7547").hostname or "10.99.0.1"
     return f"http://{host}:7567/indeso-uji-20MB.bin"
-
-
-def _waktu_iso(teks) -> Optional[datetime]:
-    t = str(teks or "").strip()
-    if not t or t.startswith("0001"):
-        return None
-    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(\.\d+)?(Z|[+-]\d\d:?\d\d)?$", t)
-    if not m:
-        return None
-    pecahan = (m.group(2) or ".0")[1:7].ljust(6, "0")
-    zona = m.group(3) or "Z"
-    zona = "+00:00" if zona == "Z" else (zona if ":" in zona else zona[:3] + ":" + zona[3:])
-    try:
-        return datetime.fromisoformat(f"{m.group(1)}.{pecahan}{zona}")
-    except ValueError:
-        return None
 
 
 def _catat_speedtest(asal, status: str, pesan: str, mbps=None, nbytes=None, detik=None) -> None:
@@ -13219,16 +12886,6 @@ def _mikrotik_ping(ip: str, jumlah: int = 10, lokasi: int = 1) -> dict:
     hilang = round((terkirim - diterima) * 100 / terkirim) if terkirim else 100
     return {"ip": ip, "terkirim": terkirim, "diterima": diterima, "hilang_persen": hilang,
             "rata_ms": rata, "min_ms": mn, "maks_ms": mx}
-
-
-def _ms(t) -> Optional[float]:
-    """'1ms234us' / '12ms' / '850us' → milidetik."""
-    if not t:
-        return None
-    m = re.fullmatch(r"(?:(\d+)s)?(?:(\d+)ms)?(?:(\d+)us)?", str(t).replace(" ", ""))
-    if not m or not any(m.groups()):
-        return None
-    return round(int(m.group(1) or 0) * 1000 + int(m.group(2) or 0) + int(m.group(3) or 0) / 1000, 1)
 
 
 # ============================================================
@@ -13664,12 +13321,6 @@ def diagnosa(username: str, request: Request):
         hasil["acs"] = None
     hasil["kesimpulan"] = _kesimpulan(hasil)
     return hasil
-
-
-# --- Cek DNS & MTU di MikroTik (hanya membaca) ---
-def _ya(v) -> Optional[bool]:
-    v = str(v or "").strip().lower()
-    return True if v in ("yes", "true") else (False if v in ("no", "false") else None)
 
 
 @app.get("/api/mikrotik/cek-dns-mtu")
