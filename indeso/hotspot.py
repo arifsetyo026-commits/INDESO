@@ -12,13 +12,16 @@ menyetor (harga reseller × terjual) → kas masuk "Pendapatan voucher hotspot".
 Dipindah dari main.py (Tahap 4, docs/rencana-perbaikan.md). Pembantu inti dipanggil lewat `inti.<nama>`;
 jalur API didaftarkan main.py lewat `app.include_router(router)`.
 """
+import html
 import re
 import secrets
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from indeso import inti
@@ -80,9 +83,33 @@ def _rate_mikrotik(mbps: float) -> str:
     return f"{int(mbps)}M" if mbps.is_integer() else f"{int(round(mbps * 1000))}k"
 
 
+def _skrip_masuk_hs(kunci_hp: bool) -> str:
+    """Skrip on-login profil voucher (RouterOS v6/v7). Berjalan setiap voucher masuk, tapi hanya bertindak saat
+    PERTAMA kali masuk (komentar user belum diawali "AKTIF:"):
+    - masa pakai dihitung SEJAK PERTAMA MASUK, tidak berhenti saat HP terputus: dibuat penjadwal (scheduler)
+      yang menghapus voucher, sesi aktif, dan cookie-nya ketika masa pakai habis (sisa = limit-uptime - uptime);
+    - voucher 1 HP dikunci ke MAC HP pertama, jadi QR/kode yang difoto/diteruskan tidak bisa dipakai HP lain.
+    HP yang sama tersambung lagi otomatis lewat MAC cookie (login-by=mac-cookie) tanpa memasukkan kode."""
+    kunci = '/ip hotspot user set $h mac-address=$"mac-address"; ' if kunci_hp else ""
+    return (':local u $user; :local h [/ip hotspot user find where name=$u]; '
+            ':if ([:len $h] > 0) do={ :local c [/ip hotspot user get $h comment]; '
+            ':if ([:pick $c 0 6] != "AKTIF:") do={ '
+            ':local t ([/ip hotspot user get $h limit-uptime] - [/ip hotspot user get $h uptime]); '
+            '/ip hotspot user set $h comment=("AKTIF: " . [/system clock get date] . " " . [/system clock get time] . " | " . $c); '
+            + kunci +
+            ':local n ("INDESO-HS-" . $u); /system scheduler remove [find where name=$n]; '
+            '/system scheduler add name=$n interval=$t start-date=[/system clock get date] comment="INDESO: hapus voucher saat masa pakai habis" '
+            'on-event=("/ip hotspot active remove [find where user=\\"" . $u . "\\"]; '
+            '/ip hotspot cookie remove [find where user=\\"" . $u . "\\"]; '
+            '/ip hotspot user remove [find where name=\\"" . $u . "\\"]; '
+            '/system scheduler remove [find where name=\\"" . $n . "\\"]") } }')
+
+
 def _profil_hs(p) -> tuple[str, dict]:
     rate = _rate_mikrotik(p["mbps"])
-    return f"INDESO-HS-{p['id']}", {"rate-limit": f"{rate}/{rate}", "shared-users": str(int(p["perangkat"]))}
+    return f"INDESO-HS-{p['id']}", {"rate-limit": f"{rate}/{rate}", "shared-users": str(int(p["perangkat"])),
+                                    "add-mac-cookie": "yes", "mac-cookie-timeout": _waktu_mikrotik(p["menit"]),
+                                    "on-login": _skrip_masuk_hs(int(p["perangkat"]) == 1)}
 
 
 def _hs_lokasi(conn, kode: int) -> dict:
@@ -105,7 +132,8 @@ def _skrip_profil(p) -> list[str]:
     nama, nilai = _profil_hs(p)
     return ["/ip hotspot user profile",
             f":if ([:len [find name={_kutip_rsc(nama)}]] = 0) do={{ add name={_kutip_rsc(nama)} }}",
-            f"set [find name={_kutip_rsc(nama)}] " + " ".join(f"{k}={v}" for k, v in nilai.items())]
+            f"set [find name={_kutip_rsc(nama)}] " + " ".join(
+                f"{k}={_kutip_rsc(v) if k == 'on-login' else v}" for k, v in nilai.items())]
 
 
 @router.get("/api/hotspot")
@@ -492,12 +520,89 @@ def hotspot_skrip_pengaturan(request: Request, lokasi: int = 1):
         paket = conn.execute("SELECT * FROM hs_paket WHERE lokasi = ? ORDER BY id", (lokasi,)).fetchall()
     baris = [f"# INDESO: pengaturan hotspot {lok['nama']} (RouterOS v6/v7)",
              "# Ganti hsprof1 dengan nama server profile hotspot Anda (lihat /ip hotspot profile print).",
-             f"/ip hotspot profile set [find name=\"hsprof1\"] dns-name={_kutip_rsc(lok['dns'])} "
-             "login-by=http-pap,http-chap,cookie",
+             f"/ip hotspot profile set [find name=\"hsprof1\"] dns-name={_kutip_rsc(lok['dns'])}",
+             "# Masuk dengan kode/QR; HP yang sama tersambung lagi otomatis (mac-cookie) selama masa pakai voucher.",
+             ':do { /ip hotspot profile set [find name="hsprof1"] login-by=http-chap,http-pap,cookie,mac-cookie } '
+             'on-error={ /ip hotspot profile set [find name="hsprof1"] login-by=http-chap,http-pap,cookie }',
              f"# Nama WiFi (SSID) terbuka tanpa sandi: {lok['ssid']}"]
     for p in paket:
         baris += _skrip_profil(p)
+    baris += ["# Halaman login INDESO (kode voucher, daftar paket & harga, nomor WA): diunduh ke folder hotspot.",
+              "# Jalankan ulang baris ini setiap kali paket/harga/nomor WA diubah.",
+              _skrip_unduh_halaman(_url_dasar(request), lokasi)]
     return {"skrip": "\n".join(baris) + "\n", "lokasi": lok}
+
+
+# --- Halaman login hotspot (disajikan INDESO, diunduh MikroTik ke folder html-directory) -------------------------
+
+_FOLDER_HALAMAN = Path(__file__).resolve().parent.parent / "deploy" / "hotspot"
+_HALAMAN_HS = ("login.html", "alogin.html", "status.html", "logout.html")
+
+
+def _url_dasar(request: Request) -> str:
+    """Alamat INDESO seperti yang dilihat dari luar (di VPS lewat Caddy/terowongan: https://app.…)."""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}"
+
+
+def _skrip_unduh_halaman(dasar: str, lokasi: int) -> str:
+    daftar = ";".join(f'"{f}"' for f in _HALAMAN_HS)
+    return ('{:local d [/ip hotspot profile get [find name="hsprof1"] html-directory]; '
+            f':foreach f in={{{daftar}}} do={{/tool fetch url=("{dasar}/hotspot/{int(lokasi)}/" . $f) '
+            'dst-path=("$d/" . $f)}}')
+
+
+def _aman(t) -> str:
+    """Teks dari database untuk halaman MikroTik: di-escape HTML, dan `$` dijadikan &#36; supaya tidak dibaca
+    MikroTik sebagai variabel $(...)."""
+    return html.escape(str(t or "")).replace("$", "&#36;")
+
+
+def _angka(x) -> str:
+    return f"{float(x):g}"
+
+
+def _html_paket(paket) -> str:
+    if not paket:
+        return ""
+    kartu = "".join(
+        f'<div class="pk"><div><b>{_aman(p["nama"])}</b><small>{_aman(_teks_durasi(p["menit"]))} · '
+        f'{_aman(_angka(p["mbps"]))} Mbps · {int(p["perangkat"])} HP</small></div>'
+        f'<div class="harga">{_aman(_rp(p["harga"]))}</div></div>' for p in paket)
+    return (f'<div class="kartu paket"><h3>Paket voucher</h3>{kartu}'
+            '<p class="beli">Voucher dijual di warung/agen terdekat.</p></div>')
+
+
+def _html_kontak() -> str:
+    wa = (inti.CONFIG.get("USAHA_WA") or "").strip()
+    link = inti._wa_link(wa)
+    if not link:
+        return ""
+    return (f'<div class="kontak">Butuh bantuan atau ingin jadi agen voucher?<br>'
+            f'<a href="{_aman(link)}">WhatsApp {_aman(wa)}</a></div>')
+
+
+@router.get("/hotspot/{lokasi}/{berkas}")
+def hotspot_halaman(lokasi: int, berkas: str):
+    """Halaman login/status/logout hotspot untuk lokasi ini. Publik (dibaca MikroTik lewat /tool fetch); isinya hanya
+    nama usaha, nama lokasi, paket & harga, dan nomor WA usaha. Variabel MikroTik $(...) dibiarkan utuh."""
+    if berkas not in _HALAMAN_HS:
+        raise HTTPException(status_code=404, detail="Halaman tidak ada.")
+    with inti.db() as conn:
+        _siapkan_hotspot(conn)
+        lok = _hs_lokasi(conn, lokasi)
+        paket = conn.execute("SELECT * FROM hs_paket WHERE lokasi = ? AND aktif = 1 ORDER BY menit, harga",
+                             (lokasi,)).fetchall()
+    isi = (_FOLDER_HALAMAN / berkas).read_text(encoding="utf-8")
+    ganti = {"{{USAHA}}": _aman(inti.CONFIG.get("NAMA_USAHA") or "Internet Desa"),
+             "{{LOKASI}}": _aman(lok["nama"]),
+             "{{PAKET}}": _html_paket(paket),
+             "{{KONTAK}}": _html_kontak()}
+    for k, v in ganti.items():
+        isi = isi.replace(k, v)
+    return Response(content=isi, media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _reseller(request: Request) -> dict:
@@ -525,13 +630,13 @@ def reseller_ringkas(request: Request):
         hari_ini = conn.execute("SELECT COUNT(*) FROM hs_voucher WHERE reseller = ? AND status = 'terjual' AND terjual_pada >= ?",
                                 (me["username"], hari)).fetchone()[0]
         riwayat = [dict(r) for r in conn.execute(
-            "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
+            "SELECT v.kode, v.terjual_pada, p.nama AS paket, b.harga, b.menit, (v.setoran_id IS NOT NULL) AS disetor FROM hs_voucher v "
             "JOIN hs_paket p ON p.id = v.paket_id JOIN hs_batch b ON b.id = v.batch_id WHERE v.reseller = ? "
             "AND v.status = 'terjual' ORDER BY v.terjual_pada DESC LIMIT 30", (me["username"],))]
         conn.commit()
     return {"akun": me["username"], "usaha": inti.CONFIG["NAMA_USAHA"], "lokasi": lok["nama"], "ssid": lok["ssid"],
             "stok": stok, "hari_ini": hari_ini, "belum_setor": {"voucher": belum[0], "setor": belum[1], "eceran": belum[2]},
-            "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"])) for r in riwayat]}
+            "riwayat": [dict(r, login=_url_login(lok["dns"], r["kode"]), durasi=_teks_durasi(r["menit"])) for r in riwayat]}
 
 
 class ResellerJualIn(BaseModel):

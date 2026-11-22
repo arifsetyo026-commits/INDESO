@@ -3635,6 +3635,12 @@ def test_hotspot_reseller_voucher(siap):
     d = o.post("/api/hotspot/paket", json=pk).json()
     pid = d["id"]
     assert d["mikrotik"] is True and mt.hs["/ip/hotspot/user/profile"][0]["rate-limit"] == "5M/5M"
+    # voucher 1 sesi: masa pakai sejak pertama masuk (penjadwal menghapus voucher), 1 HP = terkunci ke MAC HP pertama,
+    # sambung ulang otomatis lewat MAC cookie selama masa pakai
+    prof = mt.hs["/ip/hotspot/user/profile"][0]
+    assert prof["add-mac-cookie"] == "yes" and prof["mac-cookie-timeout"] == "3h"
+    assert "/system scheduler add" in prof["on-login"] and 'mac-address=$"mac-address"' in prof["on-login"]
+    assert '/ip hotspot user remove [find where name=\\"" . $u . "\\"]' in prof["on-login"]
     # titip 3 voucher (lokasi 1 berjaringan): langsung dibuat di MikroTik
     b = k.post("/api/hotspot/batch", json={"paket_id": pid, "jumlah": 3, "reseller": "warungsri"}).json()
     assert b["status"] == "siap" and b["skrip"] is None
@@ -3654,6 +3660,7 @@ def test_hotspot_reseller_voucher(siap):
     r.post("/api/reseller/jual", json={"paket_id": pid})
     s1 = r.get("/api/reseller/ringkas").json()
     assert s1["stok"][0]["stok"] == 1 and s1["belum_setor"] == {"voucher": 2, "setor": 5000, "eceran": 6000}
+    assert s1["riwayat"][0]["durasi"] == "3 jam"     # untuk pesan "Kirim lewat WA" saat QR ditampilkan ulang
     # setoran → kas masuk, tidak bisa diubah/dibatalkan dari Keuangan
     st = k.post("/api/hotspot/setoran", json={"reseller": "warungsri"}).json()
     assert st["nominal"] == 5000 and st["nomor"].startswith("BKM-")
@@ -3670,7 +3677,7 @@ def test_hotspot_reseller_voucher(siap):
     assert k.post("/api/hotspot/batch", json={"paket_id": p2, "jumlah": 2, "reseller": "warungsri"}).status_code == 400  # beda lokasi
     b2 = k.post("/api/hotspot/batch", json={"paket_id": p2, "jumlah": 2, "reseller": "warungtono"}).json()
     assert b2["status"] == "menunggu" and len(mt.hs["/ip/hotspot/user"]) == 3
-    assert "limit-uptime=5h" in b2["skrip"] and "/ip hotspot user profile" in b2["skrip"] and b2["skrip"].count("add name=") == 3
+    assert "limit-uptime=5h" in b2["skrip"] and "/ip hotspot user profile" in b2["skrip"] and b2["skrip"].count('add name="') == 3
     rt = TestClient(main.app)
     rt.post("/api/login", json={"username": "warungtono", "password": "warungtono1"})
     assert rt.post("/api/reseller/jual", json={"paket_id": p2}).status_code == 409                  # belum terpasang
@@ -3685,13 +3692,45 @@ def test_hotspot_reseller_voucher(siap):
     ring = o.get("/api/hotspot?lokasi=2").json()
     assert ring["reseller"][0]["username"] == "warungtono" and ring["reseller"][0]["belum_setor"] == 1
     sk = o.get("/api/hotspot/skrip-pengaturan?lokasi=2").json()["skrip"]
-    assert 'dns-name="hs.desa2"' in sk and "login-by=http-pap" in sk
+    assert 'dns-name="hs.desa2"' in sk and "login-by=http-chap,http-pap,cookie,mac-cookie" in sk
     # kode voucher tidak pernah masuk log aktivitas
     assert j["kode"] not in o.get("/api/aktivitas").text
     # reseller yang masih memegang stok / uang voucher tidak bisa dihapus atau dipindah lokasi
     r_hapus = o.delete("/api/akun/warungsri")
     assert r_hapus.status_code == 400 and "voucher" in r_hapus.json()["detail"]
     assert o.put("/api/akun/warungsri", json={"lokasi": 2}).status_code == 400
+
+
+def test_hotspot_halaman_login(siap):
+    """Halaman login hotspot disajikan INDESO tanpa login (diunduh MikroTik dengan /tool fetch): nama usaha, paket
+    aktif & harganya, nomor WA; variabel MikroTik $(...) utuh, teks dari database tidak bisa menyisipkan $(...)."""
+    main, o, k, m = siap
+    from fastapi.testclient import TestClient
+    publik = TestClient(main.app)
+    pk = {"nama": "Harian $(ip)", "lokasi": 1, "menit": 1440, "mbps": 2.5, "perangkat": 2, "harga": 5000,
+          "harga_reseller": 4000}
+    pid = o.post("/api/hotspot/paket", json=pk).json()["id"]
+    o.post("/api/hotspot/paket", json=dict(pk, nama="Lama", harga=1000, harga_reseller=900))
+    o.put(f"/api/hotspot/paket/{pid + 1}", json=dict(pk, nama="Lama", harga=1000, harga_reseller=900, aktif=False))
+    main.CONFIG["USAHA_WA"] = "0812-3456-7890"
+    try:
+        r = publik.get("/hotspot/1/login.html")
+    finally:
+        main.CONFIG["USAHA_WA"] = ""
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+    t = r.text
+    assert "{{" not in t and "$(link-login-only)" in t and "$(chap-challenge)" in t and "$(if error)" in t
+    assert "Harian &#36;(ip)" in t and "Rp" in t and "2.5 Mbps" in t and "2 HP" in t
+    assert "Lama" not in t                                  # paket nonaktif tidak tampil
+    assert "https://wa.me/6281234567890" in t
+    for f in ("alogin.html", "status.html", "logout.html"):
+        h = publik.get(f"/hotspot/1/{f}")
+        assert h.status_code == 200 and "{{" not in h.text, f
+    for jalur in ("/hotspot/1/md5.js", "/hotspot/1/..%2Fmain.py", "/hotspot/x/login.html"):
+        h = publik.get(jalur, follow_redirects=False)
+        assert h.status_code != 200 and "import" not in h.text, jalur
+    sk = o.get("/api/hotspot/skrip-pengaturan?lokasi=1").json()["skrip"]
+    assert "/tool fetch url=(\"http://testserver/hotspot/1/\" . $f)" in sk and '"login.html";"alogin.html"' in sk
 
 
 def test_kas_wilayah_dan_setoran(siap):
