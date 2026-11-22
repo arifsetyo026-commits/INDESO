@@ -21,7 +21,10 @@ from datetime import datetime
 APP = os.environ.get("INDESO_APP", "/opt/indeso")
 DATA = os.environ.get("INDESO_DATA_DIR", "/var/lib/indeso")
 ENV = os.environ.get("INDESO_ENV", "/etc/indeso/indeso.env")
-WAJIB = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "MIKROTIK_HOST", "MIKROTIK_USER", "MIKROTIK_PASSWORD", "OLT_HOST")
+# Sama dengan main.py: hanya isian _env_wajib yang membuat INDESO tidak mau menyala bila kosong.
+WAJIB = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "MIKROTIK_PASSWORD")
+# Nilai bawaan main.py bila isian kosong (supaya perangkatnya tetap ikut diperiksa).
+BAWAAN = {"MIKROTIK_HOST": "192.168.50.1", "MIKROTIK_PORT": "8728", "OLT_HOST": "192.168.2.100", "OLT_TELNET_PORT": "23"}
 RAHASIA = re.compile(r"(?i)(pass|token|sandi|secret|community)")
 
 hasil = {"ok": 0, "peringatan": 0, "masalah": 0}
@@ -79,6 +82,9 @@ def baca_env() -> dict:
         if RAHASIA.search(k) and v:
             _rahasia.append(v)
     lapor("ok", f"Berkas pengaturan terbaca ({len(nilai)} isian)")
+    for k, v in BAWAAN.items():
+        if not nilai.get(k):
+            nilai[k] = v
     kosong = [k for k in WAJIB if not nilai.get(k)]
     if kosong:
         lapor("masalah", "Isian wajib masih kosong: " + ", ".join(kosong), saran=f"Lengkapi di {ENV}, lalu: sudo systemctl restart indeso")
