@@ -85,7 +85,7 @@ th{font-size:var(--fs-2xs);color:var(--muted);text-transform:uppercase;letter-sp
  <section class="statusBanner"><div class="statusMain"><div class="statusIcon">⌂</div><div><div class="eyebrow">ADMIN WILAYAH</div><h2 id="lokNama">—</h2><p id="lokSub">Memuat data wilayah…</p></div></div>
   <div class="kpis">
    <div class="kpi"><div class="kpiTop"><span class="kpiIcon">♟</span>Pelanggan Aktif</div><strong id="kAktif">—</strong><small id="kAktifSub">&nbsp;</small></div>
-   <div class="kpi"><div class="kpiTop"><span class="kpiIcon">▣</span>Online</div><strong id="kOnline">—</strong><small>PPPoE tersambung</small></div>
+   <div class="kpi"><div class="kpiTop"><span class="kpiIcon">▣</span>Online</div><strong id="kOnline">—</strong><small id="kOnlineSub">PPPoE tersambung</small></div>
    <div class="kpi blue"><div class="kpiTop"><span class="kpiIcon">✓</span>Lunas Bulan Ini</div><strong id="kLunas">—</strong><small id="kLunasSub">&nbsp;</small></div>
    <div class="kpi warn"><div class="kpiTop"><span class="kpiIcon">!</span>Tunggakan</div><strong id="kTunggak">—</strong><small id="kTunggakSub">&nbsp;</small></div>
   </div></section>
@@ -107,10 +107,11 @@ th{font-size:var(--fs-2xs);color:var(--muted);text-transform:uppercase;letter-sp
     <label for="fNama">Nama pelanggan</label><input id="fNama" autocomplete="off">
     <label for="fAlamat">Alamat</label><input id="fAlamat" autocomplete="off">
     <label for="fHp">Nomor HP / WA</label><input id="fHp" inputmode="tel" autocomplete="off" placeholder="08…">
+    <label for="fKoneksi">Cara tersambung</label><select id="fKoneksi"><option value="pppoe">PPPoE (akun di MikroTik)</option><option value="ap">Akses point (tanpa PPPoE)</option></select>
     <label for="fPaket">Paket</label><select id="fPaket"></select>
     <label for="fTgl">Tanggal pasang</label><input id="fTgl" type="date">
     <div class="plBtns"><button class="plSave" id="fSimpan" onclick="simpanTambah()">Simpan pelanggan</button></div>
-    <div class="note">Username harus sama persis dengan secret PPPoE di MikroTik wilayah Anda. Tagihan bulan pertama dihitung prorata otomatis. Diskon, gratis, isolir, penagihan, serta memberhentikan/mengaktifkan pelanggan diurus Pusat. Salah input bisa dihapus dalam 30 hari.</div>
+    <div class="note">Username harus sama persis dengan secret PPPoE di MikroTik wilayah Anda (pelanggan akses point: nama singkat unik, mis. ap.budi). Tagihan bulan pertama dihitung prorata otomatis. Diskon, gratis, isolir, penagihan, serta memberhentikan/mengaktifkan pelanggan diurus Pusat. Salah input bisa dihapus dalam 30 hari.</div>
    </div></section>
  </div>
 
@@ -191,7 +192,8 @@ async function muat(){
  const tunggak=D.pelanggan.filter(p=>p.n_tunggak>0), total=tunggak.reduce((a,p)=>a+(p.tunggak||0),0);
  $('lokSub').textContent=aktif.length+' pelanggan aktif · tagihan '+namaBulan(D.periode);
  $('kAktif').textContent=aktif.length; $('kAktifSub').textContent=(D.pelanggan.length-aktif.length)+' berhenti';
- $('kOnline').textContent=aktif.filter(p=>p.online).length+' / '+aktif.length;
+ const pppoe=aktif.filter(p=>p.koneksi!=='ap'); $('kOnline').textContent=pppoe.filter(p=>p.online).length+' / '+pppoe.length;
+ $('kOnlineSub').textContent=aktif.length>pppoe.length?'PPPoE · +'+(aktif.length-pppoe.length)+' akses point':'PPPoE tersambung';
  $('kLunas').textContent=lunas.length+' / '+ditagih.length; $('kLunasSub').textContent=ditagih.length&&lunas.length===ditagih.length?'Semua lunas':(ditagih.length-lunas.length)+' belum bayar';
  $('kTunggak').textContent=rp(total); $('kTunggakSub').textContent=tunggak.length+' pelanggan';
  const pilih=$('fPaket').value; $('fPaket').innerHTML=D.paket.map(p=>`<option value="${p.id}">${esc(p.nama)} · ${p.kecepatan_mbps} Mbps · ${rp(p.harga)}</option>`).join(''); if(pilih) $('fPaket').value=pilih;
@@ -207,7 +209,7 @@ function render(){
   const chip=[];
   if(p.status==='berhenti') chip.push('<span class="chip off">Berhenti'+(p.berhenti_sejak?' '+esc(p.berhenti_sejak):'')+'</span>');
   else{
-   chip.push(p.online?'<span class="chip ok">● Online</span>':'<span class="chip off">Offline</span>');
+   chip.push(p.koneksi==='ap'?'<span class="chip info">Akses point</span>':p.online?'<span class="chip ok">● Online</span>':'<span class="chip off">Offline</span>');
    if(p.isolir) chip.push('<span class="chip bad">Isolir</span>');
    if(p.gratis) chip.push('<span class="chip off">Gratis</span>');
    else if(p.tagihan_bulan_ini==='lunas') chip.push('<span class="chip ok">Lunas</span>');
@@ -232,12 +234,12 @@ async function hapus(u){
 }
 function bukaTambah(){
  pesan(''); tampil('form');
- for(const id of ['fUser','fNama','fAlamat','fHp']) $(id).value='';
+ for(const id of ['fUser','fNama','fAlamat','fHp']) $(id).value=''; $('fKoneksi').value='pppoe';
  const t=new Date(); t.setMinutes(t.getMinutes()-t.getTimezoneOffset()); $('fTgl').value=t.toISOString().slice(0,10); $('fTgl').max=$('fTgl').value;
  $('fUser').focus();
 }
 async function simpanTambah(){
- const body={username:$('fUser').value.trim(),nama:$('fNama').value.trim(),alamat:$('fAlamat').value.trim()||null,no_hp:$('fHp').value.trim()||null,paket_id:Number($('fPaket').value),tgl_pasang:$('fTgl').value};
+ const body={username:$('fUser').value.trim(),nama:$('fNama').value.trim(),alamat:$('fAlamat').value.trim()||null,no_hp:$('fHp').value.trim()||null,paket_id:Number($('fPaket').value),tgl_pasang:$('fTgl').value,koneksi:$('fKoneksi').value};
  if(!body.username||!body.nama){ pesan('Username PPPoE dan nama wajib diisi.'); return; }
  const b=$('fSimpan'); b.disabled=true;
  try{ const r=await api('/api/wilayah/pelanggan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
