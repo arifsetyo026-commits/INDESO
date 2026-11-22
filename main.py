@@ -1,9 +1,12 @@
 """
-Dashboard Monitoring ISP - Backend
-FastAPI + routeros-api (MikroTik) + snmpwalk binary (OLT C-Data) + Telegram Alert
-Didesain untuk berjalan 24/7 di Termux (Android) sebagai local server.
+INDESO (Internet Desa) — monitoring jaringan, pelanggan, penagihan, dan keuangan ISP desa.
+FastAPI + routeros-api (MikroTik) + snmpwalk/telnet (OLT C-Data) + GenieACS (TR-069) + Telegram.
+Berjalan 24/7 di VPS sebagai layanan systemd `indeso` (lihat deploy/indeso/install.sh dan docs/vps-indeso.md).
 
-Jalankan dengan:
+Bila ada masalah, mulai dari:  sudo bash /opt/indeso/deploy/indeso/cek.sh
+Rencana perbaikan kode: docs/rencana-perbaikan.md
+
+Jalankan manual (pengembangan):
     uvicorn main:app --host 0.0.0.0 --port 8000
 
 CATATAN OID (hasil investigasi manual + validasi silang ke web GUI OLT):
@@ -52,6 +55,7 @@ load_dotenv()
 import routeros_api
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 
 # ============================================================
@@ -270,6 +274,8 @@ def _samarkan(teks: str) -> str:
 
 
 logger.addFilter(_SamarkanRahasia())
+for _nama in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(_nama).addFilter(_SamarkanRahasia())
 
 
 # ============================================================
@@ -2319,6 +2325,8 @@ async def telegram_command_listener():
 
 # /docs, /redoc, /openapi.json dimatikan: dashboard terbuka ke internet, peta API tidak perlu diumbar.
 app = FastAPI(title="ISP Monitoring Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
+# Kompresi gzip: halaman & data API (teks/JSON) jadi ±5x lebih kecil, terasa di sinyal HP pedesaan.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Dashboard dan API dilayani dari origin yang sama, jadi CORS tidak dibuka:
 # dengan CORS "*" situs lain yang dibuka admin di browser bisa ikut memanggil
@@ -2343,7 +2351,7 @@ _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 
 # Alamat yang boleh dibuka tanpa login, dan yang boleh dibuka akun mitra.
 # Selain itu: tanpa login -> 401/ke halaman login, mitra -> 403.
-_JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|api/login|api/setup|api/setup-status|healthz"
+_JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|static/banner\.jpg|api/login|api/setup|api/setup-status|healthz"
                            r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js"
                            r"|syarat-ketentuan|kebijakan-privasi|kebijakan-pengembalian-dana|api/portal/info)$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
@@ -2687,6 +2695,13 @@ def qrcode_js():
     """Pembuat kode QR (qrcode-generator, Kazuhiko Arase, lisensi MIT) untuk kartu & jual voucher hotspot."""
     return FileResponse(os.path.join(BASE_DIR, "static", "qrcode.js"), media_type="text/javascript",
                         headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/static/banner.jpg", include_in_schema=False)
+def banner_jpg():
+    """Foto banner dashboard: berkas terpisah supaya disimpan browser (dulu tertanam 220 KB di setiap halaman)."""
+    return FileResponse(os.path.join(BASE_DIR, "static", "banner.jpg"), media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=2592000"})
 
 
 @app.get("/static/inter.woff2", include_in_schema=False)

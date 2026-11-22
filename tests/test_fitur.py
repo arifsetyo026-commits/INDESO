@@ -4391,3 +4391,41 @@ def test_permintaan_material_wilayah(siap):
     st = {x["nomor"]: (x["status"], x["alasan"]) for x in d.get("/api/wilayah/material").json()["permintaan"]}
     assert st["M3"] == ("ditolak", "beli sendiri") and st["M4"][0] == "batal"
     assert k.get("/api/gudang/permintaan").json()["terbuka"] == 0
+
+
+def test_halaman_ringan_gzip_dan_banner(siap):
+    """Halaman & data API dikompres gzip; banner berkas terpisah yang disimpan browser (tidak tertanam di halaman)."""
+    main, o, k, m = siap
+    r = o.get("/", headers={"Accept-Encoding": "gzip"})
+    assert r.headers.get("content-encoding") == "gzip" and "data:image/jpeg;base64" not in r.text
+    assert '/static/banner.jpg' in r.text
+    besar = o.get("/api/aktivitas", headers={"Accept-Encoding": "gzip"})           # JSON > 1 KB ikut dikompres
+    assert besar.status_code == 200 and (len(besar.content) < 1024 or besar.headers.get("content-encoding") == "gzip")
+    from fastapi.testclient import TestClient
+    tamu = TestClient(main.app)
+    b = tamu.get("/static/banner.jpg")
+    assert b.status_code == 200 and b.content[:2] == b"\xff\xd8" and "max-age" in b.headers["cache-control"]
+    assert "data:image/jpeg;base64" not in open(os.path.join(main.BASE_DIR, "wilayah.html")).read()
+
+
+def test_cek_sh_tanpa_rahasia(tmp_path):
+    """deploy/indeso/periksa.py: hanya membaca, menandai nilai berspasi tanpa kutip, dan tidak mencetak rahasia."""
+    import sqlite3, subprocess
+    data = tmp_path / "data"
+    (data / "backup").mkdir(parents=True)
+    env = tmp_path / "indeso.env"
+    env.write_text("TELEGRAM_BOT_TOKEN=123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef\nTELEGRAM_CHAT_ID=-1\n"
+                   "MIKROTIK_HOST=127.0.0.1\nMIKROTIK_PORT=9\nMIKROTIK_USER=indeso\nMIKROTIK_PASSWORD=RahasiaMikrotik9\n"
+                   "OLT_HOST=127.0.0.1\nNAMA_USAHA=Internet Desa\nGENIEACS_URL=\n")
+    c = sqlite3.connect(data / "billing.db")
+    c.execute("CREATE TABLE pelanggan (username, status)")
+    c.execute("CREATE TABLE lokasi (kode, nama, mt_host, mt_port)")
+    c.commit(); c.close()
+    sqlite3.connect(data / "isp_history.db").close()
+    skrip = os.path.join(os.path.dirname(__file__), "..", "deploy", "indeso", "periksa.py")
+    p = subprocess.run([sys.executable, skrip], capture_output=True, text=True, timeout=120,
+                       env=dict(os.environ, INDESO_DATA_DIR=str(data), INDESO_ENV=str(env), INDESO_APP=str(tmp_path)))
+    keluar = p.stdout + p.stderr
+    assert "RINGKASAN" in keluar and "billing.db utuh" in keluar and "NAMA_USAHA" in keluar
+    assert "Belum ada backup billing.db" in keluar
+    assert "RahasiaMikrotik9" not in keluar and "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef" not in keluar
