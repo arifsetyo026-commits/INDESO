@@ -8,6 +8,8 @@
 Fitur lengkap (punya jalur API sendiri, didaftarkan main.py lewat app.include_router):
     qris_bayar.py  QRIS toko di portal + konfirmasi bukti bayar (/api/qris, /api/portal/bayar|konfirmasi,
                    /api/konfirmasi-bayar)
+    gudang.py      Warehouse: barang, stok dari riwayat mutasi, pakai/opname/batal + permintaan material dari admin
+                   wilayah (/api/gudang/*, /api/wilayah/material*)
 
     inti.py      pintu ke pembantu yang masih di main.py (db, CONFIG, cek login, aktivitas, Telegram), dibaca saat dipakai
 
