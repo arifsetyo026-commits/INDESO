@@ -84,5 +84,9 @@ Jalur API terbanyak: keuangan 33, portal 14, hotspot 11, gudang 10, ACS 10, ONU 
   `_jalankan_isolir` (B). Isi & urutan perintah sama. Dibuktikan dengan **uji banding**: versi lama dan baru dijalankan
   pada 500 skenario acak dari keadaan database yang sama (semua jalur: buka, isolir, gagal, simulasi, ditahan, isolir
   manual); pesan Telegram, log, aktivitas, panggilan MikroTik, dan isi database setelahnya identik.
+- **Tahap 5 (bagian 2, tagihan harian):** `proses_tagihan_harian` dipecah: `_tagihan_otomatis_buat`
+  (`_periode_tagihan_otomatis`, `_kabar_tagihan_dibuat`), `_tagihan_otomatis_ingatkan` (`_judul_jatuh_tempo`), dan
+  penanda `_otomasi_sudah` / `_otomasi_tandai`. Uji banding 1.500 skenario (buat_tagihan asli ikut jalan; semua
+  variasi: dibuat, terlambat, diperbarui, sudah siap, N hari lagi, hari ini, lewat, semua lunas): identik.
 
 Setiap tahap: tes otomatis lulus, diff dibaca ulang, PR kecil, dan cara kembali ke versi lama tercantum.
