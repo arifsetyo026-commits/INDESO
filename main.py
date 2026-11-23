@@ -2596,17 +2596,22 @@ class LoginIn(BaseModel):
 @app.get("/masuk", include_in_schema=False)
 @app.get("/petugas", include_in_schema=False)
 def alamat_masuk_petugas():
-    """Alamat pendek yang mudah diingat teknisi/mitra/warung."""
+    """Alamat pendek yang mudah diingat (satu pintu masuk untuk semua akun)."""
     return RedirectResponse("/login", status_code=302)
 
 
 @app.get("/pelanggan", include_in_schema=False)
 def alamat_masuk_pelanggan():
-    return RedirectResponse("/portal", status_code=302)
+    return RedirectResponse("/login", status_code=302)
 
 
 @app.get("/login")
-async def halaman_login():
+async def halaman_login(request: Request):
+    # Sudah masuk? Langsung ke halamannya (staf -> dashboard sesuai peran, pelanggan -> portal).
+    if await asyncio.to_thread(_ambil_sesi, request.cookies.get(_COOKIE_SESI, "")):
+        return RedirectResponse("/", status_code=303)
+    if await asyncio.to_thread(_ambil_sesi_portal, request.cookies.get(_COOKIE_PORTAL, "")):
+        return RedirectResponse("/portal", status_code=303)
     return FileResponse(os.path.join(BASE_DIR, "login.html"), headers={"Cache-Control": "no-cache"})
 
 
@@ -2660,10 +2665,14 @@ def setup_admin_pertama(d: LoginIn, request: Request):
 
 @app.post("/api/login")
 def login(d: LoginIn, request: Request):
+    """SATU PINTU MASUK untuk semua akun. Dicoba akun staf dulu (owner/admin/mitra/reseller/admin wilayah); bila
+    bukan, akun Portal Pelanggan (nama login atau ID pelanggan). Jawaban menyebut `arah` tujuan setelah masuk."""
     username = d.username.strip()
     sekarang = datetime.now()
     ip = _ip(request)
-    for kunci, batas in ((f"ip:{ip}", _BATAS_GAGAL["ip"]), (f"user:{username.lower()}", _BATAS_GAGAL["user"])):
+    login_portal = _login_portal_baku(username)
+    for kunci, batas in ((f"ip:{ip}", _BATAS_GAGAL["ip"]), (f"user:{username.lower()}", _BATAS_GAGAL["user"]),
+                         (f"portal-user:{login_portal.lower()}", _BATAS_GAGAL["user"])):
         menit = _terkunci(kunci, batas, sekarang)
         if menit:
             raise HTTPException(status_code=429, detail=f"Terlalu banyak percobaan gagal. Coba lagi dalam {menit} menit.")
@@ -2671,13 +2680,22 @@ def login(d: LoginIn, request: Request):
         r = conn.execute("SELECT username, password_hash, peran, aktif FROM akun WHERE username = ?",
                          (username,)).fetchone()
     ok = _cek_password(d.password, r[1] if r else _HASH_PALSU) and r is not None
-    if not ok or not r[3]:
+    if ok and not r[3]:
         _catat_gagal(f"ip:{ip}", sekarang)
         _catat_gagal(f"user:{username.lower()}", sekarang)
-        catat_aktivitas(username[:32] or "-", "login_gagal",
-                        f"dari {ip}" + (" (akun nonaktif)" if ok and r and not r[3] else ""))
-        raise HTTPException(status_code=401, detail="Username atau password salah." if not ok
-                            else "Akun ini sedang dinonaktifkan. Hubungi admin.")
+        catat_aktivitas(username[:32] or "-", "login_gagal", f"dari {ip} (akun nonaktif)")
+        raise HTTPException(status_code=401, detail="Akun ini sedang dinonaktifkan. Hubungi admin.")
+    if not ok:
+        # Bukan akun staf: coba akun Portal Pelanggan.
+        rp = _cek_akun_portal(login_portal, d.password)
+        if rp is not None:
+            _gagal_login.pop(f"portal-user:{login_portal.lower()}", None)
+            return _buka_sesi_portal(rp, request, sekarang)
+        _catat_gagal(f"ip:{ip}", sekarang)
+        _catat_gagal(f"user:{username.lower()}", sekarang)
+        _catat_gagal(f"portal-user:{login_portal.lower()}", sekarang)
+        catat_aktivitas(username[:32] or "-", "login_gagal", f"dari {ip}")
+        raise HTTPException(status_code=401, detail="Nama login atau password salah.")
     _gagal_login.pop(f"user:{username.lower()}", None)
     if not (r[1] or "").startswith(f"pbkdf2_sha256${_PBKDF2_ITERASI}$"):
         # Password tersimpan dengan iterasi lama: simpan ulang dengan iterasi sekarang.
@@ -2686,7 +2704,7 @@ def login(d: LoginIn, request: Request):
             conn.commit()
     token = _buat_sesi(r[0], request)
     catat_aktivitas(r[0], "login", f"dari {ip}")
-    resp = JSONResponse({"ok": True, "peran": r[2]})
+    resp = JSONResponse({"ok": True, "peran": r[2], "jenis": "petugas", "arah": "/"})
     _pasang_cookie(resp, request, token)
     return resp
 
@@ -8045,12 +8063,8 @@ td.r,th.r{text-align:right;white-space:nowrap}.mut{color:var(--mut);font-size:13
 .btn.o{background:#fff;color:var(--g);border:1px solid var(--g)}
 footer{border-top:1px solid var(--line);padding:18px 0 28px;font-size:13px;color:var(--mut)}footer a{margin-right:14px}
 nav a.masuk{background:#fff;color:var(--g);border:0;border-radius:999px;padding:2px 12px}
-.pintu{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.pt{display:block;border:1px solid var(--line);border-radius:14px;padding:14px;text-decoration:none;color:var(--ink);background:#fbfdfb}
-.pt b{display:block;font-size:16px}.pt span{display:block;color:var(--mut);font-size:13px;margin:3px 0 10px;line-height:1.45}
-.pt i{display:inline-block;font-style:normal;font-weight:800;font-size:14px;background:var(--g);color:#fff;border-radius:10px;padding:8px 12px}
-.pt.sf i{background:#fff;color:var(--g);border:1px solid var(--g)}
-@media(max-width:560px){.pintu{grid-template-columns:1fr}}
+.pintu1{border:2px solid #bfe6cb;background:linear-gradient(135deg,#fff,#effaf3)}
+.btn.besar{display:block;text-align:center;font-size:17px;padding:14px 18px;margin:12px 0 0;border-radius:12px}
 """
 
 
@@ -8089,11 +8103,11 @@ def _halaman_publik(judul: str, isi: str) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{_e(judul)} · {usaha}</title>
 <meta name="description" content="{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}"><style>{_CSS_PUBLIK}</style></head><body>
 <header><div class="w"><h1>{usaha}</h1><p>{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}</p>
-<nav><a href="/">Beranda</a><a href="/portal">Portal Pelanggan</a><a class="masuk" href="/login">Masuk petugas</a><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a>
+<nav><a href="/">Beranda</a><a class="masuk" href="/login">Masuk</a><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a>
 <a href="/kebijakan-privasi">Kebijakan Privasi</a><a href="/kebijakan-pengembalian-dana">Pengembalian Dana</a></nav></div></header>
 <main><div class="w">{isi}</div></main>
 <footer><div class="w"><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a><a href="/kebijakan-privasi">Kebijakan Privasi</a>
-<a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a><a href="/portal">Masuk pelanggan</a><a href="/login">Masuk petugas · mitra · warung</a>
+<a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a><a href="/login">Masuk</a>
 <div style="margin-top:8px">© {tahun} {usaha}{(' · ' + _e(CONFIG['USAHA_PEMILIK'])) if CONFIG.get('USAHA_PEMILIK') else ''}</div></div></footer>
 </body></html>"""
 
@@ -8119,13 +8133,15 @@ def _halaman_beranda() -> str:
              if paket else "<p class=mut>Daftar paket sedang diperbarui. Hubungi kami untuk informasi harga.</p>")
     wa = _wa_link(CONFIG.get("USAHA_WA") or "")
     area = CONFIG.get("USAHA_AREA")
-    # Pintu masuk paling atas: pelanggan → Portal Pelanggan, petugas/teknisi/mitra/warung → halaman masuk staf.
+    # Satu pintu masuk paling atas (/login): sistem yang membedakan akun pelanggan dan staf setelah masuk.
     # (Dulu hanya ada tautan kecil "Masuk petugas" di kaki halaman sehingga teknisi kesulitan menemukannya.)
     isi = f"""
-<section><h2>Masuk ke akun</h2><div class="pintu">
-<a class="pt" href="/portal"><b>Pelanggan internet</b><span>Cek tagihan, bayar QRIS, unduh kwitansi, atur WiFi rumah, lapor gangguan.</span><i>Masuk Portal Pelanggan →</i></a>
-<a class="pt sf" href="/login"><b>Petugas · Teknisi · Mitra · Warung</b><span>Dashboard, data pelanggan, tugas teknisi, komisi mitra, jual voucher hotspot.</span><i>Masuk petugas →</i></a>
-</div><p class=mut style="margin:10px 0 0">Alamat singkat: <b>/pelanggan</b> untuk pelanggan, <b>/masuk</b> untuk petugas.</p></section>
+<section class="pintu1"><h2>Masuk ke akun</h2>
+<p>Satu pintu untuk <b>pelanggan, petugas, teknisi, mitra, dan warung voucher</b>. Setelah masuk, Anda otomatis dibawa
+ke halaman yang sesuai dengan akun Anda.</p>
+<a class="btn besar" href="/login">Masuk →</a>
+<p class=mut style="margin:10px 0 0">Alamat singkat: <b>/masuk</b> · Pelanggan yang belum punya akun:
+<a href="/portal#daftar">daftar akun pelanggan</a>.</p></section>
 <section><h2>Layanan kami</h2><p>{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}</p>
 {f'<p>Area layanan: <b>{_e(area)}</b></p>' if area else ''}
 <p>{f'<a class=btn href="{_e(wa)}" rel="noopener">Tanya / daftar lewat WhatsApp</a>' if wa else ''}<a class="btn o" href="/portal">Portal Pelanggan</a></p></section>
@@ -8300,6 +8316,18 @@ def portal_daftar(d: PortalDaftarIn, request: Request):
     return {"ok": True, "pesan": "Pendaftaran terkirim. Akun bisa dipakai setelah disetujui admin."}
 
 
+def _cek_akun_portal(login: str, password: str):
+    """Akun Portal Pelanggan bila password cocok (None bila tidak). Akun yang belum disetujui/nonaktif: ditolak jelas."""
+    with db() as conn:
+        r = conn.execute("SELECT login, password_hash, status, wajib_ganti FROM portal_akun WHERE login = ?", (login,)).fetchone()
+    if not (_cek_password(password, r["password_hash"] if r else _HASH_PALSU) and r is not None):
+        return None
+    if r["status"] != "aktif":
+        raise HTTPException(status_code=403, detail="Akun belum disetujui admin." if r["status"] == "menunggu"
+                            else "Akun ini sedang dinonaktifkan. Hubungi admin.")
+    return r
+
+
 @app.post("/api/portal/login")
 def portal_login(d: LoginIn, request: Request):
     login, sekarang, ip = _login_portal_baku(d.username), datetime.now(), _ip(request)
@@ -8307,16 +8335,16 @@ def portal_login(d: LoginIn, request: Request):
         menit = _terkunci(kunci, batas, sekarang)
         if menit:
             raise HTTPException(status_code=429, detail=f"Terlalu banyak percobaan gagal. Coba lagi dalam {menit} menit.")
-    with db() as conn:
-        r = conn.execute("SELECT login, password_hash, status, wajib_ganti FROM portal_akun WHERE login = ?", (login,)).fetchone()
-    if not (_cek_password(d.password, r["password_hash"] if r else _HASH_PALSU) and r is not None):
+    r = _cek_akun_portal(login, d.password)
+    if r is None:
         _catat_gagal(f"portal-ip:{ip}", sekarang)
         _catat_gagal(f"portal-user:{login.lower()}", sekarang)
         raise HTTPException(status_code=401, detail="Nama login atau password salah.")
-    if r["status"] != "aktif":
-        raise HTTPException(status_code=403, detail="Akun belum disetujui admin." if r["status"] == "menunggu"
-                            else "Akun ini sedang dinonaktifkan. Hubungi admin.")
     _gagal_login.pop(f"portal-user:{login.lower()}", None)
+    return _buka_sesi_portal(r, request, sekarang)
+
+
+def _buka_sesi_portal(r, request: Request, sekarang: datetime) -> JSONResponse:
     token, waktu = secrets.token_urlsafe(32), sekarang.isoformat(timespec="seconds")
     with db() as conn:
         conn.execute("DELETE FROM portal_sesi WHERE terakhir_aktif < ?",
@@ -8325,7 +8353,7 @@ def portal_login(d: LoginIn, request: Request):
                      (_hash_token(token), r["login"], waktu, waktu))
         conn.execute("UPDATE portal_akun SET login_terakhir = ? WHERE login = ?", (_sekarang_str(), r["login"]))
         conn.commit()
-    resp = JSONResponse({"ok": True, "wajib_ganti": bool(r["wajib_ganti"])})
+    resp = JSONResponse({"ok": True, "wajib_ganti": bool(r["wajib_ganti"]), "jenis": "pelanggan", "arah": "/portal"})
     https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     resp.set_cookie(_COOKIE_PORTAL, token, httponly=True, samesite="strict", secure=https,
                     max_age=_PORTAL_SESI_HARI * 86400, path="/")

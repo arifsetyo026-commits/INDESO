@@ -228,15 +228,15 @@ def test_halaman_dan_login(app):
     # tanpa login: beranda publik (bukan dashboard), dengan tautan masuk petugas
     assert c.get("/").status_code == 200 and 'href="/login"' in c.get("/").text and "Keuangan" not in c.get("/").text
     assert c.get("/login").status_code == 200
-    # pintu masuk mudah ditemukan: kotak "Masuk ke akun" paling atas (sebelum isi lain) + menu, alamat pendek, petunjuk silang
+    # SATU pintu masuk mudah ditemukan: kotak "Masuk ke akun" paling atas (sebelum isi lain) + menu + alamat pendek
     b = c.get("/").text
     i_masuk, i_layanan = b.index("Masuk ke akun"), b.index("Layanan kami")
-    assert i_masuk < i_layanan and 'href="/portal"' in b[i_masuk:i_layanan] and 'href="/login"' in b[i_masuk:i_layanan]
+    assert i_masuk < i_layanan and 'href="/login"' in b[i_masuk:i_layanan] and 'href="/portal#daftar"' in b[i_masuk:i_layanan]
     assert 'class="masuk" href="/login"' in b
-    for pendek, tujuan in (("/masuk", "/login"), ("/petugas", "/login"), ("/pelanggan", "/portal")):
+    for pendek in ("/masuk", "/petugas", "/pelanggan"):
         r = c.get(pendek)
-        assert r.status_code == 302 and r.headers["location"] == tujuan, pendek
-    assert 'href="/portal"' in c.get("/login").text and 'href="/login"' in c.get("/portal").text
+        assert r.status_code == 302 and r.headers["location"] == "/login", pendek
+    assert 'href="/portal#daftar"' in c.get("/login").text and 'href="/login"' in c.get("/portal").text
     assert c.get("/api/status").status_code == 401
     assert c.get("/api/setup-status").json()["perlu_setup"] is True
     assert c.post("/api/setup", json={"username": "owner", "password": "pendek"}).status_code == 400
@@ -3448,6 +3448,19 @@ def test_portal_pelanggan(siap, monkeypatch):
     assert a["status"] == "menunggu" and a["pelanggan"] == "budi" and a["nama"] == "Budi"
     assert o.post("/api/portal-akun/budisaja/status", json={"status": "aktif"}).status_code == 200
     assert p.post("/api/portal/login", json={"username": "budisaja", "password": "salah1234"}).status_code == 401
+    # satu pintu: akun pelanggan masuk lewat /api/login yang sama dengan staf, diarahkan ke /portal (sesi portal saja)
+    p1 = TestClient(main.app)
+    p1.follow_redirects = False
+    r1 = p1.post("/api/login", json={"username": "budisaja", "password": "rahasia123"})
+    assert r1.status_code == 200 and r1.json()["jenis"] == "pelanggan" and r1.json()["arah"] == "/portal"
+    assert p1.get("/api/portal/saya").status_code == 200 and p1.get("/api/status").status_code == 401
+    assert p1.get("/login").status_code == 303 and p1.get("/login").headers["location"] == "/portal"
+    assert p1.post("/api/login", json={"username": "budisaja", "password": "salah1234"}).json()["detail"] == "Nama login atau password salah."
+    s1 = TestClient(main.app)
+    s1.follow_redirects = False
+    rs = s1.post("/api/login", json={"username": "owner", "password": "rahasia123"}).json()
+    assert rs["jenis"] == "petugas" and rs["arah"] == "/" and rs["peran"] == "owner"
+    assert s1.get("/login").headers["location"] == "/" and s1.get("/api/portal/saya").status_code == 401
     assert p.post("/api/portal/login", json={"username": "BudiSaja", "password": "rahasia123"}).status_code == 200
     assert p.get("/api/akun").status_code == 401 and p.get("/api/tiket").status_code == 401   # bukan sesi staf
     assert p.get("/").status_code == 200 and "Paket &amp; harga" in p.get("/").text           # sesi portal ≠ dashboard

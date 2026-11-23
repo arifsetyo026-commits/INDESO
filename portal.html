@@ -127,7 +127,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 </div></div>
 <div class="wrap">
  <div id="vAuth" class="auth" style="display:none"><div class="panel form">
-  <div class="tabs"><button id="tMasuk" class="on" onclick="modeAuth('masuk')">Masuk</button><button id="tDaftar" onclick="modeAuth('daftar')">Daftar</button></div>
+  <div class="tabs"><button id="tMasuk" onclick="location.href='/login'">Masuk</button><button id="tDaftar" onclick="modeAuth('daftar')">Daftar</button></div>
   <div id="fMasuk">
    <label>Nama login atau ID pelanggan</label><input id="mLogin" autocapitalize="off" autocomplete="username" placeholder="mis. 463376-1-0001">
    <label>Password</label><input id="mPw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')masuk()">
@@ -144,7 +144,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <div class="btns"><button class="btn go lebar" onclick="daftar()">Daftar</button></div>
   </div>
   <div class="msg" id="aMsg"></div>
-  <div class="note" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">Petugas, teknisi, mitra, atau warung voucher? <a href="/login" style="font-weight:800">Masuk di halaman petugas</a>.</div>
+  <div class="note" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">Sudah punya akun? <a href="/login" style="font-weight:800">Masuk di sini</a> (satu pintu untuk pelanggan &amp; petugas).</div>
  </div></div>
 
  <div id="vUtama" style="display:none">
@@ -189,9 +189,11 @@ async function api(url,body){
  const r=await fetch(url,body===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  const d=await r.json().catch(()=>({}));
  if(r.status===403&&d.wajib_ganti){ mintaGanti(); throw new Error(d.detail); }
- if(r.status===401&&!url.endsWith('/login')){ tampil('auth'); throw new Error(d.detail||'Silakan masuk lagi.'); }
+ if(r.status===401&&!url.endsWith('/login')){ keMasuk(); throw new Error(d.detail||'Silakan masuk lagi.'); }
  if(!r.ok) throw new Error(d.detail||('HTTP '+r.status)); return d;
 }
+// Satu pintu masuk: /login (pelanggan & petugas). Portal hanya menampilkan formulir Daftar untuk pelanggan baru.
+function keMasuk(){ if(location.hash==='#daftar'){ tampil('auth'); modeAuth('daftar'); muatInfo(); } else location.replace('/login'); }
 function tampil(v){ $('vAuth').style.display=v==='auth'?'block':'none'; $('vUtama').style.display=v==='utama'?'block':'none';
  $('vPw').style.display=v==='pw'?'block':'none'; $('tombolAkun').style.display=v==='auth'?'none':'flex';
  $('kepalaUtama').style.display=v==='utama'?'block':'none'; $('kepalaMasuk').style.display=v==='auth'?'block':'none';
@@ -206,10 +208,10 @@ async function masuk(){
 async function daftar(){
  if($('dPw').value!==$('dPw2').value){ pesan('aMsg','Ulangi password tidak sama.'); return; }
  try{ const d=await api('/api/portal/daftar',{no_hp:$('dHp').value.trim(),id_pelanggan:$('dId').value.trim()||null,login:$('dLogin').value.trim(),password:$('dPw').value});
-  $('mLogin').value=$('dLogin').value.trim(); ['dHp','dId','dLogin','dPw','dPw2'].forEach(i=>$(i).value=''); modeAuth('masuk'); pesan('aMsg',d.pesan,true); }
+  ['dHp','dId','dLogin','dPw','dPw2'].forEach(i=>$(i).value=''); $('aMsg').style.color='#0b7a3b'; $('aMsg').innerHTML=esc(d.pesan)+' <a href="/login">Ke halaman masuk</a>'; }
  catch(e){ pesan('aMsg',e.message); }
 }
-async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{ await api('/api/portal/logout',{}); }catch(e){} tampil('auth'); }
+async function keluar(){ if(!confirm('Keluar dari akun ini?')) return; try{ await api('/api/portal/logout',{}); }catch(e){} location.replace('/login'); }
 async function gantiPw(){
  if($('pBaru').value!==$('pBaru2').value){ pesan('pMsg','Ulangi password baru tidak sama.'); return; }
  try{ await api('/api/portal/password',{lama:$('pLama').value,baru:$('pBaru').value}); ['pLama','pBaru','pBaru2'].forEach(i=>$(i).value='');
@@ -255,7 +257,7 @@ async function muatInfo(){
   if(i.wa) $('lupaPw').innerHTML='Lupa password? Hubungi admin lewat <a href="'+esc(i.wa)+'" target="_blank" rel="noopener">WhatsApp '+esc(i.wa_teks)+'</a> untuk mengatur ulang.'; }catch(e){}
 }
 async function muat(){
- let d; try{ d=await api('/api/portal/saya'); }catch(e){ if(!wajibGanti){ tampil('auth'); muatInfo(); } return; }
+ let d; try{ d=await api('/api/portal/saya'); }catch(e){ if(!wajibGanti) keMasuk(); return; }
  try{ byr.riwayat=(await api('/api/portal/konfirmasi')).konfirmasi||[]; }catch(e){ byr.riwayat=[]; }
  const dicek=new Set(byr.riwayat.filter(k=>k.status==='menunggu').flatMap(k=>k.periode.split(',')));
  tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;
