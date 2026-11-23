@@ -17,18 +17,20 @@ button{width:100%;margin-top:18px;border:0;border-radius:10px;padding:12px;backg
 button:disabled{opacity:.6;cursor:wait}
 .msg{min-height:18px;margin-top:12px;font-size:var(--fs-sm);font-weight:700;color:var(--red)}
 .note{font-size:var(--fs-xs);color:var(--muted);margin-top:14px;line-height:1.5}
+.pintuLain{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);font-size:var(--fs-sm);color:var(--muted);line-height:1.5}.pintuLain a{color:#067d40;font-weight:800}
 body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media(max-width:760px){input,select,textarea{font-size:16px!important}}
 </style></head><body>
 <form class="box" id="form" autocomplete="on">
- <div class="brand"><div class="mark">ID</div><div><b>Internet Desa</b><small>Monitoring &amp; manajemen pelanggan</small></div></div>
- <h1 id="judul">Masuk</h1><p class="lead" id="lead">Masukkan username dan password akun Anda.</p>
- <label for="u">Username</label><input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+ <div class="brand"><div class="mark">ID</div><div><b>Internet Desa</b><small>Pelanggan · petugas · teknisi · mitra · warung</small></div></div>
+ <h1 id="judul">Masuk</h1><p class="lead" id="lead">Satu pintu untuk semua akun. Anda otomatis dibawa ke halaman yang sesuai.</p>
+ <label for="u" id="uLbl">Nama login atau ID pelanggan</label><input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="mis. budi atau 463376-1-0001" required>
  <label for="p">Password</label><input id="p" name="password" type="password" autocomplete="current-password" required>
  <div id="ulangWrap" style="display:none"><label for="p2">Ulangi password</label><input id="p2" type="password" autocomplete="new-password"></div>
  <label class="lihat"><input type="checkbox" id="lihat"> Tampilkan password</label>
  <button id="tombol" type="submit">Masuk</button>
  <div class="msg" id="msg" role="alert"></div>
  <div class="note" id="note"></div>
+ <div class="pintuLain" id="pintuLain">Pelanggan yang belum punya akun? <a href="/portal#daftar">Daftar akun pelanggan</a> dengan nomor HP yang terdaftar saat pemasangan.</div>
 </form>
 <script>
 const $=id=>document.getElementById(id);
@@ -38,7 +40,7 @@ $('lihat').addEventListener('change',e=>{const t=e.target.checked?'text':'passwo
  try{
   const r=await fetch('/api/setup-status'); const d=await r.json();
   if(d.perlu_setup){
-   setup=true; $('judul').textContent='Buat akun admin pertama';
+   setup=true; $('judul').textContent='Buat akun admin pertama'; $('uLbl').textContent='Username'; $('u').placeholder=''; $('pintuLain').style.display='none';
    $('lead').textContent='Belum ada akun. Akun yang dibuat sekarang menjadi admin utama.';
    $('ulangWrap').style.display='block'; $('p').autocomplete='new-password'; $('tombol').textContent='Buat akun & masuk';
    $('note').textContent='Password minimal 8 karakter. Akun lain (kasir, teknisi, mitra) bisa ditambahkan nanti dari menu Pengaturan.';
@@ -56,7 +58,7 @@ $('form').addEventListener('submit',async e=>{
   const r=await fetch(setup?'/api/setup':'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(d.detail||('Gagal (HTTP '+r.status+')'));
-  location.replace('/');
+  location.replace(d.arah||'/');   // pelanggan -> /portal, petugas -> dashboard sesuai peran
  }catch(err){ $('msg').textContent=err.message; $('p').value=''; $('p').focus(); }
  finally{ $('tombol').disabled=false; }
 });
