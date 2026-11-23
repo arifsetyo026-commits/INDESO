@@ -88,11 +88,42 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .wf .kiri{display:flex;gap:10px;align-items:center;min-width:0}
 .bln{display:flex;gap:10px;align-items:center}.bln .tg{width:40px;height:40px;border-radius:12px;background:#f1f6f2;display:grid;place-items:center;font-size:var(--fs-2xs);font-weight:800;color:#4b6355;text-align:center;line-height:1.1;flex:none}
 @media(max-width:420px){.hero{flex-direction:column;align-items:stretch}.stat{max-width:none}}
+
+/* ---- desain baru: sambutan & status di kepala hijau, riwayat bayar 12 bulan, halaman masuk ---- */
+.kepalaUtama,.kepalaMasuk{margin-top:16px}
+.kepalaUtama small{display:block;color:#bfe3cb;font-size:var(--fs-xs);font-weight:600}
+.kepalaUtama .nm{display:block;font-size:26px;font-weight:900;letter-spacing:-.02em;line-height:1.15;margin-top:1px}
+.kepalaUtama .idp{display:block;color:#d4ecdc;font-size:var(--fs-xs);margin-top:3px}
+.statNet{display:flex;align-items:center;gap:10px;margin-top:12px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.14);border-radius:14px;padding:10px 12px}
+.statNet b{display:block;font-size:var(--fs-md)}.statNet small{display:block;color:#d4ecdc;font-size:var(--fs-xs);margin-top:1px}
+.statNet .dot{flex:none;width:12px;height:12px;border-radius:50%;background:#9fb3a7;box-shadow:0 0 0 4px rgba(255,255,255,.12)}
+.statNet .dot.on{background:#75dc2e;animation:denyut 2s infinite}.statNet .dot.off{background:#f97066}.statNet .dot.iso{background:#ffd27a}
+@keyframes denyut{0%{box-shadow:0 0 0 0 rgba(117,220,46,.6)}70%{box-shadow:0 0 0 9px rgba(117,220,46,0)}100%{box-shadow:0 0 0 0 rgba(117,220,46,0)}}
+.kepalaMasuk h2{margin:0;font-size:22px;letter-spacing:-.01em}
+.kepalaMasuk p{margin:4px 0 0;color:#d4ecdc;font-size:var(--fs-sm)}
+.fitur{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:14px}
+.fitur div{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.16);border-radius:12px;padding:8px 4px;text-align:center;font-size:var(--fs-2xs);font-weight:700;color:#e6f5ec}
+.fitur i{display:block;font-style:normal;font-size:18px;margin-bottom:2px}
+.auth .btn.go.lebar{width:100%;padding:13px;font-size:var(--fs-md);border-radius:12px}
+.jejak{margin:2px 0 14px;padding:12px;border-radius:14px;background:#f4f8f5}
+.jejak .ats{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:var(--fs-xs);color:#4b6355}
+.jejak .ats b{font-size:var(--fs-sm);color:var(--ink)}
+.kotak12{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-top:9px}
+.kotak12 span{height:22px;border-radius:6px;background:#e3ebe5}
+.kotak12 span.tepat{background:#16a34a}.kotak12 span.telat{background:#f2a80f}.kotak12 span.belum{background:#d92d20}.kotak12 span.cek{background:#9fb3a7}
+.kotak12x{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-top:3px}
+.kotak12x span{text-align:center;font-size:9px;color:#8a9b92}
+.lgd{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:var(--fs-2xs);color:#4b6355}
+.lgd i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:4px;vertical-align:-1px}
 </style><script src="/static/qrcode.js"></script></head><body>
 <div class="top"><div class="topIn">
  <div class="topRow"><div class="mark">ID</div><div class="judul"><b id="usaha">Internet Desa</b><small><span class="peran">Pelanggan</span><span id="akun">Masuk untuk melihat tagihan &amp; WiFi</span></small></div>
   <span id="tombolAkun" style="display:none;gap:8px"><button class="ib" onclick="tampil('pw')" aria-label="Ganti password" title="Ganti password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2M16 7l3 3M18.5 4.5l2 2"/></svg></button>
   <button class="ib" onclick="keluar()" aria-label="Keluar" title="Keluar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button></span></div>
+ <div class="kepalaUtama" id="kepalaUtama" style="display:none"><small id="hSapa">Selamat datang,</small><span class="nm" id="hNama">—</span><span class="idp" id="hId"></span>
+  <div class="statNet"><span class="dot" id="hDot"></span><div><b id="cNet">—</b><small id="cPaket"></small></div></div></div>
+ <div class="kepalaMasuk" id="kepalaMasuk" style="display:none"><h2>Portal Pelanggan</h2><p>Cek tagihan, bayar, dan atur WiFi rumah langsung dari HP.</p>
+  <div class="fitur"><div><i>💳</i>Bayar QRIS</div><div><i>🧾</i>Kwitansi</div><div><i>📶</i>Atur WiFi</div><div><i>🛠️</i>Lapor</div></div></div>
 </div></div>
 <div class="wrap">
  <div id="vAuth" class="auth" style="display:none"><div class="panel form">
@@ -100,7 +131,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <div id="fMasuk">
    <label>Nama login atau ID pelanggan</label><input id="mLogin" autocapitalize="off" autocomplete="username" placeholder="mis. 463376-1-0001">
    <label>Password</label><input id="mPw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')masuk()">
-   <div class="btns"><button class="btn go" onclick="masuk()">Masuk</button></div>
+   <div class="btns"><button class="btn go lebar" onclick="masuk()">Masuk</button></div>
    <div class="note" id="lupaPw">Lupa password? Hubungi admin untuk mengatur ulang.</div>
   </div>
   <div id="fDaftar" style="display:none">
@@ -110,17 +141,13 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <label>Buat nama login</label><input id="dLogin" autocapitalize="off" autocomplete="username" placeholder="3–32 huruf/angka">
    <label>Buat password</label><input id="dPw" type="password" autocomplete="new-password" placeholder="minimal 8 karakter">
    <label>Ulangi password</label><input id="dPw2" type="password" autocomplete="new-password">
-   <div class="btns"><button class="btn go" onclick="daftar()">Daftar</button></div>
+   <div class="btns"><button class="btn go lebar" onclick="daftar()">Daftar</button></div>
   </div>
   <div class="msg" id="aMsg"></div>
  </div></div>
 
  <div id="vUtama" style="display:none">
-  <div class="hero">
-   <div class="halo"><small>Selamat datang,</small><b id="hNama">—</b><span id="hId"></span></div>
-   <div class="stat"><span class="dot" id="hDot"></span><div><b id="cNet">—</b><small id="cPaket"></small></div></div>
-  </div>
-  <div class="tagHero" id="tagHero"><small id="tagJudul">Tagihan belum dibayar</small><strong id="cTagih">—</strong><span id="cTagihSub"></span><div id="bayar"></div></div>
+  <div class="tagHero" id="tagHero" style="margin-top:14px"><small id="tagJudul">Tagihan belum dibayar</small><strong id="cTagih">—</strong><span id="cTagihSub"></span><div id="bayar"></div></div>
   <div class="aksiGrid">
    <div class="aksi" onclick="keBagian('tagHero');if(byr.belum&&!byr.buka)bukaBayar()"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg></i>Bayar</div>
    <div class="aksi" onclick="keBagian('secRiwayat')"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg></i>Riwayat</div>
@@ -128,7 +155,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
    <div class="aksi" onclick="keBagian('secLapor')"><i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg></i>Lapor</div>
   </div>
   <div class="msg" id="msg"></div>
-  <div class="panel sec" id="secRiwayat"><h3>Riwayat tagihan</h3><div id="tagihan"><div class="muted">Memuat…</div></div><div class="note" id="infoBayar"></div></div>
+  <div class="panel sec" id="secRiwayat"><h3>Riwayat tagihan</h3><div id="jejak"></div><div id="tagihan"><div class="muted">Memuat…</div></div><div class="note" id="infoBayar"></div></div>
   <div class="panel sec form" id="secWifi"><h3>WiFi <span class="n" id="cPerangkat">—</span><span class="sub" id="cPerangkatSub" style="margin:0;font-weight:500"></span></h3><div id="wifi"><div class="muted">Memuat…</div></div><div class="msg" id="wMsg"></div>
    <div class="note">Sandi WiFi tidak bisa ditampilkan karena modem tidak mengirimkannya. Bila lupa, buat sandi baru di sini; semua HP perlu disambungkan ulang dengan sandi baru.</div></div>
   <div class="panel sec form" id="secLapor"><h3>Lapor gangguan</h3><div id="tiket"></div>
@@ -166,6 +193,7 @@ async function api(url,body){
 }
 function tampil(v){ $('vAuth').style.display=v==='auth'?'block':'none'; $('vUtama').style.display=v==='utama'?'block':'none';
  $('vPw').style.display=v==='pw'?'block':'none'; $('tombolAkun').style.display=v==='auth'?'none':'flex';
+ $('kepalaUtama').style.display=v==='utama'?'block':'none'; $('kepalaMasuk').style.display=v==='auth'?'block':'none';
  if(v==='auth') $('akun').textContent='Masuk untuk melihat tagihan & WiFi'; }
 function modeAuth(m){ $('fMasuk').style.display=m==='masuk'?'block':'none'; $('fDaftar').style.display=m==='daftar'?'block':'none';
  $('tMasuk').classList.toggle('on',m==='masuk'); $('tDaftar').classList.toggle('on',m==='daftar'); pesan('aMsg',''); }
@@ -231,6 +259,7 @@ async function muat(){
  const dicek=new Set(byr.riwayat.filter(k=>k.status==='menunggu').flatMap(k=>k.periode.split(',')));
  tampil('utama'); $('akun').textContent=d.nama+' · ID '+(d.id_pelanggan||d.username); if(d.usaha) $('usaha').textContent=d.usaha;
  const n=d.internet;
+ const jam=new Date().getHours(); $('hSapa').textContent=(jam<11?'Selamat pagi,':jam<15?'Selamat siang,':jam<18?'Selamat sore,':'Selamat malam,');
  $('hNama').textContent=d.nama||d.username; $('hId').textContent='ID '+(d.id_pelanggan||d.username)+(d.paket?' · '+d.paket+(d.kecepatan_mbps?' '+d.kecepatan_mbps+' Mbps':''):'');
  $('cNet').textContent=n.isolir?'Diisolir':!n.diketahui?'Status belum terbaca':n.online?'Internet online':'Internet offline';
  $('hDot').className='dot '+(n.isolir?'iso':!n.diketahui?'':n.online?'on':'off');
@@ -241,11 +270,34 @@ async function muat(){
  $('cTagih').textContent=tunggu.length?rp(tunggu.reduce((a,t)=>a+t.jumlah,0)):belum.length?rp(d.belum_bayar):'Lunas ✓';
  const tertua=tunggu.slice().sort((a,b)=>a.periode<b.periode?-1:1)[0];
  $('cTagihSub').textContent=tunggu.length?(tunggu.map(t=>namaP(t.periode)).join(', ')+(tertua?' · jatuh tempo '+tgl(tertua.jatuh_tempo):'')):belum.length?'Bukti bayar Anda sedang dicek admin.':'Terima kasih, semua tagihan sudah dibayar.';
- $('tagihan').innerHTML=d.tagihan.length?d.tagihan.map(t=>`<div class="row"><div class="info bln" style="cursor:default"><div class="tg">${esc(BLN[+t.periode.slice(5)-1].slice(0,3))}<br>${esc(t.periode.slice(2,4))}</div><div style="min-width:0"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':'')+` · <a href="/api/portal/kwitansi/${esc(t.periode)}" target="_blank" rel="noopener">Kwitansi</a>`:'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div></div>
-  <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':dicek.has(t.periode)?'<span class="chip off">Bukti sedang dicek</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`).join(''):'<div class="muted">Belum ada tagihan.</div>';
+ const baris=d.tagihan.map(t=>`<div class="row"><div class="info bln" style="cursor:default"><div class="tg">${esc(BLN[+t.periode.slice(5)-1].slice(0,3))}<br>${esc(t.periode.slice(2,4))}</div><div style="min-width:0"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':'')+` · <a href="/api/portal/kwitansi/${esc(t.periode)}" target="_blank" rel="noopener">Kwitansi</a>`:'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div></div>
+  <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':dicek.has(t.periode)?'<span class="chip off">Bukti sedang dicek</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`);
+ tagihanBaris=baris; tampilTagihan();
+ jejakBayar(d.tagihan,dicek);
  $('infoBayar').textContent=d.info_bayar?'Cara bayar lain: '+d.info_bayar:'';
  byr.belum=belum.filter(t=>!dicek.has(t.periode)).length; renderBayar();
  muatWifi(); muatTiket();
+}
+// Riwayat tagihan: 4 bulan terbaru dulu, sisanya lewat tombol (ringkasan 12 bulan ada di kotak warna di atasnya).
+let tagihanBaris=[], tagihanSemua=false;
+function tampilTagihan(){
+ const b=tagihanBaris; if(!b.length){ $('tagihan').innerHTML='<div class="muted">Belum ada tagihan.</div>'; return; }
+ const n=tagihanSemua?b.length:Math.min(4,b.length);
+ $('tagihan').innerHTML=b.slice(0,n).join('')+(b.length>4?`<div class="btns" style="justify-content:center"><button class="btn" onclick="tagihanSemua=!tagihanSemua;tampilTagihan()">${tagihanSemua?'Tampilkan lebih sedikit':'Tampilkan semua ('+b.length+' bulan)'}</button></div>`:'');
+}
+// Riwayat bayar 12 bulan terakhir: tepat waktu / terlambat (dibayar setelah jatuh tempo) / belum / sedang dicek.
+function jejakBayar(tag,dicek){
+ const per={}; tag.forEach(t=>per[t.periode]=t);
+ const kini=new Date(), bln=[]; for(let i=11;i>=0;i--){ const d=new Date(kini.getFullYear(),kini.getMonth()-i,1); bln.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')); }
+ let tepat=0, ada=0;
+ const kelas=bln.map(p=>{ const t=per[p]; if(!t) return ['','tidak ada tagihan'];
+  ada++; if(t.lunas){ const ok=!t.jatuh_tempo||!t.tgl_bayar||t.tgl_bayar.slice(0,10)<=t.jatuh_tempo; if(ok) tepat++; return [ok?'tepat':'telat',ok?'dibayar tepat waktu':'dibayar terlambat']; }
+  return dicek.has(p)?['cek','bukti sedang dicek']:['belum',t.terlambat?'belum dibayar, lewat jatuh tempo':'belum dibayar']; });
+ if(!ada){ $('jejak').innerHTML=''; return; }
+ $('jejak').innerHTML=`<div class="jejak"><div class="ats"><span>Riwayat bayar 12 bulan</span><b>${tepat} dari ${ada} bulan tepat waktu</b></div>
+  <div class="kotak12">${bln.map((p,i)=>`<span class="${kelas[i][0]}" title="${esc(namaP(p))}: ${esc(kelas[i][1])}" aria-label="${esc(namaP(p))}: ${esc(kelas[i][1])}"></span>`).join('')}</div>
+  <div class="kotak12x">${bln.map(p=>`<span>${esc(BLN[+p.slice(5)-1].slice(0,1))}</span>`).join('')}</div>
+  <div class="lgd"><span><i style="background:#16a34a"></i>Tepat waktu</span><span><i style="background:#f2a80f"></i>Terlambat</span><span><i style="background:#d92d20"></i>Belum bayar</span><span><i style="background:#e3ebe5"></i>Tidak ada tagihan</span></div></div>`;
 }
 async function muatWifi(){
  const el=$('wifi');
