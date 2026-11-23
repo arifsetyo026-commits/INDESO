@@ -1,0 +1,124 @@
+/* =====================================================================
+   TEMA INDESO untuk halaman hotspot (sama dengan halaman Masuk INDESO)
+   Ganti warna cukup di ":root" di bawah. Dipakai SEMUA halaman.
+   ===================================================================== */
+
+:root{
+  --hijau-tua:  #003c20;   /* gradasi latar (atas kiri)  */
+  --hijau:      #006f38;   /* gradasi latar (tengah)     */
+  --hijau-muda: #0a8a45;   /* gradasi latar (bawah kanan)*/
+  --tombol:     #067d40;   /* tombol & angka penting     */
+  --limau:      #75dc2e;   /* kotak logo "ID" & aksen    */
+  --teks:       #163528;
+  --redup:      #6e8177;
+  --garis:      #dce8df;
+  --lembut:     #f4f8f5;   /* latar kotak kecil di kartu */
+  --merah:      #b42318;
+  --font:'Inter',ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  font-family:var(--font);color:var(--teks);font-size:14px;line-height:1.5;
+  background:linear-gradient(160deg,var(--hijau-tua),var(--hijau) 55%,var(--hijau-muda));
+  min-height:100vh;padding:28px 16px 24px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  -webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;
+}
+a{color:var(--tombol)}
+
+/* ---------- Kartu putih ---------- */
+.kartu{
+  width:100%;max-width:380px;background:#fff;border-radius:18px;
+  box-shadow:0 24px 60px rgba(0,0,0,.25);padding:24px 22px;
+}
+.kartu + .kartu{margin-top:14px}
+
+/* ---------- Merek: kotak ID + nama ---------- */
+.merek{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.tanda{
+  width:44px;height:44px;border-radius:12px;background:var(--limau);flex:none;
+  display:grid;place-items:center;color:#06381f;font-weight:900;font-size:16px;overflow:hidden;
+}
+.tanda img{width:100%;height:100%}
+.merek b{font-size:16px;display:block}
+.merek small{display:block;color:var(--redup);font-size:12px;margin-top:1px}
+
+h1{font-size:19px;margin:0 0 4px;letter-spacing:-.01em}
+.lead{color:var(--redup);font-size:13px;margin:0 0 16px}
+.tengah{text-align:center}
+
+/* ---------- Formulir ---------- */
+label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin:0 0 6px}
+.kolom{
+  width:100%;border:1px solid var(--garis);border-radius:10px;padding:11px 12px;
+  font:inherit;font-size:16px;outline:none;color:var(--teks);margin-bottom:12px;background:#fff;
+}
+.kolom:focus{border-color:#07813f;box-shadow:0 0 0 3px rgba(7,129,63,.15)}
+.kolom.kode{
+  font-size:22px;font-weight:800;letter-spacing:.22em;text-align:center;padding:13px 12px;
+  text-transform:lowercase;
+}
+.kolom.kode::placeholder{color:#c2d0c7;letter-spacing:.22em}
+.tombol{
+  display:block;width:100%;border:0;border-radius:10px;padding:13px;margin-top:4px;
+  background:var(--tombol);color:#fff;font:inherit;font-size:15px;font-weight:800;
+  text-align:center;text-decoration:none;cursor:pointer;
+}
+.tombol:active{transform:scale(.99)}
+.tombol.keluar{background:#fff;color:var(--merah);border:1px solid #f1c4bf}
+.tautan{display:block;text-align:center;margin-top:12px;font-size:12px;font-weight:700;text-decoration:none}
+.galat{
+  display:flex;gap:8px;align-items:flex-start;background:#fdecea;color:var(--merah);
+  border-radius:10px;padding:10px 12px;font-size:13px;font-weight:700;margin-bottom:14px;
+}
+.sembunyi{display:none}
+
+/* ---------- Garis pemisah berjudul ---------- */
+.pemisah{display:flex;align-items:center;gap:10px;margin:20px 0 12px;color:var(--redup);
+  font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+.pemisah:before,.pemisah:after{content:"";flex:1;height:1px;background:var(--garis)}
+
+/* ---------- 3 langkah cara pakai ---------- */
+.langkah{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.langkah div{background:var(--lembut);border-radius:12px;padding:10px 6px}
+.langkah i{
+  display:grid;place-items:center;width:24px;height:24px;margin:0 auto 5px;border-radius:50%;
+  background:var(--tombol);color:#fff;font-style:normal;font-size:12px;font-weight:800;
+}
+.langkah span{display:block;font-size:11px;line-height:1.35;color:#4b6355;font-weight:600}
+
+/* ---------- Paket ---------- */
+.paket{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:10px 0;border-bottom:1px dashed var(--garis)}
+.paket:last-of-type{border-bottom:0}
+.paket b{display:block;font-size:14px}
+.paket small{color:var(--redup);font-size:12px}
+.harga{font-weight:800;color:var(--tombol);white-space:nowrap;background:#e9f7ee;
+  border-radius:999px;padding:4px 10px;font-size:13px}
+
+/* ---------- Status: angka besar & kotak data ---------- */
+.sisa{text-align:center;background:var(--lembut);border-radius:14px;padding:16px 10px;margin-bottom:12px}
+.sisa small{display:block;color:var(--redup);font-size:11px;font-weight:800;letter-spacing:.06em}
+.sisa b{display:block;font-size:32px;line-height:1.2;color:var(--tombol);margin-top:2px;letter-spacing:-.01em}
+.data{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+.data div{border:1px solid var(--garis);border-radius:12px;padding:9px 11px}
+.data small{display:block;color:var(--redup);font-size:11px;font-weight:700}
+.data b{display:block;font-size:14px;margin-top:1px;overflow-wrap:anywhere}
+
+/* ---------- Ikon bulat & hitung mundur ---------- */
+.ikon{width:60px;height:60px;margin:2px auto 14px;border-radius:50%;display:grid;place-items:center;
+  color:#fff;font-size:30px;font-weight:900;background:linear-gradient(145deg,#85e936,#1a9e4d);
+  box-shadow:0 0 0 8px #eafbe0}
+.ikon.merah{background:linear-gradient(145deg,#f97066,#b42318);box-shadow:0 0 0 8px #fdecea}
+.ikon.abu{background:linear-gradient(145deg,#9fb3a7,#5f7568);box-shadow:0 0 0 8px #eef3ef}
+.jalan{height:4px;border-radius:9px;background:var(--garis);overflow:hidden;margin:16px 0 4px}
+.jalan i{display:block;height:100%;width:100%;background:var(--limau);animation:jalan 3s linear forwards}
+@keyframes jalan{from{width:0}to{width:100%}}
+
+/* ---------- Teks di bawah kartu (di atas latar hijau) ---------- */
+.bawah{max-width:380px;width:100%;text-align:center;color:rgba(255,255,255,.85);font-size:12px;margin-top:16px}
+.bawah a{color:#fff;font-weight:800;text-decoration:none}
+.bawah .slogan{display:block;margin-top:6px;color:rgba(255,255,255,.6);font-size:11px;letter-spacing:.04em}
+.catatan{font-size:12px;color:var(--redup);text-align:center;margin:12px 0 0}

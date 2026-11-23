@@ -1,0 +1,18 @@
+# ERRORS.TXT : terjemahan pesan galat MikroTik (tampil lewat $(error)).
+# Format: nama-galat = pesan. Ubah teks di kanan tanda "=" sesuka Anda.
+
+internal-error = Terjadi kendala di sistem hotspot. Coba lagi sebentar.
+config-error = Hotspot belum disetel dengan benar. Hubungi pengelola.
+not-logged-in = Anda belum masuk. Masukkan kode voucher.
+ippool-empty = Alamat IP sedang penuh. Coba lagi beberapa saat lagi.
+shutting-down = Hotspot sedang dimatikan sebentar.
+user-session-limit = Voucher ini sedang dipakai di jumlah HP maksimal paketnya.
+license-session-limit = Pengguna hotspot sedang penuh. Coba lagi nanti.
+wrong-mac-username = Voucher ini sudah dipakai di HP lain. Satu voucher hanya untuk HP yang pertama memakainya.
+chap-missing = Browser tidak mendukung login aman. Muat ulang halaman lalu coba lagi.
+invalid-username = Kode voucher salah, tidak terdaftar, atau masa pakainya sudah habis.
+invalid-mac = Voucher ini sudah dipakai di HP lain. Satu voucher hanya untuk HP yang pertama memakainya.
+uptime-limit = Masa pakai voucher sudah habis. Silakan beli voucher baru.
+traffic-limit = Kuota voucher sudah habis. Silakan beli voucher baru.
+radius-timeout = Server login tidak menjawab. Coba lagi sebentar.
+auth-in-progress = Sedang memeriksa kode... tunggu sebentar.
