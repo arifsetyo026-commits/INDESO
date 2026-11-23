@@ -3698,6 +3698,7 @@ def test_hotspot_reseller_voucher(siap):
     assert ring["reseller"][0]["username"] == "warungtono" and ring["reseller"][0]["belum_setor"] == 1
     sk = o.get("/api/hotspot/skrip-pengaturan?lokasi=2").json()["skrip"]
     assert 'dns-name="hs.desa2"' in sk and "login-by=http-chap,http-pap,cookie,mac-cookie" in sk
+    assert "new-ttl=set:1" in sk and 'comment="INDESO: anti berbagi hotspot"' in sk   # voucher tidak bisa dibagi lewat tethering
     # kode voucher tidak pernah masuk log aktivitas
     assert j["kode"] not in o.get("/api/aktivitas").text
     # reseller yang masih memegang stok / uang voucher tidak bisa dihapus atau dipindah lokasi
