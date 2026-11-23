@@ -524,6 +524,12 @@ def hotspot_skrip_pengaturan(request: Request, lokasi: int = 1):
              "# Masuk dengan kode/QR; HP yang sama tersambung lagi otomatis (mac-cookie) selama masa pakai voucher.",
              ':do { /ip hotspot profile set [find name="hsprof1"] login-by=http-chap,http-pap,cookie,mac-cookie } '
              'on-error={ /ip hotspot profile set [find name="hsprof1"] login-by=http-chap,http-pap,cookie }',
+             "# Anti berbagi voucher lewat hotspot/tethering HP: paket ke pelanggan hotspot dikirim dengan TTL 1, jadi HP",
+             "# pembeli tetap internetan tetapi HP lain yang menumpang ke HP itu tidak bisa (TTL habis saat diteruskan).",
+             "# Hanya interface server hotspot ini; pelanggan PPPoE tidak terpengaruh. Aman ditempel ulang.",
+             ':if ([:len [/ip firewall mangle find comment="INDESO: anti berbagi hotspot"]] = 0) do={ '
+             '/ip firewall mangle add chain=postrouting out-interface=[/ip hotspot get [find profile="hsprof1"] interface] '
+             'action=change-ttl new-ttl=set:1 passthrough=yes comment="INDESO: anti berbagi hotspot" }',
              f"# Nama WiFi (SSID) terbuka tanpa sandi: {lok['ssid']}"]
     for p in paket:
         baris += _skrip_profil(p)
