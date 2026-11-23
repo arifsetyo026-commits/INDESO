@@ -1,4 +1,4 @@
-# ERRORS.TXT : terjemahan pesan galat MikroTik (tampil lewat $(error)).
+# ERRORS.TXT : terjemahan pesan galat MikroTik (tampil di kotak merah halaman login).
 # Format: nama-galat = pesan. Ubah teks di kanan tanda "=" sesuka Anda.
 
 internal-error = Terjadi kendala di sistem hotspot. Coba lagi sebentar.
