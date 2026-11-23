@@ -2298,7 +2298,7 @@ _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 _JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|static/banner\.jpg|api/login|api/setup|api/setup-status|healthz"
                            r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js"
                            r"|syarat-ketentuan|kebijakan-privasi|kebijakan-pengembalian-dana|api/portal/info"
-                           r"|hotspot/\d+/((login|alogin|status|logout|error)\.html|errors\.txt))$")
+                           r"|hotspot/\d+/((login|alogin|status|logout|error)\.html|errors\.txt)|masuk|petugas|pelanggan)$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
 # Reseller (warung) voucher hotspot: hanya halaman jual vouchernya sendiri.
 _JALUR_RESELLER = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/reseller/.*)$")
@@ -2591,6 +2591,18 @@ def _buat_sesi(username: str, request: Request) -> str:
 class LoginIn(BaseModel):
     username: str
     password: str
+
+
+@app.get("/masuk", include_in_schema=False)
+@app.get("/petugas", include_in_schema=False)
+def alamat_masuk_petugas():
+    """Alamat pendek yang mudah diingat teknisi/mitra/warung."""
+    return RedirectResponse("/login", status_code=302)
+
+
+@app.get("/pelanggan", include_in_schema=False)
+def alamat_masuk_pelanggan():
+    return RedirectResponse("/portal", status_code=302)
 
 
 @app.get("/login")
@@ -8032,6 +8044,13 @@ td.r,th.r{text-align:right;white-space:nowrap}.mut{color:var(--mut);font-size:13
 .btn{display:inline-block;background:var(--g);color:#fff;padding:10px 16px;border-radius:10px;text-decoration:none;font-weight:700;margin:4px 6px 0 0}
 .btn.o{background:#fff;color:var(--g);border:1px solid var(--g)}
 footer{border-top:1px solid var(--line);padding:18px 0 28px;font-size:13px;color:var(--mut)}footer a{margin-right:14px}
+nav a.masuk{background:#fff;color:var(--g);border:0;border-radius:999px;padding:2px 12px}
+.pintu{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pt{display:block;border:1px solid var(--line);border-radius:14px;padding:14px;text-decoration:none;color:var(--ink);background:#fbfdfb}
+.pt b{display:block;font-size:16px}.pt span{display:block;color:var(--mut);font-size:13px;margin:3px 0 10px;line-height:1.45}
+.pt i{display:inline-block;font-style:normal;font-weight:800;font-size:14px;background:var(--g);color:#fff;border-radius:10px;padding:8px 12px}
+.pt.sf i{background:#fff;color:var(--g);border:1px solid var(--g)}
+@media(max-width:560px){.pintu{grid-template-columns:1fr}}
 """
 
 
@@ -8070,11 +8089,11 @@ def _halaman_publik(judul: str, isi: str) -> str:
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{_e(judul)} · {usaha}</title>
 <meta name="description" content="{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}"><style>{_CSS_PUBLIK}</style></head><body>
 <header><div class="w"><h1>{usaha}</h1><p>{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}</p>
-<nav><a href="/">Beranda</a><a href="/portal">Portal Pelanggan</a><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a>
+<nav><a href="/">Beranda</a><a href="/portal">Portal Pelanggan</a><a class="masuk" href="/login">Masuk petugas</a><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a>
 <a href="/kebijakan-privasi">Kebijakan Privasi</a><a href="/kebijakan-pengembalian-dana">Pengembalian Dana</a></nav></div></header>
 <main><div class="w">{isi}</div></main>
 <footer><div class="w"><a href="/syarat-ketentuan">Syarat &amp; Ketentuan</a><a href="/kebijakan-privasi">Kebijakan Privasi</a>
-<a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a><a href="/login">Masuk petugas</a>
+<a href="/kebijakan-pengembalian-dana">Kebijakan Pengembalian Dana</a><a href="/portal">Masuk pelanggan</a><a href="/login">Masuk petugas · mitra · warung</a>
 <div style="margin-top:8px">© {tahun} {usaha}{(' · ' + _e(CONFIG['USAHA_PEMILIK'])) if CONFIG.get('USAHA_PEMILIK') else ''}</div></div></footer>
 </body></html>"""
 
@@ -8100,7 +8119,13 @@ def _halaman_beranda() -> str:
              if paket else "<p class=mut>Daftar paket sedang diperbarui. Hubungi kami untuk informasi harga.</p>")
     wa = _wa_link(CONFIG.get("USAHA_WA") or "")
     area = CONFIG.get("USAHA_AREA")
+    # Pintu masuk paling atas: pelanggan → Portal Pelanggan, petugas/teknisi/mitra/warung → halaman masuk staf.
+    # (Dulu hanya ada tautan kecil "Masuk petugas" di kaki halaman sehingga teknisi kesulitan menemukannya.)
     isi = f"""
+<section><h2>Masuk ke akun</h2><div class="pintu">
+<a class="pt" href="/portal"><b>Pelanggan internet</b><span>Cek tagihan, bayar QRIS, unduh kwitansi, atur WiFi rumah, lapor gangguan.</span><i>Masuk Portal Pelanggan →</i></a>
+<a class="pt sf" href="/login"><b>Petugas · Teknisi · Mitra · Warung</b><span>Dashboard, data pelanggan, tugas teknisi, komisi mitra, jual voucher hotspot.</span><i>Masuk petugas →</i></a>
+</div><p class=mut style="margin:10px 0 0">Alamat singkat: <b>/pelanggan</b> untuk pelanggan, <b>/masuk</b> untuk petugas.</p></section>
 <section><h2>Layanan kami</h2><p>{_e(CONFIG.get('USAHA_DESKRIPSI') or '')}</p>
 {f'<p>Area layanan: <b>{_e(area)}</b></p>' if area else ''}
 <p>{f'<a class=btn href="{_e(wa)}" rel="noopener">Tanya / daftar lewat WhatsApp</a>' if wa else ''}<a class="btn o" href="/portal">Portal Pelanggan</a></p></section>

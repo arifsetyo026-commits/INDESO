@@ -228,6 +228,15 @@ def test_halaman_dan_login(app):
     # tanpa login: beranda publik (bukan dashboard), dengan tautan masuk petugas
     assert c.get("/").status_code == 200 and 'href="/login"' in c.get("/").text and "Keuangan" not in c.get("/").text
     assert c.get("/login").status_code == 200
+    # pintu masuk mudah ditemukan: kotak "Masuk ke akun" paling atas (sebelum isi lain) + menu, alamat pendek, petunjuk silang
+    b = c.get("/").text
+    i_masuk, i_layanan = b.index("Masuk ke akun"), b.index("Layanan kami")
+    assert i_masuk < i_layanan and 'href="/portal"' in b[i_masuk:i_layanan] and 'href="/login"' in b[i_masuk:i_layanan]
+    assert 'class="masuk" href="/login"' in b
+    for pendek, tujuan in (("/masuk", "/login"), ("/petugas", "/login"), ("/pelanggan", "/portal")):
+        r = c.get(pendek)
+        assert r.status_code == 302 and r.headers["location"] == tujuan, pendek
+    assert 'href="/portal"' in c.get("/login").text and 'href="/login"' in c.get("/portal").text
     assert c.get("/api/status").status_code == 401
     assert c.get("/api/setup-status").json()["perlu_setup"] is True
     assert c.post("/api/setup", json={"username": "owner", "password": "pendek"}).status_code == 400
