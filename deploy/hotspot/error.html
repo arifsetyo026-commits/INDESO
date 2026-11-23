@@ -1,0 +1,28 @@
+<!doctype html>
+<!--
+  ERROR.HTML : tampil bila ada kendala hotspot (bukan salah kode).
+    $(error)  isi pesan galat (teksnya diatur di errors.txt)
+-->
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="pragma" content="no-cache">
+<meta http-equiv="expires" content="-1">
+<meta name="theme-color" content="#004f29">
+<title>Terjadi kendala — {{USAHA}}</title>
+<style>{{CSS}}</style>
+</head>
+<body>
+<div class="kartu tengah">
+  <div class="ikon merah">!</div>
+  <h1>Terjadi kendala</h1>
+  <p class="lead">$(error)</p>
+  <a class="tombol" href="$(link-login)">Coba lagi</a>
+</div>
+<div class="bawah">
+  {{KONTAK}}
+  <span class="slogan">{{USAHA}} · cepat · stabil · terjangkau</span>
+</div>
+</body>
+</html>

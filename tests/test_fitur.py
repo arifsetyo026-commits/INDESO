@@ -3727,8 +3727,9 @@ def test_hotspot_halaman_login(siap):
     assert "{{" not in t and "$(link-login-only)" in t and "$(chap-challenge)" in t and "$(if error)" in t
     assert "Harian &#36;(ip)" in t and "Rp" in t and "2.5 Mbps" in t and "2 HP" in t
     assert "Lama" not in t                                  # paket nonaktif tidak tampil
+    assert "<style>" in t and "--tombol" in t and "{{CSS}}" not in t    # gaya tertanam (MikroTik hanya mengunduh berkas .html)
     assert "https://wa.me/6281234567890" in t
-    for f in ("alogin.html", "status.html", "logout.html"):
+    for f in ("alogin.html", "status.html", "logout.html", "error.html", "errors.txt"):
         h = publik.get(f"/hotspot/1/{f}")
         assert h.status_code == 200 and "{{" not in h.text, f
     for jalur in ("/hotspot/1/md5.js", "/hotspot/1/..%2Fmain.py", "/hotspot/x/login.html"):

@@ -81,6 +81,10 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .av{flex:none;width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-weight:800;font-size:var(--fs-sm);background:#eef3ef;color:#5f7669}
 .av.ok{background:#dcf5e5;color:#0b7a3b}.av.warn{background:#fff1c9;color:#8a5a00}.av.bad{background:#fde4e1;color:#b42318}
 .row .kiri{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+/* Label status bisa panjang ("Lunas 15 Nov · komisi bulan depan"): jangan sampai mendesak kolom nama.
+   Di HP label pindah ke bawah nama, rata kiri sejajar teks; di layar lebar tetap di kanan. */
+.row .right{flex:0 1 auto;min-width:0}
+@media(max-width:620px){.row{flex-wrap:wrap;row-gap:6px}.row .kiri{flex:1 1 100%}.row .right{flex:1 1 100%;justify-content:flex-start;padding-left:48px}.row .right .chip{white-space:normal}}
 .wa{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;background:#e7f8ee;color:#1fa855;text-decoration:none}
 .wa svg{width:18px;height:18px}
 .cariBar{display:flex;gap:8px;align-items:center;margin-bottom:10px}

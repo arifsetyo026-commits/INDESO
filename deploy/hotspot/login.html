@@ -1,94 +1,133 @@
 <!doctype html>
+<!--
+  ==========================================================================
+  LOGIN.HTML : halaman pertama yang muncul saat HP tersambung ke WiFi hotspot
+  ==========================================================================
+  Tulisan berbentuk $(nama) adalah VARIABEL MIKROTIK, diganti MikroTik sebelum
+  halaman dikirim ke HP. JANGAN dihapus/diubah ejaannya.
+    $(link-login-only)  alamat tujuan formulir login
+    $(link-orig)        situs yang tadinya ingin dibuka pengguna
+    $(username)         nama pengguna terakhir (diisi ulang bila login gagal)
+    $(error)            pesan galat (teksnya diatur di errors.txt)
+    $(chap-id) $(chap-challenge)  bahan pengaman sandi (dipakai md5.js)
+  Blok $(if ...) ... $(endif) hanya tampil bila syaratnya terpenuhi.
+  ==========================================================================
+-->
 <html lang="id">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta http-equiv="pragma" content="no-cache">
 <meta http-equiv="expires" content="-1">
-<meta name="theme-color" content="#004a27">
-<title>{{USAHA}} · WiFi Hotspot</title>
-<style>
-:root{--g9:#003a20;--g7:#07813f;--lime:#75dc2e;--bg:#eef4ef;--ink:#163528;--muted:#6e8177;--line:#dce8df;--red:#b42318}
-*{box-sizing:border-box}html,body{margin:0}
-body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
-.atas{background:linear-gradient(115deg,#003a1f,#00632f 60%,#07813f);color:#fff;padding:22px 18px 64px;text-align:center}
-.mark{width:52px;height:52px;margin:0 auto 10px;border-radius:15px;background:var(--lime);display:grid;place-items:center;color:#06381f;font-weight:900;font-size:20px}
-.atas h1{margin:0;font-size:22px;letter-spacing:-.01em}
-.atas p{margin:4px 0 0;color:#cfe8d8;font-size:13px}
-.wifi{display:inline-block;margin-top:10px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:3px 12px;font-size:12px;font-weight:700}
-.isi{max-width:440px;margin:-46px auto 0;padding:0 16px 28px}
-.kartu{background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:0 6px 20px rgba(0,55,28,.10);padding:20px}
-.kartu h2{margin:0 0 4px;font-size:17px}
-.sub{color:var(--muted);font-size:13px;margin:0 0 14px}
-label{display:block;font-size:12px;font-weight:800;color:#4b6355;margin-bottom:6px}
-.kode{width:100%;border:2px solid var(--line);border-radius:12px;padding:14px;font-size:22px;font-weight:800;letter-spacing:.18em;text-align:center;text-transform:lowercase;outline:none;font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--ink)}
-.kode:focus{border-color:var(--g7)}
-.tombol{width:100%;margin-top:12px;border:0;border-radius:12px;padding:14px;background:#067d40;color:#fff;font-size:16px;font-weight:800;cursor:pointer}
-.tombol:active{transform:scale(.99)}
-.galat{background:#fde4e1;color:var(--red);border-radius:10px;padding:10px 12px;font-size:13px;font-weight:700;margin-bottom:12px}
-.catatan{font-size:12px;color:var(--muted);margin-top:12px;text-align:center}
-.paket{margin-top:16px}
-.paket h3{font-size:14px;margin:0 0 8px}
-.pk{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:8px;background:#fbfdfb}
-.pk b{display:block;font-size:14px}.pk small{color:var(--muted);font-size:12px}
-.harga{font-weight:900;color:#067d40;white-space:nowrap;font-size:15px}
-.beli{font-size:12px;color:var(--muted);text-align:center;margin:6px 0 0}
-.kontak{margin-top:16px;text-align:center;font-size:13px;color:var(--muted)}
-.kontak a{color:#067d40;font-weight:800;text-decoration:none}
-.kaki{text-align:center;font-size:11px;color:#8a9b92;margin-top:18px}
-</style>
+<meta name="theme-color" content="#004f29">
+<title>Masuk WiFi — {{USAHA}}</title>
+<style>{{CSS}}</style>
 </head>
 <body>
+
 $(if chap-id)
-<form name="sendin" action="$(link-login-only)" method="post" style="display:none">
-<input type="hidden" name="username">
-<input type="hidden" name="password">
-<input type="hidden" name="dst" value="$(link-orig)">
-<input type="hidden" name="popup" value="true">
+<!-- Formulir tersembunyi untuk CHAP: sandi dikirim sudah teracak (aman) -->
+<form name="sendin" action="$(link-login-only)" method="post" class="sembunyi">
+  <input type="hidden" name="username">
+  <input type="hidden" name="password">
+  <input type="hidden" name="dst" value="$(link-orig)">
+  <input type="hidden" name="popup" value="true">
 </form>
 <script src="md5.js"></script>
 $(endif)
-<div class="atas">
-  <div class="mark">ID</div>
-  <h1>{{USAHA}}</h1>
-  <p>WiFi Hotspot · {{LOKASI}}</p>
-  <span class="wifi">Internet cepat dengan voucher</span>
-</div>
-<div class="isi">
-  <div class="kartu">
-    <h2>Masukkan kode voucher</h2>
-    <p class="sub">Kode tertulis di kartu voucher yang Anda beli. Atau pindai QR di kartu itu.</p>
-    $(if error)<div class="galat">$(error)</div>$(endif)
-    <form name="login" action="$(link-login-only)" method="post" onsubmit="return masuk()">
-      <input type="hidden" name="dst" value="$(link-orig)">
-      <input type="hidden" name="popup" value="true">
-      <input type="hidden" name="username" value="$(username)">
-      <input type="hidden" name="password">
-      <label for="kode">Kode voucher</label>
-      <input class="kode" id="kode" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false"
-             placeholder="abcd2345" value="$(username)" required autofocus>
-      <button class="tombol" type="submit">Masuk</button>
-    </form>
-    <p class="catatan">Masa pakai dihitung sejak pertama masuk. Selama masa pakai, HP Anda tersambung lagi otomatis tanpa memasukkan kode.</p>
+
+<div class="kartu">
+  <!-- MEREK: ganti nama & slogan. Logo gambar: <div class="tanda"><img src="img/logo.svg" alt=""></div> -->
+  <div class="merek">
+    <div class="tanda">ID</div>
+    <div><b>{{USAHA}}</b><small>WiFi Hotspot · {{LOKASI}}</small></div>
   </div>
+
+  <h1 id="judul">Masuk ke WiFi</h1>
+  <p class="lead" id="lead">Ketik kode voucher dari warung, atau pindai QR di HP penjual.</p>
+
+  $(if error)<div class="galat">⚠ <span>$(error)</span></div>$(endif)
+
+  <form name="login" action="$(link-login-only)" method="post" onsubmit="return masuk()">
+    <input type="hidden" name="dst" value="$(link-orig)">
+    <input type="hidden" name="popup" value="true">
+    <input type="hidden" name="username">
+    <input type="hidden" name="password">
+
+    <!-- Mode VOUCHER: satu kolom (kode = username = password) -->
+    <div id="modeVoucher">
+      <label for="kode">Kode voucher</label>
+      <input class="kolom kode" id="kode" type="text" autocomplete="off" autocapitalize="off"
+             spellcheck="false" maxlength="32" placeholder="••••••••" value="$(username)">
+    </div>
+
+    <!-- Mode MEMBER: username & sandi berbeda (muncul setelah tautan di bawah diklik) -->
+    <div id="modeMember" class="sembunyi">
+      <label for="nama">Nama pengguna</label>
+      <input class="kolom" id="nama" type="text" autocomplete="username" autocapitalize="off" value="$(username)">
+      <label for="sandi">Kata sandi</label>
+      <input class="kolom" id="sandi" type="password" autocomplete="current-password">
+    </div>
+
+    <button class="tombol" type="submit">Masuk</button>
+  </form>
+  <a class="tautan" href="#" id="tautanMode" onclick="return gantiMode()">Punya akun member? Masuk dengan sandi</a>
+
+  <!-- CARA PAKAI: 3 langkah singkat -->
+  <div class="pemisah">Cara pakai</div>
+  <div class="langkah">
+    <div><i>1</i><span>Beli voucher di warung terdekat</span></div>
+    <div><i>2</i><span>Pindai QR di HP penjual atau ketik kodenya</span></div>
+    <div><i>3</i><span>Internetan; sambung ulang otomatis</span></div>
+  </div>
+
   {{PAKET}}
-  {{KONTAK}}
-  <div class="kaki">© {{USAHA}} · dikelola dengan INDESO</div>
 </div>
+
+<div class="bawah">
+  {{KONTAK}}
+  <span class="slogan">{{USAHA}} · cepat · stabil · terjangkau</span>
+</div>
+
 <script>
-function masuk(){
-  var k=document.getElementById('kode').value.replace(/\s+/g,'').toLowerCase();
-  if(!k) return false;
-  var f=document.login;
-  f.username.value=k; f.password.value=k;
+// Cara kerja tombol Masuk (biasanya tidak perlu diubah)
+var member = false;
+
+function gantiMode() {
+  member = !member;
+  document.getElementById('modeVoucher').className = member ? 'sembunyi' : '';
+  document.getElementById('modeMember').className  = member ? '' : 'sembunyi';
+  document.getElementById('lead').innerHTML = member
+      ? 'Masukkan nama pengguna dan kata sandi akun member Anda.'
+      : 'Ketik kode voucher dari warung, atau pindai QR di HP penjual.';
+  document.getElementById('tautanMode').innerHTML = member
+      ? 'Pakai kode voucher' : 'Punya akun member? Masuk dengan sandi';
+  return false;
+}
+
+function masuk() {
+  var nama, sandi;
+  if (member) {
+    nama  = document.getElementById('nama').value.replace(/^\s+|\s+$/g, '');
+    sandi = document.getElementById('sandi').value;
+  } else {
+    // voucher: buang spasi, jadikan huruf kecil (kode voucher INDESO huruf kecil)
+    nama  = document.getElementById('kode').value.replace(/\s+/g, '').toLowerCase();
+    sandi = nama;
+  }
+  if (!nama) return false;
+
   $(if chap-id)
-  if(window.hexMD5){
-    document.sendin.username.value=k;
-    document.sendin.password.value=hexMD5('$(chap-id)'+k+'$(chap-challenge)');
+  if (window.hexMD5) {   // CHAP: kirim sandi teracak, bukan sandi asli
+    document.sendin.username.value = nama;
+    document.sendin.password.value = hexMD5('$(chap-id)' + sandi + '$(chap-challenge)');
     document.sendin.submit();
     return false;
   }
   $(endif)
+
+  document.login.username.value = nama;   // tanpa CHAP (PAP)
+  document.login.password.value = sandi;
   return true;
 }
 </script>

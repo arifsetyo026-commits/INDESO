@@ -2298,7 +2298,7 @@ _PERAN_PENUH = ("owner", "admin")     # akses seluruh dashboard
 _JALUR_PUBLIK = re.compile(r"^/(login|favicon\.ico|static/inter\.woff2|static/banner\.jpg|api/login|api/setup|api/setup-status|healthz"
                            r"|portal|api/portal/login|api/portal/daftar|static/qrcode\.js"
                            r"|syarat-ketentuan|kebijakan-privasi|kebijakan-pengembalian-dana|api/portal/info"
-                           r"|hotspot/\d+/(login|alogin|status|logout)\.html)$")
+                           r"|hotspot/\d+/((login|alogin|status|logout|error)\.html|errors\.txt))$")
 _JALUR_MITRA = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/mitra/.*)$")
 # Reseller (warung) voucher hotspot: hanya halaman jual vouchernya sendiri.
 _JALUR_RESELLER = re.compile(r"^/(|api/me|api/logout|api/akun/saya/password|api/reseller/.*)$")

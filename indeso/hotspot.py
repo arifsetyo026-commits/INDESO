@@ -536,7 +536,7 @@ def hotspot_skrip_pengaturan(request: Request, lokasi: int = 1):
 # --- Halaman login hotspot (disajikan INDESO, diunduh MikroTik ke folder html-directory) -------------------------
 
 _FOLDER_HALAMAN = Path(__file__).resolve().parent.parent / "deploy" / "hotspot"
-_HALAMAN_HS = ("login.html", "alogin.html", "status.html", "logout.html")
+_HALAMAN_HS = ("login.html", "alogin.html", "status.html", "logout.html", "error.html", "errors.txt")
 
 
 def _url_dasar(request: Request) -> str:
@@ -566,12 +566,11 @@ def _angka(x) -> str:
 def _html_paket(paket) -> str:
     if not paket:
         return ""
-    kartu = "".join(
-        f'<div class="pk"><div><b>{_aman(p["nama"])}</b><small>{_aman(_teks_durasi(p["menit"]))} · '
+    baris = "".join(
+        f'<div class="paket"><div><b>{_aman(p["nama"])}</b><small>{_aman(_teks_durasi(p["menit"]))} · '
         f'{_aman(_angka(p["mbps"]))} Mbps · {int(p["perangkat"])} HP</small></div>'
-        f'<div class="harga">{_aman(_rp(p["harga"]))}</div></div>' for p in paket)
-    return (f'<div class="kartu paket"><h3>Paket voucher</h3>{kartu}'
-            '<p class="beli">Voucher dijual di warung/agen terdekat.</p></div>')
+        f'<span class="harga">{_aman(_rp(p["harga"]))}</span></div>' for p in paket)
+    return f'<div class="pemisah">Paket voucher</div>{baris}'
 
 
 def _html_kontak() -> str:
@@ -579,8 +578,7 @@ def _html_kontak() -> str:
     link = inti._wa_link(wa)
     if not link:
         return ""
-    return (f'<div class="kontak">Butuh bantuan atau ingin jadi agen voucher?<br>'
-            f'<a href="{_aman(link)}">WhatsApp {_aman(wa)}</a></div>')
+    return f'Butuh bantuan atau ingin jadi agen voucher?<br><a href="{_aman(link)}">WhatsApp {_aman(wa)}</a>'
 
 
 @router.get("/hotspot/{lokasi}/{berkas}")
@@ -595,13 +593,15 @@ def hotspot_halaman(lokasi: int, berkas: str):
         paket = conn.execute("SELECT * FROM hs_paket WHERE lokasi = ? AND aktif = 1 ORDER BY menit, harga",
                              (lokasi,)).fetchall()
     isi = (_FOLDER_HALAMAN / berkas).read_text(encoding="utf-8")
-    ganti = {"{{USAHA}}": _aman(inti.CONFIG.get("NAMA_USAHA") or "Internet Desa"),
+    ganti = {"{{CSS}}": (_FOLDER_HALAMAN / "gaya.css").read_text(encoding="utf-8"),
+             "{{USAHA}}": _aman(inti.CONFIG.get("NAMA_USAHA") or "Internet Desa"),
              "{{LOKASI}}": _aman(lok["nama"]),
              "{{PAKET}}": _html_paket(paket),
              "{{KONTAK}}": _html_kontak()}
     for k, v in ganti.items():
         isi = isi.replace(k, v)
-    return Response(content=isi, media_type="text/html; charset=utf-8",
+    jenis = "text/plain; charset=utf-8" if berkas.endswith(".txt") else "text/html; charset=utf-8"
+    return Response(content=isi, media_type=jenis,
                     headers={"Cache-Control": "no-store"})
 
 
