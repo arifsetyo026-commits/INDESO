@@ -2944,7 +2944,7 @@ def siapkan_database() -> None:
         # Hanya struktur tabel; data awal fitur (bulan mulai kas wilayah, kategori Hotspot) tetap dibuat saat fiturnya
         # pertama kali dipakai, seperti sebelumnya.
         for f in (_siapkan_gudang, _siapkan_kunci_komisi, _skema_kas_wilayah, _siapkan_material, _skema_hotspot,
-                  _siapkan_qris):
+                  _siapkan_qris, _skema_pemasangan):
             f(conn)
     _siapkan_tabel_isolir()
 
@@ -13667,6 +13667,12 @@ app.include_router(_router_hotspot)
 from indeso.wilayah import router as _router_wilayah  # noqa: E402
 from indeso.wilayah import _lokasi_wilayah, _pelanggan_wilayah, TambahWilayahIn  # noqa: E402,F401
 app.include_router(_router_wilayah)
+
+
+# Pemasangan (provisioning): catatan pasang + material per pelanggan — indeso/pemasangan.py.
+from indeso.pemasangan import router as _router_pemasangan  # noqa: E402
+from indeso.pemasangan import _skema_pemasangan  # noqa: E402,F401
+app.include_router(_router_pemasangan)
 
 
 if __name__ == "__main__":

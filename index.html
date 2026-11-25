@@ -191,6 +191,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <a href="#" onclick="openAlertEvent();return false"><span class="ico">♧</span>Peringatan &amp; Log <span id="alertBadge" class="badge">0</span></a>
    <a href="#" onclick="openHotspot();return false"><span class="ico">⌔</span>Hotspot</a>
    <a href="#" onclick="openTiket();return false"><span class="ico">⚒</span>Tiket Gangguan <span id="tiketBadge" class="badge" style="display:none">0</span></a>
+   <a href="#" onclick="openPemasangan();return false"><span class="ico">✎</span>Pemasangan</a>
    <a href="#" onclick="openGudang();return false"><span class="ico">▤</span>Warehouse <span id="gudangBadge" class="badge" style="display:none" title="barang menipis">0</span></a>
   <a href="#" onclick="scrollToSection('history');return false"><span class="ico">◷</span>Riwayat</a>
   <a href="#" onclick="openKesehatan();return false"><span class="ico">✚</span>Kesehatan Jaringan</a>
@@ -474,6 +475,14 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 <div class="blFilters gdTabs"><button data-v="stok" class="on" onclick="gdTab('stok')">Stok</button><button data-v="pakai" onclick="gdTab('pakai')">Pakai untuk pelanggan</button><button data-v="minta" onclick="gdTab('minta')">Permintaan wilayah <span id="gdMintaN" class="badge" style="display:none">0</span></button><button data-v="riwayat" onclick="gdTab('riwayat')">Riwayat</button><button data-v="baru" onclick="gdTab('baru')">+ Barang baru</button></div>
 <div class="plMsg" id="gdMsg"></div>
 <div id="gdIsi"><div class="muted">Memuat…</div></div>
+</div></div></div>
+<div class="overlay" id="pemasanganModal"><div class="modal"><div class="modalHead"><h3>Pemasangan</h3><button class="close" onclick="closeModal('pemasanganModal')">Tutup</button></div><div class="modalBody">
+<div class="plSub" style="margin-bottom:8px">Catatan setiap pemasangan: teknisi, ODP, ONU, biaya pasang, dan material yang dipakai. Stok warehouse langsung berkurang, harga material dibekukan saat dicatat, dan setiap catatan dikabarkan ke grup Telegram. Catatan yang salah hanya bisa <b>dibatalkan owner</b> dengan alasan.</div>
+<div class="blNav" style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><button class="btnS" onclick="psGeser(-1)">‹</button><b id="psPeriode" style="flex:1;text-align:center">—</b><button class="btnS" onclick="psGeser(1)">›</button></div>
+<div class="khSum" id="psSum"></div>
+<div class="blFilters psTabs"><button data-v="daftar" class="on" onclick="psTab('daftar')">Daftar pemasangan</button><button data-v="catat" onclick="psTab('catat')">+ Catat pemasangan</button><button data-v="rekap" onclick="psTab('rekap')">Rekap material</button></div>
+<div class="plMsg" id="psMsg"></div>
+<div id="psIsi"><div class="muted">Memuat…</div></div>
 </div></div></div>
 <div class="overlay" id="wifiKhModal"><div class="modal"><div class="modalHead"><h3>Kesehatan WiFi</h3><button class="close" onclick="closeModal('wifiKhModal')">Tutup</button></div><div class="modalBody">
 <div class="khSum"><div class="blBox khBtn" onclick="wk.filter='kritis';renderWifiKh()"><small>Kritis</small><b id="wkKritis" style="color:#b42318">—</b></div><div class="blBox khBtn" onclick="wk.filter='perhatian';renderWifiKh()"><small>Perlu perhatian</small><b id="wkPerhatian" style="color:#b45309">—</b></div><div class="blBox khBtn" onclick="wk.filter='sehat';renderWifiKh()"><small>Sehat</small><b id="wkSehat" style="color:#0b7a3b">—</b></div></div>
@@ -1500,7 +1509,7 @@ async function simpanPasangBaru(){
   const t=[ 'Pelanggan '+body.nama+' ('+d.username+', ID '+d.id_pelanggan+') tersimpan' ];
   if(d.tagihan) t.push('tagihan '+namaPeriode(d.tagihan.periode)+' '+rp(d.tagihan.jumlah)+(d.tagihan.catatan?' ('+d.tagihan.catatan+')':''));
   if(d.jumlah_tagihan>1) t.push('ditambah '+(d.jumlah_tagihan-1)+' tagihan bulan berikutnya s/d bulan ini');
-  $('plListMsg').style.color='#0b7a3b'; $('plListMsg').textContent=t.join(' · ')+'.';
+  $('plListMsg').style.color='#0b7a3b'; $('plListMsg').innerHTML=esc(t.join(' · ')+'.')+` <a href="#" onclick="openPemasangan('${esc(d.username)}');return false"><b>Catat pemasangan &amp; material →</b></a>`;
  }catch(e){ msg.textContent='Gagal: '+e.message; }
  finally{ b.disabled=false; b.textContent='Simpan pelanggan baru'; }
 }
@@ -3443,7 +3452,7 @@ function gdRender(){
   const q=gd.cari.toLowerCase(), list=d.barang.filter(b=>(gd.filter==='nonaktif'?!b.aktif:b.aktif)&&(gd.filter!=='menipis'||b.menipis)&&(!q||(b.nama+' '+(b.kategori||'')).toLowerCase().includes(q)));
   el.innerHTML=`<div class="search"><input id="gdCari" placeholder="Cari barang…" value="${esc(gd.cari)}" oninput="gd.cari=this.value;gdRender();$('gdCari').focus();$('gdCari').setSelectionRange(99,99)"></div>
    <div class="blFilters">${[['semua','Semua'],['menipis','Menipis'],['nonaktif','Nonaktif']].map(([v,t])=>`<button class="${gd.filter===v?'on':''}" onclick="gd.filter='${v}';gdRender()">${t}</button>`).join('')}</div>`
-   +(list.map(b=>`<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div class="plName">${esc(b.nama)}</div><div class="plSub">${esc(b.kategori||'tanpa kategori')}${b.stok_min?' · minimum '+gdAngka(b.stok_min)+' '+esc(b.satuan):''}${b.terakhir?' · terakhir '+esc(khWaktu(b.terakhir)):''}</div></div>
+   +(list.map(b=>`<div class="blRow" style="display:block"><div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0"><div class="plName">${esc(b.nama)}</div><div class="plSub">${esc(b.kategori||'tanpa kategori')}${b.harga?' · <b>'+rp(b.harga)+'</b>/'+esc(b.satuan):' · <i>harga belum diisi</i>'}${b.stok_min?' · minimum '+gdAngka(b.stok_min)+' '+esc(b.satuan):''}${b.terakhir?' · terakhir '+esc(khWaktu(b.terakhir)):''}</div></div>
      <div style="text-align:right;flex:none"><div class="blAmt" style="color:${b.menipis?'#b42318':b.stok<=0?'#8a5a00':'inherit'}">${gdAngka(b.stok)} <span class="plSub">${esc(b.satuan)}</span></div>${b.menipis?'<span class="chip bad">Menipis</span>':''}</div></div>
      <div class="blAksi" style="justify-content:flex-start">${b.aktif?`<button class="btnS go" onclick="gdBukaForm(${b.id},'masuk')">+ Masuk</button><button class="btnS" onclick="gdBukaForm(${b.id},'keluar')">− Pakai</button><button class="btnS" onclick="gdBukaForm(${b.id},'opname')">Hitung fisik</button>`:''}<button class="btnS" onclick="gdBukaForm(${b.id},'ubah')">✎ Ubah</button><button class="btnS" onclick="gdRiwayatBarang(${b.id})">Riwayat</button></div>
      <div id="gdF${b.id}">${gd.form&&gd.form.id===b.id?gdHtmlForm(b,gd.form.jenis):''}</div></div>`).join('')
@@ -3483,6 +3492,7 @@ function gdRender(){
    <label>Kategori <span class="plSub">(opsional)</span></label><input id="gbKat" maxlength="40" list="gbKatL" placeholder="mis. ONU, Kabel, Aksesoris"><datalist id="gbKatL">${[...new Set(d.barang.map(b=>b.kategori).filter(Boolean))].map(k=>`<option value="${esc(k)}">`).join('')}</datalist>
    <label>Stok sekarang</label><input id="gbAwal" type="number" min="0" step="any" inputmode="decimal" value="0">
    <label>Stok minimum <span class="plSub">(di bawah ini ditandai menipis & dikabarkan lewat Telegram; 0 = tidak dipantau)</span></label><input id="gbMin" type="number" min="0" step="any" inputmode="decimal" value="0">
+   ${d.peran==='owner'?'<label>Harga per satuan (Rp) <span class="plSub">(untuk menghitung biaya pemasangan; hanya owner)</span></label><input id="gbHarga" type="number" min="0" step="any" inputmode="numeric" value="0">':''}
    <div class="plBtns"><button class="plSave" onclick="gdSimpanBarang(this)">Simpan barang</button></div></div>`;
  }
 }
@@ -3502,7 +3512,7 @@ function gdRiwayatBarang(id){ gd.riwayatId=id; gdTab('riwayat'); }
 function gdBukaForm(id,jenis){ gd.form=(gd.form&&gd.form.id===id&&gd.form.jenis===jenis)?null:{id,jenis}; gdPesan(''); gdRender(); if(gd.form){ const i=document.querySelector('#gdF'+id+' input'); if(i) i.focus(); } }
 function gdHtmlForm(b,jenis){
  const hari=new Date().toLocaleDateString('sv-SE');
- if(jenis==='ubah') return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><label>Nama</label><input id="guNama" value="${esc(b.nama)}" maxlength="80"><label>Satuan</label><input id="guSatuan" value="${esc(b.satuan)}" maxlength="20"><label>Kategori</label><input id="guKat" value="${esc(b.kategori||'')}" maxlength="40"><label>Stok minimum</label><input id="guMin" type="number" min="0" step="any" value="${b.stok_min}"><label class="plCek"><input type="checkbox" id="guAktif" ${b.aktif?'checked':''}> Masih dipakai (hilangkan centang untuk menyembunyikan barang ini)</label><div class="plBtns"><button class="plSave" onclick="gdSimpanUbah(${b.id},this)">Simpan</button><button class="plCancel" onclick="gdBukaForm(${b.id},'ubah')">Batal</button></div></div>`;
+ if(jenis==='ubah') return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><label>Nama</label><input id="guNama" value="${esc(b.nama)}" maxlength="80"><label>Satuan</label><input id="guSatuan" value="${esc(b.satuan)}" maxlength="20"><label>Kategori</label><input id="guKat" value="${esc(b.kategori||'')}" maxlength="40"><label>Stok minimum</label><input id="guMin" type="number" min="0" step="any" value="${b.stok_min}">${gd.data.peran==='owner'?`<label>Harga per ${esc(b.satuan)} (Rp) <span class="plSub">(untuk menghitung biaya pemasangan; hanya owner)</span></label><input id="guHarga" type="number" min="0" step="any" inputmode="numeric" value="${b.harga||0}">`:''}<label class="plCek"><input type="checkbox" id="guAktif" ${b.aktif?'checked':''}> Masih dipakai (hilangkan centang untuk menyembunyikan barang ini)</label><div class="plBtns"><button class="plSave" onclick="gdSimpanUbah(${b.id},this)">Simpan</button><button class="plCancel" onclick="gdBukaForm(${b.id},'ubah')">Batal</button></div></div>`;
  if(jenis==='opname') return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><div class="plSub">Hitung barangnya di gudang, lalu isi jumlah sebenarnya. Selisih dengan catatan (${gdAngka(b.stok)} ${esc(b.satuan)}) dicatat sebagai koreksi.</div><label>Jumlah hasil hitung (${esc(b.satuan)})</label><input id="goFisik" type="number" min="0" step="any" inputmode="decimal" value="${b.stok}"><label>Keterangan</label><input id="goKet" maxlength="150"><div class="plBtns"><button class="plSave" onclick="gdSimpanOpname(${b.id},this)">Simpan hasil hitung</button><button class="plCancel" onclick="gdBukaForm(${b.id},'opname')">Batal</button></div></div>`;
  const masuk=jenis==='masuk';
  return `<div class="plForm" style="margin-top:8px;border-top:1px solid var(--line);padding-top:6px"><label>Jumlah ${masuk?'masuk':'dipakai'} (${esc(b.satuan)})${masuk?'':' · sisa '+gdAngka(b.stok)}</label><input id="gmJml" type="number" min="0" step="any" inputmode="decimal">
@@ -3530,13 +3540,13 @@ function gdSimpanOpname(id,btn){
 }
 async function gdSimpanUbah(id,btn){
  btn.disabled=true;
- try{ await jsonAtauError(await fetch('/api/gudang/barang/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nama:$('guNama').value.trim(),satuan:$('guSatuan').value.trim(),kategori:$('guKat').value.trim()||null,stok_min:Number($('guMin').value||0),aktif:$('guAktif').checked})}));
+ try{ await jsonAtauError(await fetch('/api/gudang/barang/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({nama:$('guNama').value.trim(),satuan:$('guSatuan').value.trim(),kategori:$('guKat').value.trim()||null,stok_min:Number($('guMin').value||0),aktif:$('guAktif').checked,harga:$('guHarga')?Number($('guHarga').value||0):null})}));
   gd.form=null; await gdMuatData(); gdRender(); gdPesan('✅ Barang diperbarui.',true); }
  catch(e){ gdPesan('Gagal: '+e.message); btn.disabled=false; }
 }
 function gdSimpanBarang(btn){
  const nama=$('gbNama').value.trim(); if(nama.length<2){ gdPesan('Isi nama barang.'); return; }
- gdKirim('/api/gudang/barang',{nama,satuan:$('gbSatuan').value.trim()||'pcs',kategori:$('gbKat').value.trim()||null,stok_awal:Number($('gbAwal').value||0),stok_min:Number($('gbMin').value||0)},btn,'✅ Barang '+nama+' ditambahkan.');
+ gdKirim('/api/gudang/barang',{nama,satuan:$('gbSatuan').value.trim()||'pcs',kategori:$('gbKat').value.trim()||null,stok_awal:Number($('gbAwal').value||0),stok_min:Number($('gbMin').value||0),harga:$('gbHarga')?Number($('gbHarga').value||0):null},btn,'✅ Barang '+nama+' ditambahkan.');
 }
 function gdTambahBaris(){
  const aktif=gd.data.barang.filter(b=>b.aktif), d=document.createElement('div'); d.className='gdBrs'; d.style.cssText='display:flex;gap:6px;margin-bottom:6px';
@@ -3554,6 +3564,86 @@ async function gdBatal(id){
  const alasan=prompt('Alasan membatalkan catatan ini?'); if(!alasan) return;
  try{ await jsonAtauError(await fetch('/api/gudang/mutasi/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan})})); await gdMuatData(); gdRender(); gdPesan('✅ Catatan dibatalkan, stok disesuaikan.',true); }
  catch(e){ gdPesan('Gagal: '+e.message); }
+}
+// ===== Pemasangan (provisioning): catatan pasang + material per pelanggan =====
+const ps={periode:new Date().toISOString().slice(0,7),tab:'daftar',data:null,user:null};
+async function openPemasangan(user){ $('pemasanganModal').classList.add('show'); psPesan(''); ps.user=user||null; ps.periode=new Date().toLocaleDateString('sv-SE').slice(0,7);
+ await psMuat(); psTab(user?'catat':'daftar'); }
+function psPesan(t,ok){ const m=$('psMsg'); m.style.color=ok?'#0b7a3b':'#b42318'; m.textContent=t||''; }
+async function psMuat(){ $('psPeriode').textContent=namaPeriode(ps.periode);
+ try{ ps.data=await jsonAtauError(await fetch('/api/pemasangan?periode='+ps.periode,{cache:'no-store'})); }
+ catch(e){ $('psIsi').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; return; }
+ const r=ps.data.ringkasan;
+ $('psSum').innerHTML=`<div class="blBox"><small>Pemasangan</small><b>${r.jumlah}</b></div><div class="blBox"><small>Biaya material</small><b>${rp(r.biaya_material)}</b></div><div class="blBox"><small>Rata-rata / pasang</small><b>${rp(r.rata_rata)}</b></div><div class="blBox"><small>Biaya pasang diterima</small><b>${rp(r.biaya_pasang)}</b></div>`; }
+async function psGeser(n){ ps.periode=geserPeriode(ps.periode,n); await psMuat(); psRender(); }
+function psTab(t){ ps.tab=t; document.querySelectorAll('.psTabs button').forEach(b=>b.classList.toggle('on',b.dataset.v===t)); psRender(); }
+function psRender(){
+ const d=ps.data, el=$('psIsi'); if(!d) return;
+ if(ps.tab==='daftar'){
+  el.innerHTML=d.pemasangan.length?d.pemasangan.map(s=>{ const batal=s.status!=='aktif';
+   return `<div class="blRow" style="display:block${batal?';opacity:.55':''}"><div style="display:flex;justify-content:space-between;gap:10px"><div style="min-width:0">
+    <div class="plName">#${s.id} · ${esc(s.nama_pelanggan||s.username)} <span class="plSub">(${esc(s.username)})</span>${batal?' <span class="chip bad">Dibatalkan</span>':''}</div>
+    <div class="plSub">${esc(tglPendek(s.tanggal))} · teknisi <b>${esc(s.teknisi)}</b>${s.odp?' · '+esc(s.odp):''}${s.onu?' · ONU '+esc(s.onu):''}</div></div>
+    <div style="text-align:right;flex:none"><div class="blAmt">${rp(s.biaya_material)}</div><div class="plSub">material${s.biaya_pasang?' · pasang '+rp(s.biaya_pasang):''}</div></div></div>
+    <div style="margin-top:6px;font-size:var(--fs-sm)">${s.material.map(m=>`• ${esc(m.nama)}: <b>${gdAngka(m.jumlah)}</b> ${esc(m.satuan)} ${m.harga_satuan?`<span class="plSub">× ${rp(m.harga_satuan)} = ${rp(m.subtotal)}</span>`:'<span class="plSub" style="color:#b45309">(harga belum diisi)</span>'}`).join('<br>')}</div>
+    <div class="plSub" style="margin-top:4px">Dicatat ${esc(s.oleh)} · ${esc((s.dicatat_pada||'').slice(0,16))}${s.catatan?' · '+esc(s.catatan):''}${batal?' · dibatalkan '+esc(s.batal_oleh||'')+': '+esc(s.batal_alasan||''):''}</div>
+    ${!batal&&d.peran==='owner'?`<div class="blAksi" style="justify-content:flex-start"><button class="btnS" onclick="psBatal(${s.id})">Batalkan</button></div>`:''}</div>`; }).join('')
+   :`<div class="muted">Belum ada pemasangan di ${esc(namaPeriode(d.periode))}. Catat lewat <b>+ Catat pemasangan</b>.</div>`;
+ } else if(ps.tab==='rekap'){
+  const L=d.ringkasan.per_barang;
+  el.innerHTML=L.length?`<div class="plSub" style="margin-bottom:6px">Material terpakai untuk pemasangan ${esc(namaPeriode(d.periode))} (yang dibatalkan tidak dihitung).</div>`
+   +L.map(x=>`<div class="blRow"><div><div class="plName">${esc(x.nama)}</div><div class="plSub">${gdAngka(x.jumlah)} ${esc(x.satuan)}</div></div><div class="blAmt">${rp(x.biaya)}</div></div>`).join('')
+   +`<div class="blRow" style="border-top:2px solid var(--line)"><div class="plName">Total</div><div class="blAmt">${rp(d.ringkasan.biaya_material)}</div></div>`
+   :'<div class="muted">Belum ada material terpakai bulan ini.</div>';
+ } else {
+  const pel=d.pelanggan.slice().sort((a,b)=>(a.sudah_dicatat-b.sudah_dicatat)), hari=new Date().toLocaleDateString('sv-SE');
+  const teknisi=[...new Set(d.pemasangan.map(s=>s.teknisi))];
+  el.innerHTML=`<div class="plForm">
+   <label>Pelanggan</label><select id="psUser"><option value="">— pilih pelanggan —</option>${pel.map(p=>`<option value="${esc(p.username)}"${p.username===ps.user?' selected':''}>${esc(p.nama||p.username)} (${esc(p.username)})${p.sudah_dicatat?' · sudah pernah dicatat':''}</option>`).join('')}</select>
+   <label>Tanggal pasang</label><input id="psTgl" type="date" value="${hari}" max="${hari}">
+   <label>Teknisi yang memasang</label><input id="psTek" maxlength="80" list="psTekL" placeholder="mis. Arif, Budi"><datalist id="psTekL">${teknisi.map(t=>`<option value="${esc(t)}">`).join('')}</datalist>
+   <label>ODP / tiang <span class="plSub">(opsional)</span></label><input id="psOdp" maxlength="60" placeholder="mis. ODP-03 port 5">
+   <label>ONU <span class="plSub">(opsional: merek / SN)</span></label><input id="psOnu" maxlength="60" placeholder="mis. ZTE F609 ZTEG1234ABCD">
+   <label>Biaya pasang dibayar pelanggan (Rp) <span class="plSub">(0 bila gratis)</span></label><input id="psBiaya" type="number" min="0" step="1000" inputmode="numeric" value="0">
+   <label>Material yang dipakai</label><div id="psBaris"></div><button type="button" class="btnS" onclick="psTambahBaris()">+ Tambah material</button>
+   <div class="kuPanel" id="psTotal" style="margin:10px 0;background:#f7faf8"></div>
+   <label>Catatan <span class="plSub">(opsional)</span></label><input id="psCat" maxlength="300" placeholder="mis. tarik kabel dari tiang depan masjid">
+   <div class="plBtns"><button class="plSave" onclick="psSimpan(this)">Simpan pemasangan</button></div></div>`;
+  ['','',''].forEach(()=>psTambahBaris()); psHitung();
+  if(!d.barang.length) psPesan('Warehouse masih kosong: tambahkan barang (dan harganya) di menu Warehouse dulu.');
+ }
+}
+function psTambahBaris(){
+ const d=document.createElement('div'); d.className='psBrs'; d.style.cssText='display:flex;gap:6px;margin-bottom:6px;align-items:center';
+ d.innerHTML=`<select class="psId" style="flex:1;min-width:0" onchange="psHitung()"><option value="">— pilih barang —</option>${ps.data.barang.map(b=>`<option value="${b.id}">${esc(b.nama)} · sisa ${gdAngka(b.stok)} ${esc(b.satuan)}${b.harga?' · '+rp(b.harga):''}</option>`).join('')}</select><input class="psJml" type="number" min="0" step="any" inputmode="decimal" placeholder="jumlah" style="width:90px" oninput="psHitung()"><span class="psSub plSub" style="width:84px;text-align:right"></span>`;
+ $('psBaris').appendChild(d);
+}
+function psItem(){ return [...document.querySelectorAll('#psBaris .psBrs')].map(r=>({barang_id:Number(r.querySelector('.psId').value),jumlah:Number(r.querySelector('.psJml').value),el:r})).filter(x=>x.barang_id&&x.jumlah>0); }
+function psHitung(){
+ let total=0, tanpa=0;
+ document.querySelectorAll('#psBaris .psBrs').forEach(r=>{ const b=ps.data.barang.find(x=>x.id===Number(r.querySelector('.psId').value)), j=Number(r.querySelector('.psJml').value)||0;
+  const sub=b&&j?Math.round(j*(b.harga||0)):0; total+=sub; if(b&&j&&!b.harga) tanpa++;
+  r.querySelector('.psSub').innerHTML=b&&j?(b.harga?rp(sub):'<span style="color:#b45309">tanpa harga</span>')+(j>b.stok?'<br><b style="color:#b42318">stok kurang</b>':''):''; });
+ const biaya=Number(($('psBiaya')||{}).value||0);
+ $('psTotal').innerHTML=`<b>Total material ${rp(total)}</b>${tanpa?`<div class="plSub" style="color:#b45309">${tanpa} barang belum punya harga (diisi owner di Warehouse → Ubah).</div>`:''}<div class="plSub">Stok warehouse langsung berkurang saat disimpan.</div>`;
+}
+async function psSimpan(btn){
+ const item=psItem().map(({barang_id,jumlah})=>({barang_id,jumlah})), body={username:$('psUser').value,tanggal:$('psTgl').value,teknisi:$('psTek').value.trim(),
+  odp:$('psOdp').value.trim()||null,onu:$('psOnu').value.trim()||null,biaya_pasang:Number($('psBiaya').value||0),catatan:$('psCat').value.trim()||null,item};
+ if(!body.username){ psPesan('Pilih pelanggannya.'); return; } if(body.teknisi.length<2){ psPesan('Isi nama teknisi yang memasang.'); return; }
+ if(!item.length){ psPesan('Isi material yang dipakai.'); return; }
+ const p=ps.data.pelanggan.find(x=>x.username===body.username);
+ if(p&&p.sudah_dicatat&&!confirm((p.nama||p.username)+' sudah pernah dicatat pemasangannya. Catat lagi (mis. pindah rumah / pasang ulang)?')) return;
+ btn.disabled=true;
+ try{ const r=await jsonAtauError(await fetch('/api/pemasangan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));
+  ps.user=null; ps.periode=body.tanggal.slice(0,7); await psMuat(); psTab('daftar'); psPesan('✅ Pemasangan #'+r.id+' tercatat: material '+rp(r.biaya_material)+'. Sudah dikabarkan ke grup Telegram.',true); }
+ catch(e){ psPesan('Gagal: '+e.message); btn.disabled=false; }
+}
+async function psBatal(id){
+ const alasan=prompt('Batalkan pemasangan #'+id+'? Semua materialnya dikembalikan ke stok.\n\nTuliskan alasannya (dicatat & dikabarkan ke grup):'); if(!alasan||!alasan.trim()) return;
+ try{ await jsonAtauError(await fetch('/api/pemasangan/'+id+'/batal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alasan:alasan.trim()})}));
+  await psMuat(); psRender(); psPesan('Pemasangan #'+id+' dibatalkan, material kembali ke stok.',true); }
+ catch(e){ psPesan('Gagal: '+e.message); }
 }
 // Lencana "menipis" di menu Warehouse (dicek berkala, ringan).
 async function gdCekBadge(){ try{ const v=await jsonAtauError(await fetch('/api/gudang/versi',{cache:'no-store'})); gd.mintaN=v.permintaan||0; gdBadge(v.menipis); }catch(e){} }

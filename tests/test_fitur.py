@@ -4580,3 +4580,51 @@ def test_pelanggan_akses_point(siap):
     # Ubah cara tersambung tercatat di aktivitas
     assert o.put("/api/data-pelanggan/ap.wati", json={"nama": "Wati", "paket_id": 1, "koneksi": "pppoe"}).status_code == 200
     assert "cara tersambung Akses point → PPPoE" in o.get("/api/aktivitas").text
+
+
+def test_pemasangan_material(siap):
+    """Pemasangan: teknisi, ODP, ONU, biaya pasang & material per pelanggan. Stok berkurang sekaligus, harga per satuan
+    dibekukan saat dicatat (harga naik kemudian tidak mengubah catatan lama), dikabarkan ke Telegram. Tidak bisa diubah
+    diam-diam: hanya owner yang membatalkan (dengan alasan) dan stok kembali; material pemasangan tidak bisa dibatalkan
+    satu per satu dari warehouse. Harga barang hanya bisa diatur owner."""
+    main, o, k, m = siap
+    kab = o.post("/api/gudang/barang", json={"nama": "Dropcore", "satuan": "meter", "stok_awal": 500, "harga": 1200}).json()["id"]
+    onu = o.post("/api/gudang/barang", json={"nama": "ONU F609", "satuan": "unit", "stok_awal": 3, "harga": 185000}).json()["id"]
+    klem = k.post("/api/gudang/barang", json={"nama": "Klem", "stok_awal": 100}).json()["id"]      # admin: tanpa harga
+    assert k.post("/api/gudang/barang", json={"nama": "Patchcord", "harga": 15000}).status_code == 403   # harga: owner
+    assert k.put(f"/api/gudang/barang/{klem}", json={"nama": "Klem", "harga": 500}).status_code == 403
+    assert k.put(f"/api/gudang/barang/{klem}", json={"nama": "Klem", "stok_min": 10}).status_code == 200  # ubah lain boleh
+    assert o.put(f"/api/gudang/barang/{klem}", json={"nama": "Klem", "stok_min": 10, "harga": 500}).status_code == 200
+    assert m.get("/api/pemasangan").status_code == 403
+    isi = {"username": "budi", "teknisi": "Arif", "odp": "ODP-03", "onu": "ZTEG1234ABCD", "biaya_pasang": 250000,
+           "item": [{"barang_id": kab, "jumlah": 80}, {"barang_id": onu, "jumlah": 1}, {"barang_id": klem, "jumlah": 6}]}
+    assert k.post("/api/pemasangan", json=dict(isi, teknisi="")).status_code == 400
+    assert k.post("/api/pemasangan", json=dict(isi, item=[])).status_code == 400
+    assert k.post("/api/pemasangan", json=dict(isi, username="tidakada")).status_code == 404
+    # stok kurang: tidak ada yang tercatat sama sekali
+    r = k.post("/api/pemasangan", json=dict(isi, item=[{"barang_id": kab, "jumlah": 10}, {"barang_id": onu, "jumlah": 9}]))
+    assert r.status_code == 409
+    d0 = o.get("/api/pemasangan").json()
+    assert d0["pemasangan"] == [] and next(b for b in d0["barang"] if b["id"] == kab)["stok"] == 500
+    r = k.post("/api/pemasangan", json=isi).json()
+    assert r["biaya_material"] == 80 * 1200 + 185000 + 6 * 500
+    assert "Pemasangan #" in str(main._terkirim[-1]["data"]) and "Dropcore" in str(main._terkirim[-1]["data"])
+    # harga naik kemudian: catatan lama tetap memakai harga saat dipasang
+    o.put(f"/api/gudang/barang/{kab}", json={"nama": "Dropcore", "satuan": "meter", "harga": 2000})
+    d = o.get("/api/pemasangan").json()
+    s = d["pemasangan"][0]
+    assert s["teknisi"] == "Arif" and s["odp"] == "ODP-03" and s["biaya_pasang"] == 250000 and s["oleh"] == "kasir"
+    assert s["biaya_material"] == 284000 and s["material"][0]["harga_satuan"] == 1200
+    assert d["ringkasan"]["jumlah"] == 1 and d["ringkasan"]["biaya_material"] == 284000 and d["ringkasan"]["biaya_pasang"] == 250000
+    assert next(b for b in d["barang"] if b["id"] == kab)["stok"] == 420
+    assert next(p for p in d["pelanggan"] if p["username"] == "budi")["sudah_dicatat"] is True
+    # tidak bisa dibatalkan per barang dari warehouse, dan admin tidak bisa membatalkan pemasangan
+    mid = next(x["id"] for x in o.get("/api/gudang").json()["mutasi"] if x.get("pemasangan_id") == s["id"])
+    assert o.post(f"/api/gudang/mutasi/{mid}/batal", json={"alasan": "salah"}).status_code == 409
+    assert k.post(f"/api/pemasangan/{s['id']}/batal", json={"alasan": "salah input"}).status_code == 403
+    assert o.post(f"/api/pemasangan/{s['id']}/batal", json={"alasan": ""}).status_code == 400
+    assert o.post(f"/api/pemasangan/{s['id']}/batal", json={"alasan": "salah pelanggan"}).status_code == 200
+    d2 = o.get("/api/pemasangan").json()
+    assert d2["pemasangan"][0]["status"] == "batal" and d2["ringkasan"]["jumlah"] == 0 and d2["ringkasan"]["dibatalkan"] == 1
+    assert next(b for b in d2["barang"] if b["id"] == kab)["stok"] == 500 and "dibatalkan" in str(main._terkirim[-1]["data"])
+    assert o.post(f"/api/pemasangan/{s['id']}/batal", json={"alasan": "lagi"}).status_code == 404
