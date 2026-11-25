@@ -34,7 +34,8 @@ Backup ada di `/var/lib/indeso/backup` (`billing-TANGGAL.db`, `riwayat-TANGGAL.d
 | | `portal_akun`, `portal_sesi` | Akun & sesi Portal Pelanggan |
 | | `aktivitas` | Catatan siapa melakukan apa dan kapan (audit) |
 | Operasional | `tiket`, `tiket_log` | Tiket gangguan dan riwayat penanganannya |
-| | `gudang_barang`, `gudang_mutasi` | Barang gudang; stok dihitung dari riwayat keluar-masuk |
+| | `gudang_barang`, `gudang_mutasi` | Barang gudang (dengan harga per satuan, diatur owner); stok dihitung dari riwayat keluar-masuk. `gudang_mutasi.harga_satuan` = harga yang dibekukan saat dipakai, `pemasangan_id` = bagian dari satu pemasangan |
+| | `pemasangan` | Catatan pemasangan pelanggan: tanggal, teknisi, ODP, ONU, biaya pasang, siapa yang mencatat; dibatalkan owner dengan alasan (materialnya ikut kembali ke stok) |
 | | `material_minta`, `material_minta_item` | Permintaan material dari admin wilayah |
 | Hotspot | `hs_paket`, `hs_batch`, `hs_voucher`, `hs_setoran` | Paket voucher, cetakan, voucher, setoran reseller |
 | Sistem | `pengaturan` | Pengaturan yang diubah dari dashboard |
