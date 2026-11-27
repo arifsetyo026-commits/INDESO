@@ -549,6 +549,7 @@ def test_alert_dan_event(siap):
     main.proses_event([onu(1, user="budi"), onu(2)], None)
     main.proses_event([onu(1, online=False), onu(2, status="CRITICAL")], None)
     main.proses_event([], "[ConnectionError] timeout")
+    main.proses_event([], "[ConnectionError] timeout")      # OLT baru dianggap tidak merespons setelah 2 siklus
     ev = o.get("/api/event?jam=24").json()
     judul = {e["judul"] for e in ev["event"]}
     assert {"Interface link down", "ONU offline", "Redaman kritis", "OLT tidak merespons SNMP",
@@ -4628,3 +4629,25 @@ def test_pemasangan_material(siap):
     assert d2["pemasangan"][0]["status"] == "batal" and d2["ringkasan"]["jumlah"] == 0 and d2["ringkasan"]["dibatalkan"] == 1
     assert next(b for b in d2["barang"] if b["id"] == kab)["stok"] == 500 and "dibatalkan" in str(main._terkirim[-1]["data"])
     assert o.post(f"/api/pemasangan/{s['id']}/batal", json={"alasan": "lagi"}).status_code == 404
+
+
+def test_peringatan_olt_snmp_tidak_palsu(siap):
+    """OLT yang telat menjawab SNMP satu siklus lalu pulih tidak memicu peringatan. Diam 2 siklus berturut-turut:
+    satu peringatan (tidak berulang selama masih diam), dan saat pulih ada kabar 'OLT merespons kembali' dengan lama
+    gangguannya. Keduanya ke Telegram."""
+    main, o, k, m = siap
+    main.CONFIG["EVENT_TELEGRAM_KRITIS"] = True
+    onu = main.ONUStatus(pon="0/0/1", onu_id=1, snmp_index=1, olt_rx_dbm=-20.0, online=True, status="OK")
+    kirim = lambda: [x for x in main._terkirim if "OLT" in str(x["data"].get("text", ""))]
+    main.proses_event([onu], None)
+    main._terkirim.clear()
+    main.proses_event([], None)              # satu siklus telat
+    main.proses_event([onu], None)           # pulih: tidak ada kabar apa pun
+    assert kirim() == []
+    main.proses_event([], None)
+    main.proses_event([], None)              # dua siklus berturut-turut: peringatan
+    main.proses_event([], None)              # masih diam: tidak berulang
+    assert len(kirim()) == 1 and "tidak merespons" in kirim()[0]["data"]["text"]
+    main.proses_event([onu], None)
+    k2 = kirim()
+    assert len(k2) == 2 and "merespons kembali" in k2[1]["data"]["text"] and "menit" in k2[1]["data"]["text"]

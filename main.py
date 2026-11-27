@@ -1279,20 +1279,39 @@ def _db(v) -> str:
 # Kondisi terakhir tiap ONU, untuk mendeteksi perubahan antar siklus
 _onu_kondisi: dict[tuple[str, int], dict] = {}
 _olt_pertama = True
-_olt_online_lalu: Optional[bool] = None
 _mikrotik_online_lalu: Optional[bool] = None
+# OLT kadang telat menjawab SNMP satu siklus (sibuk saat telnet/save, paket UDP hilang di terowongan) lalu pulih sendiri.
+# Supaya tidak ada peringatan palsu, "OLT tidak merespons" baru dibuat setelah _OLT_GAGAL_BERUNTUN siklus berturut-turut
+# tanpa jawaban; saat pulih setelah peringatan itu, kabar "OLT merespons kembali" (dengan lama gangguan) ikut dikirim.
+_OLT_GAGAL_BERUNTUN = 2
+_olt_gagal = 0                              # siklus berturut-turut tanpa jawaban SNMP
+_olt_mati_sejak: Optional[datetime] = None  # siklus pertama yang gagal
+_olt_dikabarkan = False                     # peringatan "OLT tidak merespons" sudah dibuat
 
 
 def deteksi_event_perangkat(onu_list: list[ONUStatus], mikrotik_error: Optional[str]) -> list[dict]:
     """Bandingkan kondisi sekarang dengan siklus sebelumnya -> event perubahan."""
-    global _olt_pertama, _olt_online_lalu, _mikrotik_online_lalu
+    global _olt_pertama, _mikrotik_online_lalu, _olt_gagal, _olt_mati_sejak, _olt_dikabarkan
     hasil = []
     olt_online = len(onu_list) > 0
-    if _olt_online_lalu is not None and olt_online != _olt_online_lalu:
-        hasil.append(_ev("olt", "kritis" if not olt_online else "info", "olt",
-                         "OLT tidak merespons SNMP" if not olt_online else "OLT merespons kembali",
-                         f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}"))
-    _olt_online_lalu = olt_online
+    alamat_olt, sekarang = f"{CONFIG['OLT_HOST']}:{CONFIG['OLT_SNMP_PORT']}", datetime.now()
+    if olt_online:
+        if _olt_dikabarkan and _olt_mati_sejak:
+            menit = max(1, round((sekarang - _olt_mati_sejak).total_seconds() / 60))
+            e = _ev("olt", "info", "olt", "OLT merespons kembali",
+                    f"{alamat_olt} · tidak menjawab ±{menit} menit (sejak {_olt_mati_sejak.strftime('%H:%M')})")
+            e["kabarkan"] = True     # pasangan peringatan yang sudah terkirim: ikut dikabarkan ke Telegram
+            hasil.append(e)
+        _olt_gagal, _olt_mati_sejak, _olt_dikabarkan = 0, None, False
+    else:
+        _olt_gagal += 1
+        _olt_mati_sejak = _olt_mati_sejak or sekarang
+        if _olt_gagal >= _OLT_GAGAL_BERUNTUN and not _olt_dikabarkan:
+            hasil.append(_ev("olt", "kritis", "olt", "OLT tidak merespons SNMP",
+                             f"{alamat_olt} · tidak menjawab {_olt_gagal} siklus berturut-turut sejak "
+                             f"{_olt_mati_sejak.strftime('%H:%M')}. Cek listrik OLT, kabel/SFP ke MikroTik, dan "
+                             "terowongan VPS–MikroTik."))
+            _olt_dikabarkan = True
     mik_online = mikrotik_error is None
     if _mikrotik_online_lalu is not None and mik_online != _mikrotik_online_lalu:
         hasil.append(_ev("sistem", "kritis" if not mik_online else "info", "mikrotik",
@@ -1352,7 +1371,7 @@ def kirim_event_penting(baru: list[dict], dari_log_awal: bool = False) -> None:
     sekarang = datetime.now()
     for e in baru:
         diteruskan = e["sumber"] in ("mikrotik", "sistem") or e["kategori"] == "olt"
-        if e["tingkat"] != "kritis" or not diteruskan:
+        if not diteruskan or (e["tingkat"] != "kritis" and not e.get("kabarkan")):
             continue
         try:
             if sekarang - datetime.strptime(e["waktu"], "%Y-%m-%d %H:%M:%S") > timedelta(minutes=15):
@@ -1360,10 +1379,13 @@ def kirim_event_penting(baru: list[dict], dari_log_awal: bool = False) -> None:
         except ValueError:
             pass
         jenis = e["judul"]
-        if sekarang - _event_telegram_terakhir.get(jenis, datetime.min) < timedelta(minutes=30):
+        # Status OLT sudah disaring di deteksi_event_perangkat (peringatan sekali per gangguan + kabar pulih), jadi
+        # tidak dibatasi 30 menit; supaya kabar pulih selalu punya pasangan peringatannya.
+        if e["kategori"] != "olt" and sekarang - _event_telegram_terakhir.get(jenis, datetime.min) < timedelta(minutes=30):
             continue
         _event_telegram_terakhir[jenis] = sekarang
-        send_telegram_message(f"🚨 <b>{_esc(e['judul'])}</b>\n{_esc(e['detail'] or '')}\nWaktu: {e['waktu'][11:16]}")
+        ikon = "✅" if e["tingkat"] != "kritis" else "🚨"
+        send_telegram_message(f"{ikon} <b>{_esc(e['judul'])}</b>\n{_esc(e['detail'] or '')}\nWaktu: {e['waktu'][11:16]}")
 
 
 def proses_event(onu_list: list[ONUStatus], mikrotik_error: Optional[str]) -> None:
