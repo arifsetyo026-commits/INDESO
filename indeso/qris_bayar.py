@@ -117,7 +117,10 @@ def portal_bayar(request: Request, periode: Optional[str] = None):
         q = _qris_aktif(conn)
         tg = [t for t in _tagihan_belum(conn, u, periode) if t["id"] not in _tagihan_menunggu(conn, u)]
     if not q:
-        return {"tersedia": False, "pesan": "Pembayaran QRIS dari portal belum tersedia. " + inti.CONFIG["INFO_BAYAR"]}
+        # Tanpa QRIS pelanggan tetap bisa membayar dengan cara lain (INFO_BAYAR) lalu mengirim bukti bayar dari portal.
+        return {"tersedia": False, "pesan": "Pembayaran QRIS dari portal belum tersedia. " + inti.CONFIG["INFO_BAYAR"],
+                "jumlah": sum(t["jumlah"] for t in tg),
+                "tagihan": [{"periode": t["periode"], "jumlah": t["jumlah"]} for t in tg]}
     if not tg:
         return {"tersedia": True, "tagihan": [], "jumlah": 0, "pesan": "Tidak ada tagihan yang perlu dibayar."}
     jumlah = sum(t["jumlah"] for t in tg)

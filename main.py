@@ -8415,10 +8415,14 @@ def portal_saya(request: Request):
     u = request.state.portal["pelanggan"]
     _siapkan_tabel_isolir()
     with db() as conn:
-        p = conn.execute(f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.nama, p.alamat, k.nama AS paket, k.kecepatan_mbps FROM pelanggan p "
-                         "LEFT JOIN paket k ON k.id = p.paket_id WHERE p.username = ?", (u,)).fetchone()
+        p = conn.execute(f"SELECT p.username, {_SQL_ID} AS id_pelanggan, p.nama, p.alamat, p.status, k.nama AS paket, "
+                         "k.kecepatan_mbps FROM pelanggan p LEFT JOIN paket k ON k.id = p.paket_id WHERE p.username = ?",
+                         (u,)).fetchone()
+        # 12 bulan terakhir + SEMUA yang belum lunas (walau lebih lama), supaya total belum dibayar sama dengan
+        # jumlah yang ditagihkan QRIS / bukti bayar (keduanya mengambil semua tagihan belum lunas).
         tagihan = conn.execute("SELECT periode, jumlah, status, jatuh_tempo, tgl_bayar, metode_bayar FROM tagihan "
-                               "WHERE username = ? ORDER BY periode DESC LIMIT 12", (u,)).fetchall()
+                               "WHERE username = ? AND (status != 'lunas' OR periode IN (SELECT periode FROM tagihan "
+                               "WHERE username = ? ORDER BY periode DESC LIMIT 12)) ORDER BY periode DESC", (u, u)).fetchall()
         isolir = conn.execute("SELECT 1 FROM isolir WHERE username = ?", (u,)).fetchone() is not None
         dipantau = _dipantau(conn, u)
     if not p:
@@ -8431,8 +8435,9 @@ def portal_saya(request: Request):
                if t["status"] == "lunas" else None} for t in tagihan]
     return {"login": request.state.portal["login"], "nama": p["nama"], "username": p["username"], "id_pelanggan": p["id_pelanggan"],
             "alamat": p["alamat"], "paket": p["paket"], "kecepatan_mbps": p["kecepatan_mbps"],
-            "internet": {"diketahui": _latest_data is not None and dipantau, "online": sesi is not None,
-                         "uptime": sesi.uptime if sesi else None, "isolir": isolir},
+            "internet": {"diketahui": _latest_data is not None and dipantau, "dipantau": dipantau,
+                         "online": sesi is not None, "uptime": sesi.uptime if sesi else None, "isolir": isolir},
+            "berhenti": p["status"] == "berhenti",
             "tagihan": daftar, "belum_bayar": sum(t["jumlah"] for t in daftar if not t["lunas"]),
             "usaha": CONFIG["NAMA_USAHA"], "info_bayar": CONFIG["INFO_BAYAR"]}
 
@@ -8458,9 +8463,22 @@ def portal_info():
     return {"usaha": CONFIG["NAMA_USAHA"], "wa": _wa_link(CONFIG.get("USAHA_WA") or ""), "wa_teks": CONFIG.get("USAHA_WA") or ""}
 
 
+_PESAN_BERHENTI = "Langganan Anda sudah berhenti. Hubungi admin untuk berlangganan lagi."
+
+
+def _pelanggan_berhenti(username: str) -> bool:
+    """Pelanggan berhenti tetap bisa melihat tagihan, membayar sisa tagihan, dan mengunduh kwitansi lewat portal,
+    tetapi tidak lagi mengatur WiFi (ONU-nya bisa sudah dipasang di rumah lain) atau membuat laporan gangguan."""
+    with db() as conn:
+        r = conn.execute("SELECT status FROM pelanggan WHERE username = ?", (username,)).fetchone()
+    return bool(r) and r["status"] == "berhenti"
+
+
 @app.get("/api/portal/wifi")
 def portal_wifi(request: Request):
     """Ringkas: nama WiFi, menyala/tidak, jumlah perangkat tersambung. Tanpa sandi, MAC, atau data teknis."""
+    if _pelanggan_berhenti(request.state.portal["pelanggan"]):
+        return {"tersedia": False, "pesan": _PESAN_BERHENTI}
     if not _acs_aktif():
         return {"tersedia": False, "pesan": "Pengaturan WiFi dari sini belum tersedia."}
     doc = _cari_perangkat(request.state.portal["pelanggan"])
@@ -8483,6 +8501,8 @@ class PortalWifiIn(BaseModel):
 @app.post("/api/portal/wifi")
 def portal_ganti_wifi(d: PortalWifiIn, request: Request):
     u, sekarang = request.state.portal["pelanggan"], datetime.now()
+    if _pelanggan_berhenti(u):
+        raise HTTPException(status_code=403, detail=_PESAN_BERHENTI)
     riwayat = [t for t in _ganti_wifi_portal.get(u, []) if sekarang - t < timedelta(hours=1)]
     if len(riwayat) >= _BATAS_GANTI_WIFI:
         raise HTTPException(status_code=429, detail="Terlalu sering mengganti WiFi. Coba lagi satu jam lagi.")
@@ -8511,8 +8531,17 @@ class PortalTiketIn(BaseModel):
 
 @app.post("/api/portal/tiket")
 def portal_lapor(d: PortalTiketIn, request: Request):
-    return _buat_tiket(TiketIn(username=request.state.portal["pelanggan"], kategori=d.kategori,
-                               keterangan=d.keterangan), _oleh(request))
+    u = request.state.portal["pelanggan"]
+    if _pelanggan_berhenti(u):
+        raise HTTPException(status_code=403, detail=_PESAN_BERHENTI)
+    try:
+        return _buat_tiket(TiketIn(username=u, kategori=d.kategori, keterangan=d.keterangan), _oleh(request))
+    except HTTPException as e:
+        m = re.search(r"#T(\d+)", str(e.detail)) if e.status_code == 409 else None
+        if m:   # pesan untuk staf ("Tambahkan catatan di tiket itu") diganti bahasa pelanggan
+            raise HTTPException(status_code=409, detail=f"Laporan Anda #T{m.group(1)} masih ditangani teknisi. Mohon "
+                                                        "tunggu kabar dari kami; bila mendesak, hubungi admin lewat WhatsApp.")
+        raise
 
 
 # --- Kelola akun portal (admin) ---
