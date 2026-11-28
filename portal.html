@@ -110,7 +110,7 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
 .jejak .ats b{font-size:var(--fs-sm);color:var(--ink)}
 .kotak12{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-top:9px}
 .kotak12 span{height:22px;border-radius:6px;background:#e3ebe5}
-.kotak12 span.tepat{background:#16a34a}.kotak12 span.telat{background:#f2a80f}.kotak12 span.belum{background:#d92d20}.kotak12 span.cek{background:#9fb3a7}
+.kotak12 span.jalan{background:#fde7b0}.kotak12 span.tepat{background:#16a34a}.kotak12 span.telat{background:#f2a80f}.kotak12 span.belum{background:#d92d20}.kotak12 span.cek{background:#9fb3a7}
 .kotak12x{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-top:3px}
 .kotak12x span{text-align:center;font-size:9px;color:#8a9b92}
 .lgd{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:var(--fs-2xs);color:#4b6355}
@@ -224,17 +224,21 @@ async function bukaBayar(){ byr.buka=true; byr.data=null; renderBayar();
  try{ byr.data=await api('/api/portal/bayar'); }catch(e){ byr.data={tersedia:false,pesan:e.message}; } renderBayar(); }
 function renderBayar(){
  const r=byr.riwayat.slice(0,3).map(k=>`<div class="sub" style="margin-top:4px">Bukti ${esc(tgl(k.dibuat_pada))} · ${rp(k.jumlah)} · ${k.status==='menunggu'?'<b>sedang dicek admin</b>':k.status==='diterima'?'<b class="ok">diterima, tagihan lunas</b>':'<b class="bad">ditolak</b>: '+esc(k.alasan||'')}</div>`).join('');
- if(!byr.buka){ $('bayar').innerHTML=(byr.belum?'<div class="btns"><button class="btn go" onclick="bukaBayar()">Bayar sekarang dengan QRIS</button></div>':'')+r; return; }
+ if(!byr.buka){ $('bayar').innerHTML=(byr.belum?'<div class="btns"><button class="btn go" onclick="bukaBayar()">Bayar sekarang</button></div>':'')+r; return; }
  const d=byr.data;
- if(!d){ $('bayar').innerHTML='<div class="muted">Menyiapkan QRIS…</div>'; return; }
- if(!d.tersedia||!d.jumlah){ $('bayar').innerHTML='<div class="note">'+esc(d.pesan||'')+'</div>'+r; return; }
+ if(!d){ $('bayar').innerHTML='<div class="muted">Menyiapkan pembayaran…</div>'; return; }
+ if(!d.jumlah){ $('bayar').innerHTML='<div class="note">'+esc(d.pesan||'')+'</div>'+r; return; }
+ const formBukti=`<div style="margin-top:12px;font-size:var(--fs-sm);font-weight:800">Sudah bayar? Kirim foto/screenshot bukti bayar</div><input type="file" id="bBukti" accept="image/*,application/pdf" style="margin-top:6px;font-size:var(--fs-sm);max-width:100%">
+  <div class="btns"><button class="btn go" onclick="kirimBukti()">Kirim bukti</button><button class="btn" onclick="byr.buka=false;renderBayar()">Tutup</button></div><div class="msg" id="bMsg"></div>`;
+ if(!d.tersedia){   // tanpa QRIS: bayar cara lain (transfer/tunai) lalu kirim buktinya
+  $('bayar').innerHTML=`<div class="qrBox" style="padding:12px"><div class="sub">Total yang dibayar</div><div style="font-size:var(--fs-xl);font-weight:800">${rp(d.jumlah)}</div><div class="sub">${d.tagihan.map(t=>esc(namaP(t.periode))).join(', ')}</div></div>
+   <div class="note">${esc(d.pesan||'')}</div>`+formBukti+r; return; }
  let qr=''; try{ const q=qrcode(0,'M'); q.addData(d.qris); q.make(); qr=q.createSvgTag({cellSize:5,margin:2,scalable:true}); }catch(e){ qr='<div class="muted">QR gagal dibuat.</div>'; }
  $('bayar').innerHTML=`<div class="awas">⚠️ Sebelum membayar, pastikan nama penerima di aplikasi Anda: <b>${esc(d.merchant)}</b>${d.nmid?' (NMID '+esc(d.nmid)+')':''}. Jika berbeda, <b>jangan bayar</b> dan hubungi kami.</div>
   <div class="qrBox">${qr}<div style="font-size:var(--fs-xl);font-weight:800;margin-top:6px">${rp(d.jumlah)}</div>
   <div class="sub">${d.tagihan.map(t=>esc(namaP(t.periode))).join(', ')}</div></div>
   <div class="sub">Scan dengan aplikasi bank atau dompet digital (DANA, GoPay, OVO, ShopeePay, m-banking). ${d.nominal_otomatis?'Bila nominal tidak terisi otomatis, ketik '+rp(d.jumlah)+'.':'<b>Ketik nominal '+rp(d.jumlah)+'</b> saat membayar.'}</div>
-  <div style="margin-top:12px;font-size:var(--fs-sm);font-weight:800">Sudah bayar? Kirim foto/screenshot bukti bayar</div><input type="file" id="bBukti" accept="image/*,application/pdf" style="margin-top:6px;font-size:var(--fs-sm);max-width:100%">
-  <div class="btns"><button class="btn go" onclick="kirimBukti()">Kirim bukti</button><button class="btn" onclick="byr.buka=false;renderBayar()">Tutup</button></div><div class="msg" id="bMsg"></div>`+r;
+  `+formBukti+r;
 }
 async function kecilkan(f){
  if(!f.type.startsWith('image/')||f.type==='image/gif') return f;
@@ -264,15 +268,17 @@ async function muat(){
  const n=d.internet;
  const jam=new Date().getHours(); $('hSapa').textContent=(jam<11?'Selamat pagi,':jam<15?'Selamat siang,':jam<18?'Selamat sore,':'Selamat malam,');
  $('hNama').textContent=d.nama||d.username; $('hId').textContent='ID '+(d.id_pelanggan||d.username)+(d.paket?' · '+d.paket+(d.kecepatan_mbps?' '+d.kecepatan_mbps+' Mbps':''):'');
- $('cNet').textContent=n.isolir?'Diisolir':!n.diketahui?'Status belum terbaca':n.online?'Internet online':'Internet offline';
- $('hDot').className='dot '+(n.isolir?'iso':!n.diketahui?'':n.online?'on':'off');
- $('cPaket').textContent=n.isolir?'Lunasi tagihan untuk membuka kembali':(n.online&&n.uptime?'Tersambung '+n.uptime:(n.diketahui&&!n.online?'Cek listrik modem & kabel':''));
+ $('cNet').textContent=d.berhenti?'Langganan berhenti':n.isolir?'Diisolir':n.dipantau===false?'Status tidak dipantau otomatis':!n.diketahui?'Status sedang dibaca':n.online?'Internet online':'Internet offline';
+ $('hDot').className='dot '+(d.berhenti?'':n.isolir?'iso':!n.diketahui?'':n.online?'on':'off');
+ $('cPaket').textContent=d.berhenti?'Tagihan & kwitansi tetap bisa dilihat di sini':n.isolir?'Lunasi tagihan untuk membuka kembali':n.dipantau===false?'Bila internet bermasalah, kirim laporan di bawah':(n.online&&n.uptime?'Tersambung '+n.uptime:(n.diketahui&&!n.online?'Cek listrik modem & kabel':!n.diketahui?'Coba muat ulang beberapa menit lagi':''));
+ // Langganan berhenti: tagihan, bayar & kwitansi tetap; WiFi & lapor gangguan ditutup (server juga menolak).
+ ['secLapor','secWifi'].forEach(i=>$(i).style.display=d.berhenti?'none':''); document.querySelectorAll('.aksi').forEach((a,i)=>{ if(i>=2) a.style.display=d.berhenti?'none':''; });
  const belum=d.tagihan.filter(t=>!t.lunas), tunggu=belum.filter(t=>!dicek.has(t.periode));
  $('tagHero').classList.toggle('utang',!!tunggu.length);
  $('tagJudul').textContent=tunggu.length?'Tagihan belum dibayar':belum.length?'Pembayaran sedang dicek':'Status tagihan';
  $('cTagih').textContent=tunggu.length?rp(tunggu.reduce((a,t)=>a+t.jumlah,0)):belum.length?rp(d.belum_bayar):'Lunas ✓';
  const tertua=tunggu.slice().sort((a,b)=>a.periode<b.periode?-1:1)[0];
- $('cTagihSub').textContent=tunggu.length?(tunggu.map(t=>namaP(t.periode)).join(', ')+(tertua?' · jatuh tempo '+tgl(tertua.jatuh_tempo):'')):belum.length?'Bukti bayar Anda sedang dicek admin.':'Terima kasih, semua tagihan sudah dibayar.';
+ $('cTagihSub').textContent=tunggu.length?(tunggu.slice().sort((a,b)=>a.periode<b.periode?-1:1).map(t=>namaP(t.periode)).join(', ')+(tertua?' · jatuh tempo '+tgl(tertua.jatuh_tempo):'')):belum.length?'Bukti bayar Anda sedang dicek admin.':'Terima kasih, semua tagihan sudah dibayar.';
  const baris=d.tagihan.map(t=>`<div class="row"><div class="info bln" style="cursor:default"><div class="tg">${esc(BLN[+t.periode.slice(5)-1].slice(0,3))}<br>${esc(t.periode.slice(2,4))}</div><div style="min-width:0"><div class="name">${esc(namaP(t.periode))}</div><div class="sub">${rp(t.jumlah)} · ${t.lunas?'dibayar '+esc(tgl(t.tgl_bayar))+(t.metode?' ('+esc(t.metode)+')':'')+` · <a href="/api/portal/kwitansi/${esc(t.periode)}" target="_blank" rel="noopener">Kwitansi</a>`:'jatuh tempo '+esc(tgl(t.jatuh_tempo))}</div></div></div>
   <div class="right">${t.lunas?'<span class="chip ok">Lunas</span>':dicek.has(t.periode)?'<span class="chip off">Bukti sedang dicek</span>':t.terlambat?'<span class="chip bad">Terlambat</span>':'<span class="chip warn">Belum bayar</span>'}</div></div>`);
  tagihanBaris=baris; tampilTagihan();
@@ -295,12 +301,15 @@ function jejakBayar(tag,dicek){
  let tepat=0, ada=0;
  const kelas=bln.map(p=>{ const t=per[p]; if(!t) return ['','tidak ada tagihan'];
   ada++; if(t.lunas){ const ok=!t.jatuh_tempo||!t.tgl_bayar||t.tgl_bayar.slice(0,10)<=t.jatuh_tempo; if(ok) tepat++; return [ok?'tepat':'telat',ok?'dibayar tepat waktu':'dibayar terlambat']; }
-  return dicek.has(p)?['cek','bukti sedang dicek']:['belum',t.terlambat?'belum dibayar, lewat jatuh tempo':'belum dibayar']; });
- if(!ada){ $('jejak').innerHTML=''; return; }
- $('jejak').innerHTML=`<div class="jejak"><div class="ats"><span>Riwayat bayar 12 bulan</span><b>${tepat} dari ${ada} bulan tepat waktu</b></div>
+  if(dicek.has(p)){ ada--; return ['cek','bukti sedang dicek']; }
+  if(!t.terlambat){ ada--; return ['jalan','belum jatuh tempo']; }
+  return ['belum','belum dibayar, lewat jatuh tempo']; });
+ const dinilai=bln.some(p=>per[p]);
+ if(!dinilai){ $('jejak').innerHTML=''; return; }
+ $('jejak').innerHTML=`<div class="jejak"><div class="ats"><span>Riwayat bayar 12 bulan</span><b>${ada?tepat+' dari '+ada+' bulan tepat waktu':'Mulai dinilai setelah tagihan dibayar'}</b></div>
   <div class="kotak12">${bln.map((p,i)=>`<span class="${kelas[i][0]}" title="${esc(namaP(p))}: ${esc(kelas[i][1])}" aria-label="${esc(namaP(p))}: ${esc(kelas[i][1])}"></span>`).join('')}</div>
   <div class="kotak12x">${bln.map(p=>`<span>${esc(BLN[+p.slice(5)-1].slice(0,1))}</span>`).join('')}</div>
-  <div class="lgd"><span><i style="background:#16a34a"></i>Tepat waktu</span><span><i style="background:#f2a80f"></i>Terlambat</span><span><i style="background:#d92d20"></i>Belum bayar</span><span><i style="background:#e3ebe5"></i>Tidak ada tagihan</span></div></div>`;
+  <div class="lgd"><span><i style="background:#16a34a"></i>Tepat waktu</span><span><i style="background:#f2a80f"></i>Terlambat</span><span><i style="background:#d92d20"></i>Belum bayar</span><span><i style="background:#9fb3a7"></i>Sedang dicek</span><span><i style="background:#fde7b0"></i>Belum jatuh tempo</span><span><i style="background:#e3ebe5"></i>Tidak ada tagihan</span></div></div>`;
 }
 async function muatWifi(){
  const el=$('wifi');

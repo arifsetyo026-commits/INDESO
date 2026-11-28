@@ -4651,3 +4651,44 @@ def test_peringatan_olt_snmp_tidak_palsu(siap):
     main.proses_event([onu], None)
     k2 = kirim()
     assert len(k2) == 2 and "merespons kembali" in k2[1]["data"]["text"] and "menit" in k2[1]["data"]["text"]
+
+
+def test_portal_logika_audit(siap):
+    """Audit portal: (1) tanpa QRIS pelanggan tetap melihat jumlah & bisa kirim bukti bayar (transfer/tunai);
+    (2) tagihan belum lunas yang lebih lama dari 12 bulan tetap tampil & dihitung, sama dengan jumlah bayar;
+    (3) sambungan yang tidak dipantau ditandai, bukan 'belum terbaca' selamanya; (4) pelanggan berhenti tetap bisa
+    melihat tagihan & bayar, tetapi WiFi & lapor gangguan ditutup; (5) laporan dobel dijawab dengan bahasa pelanggan."""
+    from fastapi.testclient import TestClient
+    main, o, k, m = siap
+    o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                            "no_hp": "081234567890", "lokasi": 1})
+    bulan = [f"{2025 + (i + 8) // 12}-{(i + 8) % 12 + 1:02d}" for i in range(15)]      # 2025-09 .. 2026-11
+    for per in bulan:
+        o.post(f"/api/tagihan/buat?periode={per}")
+    p = TestClient(main.app)
+    p.post("/api/portal/daftar", json={"no_hp": "081234567890", "login": "budisaja", "password": "rahasia123"})
+    o.post("/api/portal-akun/budisaja/status", json={"status": "aktif"})
+    assert p.post("/api/login", json={"username": "budisaja", "password": "rahasia123"}).json()["arah"] == "/portal"
+    d = p.get("/api/portal/saya").json()
+    belum = [t for t in d["tagihan"] if not t["lunas"]]
+    assert len(belum) == 15 and d["belum_bayar"] == sum(t["jumlah"] for t in belum)          # (2) > 12 bulan
+    b = p.get("/api/portal/bayar").json()
+    assert b["tersedia"] is False and b["jumlah"] == d["belum_bayar"] and len(b["tagihan"]) == 15   # (1) tanpa QRIS
+    assert p.post("/api/portal/konfirmasi", content=b"\xff\xd8\xff" + b"0" * 100).status_code == 200
+    assert d["internet"]["dipantau"] is True and d["berhenti"] is False
+    o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "status": "aktif", "atur_secret": False,
+                                            "koneksi": "ap"})
+    assert p.get("/api/portal/saya").json()["internet"]["dipantau"] is False                   # (3)
+    # (5) laporan dobel
+    assert p.post("/api/portal/tiket", json={"kategori": "Internet mati"}).status_code == 200
+    r = p.post("/api/portal/tiket", json={"kategori": "Internet mati"})
+    assert r.status_code == 409 and "Laporan Anda #T" in r.json()["detail"] and "Tambahkan catatan" not in r.json()["detail"]
+    # (4) berhenti
+    o.put("/api/data-pelanggan/budi", json={"nama": "Budi", "paket_id": 1, "status": "berhenti", "atur_secret": False})
+    d4 = p.get("/api/portal/saya").json()
+    assert d4["berhenti"] is True and d4["tagihan"]
+    w = p.get("/api/portal/wifi").json()
+    assert w["tersedia"] is False and "berhenti" in w["pesan"]
+    assert p.post("/api/portal/wifi", json={"index": 1, "nama": "X"}).status_code == 403
+    assert p.post("/api/portal/tiket", json={"kategori": "Internet mati"}).status_code == 403
+    assert p.get("/api/portal/bayar").status_code == 200
