@@ -248,6 +248,8 @@ CONFIG = {
                            "Terima kasih."),
     "PENGINGAT_JEDA_HARI": 3,           # pengingat massal melewati pelanggan yang baru diingatkan
     "KOMISI_MULAI": "",                 # YYYY-MM: komisi mitra dihitung mulai bulan ini (kosong = sejak data pertama)
+    "BAGI_HASIL_MULAI": "2027-01",      # YYYY-MM: bagi hasil laba bersih wilayah berlaku mulai buku bulan ini
+    "BAGI_HASIL_ADMIN_PERSEN": 40,      # bagian admin wilayah dari laba bersih (sisanya untuk Pusat)
     "ONU_SANDI_ADMIN": "",              # password admin web ONU yang dipasang tombol "Amankan ONU" (rahasia)
     "BACKUP_HARI_KIRIM": 6,             # hari pengiriman mingguan: 0=Senin ... 6=Minggu
     # Database (kecil) dikirim ke Telegram TIAP HARI tanpa bunyi notifikasi, supaya bila VPS
@@ -3334,6 +3336,14 @@ _PENGATURAN = {
     "KOMISI_MULAI": {"label": "Komisi mitra dihitung mulai bulan (YYYY-MM, kosong = sejak data pertama)", "tipe": "teks",
                      "pola": r"^\s*(\d{4}-(0[1-9]|1[0-2]))?\s*$", "owner": True, "contoh": "2026-10",
                      "bantuan": "Bulan sebelumnya tidak ditampilkan dan tidak dihitung sebagai komisi belum dibayar."},
+    "BAGI_HASIL_MULAI": {"label": "Bagi hasil wilayah berlaku mulai buku bulan (YYYY-MM)", "tipe": "teks",
+                         "pola": r"^\s*\d{4}-(0[1-9]|1[0-2])\s*$", "owner": True, "contoh": "2027-01",
+                         "bantuan": "Mulai buku ini, laba bersih wilayah (setelah semua beban operasional & pengembalian "
+                                    "pinjaman Pusat) dibagi: bagian admin wilayah ditahan wilayah, sisanya disetor ke Pusat. "
+                                    "Buku sebelumnya: seluruh kas wilayah disetor."},
+    "BAGI_HASIL_ADMIN_PERSEN": {"label": "Bagian admin wilayah dari laba bersih wilayah (%)", "tipe": "int",
+                                "min": 0, "max": 100, "owner": True,
+                                "bantuan": "Mis. 40 = admin wilayah 40%, Pusat 60%."},
     "TELEGRAM_OWNER_CHAT_ID": {"label": "Chat ID tujuan laporan keuangan: grup internal owner dan/atau chat pribadi (pisahkan koma)",
                                "tipe": "teks", "pola": r"^\s*(-?\d{5,20}\s*(,\s*-?\d{5,20}\s*)*)?$", "owner": True,
                                "bantuan": "Grup: tambahkan bot ke grup internal owner, lalu kirim /id di grup itu "
@@ -3830,9 +3840,10 @@ def ubah_pj_kas(kode: int, d: PjKasIn, request: Request):
     u = (d.username or "").strip() or None
     with db() as conn:
         _cek_lokasi(conn, kode)
-        if u and not conn.execute("SELECT 1 FROM akun WHERE username = ? AND peran = 'mitra' AND COALESCE(lokasi, 1) = ?",
+        if u and not conn.execute("SELECT 1 FROM akun WHERE username = ? AND peran IN ('mitra', 'wilayah') "
+                                  "AND COALESCE(lokasi, 1) = ?",
                                   (u, kode)).fetchone():
-            raise HTTPException(status_code=400, detail="Admin wilayah harus akun di lokasi ini (akun berperan mitra).")
+            raise HTTPException(status_code=400, detail="Pemegang kas harus akun admin wilayah atau mitra di lokasi ini.")
         conn.execute("UPDATE lokasi SET pj_kas = ? WHERE kode = ?", (u, kode))
         conn.commit()
     catat_aktivitas(_oleh(request), "kas_wilayah", f"admin wilayah (pemegang kas) lokasi {kode}: {u or 'Pusat'}")
@@ -4831,6 +4842,10 @@ def init_keuangan_db() -> None:
             conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_periode TEXT")
         if "insentif_lokasi" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
             conn.execute("ALTER TABLE transaksi ADD COLUMN insentif_lokasi INTEGER")     # NULL = lokasi 1 (data lama)
+        # Pengeluaran Pusat yang dibebankan ke satu wilayah (mis. bagian bandwidth): dihitung sebagai beban operasional
+        # wilayah itu dalam bagi hasil.
+        if "beban_lokasi" not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
+            conn.execute("ALTER TABLE transaksi ADD COLUMN beban_lokasi INTEGER")
         # Banyaknya barang (mis. 10 pcs, 150 meter) — opsional, untuk keterangan & harga satuan.
         for kol, tipe in (("qty", "REAL"), ("satuan", "TEXT"), ("nomor", "TEXT")):
             if kol not in [r[1] for r in conn.execute("PRAGMA table_info(transaksi)")]:
@@ -6394,6 +6409,16 @@ class TransaksiIn(BaseModel):
     qty: Optional[float] = None         # banyaknya barang, mis. 10 (pcs)
     satuan: Optional[str] = None
     lokasi: Optional[int] = None        # kas wilayah tempat uang ini (kosong = Pusat)
+    beban_lokasi: Optional[int] = None  # pengeluaran Pusat yang dibebankan ke wilayah ini (bagi hasil)
+
+
+def _cek_beban_lokasi(conn, d: "TransaksiIn") -> Optional[int]:
+    """Hanya pengeluaran dari kas Pusat yang bisa dibebankan ke wilayah (pengeluaran kas wilayah sudah beban wilayah)."""
+    if d.beban_lokasi is None:
+        return None
+    if d.jenis != "keluar" or d.lokasi is not None:
+        raise HTTPException(status_code=400, detail="Yang bisa dibebankan ke wilayah hanya pengeluaran dari kas Pusat.")
+    return _cek_lokasi(conn, d.beban_lokasi)
 
 
 def _cek_qty(qty: Optional[float], satuan: Optional[str]) -> tuple[Optional[float], Optional[str]]:
@@ -6452,11 +6477,12 @@ def keuangan_tambah(d: TransaksiIn, request: Request):
             conn.rollback()
             raise HTTPException(status_code=409, detail=f"Transaksi yang sama baru saja tercatat ({kembar['nomor']}). "
                                 "Bila memang ada dua transaksi kembar, tunggu 20 detik lalu simpan lagi.")
+        beban_lokasi = _cek_beban_lokasi(conn, d)
         cur = conn.execute(
             "INSERT INTO transaksi (tanggal, jenis, kategori_id, jumlah, metode, keterangan, dicatat_oleh, dicatat_pada, "
-            "qty, satuan, lokasi) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "qty, satuan, lokasi, beban_lokasi) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
-             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.qty, d.satuan, d.lokasi),
+             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), d.qty, d.satuan, d.lokasi, beban_lokasi),
         )
         nomor = _beri_nomor(conn, cur.lastrowid)
         conn.commit()
@@ -6498,10 +6524,10 @@ def keuangan_ubah(tid: int, d: TransaksiIn, request: Request):
         _wajib_buku_terbuka(conn, t["tanggal"], d.tanggal)
         conn.execute(
             "UPDATE transaksi SET tanggal=?, jenis=?, kategori_id=?, jumlah=?, metode=?, keterangan=?, "
-            "qty=?, satuan=?, lokasi=?, diubah_oleh=?, diubah_pada=? WHERE id=?",
+            "qty=?, satuan=?, lokasi=?, beban_lokasi=?, diubah_oleh=?, diubah_pada=? WHERE id=?",
             (d.tanggal, d.jenis, d.kategori_id, d.jumlah, d.metode, (d.keterangan or "").strip()[:500] or None,
-             d.qty, d.satuan, _cek_lokasi(conn, d.lokasi) if d.lokasi is not None else None, _oleh(request),
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
+             d.qty, d.satuan, _cek_lokasi(conn, d.lokasi) if d.lokasi is not None else None, _cek_beban_lokasi(conn, d),
+             _oleh(request), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tid),
         )
         nomor_baru = None
         if d.jenis != t["jenis"] or d.tanggal[:7] != t["tanggal"][:7]:
@@ -6548,7 +6574,7 @@ def _query_transaksi(conn, periode: str, jenis: str, kategori_id: Optional[int],
     awal, akhir = _batas_periode(periode)
     sql = ("SELECT t.id, t.tanggal, t.jenis, t.kategori_id, k.nama AS kategori, k.pengaruh_laba, t.jumlah, t.metode, "
            "t.keterangan, t.dicatat_oleh, t.dicatat_pada, t.diubah_oleh, t.diubah_pada, t.status, "
-           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, t.nomor, t.lokasi, "
+           "t.batal_oleh, t.batal_pada, t.batal_alasan, t.utang_id, t.insentif_periode, t.qty, t.satuan, t.nomor, t.lokasi, t.beban_lokasi, "
            "(SELECT u.pemasok FROM utang u WHERE u.id = t.utang_id) AS pemasok "
            "FROM transaksi t JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.tanggal >= ? AND t.tanggal < ?")
     arg: list = [awal, akhir]
@@ -7720,6 +7746,12 @@ def _skema_kas_wilayah(conn) -> None:
         status TEXT NOT NULL DEFAULT 'tanpa_bukti', berkas TEXT, mime TEXT, diperiksa_oleh TEXT, diperiksa_pada TEXT,
         alasan_tolak TEXT)""")
     conn.execute("CREATE TABLE IF NOT EXISTS pengaturan (kunci TEXT PRIMARY KEY, nilai TEXT NOT NULL)")
+    # Dana yang dipinjamkan Pusat ke wilayah yang rugi (beban > uang kas wilayah). Wajib dikembalikan dari laba bulan
+    # berikutnya sebelum laba dibagi. status: menunggu / disetujui (uang sudah diberikan) / ditolak / batal.
+    conn.execute("""CREATE TABLE IF NOT EXISTS pinjaman_wilayah (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, lokasi INTEGER NOT NULL, jumlah INTEGER NOT NULL, alasan TEXT,
+        diminta_oleh TEXT NOT NULL, diminta_pada TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'menunggu',
+        tanggal_cair TEXT, diproses_oleh TEXT, diproses_pada TEXT, catatan TEXT)""")
 
 
 def _siapkan_kas_wilayah(conn) -> str:
@@ -7746,6 +7778,78 @@ def _masuk_wilayah(conn, lokasi: int, dari: str, sampai: str) -> int:
     return tagihan + trx
 
 
+# --- Bagi hasil wilayah (mulai BAGI_HASIL_MULAI) ---
+# Per bulan buku, uang kas wilayah dipakai dengan urutan:
+#   1. lunasi beban operasional yang dibayar Pusat untuk wilayah itu: komisi mitra wilayah, material yang dikirim/dipakai
+#      untuk wilayah (harga dibekukan saat keluar gudang), dan pengeluaran Pusat yang "dibebankan ke wilayah"
+#      (mis. bagian bandwidth);
+#   2. kembalikan pinjaman Pusat (bila ada bulan yang rugi);
+#   3. sisanya laba bersih: BAGI_HASIL_ADMIN_PERSEN ditahan admin wilayah, sisanya disetor ke Pusat.
+# Pengeluaran dari kas wilayah sendiri sudah mengurangi uang kas wilayah. Bulan yang rugi: bagian admin 0; bila kas
+# wilayah tidak cukup, wilayah mengajukan pinjaman ke Pusat (wajib dikembalikan dari laba bulan berikutnya).
+
+def _bh_angka(conn, lokasi: int, periode: str) -> dict:
+    a, b = _batas_periode(periode)
+    tagihan = conn.execute("SELECT COALESCE(SUM(t.jumlah), 0) FROM tagihan t JOIN pelanggan p ON p.username = t.username "
+                           "WHERE t.status = 'lunas' AND COALESCE(t.lokasi_kas, p.lokasi) = ? AND t.tgl_bayar >= ? "
+                           "AND t.tgl_bayar < ?", (lokasi, a, b)).fetchone()[0]
+    kas = {(r[0], r[1]): r[2] for r in conn.execute(
+        "SELECT t.jenis, COALESCE(k.pengaruh_laba, 1), COALESCE(SUM(t.jumlah), 0) FROM transaksi t "
+        "LEFT JOIN kategori_kas k ON k.id = t.kategori_id WHERE t.status = 'aktif' AND t.lokasi = ? AND t.tanggal >= ? "
+        "AND t.tanggal < ? GROUP BY 1, 2", (lokasi, a, b))}
+    komisi = conn.execute("SELECT COALESCE(SUM(jumlah), 0) FROM transaksi WHERE status = 'aktif' AND jenis = 'keluar' "
+                          "AND lokasi IS NULL AND insentif_periode IS NOT NULL AND COALESCE(insentif_lokasi, 1) = ? "
+                          "AND tanggal >= ? AND tanggal < ?", (lokasi, a, b)).fetchone()[0]
+    beban_pusat = conn.execute("SELECT COALESCE(SUM(jumlah), 0) FROM transaksi WHERE status = 'aktif' AND jenis = 'keluar' "
+                               "AND lokasi IS NULL AND insentif_periode IS NULL AND beban_lokasi = ? AND tanggal >= ? "
+                               "AND tanggal < ?", (lokasi, a, b)).fetchone()[0]
+    material = 0
+    try:
+        material = round(conn.execute(
+            "SELECT COALESCE(SUM(m.jumlah * COALESCE(m.harga_satuan, g.harga, 0)), 0) FROM gudang_mutasi m "
+            "JOIN gudang_barang g ON g.id = m.barang_id LEFT JOIN pelanggan p ON p.username = m.username "
+            "WHERE m.status = 'aktif' AND m.jenis = 'keluar' AND m.tanggal >= ? AND m.tanggal < ? "
+            "AND COALESCE(m.lokasi_tujuan, p.lokasi) = ?", (a, b, lokasi)).fetchone()[0])
+    except sqlite3.OperationalError:
+        pass        # warehouse belum pernah dipakai
+    cair = conn.execute("SELECT COALESCE(SUM(jumlah), 0) FROM pinjaman_wilayah WHERE lokasi = ? AND status = 'disetujui' "
+                        "AND tanggal_cair >= ? AND tanggal_cair < ?", (lokasi, a, b)).fetchone()[0]
+    return {"pendapatan": tagihan + kas.get(("masuk", 1), 0), "pendapatan_tagihan": tagihan,
+            "pendapatan_lain": kas.get(("masuk", 1), 0), "beban_kas_wilayah": kas.get(("keluar", 1), 0),
+            "komisi_mitra": komisi, "material": material, "beban_pusat": beban_pusat, "pinjaman_cair": cair}
+
+
+def _bagi_hasil_wilayah(conn, lokasi: int) -> dict:
+    """Rincian bagi hasil per bulan buku untuk wilayah ini (dari BAGI_HASIL_MULAI sampai bulan berjalan)."""
+    persen = max(0, min(100, int(CONFIG.get("BAGI_HASIL_ADMIN_PERSEN") or 0)))
+    mulai_bh = (CONFIG.get("BAGI_HASIL_MULAI") or "").strip() or "2027-01"
+    mulai = max(mulai_bh, _siapkan_kas_wilayah(conn))
+    tutup = conn.execute("SELECT MAX(periode) FROM tutup_buku").fetchone()[0] or ""
+    sekarang = datetime.now().strftime("%Y-%m")
+    hutang = conn.execute("SELECT COALESCE(SUM(jumlah), 0) FROM pinjaman_wilayah WHERE lokasi = ? AND status = 'disetujui' "
+                          "AND tanggal_cair < ?", (lokasi, f"{mulai}-01")).fetchone()[0]
+    bulan, per = [], mulai
+    while per <= sekarang:
+        x = _bh_angka(conn, lokasi, per)
+        beban_pusat_total = x["komisi_mitra"] + x["material"] + x["beban_pusat"]
+        kas_operasional = x["pendapatan"] - x["beban_kas_wilayah"]
+        laba_operasional = kas_operasional - beban_pusat_total
+        kembali = min(hutang, max(0, laba_operasional))
+        laba = laba_operasional - kembali
+        admin = round(max(0, laba) * persen / 100)
+        hutang_awal = hutang
+        hutang = hutang - kembali + x["pinjaman_cair"]
+        bulan.append({**x, "periode": per, "ditutup": per <= tutup, "beban_pusat_total": beban_pusat_total,
+                      "kas_operasional": kas_operasional, "laba_operasional": laba_operasional,
+                      "hutang_awal": hutang_awal, "pengembalian_pinjaman": kembali, "laba_bersih": laba,
+                      "rugi": laba_operasional < 0, "bagian_admin": admin, "bagian_pusat": max(0, laba) - admin,
+                      "setor_bulan_ini": kas_operasional - admin})
+        per = _geser_periode(per, 1)
+    return {"persen_admin": persen, "persen_pusat": 100 - persen, "mulai": mulai_bh, "bulan": bulan,
+            "hutang_pinjaman": hutang,
+            "admin_ditahan": sum(b["bagian_admin"] for b in bulan if b["ditutup"])}
+
+
 def _posisi_kas_wilayah(conn, lokasi: int) -> dict:
     mulai = _siapkan_kas_wilayah(conn)
     dari = f"{mulai}-01"
@@ -7760,14 +7864,17 @@ def _posisi_kas_wilayah(conn, lokasi: int) -> dict:
     pj = conn.execute("SELECT pj_kas FROM lokasi WHERE kode = ?", (lokasi,)).fetchone()
     pj = pj[0] if pj else None
     masuk_total = _masuk_wilayah(conn, lokasi, dari, besok)
-    # Tanpa admin wilayah, uang lokasi ini dipegang Pusat sendiri: tidak ada yang perlu disetor.
-    wajib = (_masuk_wilayah(conn, lokasi, dari, sampai_tutup) - diterima) if pj else 0
+    # Tanpa admin wilayah, uang lokasi ini dipegang Pusat sendiri: tidak ada yang perlu disetor (dan tidak ada bagi hasil).
+    bh = _bagi_hasil_wilayah(conn, lokasi) if pj else None
+    ditahan = bh["admin_ditahan"] if bh else 0
+    wajib = (_masuk_wilayah(conn, lokasi, dari, sampai_tutup) - diterima - ditahan) if pj else 0
     bln = sekarang.strftime("%Y-%m")
     return {"lokasi": lokasi, "mulai": mulai, "tutup_terakhir": tutup, "admin_wilayah": pj,
             "masuk_bulan_ini": _masuk_wilayah(conn, lokasi, f"{bln}-01", besok),
             "di_tangan": (masuk_total - diterima) if pj else 0, "wajib_setor": max(0, wajib),
             "menunggu": {"n": setor.get("menunggu", (0, 0))[0], "jumlah": setor.get("menunggu", (0, 0))[1]},
-            "tanpa_bukti": setor.get("tanpa_bukti", (0, 0))[0], "diterima_total": diterima}
+            "tanpa_bukti": setor.get("tanpa_bukti", (0, 0))[0], "diterima_total": diterima,
+            "bagian_admin_ditahan": ditahan, "bagi_hasil": bh}
 
 
 def _daftar_setoran(conn, lokasi: Optional[int] = None, limit: int = 30) -> list[dict]:
@@ -7818,10 +7925,10 @@ def proses_pengingat_setoran(sekarang=None) -> None:
 
 
 def _boleh_lokasi_kas(request: Request, lokasi: int) -> None:
-    """Admin/owner: semua wilayah. Akun mitra: hanya bila ditunjuk owner sebagai admin wilayah (pemegang kas) lokasi itu."""
+    """Admin/owner: semua wilayah. Akun admin wilayah / mitra: hanya bila ditunjuk owner sebagai pemegang kas lokasi itu."""
     if request.state.peran in _PERAN_PENUH:
         return
-    if request.state.peran == "mitra":
+    if request.state.peran in ("mitra", "wilayah"):
         with db() as conn:
             r = conn.execute("SELECT pj_kas FROM lokasi WHERE kode = ?", (lokasi,)).fetchone()
         if r and r["pj_kas"] == request.state.user:

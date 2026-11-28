@@ -44,6 +44,15 @@ def _siapkan_gudang(conn) -> None:
         conn.execute("ALTER TABLE gudang_mutasi ADD COLUMN harga_satuan REAL")
     if "pemasangan_id" not in kolom:
         conn.execute("ALTER TABLE gudang_mutasi ADD COLUMN pemasangan_id INTEGER")
+    # Wilayah tujuan material yang dikirim lewat permintaan material (#M): beban operasional wilayah itu (bagi hasil).
+    if "lokasi_tujuan" not in kolom:
+        conn.execute("ALTER TABLE gudang_mutasi ADD COLUMN lokasi_tujuan INTEGER")
+        try:   # catatan lama: "Dikirim ke <wilayah> (#M<id>)"
+            for mid, mm in conn.execute("SELECT m.id, mm.lokasi FROM gudang_mutasi m JOIN material_minta mm "
+                                        "ON m.keterangan LIKE '%(#M' || mm.id || ')'").fetchall():
+                conn.execute("UPDATE gudang_mutasi SET lokasi_tujuan = ? WHERE id = ?", (mm, mid))
+        except sqlite3.OperationalError:
+            pass       # tabel permintaan material belum ada: belum ada catatan lama
 
 
 _SQL_STOK = ("COALESCE((SELECT SUM(CASE m.jenis WHEN 'keluar' THEN -m.jumlah ELSE m.jumlah END) FROM gudang_mutasi m "
@@ -78,7 +87,7 @@ def _cek_tanggal_gudang(t: Optional[str]) -> str:
 
 
 def _gudang_keluar(conn, item: list, username: Optional[str], oleh: str, tanggal: str, keterangan: str,
-                   pemasangan_id: Optional[int] = None) -> list[dict]:
+                   pemasangan_id: Optional[int] = None, lokasi_tujuan: Optional[int] = None) -> list[dict]:
     """Catat pemakaian beberapa barang sekaligus (dipanggil di dalam transaksi BEGIN IMMEDIATE, supaya dua orang
     yang mengurangi stok bersamaan tidak membuat stok minus). Semua atau tidak sama sekali."""
     jumlah: dict[int, float] = {}
@@ -102,9 +111,9 @@ def _gudang_keluar(conn, item: list, username: Optional[str], oleh: str, tanggal
                       "harga_satuan": float(b["harga"] or 0)})
     for h in hasil:
         conn.execute("INSERT INTO gudang_mutasi (barang_id, tanggal, jenis, jumlah, username, keterangan, oleh, dicatat_pada, "
-                     "harga_satuan, pemasangan_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     "harga_satuan, pemasangan_id, lokasi_tujuan) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                      (h["barang_id"], tanggal, "keluar", h["jumlah"], username, keterangan, oleh, sekarang,
-                      h["harga_satuan"], pemasangan_id))
+                      h["harga_satuan"], pemasangan_id, lokasi_tujuan))
     return hasil
 
 
@@ -568,7 +577,8 @@ def gudang_proses_permintaan(mid: int, d: ProsesMaterialIn, request: Request):
             dari_gudang = [{"barang_id": i["barang_id"], "jumlah": i["jumlah"]} for i in item if i["barang_id"]]
             if dari_gudang:
                 keluar = _gudang_keluar(conn, dari_gudang, None, inti._oleh(request), sekarang[:10],
-                                        f"Dikirim ke {m['nama_lokasi'] or 'lokasi ' + str(m['lokasi'])} (#M{mid})")
+                                        f"Dikirim ke {m['nama_lokasi'] or 'lokasi ' + str(m['lokasi'])} (#M{mid})",
+                                        lokasi_tujuan=m["lokasi"])
         conn.execute("UPDATE material_minta SET status = ?, diproses_oleh = ?, diproses_pada = ?, alasan = ?, "
                      "stok_dikurangi = ? WHERE id = ?", (d.status, inti._oleh(request), sekarang, alasan, int(bool(keluar)), mid))
         conn.commit()

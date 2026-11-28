@@ -248,6 +248,26 @@ function buka(i){
 function tutupForm(){ lihat('listView'); }
 // ===== Kas wilayah: admin wilayah (pemegang kas) yang login dengan akun ini; setor ke Pusat dengan bukti =====
 const KS_STATUS={tanpa_bukti:'<span class="chip warn">Belum ada bukti</span>',menunggu:'<span class="chip warn">Diperiksa owner</span>',diterima:'<span class="chip ok">Diterima</span>',ditolak:'<span class="chip bad">Ditolak</span>'};
+// Rincian bagi hasil wilayah (sama di Keuangan Pusat, halaman admin wilayah, dan portal mitra pemegang kas).
+function htmlBagiHasil(bh,rpF,namaF){
+ if(!bh) return '';
+ const pa=bh.persen_admin, pp=bh.persen_pusat;
+ if(!bh.bulan.length) return `<div style="font-size:12px;color:#6e8177;margin-top:6px">Bagi hasil laba bersih (${pa}% admin wilayah / ${pp}% Pusat) mulai berlaku <b>Buku ${esc(namaF(bh.mulai))}</b>. Sebelum itu seluruh kas wilayah disetor ke Pusat.</div>`;
+ const brs=(t,v,o)=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;${o&&o.tebal?'font-weight:800;':''}"><span style="min-width:0;color:${o&&o.redup?'#6e8177':'inherit'}">${t}</span><span style="flex:none;white-space:nowrap;color:${o&&o.warna||'inherit'}">${v}</span></div>`;
+ return bh.bulan.slice(-3).reverse().map(b=>`<div style="border:1px solid #dce8df;border-radius:12px;padding:10px 12px;margin-top:8px;background:#fbfdfb">
+  <div style="display:flex;justify-content:space-between;gap:8px;font-weight:800;font-size:13px"><span>Buku ${esc(namaF(b.periode))}</span><span style="font-size:11px;color:${b.ditutup?'#0b7a3b':'#8a5a00'}">${b.ditutup?'✓ ditutup':'berjalan · perkiraan'}</span></div>
+  <div style="font-size:13px;margin-top:6px">
+  ${brs('Pendapatan wilayah',rpF(b.pendapatan))}${brs('− Beban dari kas wilayah',rpF(b.beban_kas_wilayah),{redup:1})}
+  ${brs('= Uang kas operasional',rpF(b.kas_operasional),{tebal:1})}
+  ${brs('− Komisi mitra (dibayar Pusat)',rpF(b.komisi_mitra),{redup:1})}${brs('− Material dari Pusat',rpF(b.material),{redup:1})}
+  ${brs('− Beban lain dari Pusat (bandwidth, dll)',rpF(b.beban_pusat),{redup:1})}
+  ${b.pengembalian_pinjaman?brs('− Pengembalian pinjaman Pusat',rpF(b.pengembalian_pinjaman),{redup:1}):''}
+  ${brs(b.rugi?'= Rugi':'= Laba bersih',rpF(b.rugi?b.laba_operasional:b.laba_bersih),{tebal:1,warna:b.rugi?'#b42318':'#0b7a3b'})}
+  ${brs(`Bagian admin wilayah ${pa}% (ditahan wilayah)`,rpF(b.bagian_admin),{warna:'#2f7d0a'})}${brs(`Bagian Pusat ${pp}%`,rpF(b.bagian_pusat))}
+  ${brs('Disetor ke Pusat untuk buku ini',rpF(Math.max(0,b.setor_bulan_ini)),{tebal:1,warna:'#123c6b'})}</div>
+  ${b.rugi?'<div style="font-size:12px;color:#b42318;margin-top:4px">Rugi: bagian admin Rp0. Bila kas wilayah tidak cukup menutup beban, ajukan pinjaman ke Pusat (dikembalikan dari laba bulan berikutnya).</div>':''}</div>`).join('')
+  +(bh.hutang_pinjaman?`<div style="font-size:12px;color:#b45309;margin-top:6px">Sisa pinjaman ke Pusat: <b>${rpF(bh.hutang_pinjaman)}</b> (dikembalikan sebelum laba dibagi).</div>`:'');
+}
 async function muatKas(){
  try{ const r=await fetch('/api/mitra/kas',{cache:'no-store'}); const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.detail||('HTTP '+r.status));
   st.kas=d; const p=d.posisi; $('kasRingkas').style.display='block';
@@ -256,7 +276,8 @@ async function muatKas(){
      :'<div class="sub" style="font-weight:700">Wajib setor ke Pusat</div><div class="angka">✓ Lunas</div>')
    +'Uang di tangan <b>'+rp(p.di_tangan)+'</b> · masuk bulan ini '+rp(p.masuk_bulan_ini)
    +(p.menunggu.n?'<br>'+p.menunggu.n+' setoran ('+rp(p.menunggu.jumlah)+') sedang diperiksa owner.':'')
-   +(p.tanpa_bukti?'<br><b style="color:#b42318">'+p.tanpa_bukti+' setoran belum ada buktinya.</b>':'');
+   +(p.tanpa_bukti?'<br><b style="color:#b42318">'+p.tanpa_bukti+' setoran belum ada buktinya.</b>':'')
+   +(p.bagi_hasil?`<details style="margin-top:8px"><summary style="cursor:pointer;font-weight:700">Bagi hasil ${p.bagi_hasil.persen_admin}/${p.bagi_hasil.persen_pusat}${p.bagian_admin_ditahan?' · bagian Anda '+rp(p.bagian_admin_ditahan):''}</summary>${htmlBagiHasil(p.bagi_hasil,rp,namaP)}</details>`:'');
   $('ksList').innerHTML=d.setoran.length?d.setoran.map(x=>`<div class="row"><div class="info" style="cursor:default"><div class="name">#S${x.id} · ${rp(x.jumlah)}</div><div class="sub">${tgl(x.tanggal)} · ${esc(x.metode)}${x.alasan_tolak?' · ditolak: '+esc(x.alasan_tolak):''}</div></div>
    <div class="right">${KS_STATUS[x.status]||''}${x.ada_bukti?`<a class="btn" href="/api/mitra/kas/setoran/${x.id}/bukti" target="_blank" rel="noopener">Bukti</a>`:''}${x.status==='tanpa_bukti'||x.status==='ditolak'?`<label class="btn" style="cursor:pointer">Kirim bukti<input type="file" accept="image/*,application/pdf" style="display:none" onchange="kirimBukti(${x.id},this.files[0])"></label>`:''}</div></div>`).join('')
    :'<div class="muted">Belum ada setoran.</div>';

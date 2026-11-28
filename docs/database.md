@@ -23,18 +23,19 @@ Backup ada di `/var/lib/indeso/backup` (`billing-TANGGAL.db`, `riwayat-TANGGAL.d
 | | `isolir` | Pelanggan yang sedang diisolir dan profil asalnya |
 | | `konfirmasi_bayar` | Bukti bayar QRIS dari portal yang menunggu diperiksa |
 | | `qris_bayar` | QRIS toko yang dipakai di portal |
-| Keuangan | `transaksi` | Uang masuk & keluar (kas Pusat atau kas wilayah) |
+| Keuangan | `transaksi` | Uang masuk & keluar (kas Pusat atau kas wilayah). `beban_lokasi` = pengeluaran Pusat yang dibebankan ke satu wilayah (mis. bagian bandwidth), dihitung dalam bagi hasil |
 | | `kategori_kas` | Kategori transaksi |
 | | `utang`, `utang_cicilan` | Utang ke pemasok dan jadwal cicilannya |
 | | `tutup_buku` | Bulan yang sudah ditutup (tidak bisa diubah lagi) |
 | | `kas_setoran` | Setoran kas wilayah ke Pusat + bukti transfer |
+| | `pinjaman_wilayah` | Dana yang dipinjamkan Pusat ke wilayah yang rugi; dikembalikan dari laba bulan berikutnya sebelum bagi hasil |
 | | `komisi_kunci` | Komisi mitra yang sudah dikunci per bulan per lokasi |
 | | `nota` | Foto nota/bukti yang diunggah (berkasnya di folder `nota/`) |
 | Akun & keamanan | `akun`, `sesi` | Akun staf (owner/admin/wilayah/mitra/reseller) dan sesi login |
 | | `portal_akun`, `portal_sesi` | Akun & sesi Portal Pelanggan |
 | | `aktivitas` | Catatan siapa melakukan apa dan kapan (audit) |
 | Operasional | `tiket`, `tiket_log` | Tiket gangguan dan riwayat penanganannya |
-| | `gudang_barang`, `gudang_mutasi` | Barang gudang (dengan harga per satuan, diatur owner); stok dihitung dari riwayat keluar-masuk. `gudang_mutasi.harga_satuan` = harga yang dibekukan saat dipakai, `pemasangan_id` = bagian dari satu pemasangan |
+| | `gudang_barang`, `gudang_mutasi` | Barang gudang (dengan harga per satuan, diatur owner); stok dihitung dari riwayat keluar-masuk. `gudang_mutasi.harga_satuan` = harga yang dibekukan saat dipakai, `pemasangan_id` = bagian dari satu pemasangan, `lokasi_tujuan` = wilayah tujuan material yang dikirim lewat permintaan material |
 | | `pemasangan` | Catatan pemasangan pelanggan: tanggal, teknisi, ODP, ONU, biaya pasang, siapa yang mencatat; dibatalkan owner dengan alasan (materialnya ikut kembali ke stok) |
 | | `material_minta`, `material_minta_item` | Permintaan material dari admin wilayah |
 | Hotspot | `hs_paket`, `hs_batch`, `hs_voucher`, `hs_setoran` | Paket voucher, cetakan, voucher, setoran reseller |

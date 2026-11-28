@@ -402,7 +402,8 @@ body{font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}@media
   <label>Metode uang muka</label><select id="kuDPMetode"><option value="tunai">Tunai</option><option value="transfer">Transfer bank</option><option value="qris">QRIS / e-wallet</option><option value="lainnya">Lainnya</option></select>
   <div class="plSub" style="margin-top:6px">Harga barang dihitung sebagai pengeluaran bulan pembelian (laba); bunga angsuran dibebankan per bulan sesuai jadwal. Saldo kas baru berkurang saat liabilitas dilunasi atau diangsur di tab Liabilitas.</div>
  </div>
- <div id="kuKasWrap" style="display:none"><label>Uang ini di kas <span class="plSub">(uang masuk yang diterima wilayah dihitung wajib setor ke Pusat)</span></label><select id="kuKasLok"></select></div>
+ <div id="kuKasWrap" style="display:none"><label>Uang ini di kas <span class="plSub">(uang masuk yang diterima wilayah dihitung wajib setor ke Pusat)</span></label><select id="kuKasLok" onchange="sinkronBebanKu()"></select></div>
+ <div id="kuBebanWrap" style="display:none"><label>Dibebankan ke wilayah <span class="plSub">(opsional: pengeluaran Pusat untuk satu wilayah, mis. bagian bandwidth. Dihitung sebagai beban wilayah itu dalam bagi hasil)</span></label><select id="kuBebanLok"></select></div>
  <label>Keterangan</label><textarea id="kuKet" placeholder="mis. Beli 10 ONT ZTE F670 dari toko X, nota no. 123"></textarea>
  <label>Foto nota / kuitansi</label>
  <div class="notaWrap" id="kuNotaAda"></div>
@@ -1683,7 +1684,7 @@ async function simpanMtLokasi(k,pantau){
  catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
 }
 async function ubahPjKas(k){
- const u=prompt('Admin wilayah '+namaLokasi(k)+' (pemegang kas): ketik username akun lokasi ini yang memegang uang wilayah dan mencatat setoran ke Pusat (di W2: akun mitra W2). Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
+ const u=prompt('Admin wilayah '+namaLokasi(k)+' (pemegang kas): ketik username akun admin wilayah (atau mitra) lokasi ini yang memegang uang wilayah, menahan bagian bagi hasilnya, dan menyetor sisanya ke Pusat. Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
  if(u==null) return;
  try{ await jsonAtauError(await fetch('/api/lokasi/'+k+'/pj-kas',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.trim()||null})}));
   $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Admin wilayah '+namaLokasi(k)+': '+(u.trim()||'Pusat')+'.'; await muatLokasi(); }
@@ -2969,7 +2970,10 @@ function petunjukKat(){
 }
 function setFormJenis(j,pilih){ ku.formJenis=j; document.querySelectorAll('.kuJenis button').forEach(b=>b.classList.toggle('on',b.dataset.j===j));
  const opt=$('kuMetode').querySelector('option[value="kredit"]'); opt.hidden=j!=='keluar'||ku.edit!=null; if(opt.hidden&&$('kuMetode').value==='kredit') $('kuMetode').value='tunai';
- aturKredit(pilih); }
+ aturKredit(pilih); sinkronBebanKu(); }
+// "Dibebankan ke wilayah" hanya untuk pengeluaran dari kas Pusat (pengeluaran kas wilayah sudah beban wilayahnya).
+function sinkronBebanKu(){ const w=$('kuBebanWrap'); if(!w) return; const boleh=ku.formJenis==='keluar'&&!$('kuKasLok').value&&(ku.lokasi||[]).length>1;
+ w.style.display=boleh?'':'none'; if(!boleh) $('kuBebanLok').value=''; }
 // Usulan nama pemasok yang sudah pernah dipakai, supaya ejaannya seragam (grup di tab Liabilitas).
 async function isiDaftarPemasok(){
  if(ku.daftarPemasok) return;
@@ -3032,10 +3036,12 @@ function resetFormKu(){
  isiPilihanKasKu(null);
 }
 // Pilihan kas (Pusat / kas wilayah) saat mencatat; hanya tampil bila ada lebih dari satu lokasi.
-async function isiPilihanKasKu(pilih){
+async function isiPilihanKasKu(pilih,beban){
  if(!ku.lokasi){ try{ const r=await fetch('/api/lokasi'); ku.lokasi=r.ok?(await r.json()).lokasi:[]; }catch(e){ ku.lokasi=[]; } }
  $('kuKasWrap').style.display=ku.lokasi.length>1?'':'none';
  $('kuKasLok').innerHTML='<option value="">Pusat</option>'+ku.lokasi.map(l=>`<option value="${l.kode}" ${l.kode===pilih?'selected':''}>Kas ${esc(l.nama)}</option>`).join('');
+ $('kuBebanLok').innerHTML='<option value="">— tidak (beban Pusat sendiri) —</option>'+ku.lokasi.map(l=>`<option value="${l.kode}" ${l.kode===beban?'selected':''}>${esc(l.nama)}</option>`).join('');
+ sinkronBebanKu();
 }
 function editTransaksi(i){
  const t=ku.trx.transaksi[i]; ku.edit=t.id; tabKu('catat');
@@ -3043,7 +3049,7 @@ function editTransaksi(i){
  $('kuTgl').value=t.tanggal; $('kuJumlah').value=Number(t.jumlah).toLocaleString('id-ID'); $('kuMetode').value=t.metode; $('kuKet').value=t.keterangan||'';
  $('kuQty').value=t.qty?String(t.qty).replace('.',','):''; $('kuSatuan').value=t.qty?(t.satuan||'pcs'):''; infoQty();
  $('kuNotaAda').innerHTML=(t.nota||[]).map(n=>thumbNota(n,true)).join('');
- isiPilihanKasKu(t.lokasi??null);
+ isiPilihanKasKu(t.lokasi??null,t.beban_lokasi??null);
 }
 // Tombol Simpan: dikunci selama proses (kirim data + unggah nota bisa beberapa detik) supaya
 // tidak tertekan dua kali dan tercatat dobel; pesan juga tampil tepat di atas tombol.
@@ -3056,7 +3062,7 @@ async function kirimTransaksi(btn){
 }
 async function simpanTransaksi(){
  if(ku.edit==null&&ku.formJenis==='keluar'&&$('kuMetode').value==='kredit') return simpanKredit();
- const body={tanggal:$('kuTgl').value,jenis:ku.formJenis,kategori_id:Number($('kuKat').value),jumlah:Number($('kuJumlah').value.replace(/\D/g,'')),metode:$('kuMetode').value,keterangan:$('kuKet').value.trim()||null,qty:bacaQty(),satuan:$('kuSatuan').value.trim()||null,lokasi:$('kuKasLok').value?Number($('kuKasLok').value):null};
+ const body={tanggal:$('kuTgl').value,jenis:ku.formJenis,kategori_id:Number($('kuKat').value),jumlah:Number($('kuJumlah').value.replace(/\D/g,'')),metode:$('kuMetode').value,keterangan:$('kuKet').value.trim()||null,qty:bacaQty(),satuan:$('kuSatuan').value.trim()||null,lokasi:$('kuKasLok').value?Number($('kuKasLok').value):null,beban_lokasi:$('kuBebanLok').value?Number($('kuBebanLok').value):null};
  if(String($('kuQty').value).trim()&&!body.qty){ kuPesan('Banyaknya barang harus berupa angka, mis. 10 atau 2,5.'); return; }
  if(!body.tanggal||!body.kategori_id||!(body.jumlah>0)){ kuPesan('Isi tanggal, kategori, dan jumlah.'); return; }
  const baru=ku.edit==null;
@@ -3303,6 +3309,26 @@ AKSI_LABEL.nota_unggah='Unggah nota'; AKSI_LABEL.nota_hapus='Hapus nota';
 // ===== Kas wilayah: uang yang dipegang admin wilayah & setoran ke Pusat (dengan bukti) =====
 ku.kas=null;
 const KAS_CHIP={tanpa_bukti:'<span class="chip warn">Belum ada bukti</span>',menunggu:'<span class="chip warn">Menunggu diperiksa</span>',diterima:'<span class="chip ok">Diterima Pusat</span>',ditolak:'<span class="chip bad">Ditolak</span>'};
+// Rincian bagi hasil wilayah (sama di Keuangan Pusat, halaman admin wilayah, dan portal mitra pemegang kas).
+function htmlBagiHasil(bh,rpF,namaF){
+ if(!bh) return '';
+ const pa=bh.persen_admin, pp=bh.persen_pusat;
+ if(!bh.bulan.length) return `<div style="font-size:12px;color:#6e8177;margin-top:6px">Bagi hasil laba bersih (${pa}% admin wilayah / ${pp}% Pusat) mulai berlaku <b>Buku ${esc(namaF(bh.mulai))}</b>. Sebelum itu seluruh kas wilayah disetor ke Pusat.</div>`;
+ const brs=(t,v,o)=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;${o&&o.tebal?'font-weight:800;':''}"><span style="min-width:0;color:${o&&o.redup?'#6e8177':'inherit'}">${t}</span><span style="flex:none;white-space:nowrap;color:${o&&o.warna||'inherit'}">${v}</span></div>`;
+ return bh.bulan.slice(-3).reverse().map(b=>`<div style="border:1px solid #dce8df;border-radius:12px;padding:10px 12px;margin-top:8px;background:#fbfdfb">
+  <div style="display:flex;justify-content:space-between;gap:8px;font-weight:800;font-size:13px"><span>Buku ${esc(namaF(b.periode))}</span><span style="font-size:11px;color:${b.ditutup?'#0b7a3b':'#8a5a00'}">${b.ditutup?'✓ ditutup':'berjalan · perkiraan'}</span></div>
+  <div style="font-size:13px;margin-top:6px">
+  ${brs('Pendapatan wilayah',rpF(b.pendapatan))}${brs('− Beban dari kas wilayah',rpF(b.beban_kas_wilayah),{redup:1})}
+  ${brs('= Uang kas operasional',rpF(b.kas_operasional),{tebal:1})}
+  ${brs('− Komisi mitra (dibayar Pusat)',rpF(b.komisi_mitra),{redup:1})}${brs('− Material dari Pusat',rpF(b.material),{redup:1})}
+  ${brs('− Beban lain dari Pusat (bandwidth, dll)',rpF(b.beban_pusat),{redup:1})}
+  ${b.pengembalian_pinjaman?brs('− Pengembalian pinjaman Pusat',rpF(b.pengembalian_pinjaman),{redup:1}):''}
+  ${brs(b.rugi?'= Rugi':'= Laba bersih',rpF(b.rugi?b.laba_operasional:b.laba_bersih),{tebal:1,warna:b.rugi?'#b42318':'#0b7a3b'})}
+  ${brs(`Bagian admin wilayah ${pa}% (ditahan wilayah)`,rpF(b.bagian_admin),{warna:'#2f7d0a'})}${brs(`Bagian Pusat ${pp}%`,rpF(b.bagian_pusat))}
+  ${brs('Disetor ke Pusat untuk buku ini',rpF(Math.max(0,b.setor_bulan_ini)),{tebal:1,warna:'#123c6b'})}</div>
+  ${b.rugi?'<div style="font-size:12px;color:#b42318;margin-top:4px">Rugi: bagian admin Rp0. Bila kas wilayah tidak cukup menutup beban, ajukan pinjaman ke Pusat (dikembalikan dari laba bulan berikutnya).</div>':''}</div>`).join('')
+  +(bh.hutang_pinjaman?`<div style="font-size:12px;color:#b45309;margin-top:6px">Sisa pinjaman ke Pusat: <b>${rpF(bh.hutang_pinjaman)}</b> (dikembalikan sebelum laba dibagi).</div>`:'');
+}
 async function muatKasWilayah(){
  $('kasWil').innerHTML='<div class="muted">Memuat…</div>';
  try{ const d=await jsonAtauError(await fetch('/api/kas-wilayah',{cache:'no-store'})); ku.kas=d; const owner=d.peran==='owner';
@@ -3310,7 +3336,8 @@ async function muatKasWilayah(){
   $('kasWil').innerHTML=d.wilayah.map(w=>`<div class="blRow" style="display:block"><div class="plName">${esc(w.nama)}</div>
    <div class="blSum" style="margin-top:6px"><div class="blBox"><small>Masuk bulan ini</small><b>${rp(w.masuk_bulan_ini)}</b></div><div class="blBox"><small>Uang di tangan</small><b>${w.admin_wilayah?rp(w.di_tangan):'di Pusat'}</b><small>${w.admin_wilayah?'admin '+esc(w.admin_wilayah):'tanpa admin wilayah'}</small></div>
    <div class="blBox"><small>Wajib setor</small><b style="color:${w.wajib_setor?'#b45309':'#0b7a3b'}">${rp(w.wajib_setor)}</b><small>${w.tutup_terakhir?'s/d buku '+esc(namaPeriode(w.tutup_terakhir)):'belum ada buku ditutup'}</small></div>
-   <div class="blBox"><small>Menunggu diperiksa</small><b>${rp(w.menunggu.jumlah)}</b><small>${w.menunggu.n} setoran</small></div></div></div>`).join('');
+   <div class="blBox"><small>Menunggu diperiksa</small><b>${rp(w.menunggu.jumlah)}</b><small>${w.menunggu.n} setoran</small></div></div>
+   ${w.bagi_hasil?`<details style="margin-top:6px"><summary style="cursor:pointer;font-weight:700;font-size:var(--fs-sm)">Bagi hasil ${w.bagi_hasil.persen_admin}/${w.bagi_hasil.persen_pusat}${w.bagian_admin_ditahan?' · admin menahan '+rp(w.bagian_admin_ditahan):''}</summary>${htmlBagiHasil(w.bagi_hasil,rp,namaPeriode)}</details>`:''}</div>`).join('');
   $('kasForm').innerHTML=!d.wilayah.some(w=>w.admin_wilayah)?'<div class="plSub">Belum ada wilayah dengan admin wilayah (pemegang kas). Tunjuk di Pelanggan → Lokasi; wilayah tanpa admin dianggap dipegang Pusat.</div>':`<label>Catat setoran ke Pusat</label><div class="kuBayarForm" style="grid-template-columns:repeat(2,minmax(0,1fr))">
    <div><small>Wilayah</small><select id="ksLok" onchange="isiJumlahSetor()">${d.wilayah.filter(w=>w.admin_wilayah).map(w=>`<option value="${w.lokasi}">${esc(w.nama)} (admin ${esc(w.admin_wilayah)})</option>`).join('')}</select></div>
    <div><small>Jumlah (Rp)</small><input id="ksJml" inputmode="numeric"></div>
