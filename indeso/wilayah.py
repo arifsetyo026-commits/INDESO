@@ -138,3 +138,36 @@ def wilayah_keuangan(request: Request, bulan: int = 12):
     per_bulan = [{**kosong, **tag.get(p, {}), "periode": p, "uang_masuk": masuk.get(p, 0)} for p in periode]
     return {"lokasi": lok, "per_bulan": per_bulan, "tunggakan": tunggakan,
             "total_tunggakan": sum(x["jumlah"] for x in tunggakan), "transaksi": transaksi, "kas": kas}
+
+
+# --- Kas wilayah: admin wilayah yang ditunjuk owner sebagai pemegang kas mencatat setoran ke Pusat (+ bukti) ---
+
+class SetoranAdminWilayahIn(BaseModel):
+    jumlah: int
+    tanggal: str
+    metode: str = "transfer"
+    catatan: Optional[str] = None
+
+
+@router.get("/api/wilayah/kas")
+def wilayah_kas(request: Request):
+    """Posisi kas (termasuk bagi hasil) & riwayat setoran. Hanya untuk admin wilayah pemegang kas lokasinya."""
+    kode = _lokasi_wilayah(request)["kode"]
+    inti._boleh_lokasi_kas(request, kode)
+    with inti.db() as conn:
+        return {"posisi": inti._posisi_kas_wilayah(conn, kode), "setoran": inti._daftar_setoran(conn, kode, limit=20)}
+
+
+@router.post("/api/wilayah/kas/setoran")
+def wilayah_kas_setor(d: SetoranAdminWilayahIn, request: Request):
+    return inti._catat_setoran(inti.SetoranWilayahIn(lokasi=_lokasi_wilayah(request)["kode"], **d.model_dump()), request)
+
+
+@router.post("/api/wilayah/kas/setoran/{sid}/bukti")
+async def wilayah_kas_bukti(sid: int, request: Request):
+    return await inti._unggah_bukti_setoran(sid, request)
+
+
+@router.get("/api/wilayah/kas/setoran/{sid}/bukti")
+def wilayah_kas_lihat_bukti(sid: int, request: Request):
+    return inti.kas_wilayah_lihat_bukti(sid, request)

@@ -3769,6 +3769,7 @@ def test_kas_wilayah_dan_setoran(siap):
     Pengingat Telegram tiap 3 hari selama masih ada yang wajib disetor."""
     main, o, k, m = siap
     from fastapi.testclient import TestClient
+    main.CONFIG["BAGI_HASIL_MULAI"] = "2099-01"      # aturan lama (seluruh kas disetor); bagi hasil diuji terpisah
     hari = datetime.now().strftime("%Y-%m-%d")
     per = hari[:7]
     assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
@@ -4692,3 +4693,72 @@ def test_portal_logika_audit(siap):
     assert p.post("/api/portal/wifi", json={"index": 1, "nama": "X"}).status_code == 403
     assert p.post("/api/portal/tiket", json={"kategori": "Internet mati"}).status_code == 403
     assert p.get("/api/portal/bayar").status_code == 200
+
+
+def test_bagi_hasil_wilayah(siap):
+    """Bagi hasil wilayah: kas wilayah melunasi dulu beban yang dibayar Pusat untuk wilayah itu (pengeluaran Pusat
+    yang dibebankan ke wilayah, material yang dipakai pelanggan wilayah), lalu pinjaman Pusat; sisanya laba bersih:
+    40% ditahan admin wilayah, 60% disetor. Wajib setor = kas operasional - bagian admin."""
+    main, o, k, m = siap
+    hari = datetime.now().strftime("%Y-%m-%d")
+    per = hari[:7]
+    main.CONFIG["BAGI_HASIL_MULAI"], main.CONFIG["BAGI_HASIL_ADMIN_PERSEN"] = per, 40
+    assert k.post("/api/lokasi", json={"nama": "Wilayah 2"}).json()["kode"] == 2
+    o.post("/api/akun", json={"username": "rina", "password": "mitrapass2", "peran": "mitra", "lokasi": 2})
+    o.put("/api/lokasi/2/pj-kas", json={"username": "rina"})
+    k.post("/api/data-pelanggan", json={"username": "w2.sari", "nama": "Sari", "paket_id": 1, "lokasi": 2,
+                                        "tgl_pasang": f"{per}-01"})
+    o.post(f"/api/tagihan/buat?periode={per}")
+    tg = {t["username"]: t for t in o.get(f"/api/tagihan?periode={per}").json()["tagihan"]}
+    o.post(f"/api/tagihan/{tg['w2.sari']['id']}/lunas")
+    tagihan = tg["w2.sari"]["jumlah"]
+    kat = o.get("/api/keuangan/kategori").json()["kategori"]
+    masuk = next(x["id"] for x in kat if x["nama"] == "Pendapatan jasa pemasangan")
+    keluar = next(x["id"] for x in kat if x["jenis"] == "keluar" and x["pengaruh_laba"] and not x.get("khusus"))
+    trx = lambda **kw: k.post("/api/keuangan/transaksi", json={"tanggal": hari, "kategori_id": keluar, "jenis": "keluar", **kw})
+    assert trx(jenis="masuk", kategori_id=masuk, lokasi=2, jumlah=50000).status_code == 200
+    assert trx(lokasi=2, jumlah=20000).status_code == 200                                # beban dari kas W2
+    assert trx(jumlah=30000, beban_lokasi=2).status_code == 200                          # bandwidth dibayar Pusat
+    assert trx(jumlah=1, beban_lokasi=9).status_code == 400
+    assert trx(jumlah=1, beban_lokasi=2, lokasi=2).status_code == 400                    # hanya pengeluaran kas Pusat
+    assert trx(jenis="masuk", kategori_id=masuk, jumlah=1, beban_lokasi=2).status_code == 400
+    bid = o.post("/api/gudang/barang", json={"nama": "Dropcore", "satuan": "meter", "stok_awal": 100, "harga": 1000}).json()["id"]
+    o.post("/api/gudang/pakai", json={"username": "w2.sari", "item": [{"barang_id": bid, "jumlah": 10}]})
+    w = {x["lokasi"]: x for x in o.get("/api/kas-wilayah").json()["wilayah"]}
+    b = w[2]["bagi_hasil"]["bulan"][-1]
+    assert b["pendapatan"] == tagihan + 50000 and b["beban_kas_wilayah"] == 20000
+    assert b["beban_pusat"] == 30000 and b["material"] == 10000 and b["komisi_mitra"] == 0
+    laba = tagihan + 50000 - 20000 - 40000
+    assert b["laba_bersih"] == laba and b["bagian_admin"] == round(laba * 0.4) and b["bagian_pusat"] == laba - round(laba * 0.4)
+    assert w[2]["wajib_setor"] == 0 and w[1]["bagi_hasil"] is None                    # buku belum ditutup; W1 = Pusat
+    assert o.post(f"/api/keuangan/tutup-buku/{per}", json={}).status_code == 200
+    w = {x["lokasi"]: x for x in o.get("/api/kas-wilayah").json()["wilayah"]}
+    kas_op = tagihan + 50000 - 20000
+    assert w[2]["bagian_admin_ditahan"] == round(laba * 0.4) and w[2]["wajib_setor"] == kas_op - round(laba * 0.4)
+    # admin wilayah melihat rincian yang sama (lihat saja)
+    from fastapi.testclient import TestClient
+    r2 = TestClient(main.app)
+    r2.post("/api/login", json={"username": "rina", "password": "mitrapass2"})
+    assert r2.get("/api/mitra/kas").json()["posisi"]["bagi_hasil"]["bulan"][-1]["bagian_admin"] == round(laba * 0.4)
+    # pinjaman Pusat dari bulan sebelumnya dikembalikan dulu sebelum laba dibagi
+    with main.db() as conn:
+        conn.execute("INSERT INTO pinjaman_wilayah (lokasi, jumlah, diminta_oleh, diminta_pada, status, tanggal_cair) "
+                     "VALUES (2, 50000, 'rina', '2026-01-01', 'disetujui', '2000-01-01')")
+        conn.commit()
+    w = {x["lokasi"]: x for x in o.get("/api/kas-wilayah").json()["wilayah"]}
+    b = w[2]["bagi_hasil"]["bulan"][-1]
+    assert b["pengembalian_pinjaman"] == 50000 and b["laba_bersih"] == laba - 50000
+    assert w[2]["bagi_hasil"]["hutang_pinjaman"] == 0 and w[2]["wajib_setor"] == kas_op - round((laba - 50000) * 0.4)
+    # admin wilayah (bukan mitra) sebagai pemegang kas: melihat bagi hasil & mencatat setoran dari halaman wilayah
+    assert o.post("/api/akun", json={"username": "dewi", "password": "wilayahpass1", "peran": "wilayah", "lokasi": 2}).status_code == 200
+    d2 = TestClient(main.app)
+    d2.post("/api/login", json={"username": "dewi", "password": "wilayahpass1"})
+    assert d2.get("/api/wilayah/kas").status_code == 403                               # belum ditunjuk pemegang kas
+    assert o.put("/api/lokasi/2/pj-kas", json={"username": "dewi"}).status_code == 200
+    kas = d2.get("/api/wilayah/kas").json()
+    assert kas["posisi"]["bagi_hasil"]["persen_admin"] == 40 and kas["posisi"]["wajib_setor"] == w[2]["wajib_setor"]
+    sid = d2.post("/api/wilayah/kas/setoran", json={"jumlah": 1000, "tanggal": hari}).json()["id"]
+    assert d2.post(f"/api/wilayah/kas/setoran/{sid}/bukti", content=b"\xff\xd8\xff" + b"0" * 100).status_code == 200
+    assert d2.get(f"/api/wilayah/kas/setoran/{sid}/bukti").status_code == 200
+    assert d2.get("/api/wilayah/keuangan").json()["kas"]["bagi_hasil"]["bulan"][-1]["bagian_admin"] > 0
+    assert r2.get("/api/mitra/kas").status_code == 403                                 # rina bukan pemegang kas lagi
