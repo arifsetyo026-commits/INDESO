@@ -4754,7 +4754,13 @@ def test_bagi_hasil_wilayah(siap):
     d2 = TestClient(main.app)
     d2.post("/api/login", json={"username": "dewi", "password": "wilayahpass1"})
     assert d2.get("/api/wilayah/kas").status_code == 403                               # belum ditunjuk pemegang kas
-    assert o.put("/api/lokasi/2/pj-kas", json={"username": "dewi"}).status_code == 200
+    r = o.put("/api/lokasi/2/pj-kas", json={"username": "kasir"})
+    assert r.status_code == 400 and "berperan admin" in r.json()["detail"]                     # pesan jelas: peran salah
+    r = o.put("/api/lokasi/2/pj-kas", json={"username": "joko"})
+    assert r.status_code == 400 and "terdaftar di lokasi" in r.json()["detail"]                # pesan jelas: lokasi beda
+    assert "tidak ditemukan" in o.put("/api/lokasi/2/pj-kas", json={"username": "tidakada"}).json()["detail"]
+    assert o.put("/api/lokasi/2/pj-kas", json={"username": "DEWI"}).status_code == 200      # huruf besar-kecil bebas
+    assert {l["kode"]: l for l in o.get("/api/lokasi").json()["lokasi"]}[2]["pj_kas"] == "dewi"   # ejaan baku
     kas = d2.get("/api/wilayah/kas").json()
     assert kas["posisi"]["bagi_hasil"]["persen_admin"] == 40 and kas["posisi"]["wajib_setor"] == w[2]["wajib_setor"]
     sid = d2.post("/api/wilayah/kas/setoran", json={"jumlah": 1000, "tanggal": hari}).json()["id"]

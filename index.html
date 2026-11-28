@@ -1655,8 +1655,8 @@ async function muatLokasi(){
      <div><small>Sandi user API</small><input id="lkMtSandi" type="password" autocomplete="new-password" placeholder="${mt.ada_sandi?'tersimpan, kosongkan bila tetap':''}"></div></div>
      <div class="plSub" style="margin-top:6px">Setelah dipantau, pelanggan lokasi ini ikut <b>isolir otomatis</b>, sinkron secret PPPoE, peringatan putus, dan Diagnosa seperti lokasi 1.</div>
      <div class="blAksi" style="justify-content:flex-start;margin-top:6px"><button class="btnS" onclick="tesMtLokasi(${l.kode})">Tes koneksi</button><button class="btnS go" onclick="simpanMtLokasi(${l.kode},true)">Simpan &amp; pantau</button>${l.jaringan?`<button class="btnS" onclick="simpanMtLokasi(${l.kode},false)">Kembali ke hanya penagihan</button>`:''}</div>`:'';
-   return `<div class="blRow"${form?' style="display:block"':''}><div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${status}</div>${st&&!st.ok&&st.pesan?'<div class="plSub turun">'+esc(st.pesan)+'</div>':''}</div>
-   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Admin wilayah: ${esc(l.pj_kas||'Pusat')}</button>${mt?`<button class="btnS" onclick="lk.mt=lk.mt===${l.kode}?null:${l.kode};muatLokasi()">MikroTik</button>`:''}</div></div>${form}</div>`;}).join('');
+   return `<div class="blRow" style="${form?'display:block':'flex-wrap:wrap'}"><div style="display:flex;justify-content:space-between;gap:10px;width:100%"><div><b>${l.kode} · ${esc(l.nama)}</b><div class="plSub">${l.pelanggan} pelanggan aktif · ID 463376-${l.kode}-… · ${status}</div>${st&&!st.ok&&st.pesan?'<div class="plSub turun">'+esc(st.pesan)+'</div>':''}</div>
+   <div class="blAksi"><button class="btnS" onclick="ubahLokasi(${l.kode})">Ganti nama</button><button class="btnS" onclick="ubahPjKas(${l.kode})">Admin wilayah: ${esc(l.pj_kas||'Pusat')}</button>${mt?`<button class="btnS" onclick="lk.mt=lk.mt===${l.kode}?null:${l.kode};muatLokasi()">MikroTik</button>`:''}</div></div><div id="pjForm${l.kode}" style="flex-basis:100%;width:100%"></div>${form}</div>`;}).join('');
  }catch(e){ $('lkList').innerHTML='<div class="muted">Gagal memuat: '+esc(e.message)+'</div>'; }
 }
 async function simpanLokasi(url,metode,nama,pesanOk){
@@ -1684,10 +1684,21 @@ async function simpanMtLokasi(k,pantau){
  catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
 }
 async function ubahPjKas(k){
- const u=prompt('Admin wilayah '+namaLokasi(k)+' (pemegang kas): ketik username akun admin wilayah (atau mitra) lokasi ini yang memegang uang wilayah, menahan bagian bagi hasilnya, dan menyetor sisanya ke Pusat. Kosongkan = dipegang Pusat.',(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'');
- if(u==null) return;
- try{ await jsonAtauError(await fetch('/api/lokasi/'+k+'/pj-kas',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u.trim()||null})}));
-  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Admin wilayah '+namaLokasi(k)+': '+(u.trim()||'Pusat')+'.'; await muatLokasi(); }
+ // Pilihan, bukan ketik: hanya akun admin wilayah / mitra yang lokasinya sama dengan wilayah ini.
+ let akun=[]; try{ akun=(await jsonAtauError(await fetch('/api/akun',{cache:'no-store'}))).akun; }catch(e){}
+ const calon=akun.filter(a=>['wilayah','mitra'].includes(a.peran)&&(a.lokasi||1)===k&&a.aktif);
+ const kini=(pl.lokasi.find(x=>x.kode===k)||{}).pj_kas||'';
+ const el=$('pjForm'+k); if(!el) return;
+ if(el.innerHTML){ el.innerHTML=''; return; }
+ el.innerHTML=`<div class="plForm" style="margin-top:8px"><label>Pemegang kas ${esc(namaLokasi(k))} <span class="plSub">(memegang uang wilayah, menahan bagian bagi hasil, menyetor sisanya ke Pusat)</span></label>
+  <select id="pjPilih${k}"><option value="">Pusat (tanpa admin wilayah)</option>${calon.map(a=>`<option value="${esc(a.username)}" ${a.username===kini?'selected':''}>${esc(a.username)} · ${a.peran==='wilayah'?'admin wilayah':'mitra'}</option>`).join('')}</select>
+  ${calon.length?'':`<div class="plSub" style="color:#b45309">Belum ada akun admin wilayah/mitra dengan lokasi ${esc(namaLokasi(k))}. Buat atau ubah lokasi akunnya di Pengaturan → Pengguna.</div>`}
+  <div class="plBtns"><button class="plSave" onclick="simpanPjKas(${k})">Simpan</button><button class="plCancel" onclick="$('pjForm${k}').innerHTML=''">Batal</button></div></div>`;
+}
+async function simpanPjKas(k){
+ const u=$('pjPilih'+k).value;
+ try{ await jsonAtauError(await fetch('/api/lokasi/'+k+'/pj-kas',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u||null})}));
+  $('lkMsg').style.color='#0b7a3b'; $('lkMsg').textContent='Pemegang kas '+namaLokasi(k)+': '+(u||'Pusat')+'.'; await muatLokasi(); }
  catch(e){ $('lkMsg').style.color='#b42318'; $('lkMsg').textContent='Gagal: '+e.message; }
 }
 function ubahLokasi(k){ const nama=prompt('Nama lokasi '+k+':',namaLokasi(k)); if(nama&&nama.trim()) simpanLokasi('/api/lokasi/'+k,'PUT',nama.trim(),'Nama lokasi diganti.'); }
