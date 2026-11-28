@@ -3835,15 +3835,27 @@ class PjKasIn(BaseModel):
 
 @app.put("/api/lokasi/{kode}/pj-kas")
 def ubah_pj_kas(kode: int, d: PjKasIn, request: Request):
-    """Owner menunjuk admin wilayah (pemegang kas lokasi ini; di W2 akun mitra W2) yang mencatat setoran ke Pusat."""
+    """Owner menunjuk pemegang kas lokasi ini (akun admin wilayah atau mitra lokasi itu) yang menyetor ke Pusat."""
     _wajib_owner(request, "Admin wilayah (pemegang kas) hanya bisa diatur owner.")
     u = (d.username or "").strip() or None
     with db() as conn:
         _cek_lokasi(conn, kode)
-        if u and not conn.execute("SELECT 1 FROM akun WHERE username = ? AND peran IN ('mitra', 'wilayah') "
-                                  "AND COALESCE(lokasi, 1) = ?",
-                                  (u, kode)).fetchone():
-            raise HTTPException(status_code=400, detail="Pemegang kas harus akun admin wilayah atau mitra di lokasi ini.")
+        if u:
+            a = conn.execute("SELECT a.username, a.peran, COALESCE(a.lokasi, 1) AS lokasi, l.nama AS nama_lokasi FROM akun a "
+                             "LEFT JOIN lokasi l ON l.kode = COALESCE(a.lokasi, 1) WHERE a.username = ? COLLATE NOCASE",
+                             (u,)).fetchone()
+            nama = conn.execute("SELECT nama FROM lokasi WHERE kode = ?", (kode,)).fetchone()[0]
+            if not a:
+                raise HTTPException(status_code=400, detail=f"Akun '{u}' tidak ditemukan. Periksa ejaannya di "
+                                                            "Pengaturan → Pengguna.")
+            if a["peran"] not in ("mitra", "wilayah"):
+                raise HTTPException(status_code=400, detail=f"Akun {a['username']} berperan {a['peran']}. Pemegang kas harus "
+                                                            "akun admin wilayah atau mitra.")
+            if a["lokasi"] != kode:
+                raise HTTPException(status_code=400, detail=f"Akun {a['username']} terdaftar di lokasi "
+                                                            f"{a['nama_lokasi'] or a['lokasi']}, bukan {nama}. Ubah lokasi "
+                                                            "akunnya dulu di Pengaturan → Pengguna.")
+            u = a["username"]          # ejaan persis seperti di daftar akun
         conn.execute("UPDATE lokasi SET pj_kas = ? WHERE kode = ?", (u, kode))
         conn.commit()
     catat_aktivitas(_oleh(request), "kas_wilayah", f"admin wilayah (pemegang kas) lokasi {kode}: {u or 'Pusat'}")
